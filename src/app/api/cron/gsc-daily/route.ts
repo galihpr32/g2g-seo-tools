@@ -14,7 +14,6 @@ import {
   sendCWVAlert,
 } from '@/lib/slack/alerts'
 
-// Vercel cron security
 export const maxDuration = 60
 
 function verifyAuth(request: Request) {
@@ -32,30 +31,22 @@ export async function GET(request: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
 
-  // Get all GSC connections
-  const { data: connections } = await supabase
-    .from('gsc_connections')
-    .select('*')
-
-  if (!connections?.length) {
-    return NextResponse.json({ message: 'No connections found' })
-  }
+  const { data: connections } = await supabase.from('gsc_connections').select('*')
+  if (!connections?.length) return NextResponse.json({ message: 'No connections found' })
 
   const results: Record<string, unknown> = {}
 
   for (const conn of connections) {
     try {
-      const auth = await getRefreshedClient(
-        conn.access_token,
-        conn.refresh_token,
-        conn.expires_at
-      )
+      const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
       const siteUrl = conn.site_url
+      const today = getDateRange(0)
 
       // ── Task 1: Ranking Drop Alert ──────────────────────────────────────
-      const [currentRows, previousRows] = await Promise.all([
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1)),
-        getSearchAnalytics(auth, siteUrl, getDateRange(14), getDateRange(8)),
+      const [currentRows, previousRows, queryRows] = await Promise.all([
+        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page'], 1000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(14), getDateRange(8), ['page'], 1000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page', 'query'], 2000),
       ])
 
       const toRankingRow = (rows: typeof currentRows): RankingRow[] =>
@@ -67,27 +58,84 @@ export async function GET(request: Request) {
           position: r.position ?? 0,
         }))
 
-      const drops = detectRankingDrops(toRankingRow(currentRows), toRankingRow(previousRows))
+      const current = toRankingRow(currentRows)
+      const previous = toRankingRow(previousRows)
+      const drops = detectRankingDrops(current, previous)
 
-      // Save ranking snapshot
-      const today = getDateRange(0)
-      const rankingInserts = toRankingRow(currentRows).map(r => ({
-        site_url: siteUrl,
-        snapshot_date: today,
-        page: r.page,
-        clicks: r.clicks,
-        impressions: r.impressions,
-        ctr: r.ctr,
-        position: r.position,
-      }))
-      if (rankingInserts.length) {
-        await supabase.from('gsc_ranking_snapshots').upsert(rankingInserts, {
-          onConflict: 'site_url,snapshot_date,page',
-          ignoreDuplicates: true,
-        })
+      // Save raw ranking snapshot
+      if (current.length) {
+        await supabase.from('gsc_ranking_snapshots').upsert(
+          current.map(r => ({
+            site_url: siteUrl,
+            snapshot_date: today,
+            page: r.page,
+            clicks: r.clicks,
+            impressions: r.impressions,
+            ctr: r.ctr,
+            position: r.position,
+          })),
+          { onConflict: 'site_url,snapshot_date,page', ignoreDuplicates: true }
+        )
       }
 
+      // Save detected drops to dedicated table (so page reads from DB, not live API)
       if (drops.length) {
+        // Upsert drop records
+        await supabase.from('gsc_ranking_drops').upsert(
+          drops.map(d => ({
+            site_url: siteUrl,
+            snapshot_date: today,
+            page: d.page,
+            clicks_now: d.currentClicks,
+            clicks_prev: d.previousClicks,
+            clicks_drop: d.clicksDrop,
+            impressions_now: d.currentImpressions,
+            impressions_prev: d.previousImpressions,
+            impressions_drop: d.impressionsDrop,
+            position_now: d.currentPosition,
+            position_prev: d.previousPosition,
+            position_diff: d.positionChange,
+          })),
+          { onConflict: 'site_url,snapshot_date,page', ignoreDuplicates: false }
+        )
+
+        // Build query map and save per-page queries
+        const queryMap = new Map<string, typeof queryRows>()
+        for (const row of queryRows) {
+          const page = row.keys?.[0] ?? ''
+          if (!queryMap.has(page)) queryMap.set(page, [])
+          queryMap.get(page)!.push(row)
+        }
+
+        // Only save queries for pages that had drops (keeps DB lean)
+        const queryInserts = []
+        for (const drop of drops) {
+          const pageQueries = (queryMap.get(drop.page) ?? [])
+            .sort((a, b) => (b.clicks ?? 0) - (a.clicks ?? 0))
+            .slice(0, 20)
+
+          for (const q of pageQueries) {
+            queryInserts.push({
+              site_url: siteUrl,
+              snapshot_date: today,
+              page: drop.page,
+              query: q.keys?.[1] ?? '',
+              clicks: q.clicks ?? 0,
+              impressions: q.impressions ?? 0,
+              ctr: q.ctr ?? 0,
+              position: q.position ?? 0,
+            })
+          }
+        }
+
+        if (queryInserts.length) {
+          await supabase.from('gsc_ranking_drop_queries').upsert(queryInserts, {
+            onConflict: 'site_url,snapshot_date,page,query',
+            ignoreDuplicates: false,
+          })
+        }
+
+        // Send Slack alert + log
         await sendRankingDropAlert(drops)
         await supabase.from('alert_log').insert({
           alert_type: 'ranking_drop',
@@ -95,13 +143,12 @@ export async function GET(request: Request) {
           title: `${drops.length} pages dropped >15% WoW`,
           message: drops.map(d => d.page).join(', '),
           severity: drops.length > 5 ? 'critical' : 'warning',
-          slack_sent: true,
+          slack_sent: !!process.env.SLACK_WEBHOOK_URL,
           metadata: { drops },
         })
       }
 
       // ── Task 2: Index Coverage ──────────────────────────────────────────
-      // Approximate: count total unique pages appearing in search analytics
       const totalIndexed = currentRows.length
 
       const { data: prevSnapshot } = await supabase
@@ -119,7 +166,7 @@ export async function GET(request: Request) {
         site_url: siteUrl,
         snapshot_date: today,
         indexed_pages: totalIndexed,
-        errors: 0, // Updated when URL inspection API is wired in
+        errors: 0,
       }, { onConflict: 'site_url,snapshot_date' })
 
       await sendIndexCoverageAlert({
@@ -146,18 +193,11 @@ export async function GET(request: Request) {
           site_url: siteUrl,
           snapshot_date: today,
           origin,
-          lcp_good: cwv.lcp.good,
-          lcp_ni: cwv.lcp.ni,
-          lcp_poor: cwv.lcp.poor,
-          cls_good: cwv.cls.good,
-          cls_ni: cwv.cls.ni,
-          cls_poor: cwv.cls.poor,
-          inp_good: cwv.inp.good,
-          inp_ni: cwv.inp.ni,
-          inp_poor: cwv.inp.poor,
+          lcp_good: cwv.lcp.good, lcp_ni: cwv.lcp.ni, lcp_poor: cwv.lcp.poor,
+          cls_good: cwv.cls.good, cls_ni: cwv.cls.ni, cls_poor: cwv.cls.poor,
+          inp_good: cwv.inp.good, inp_ni: cwv.inp.ni, inp_poor: cwv.inp.poor,
         }, { onConflict: 'site_url,snapshot_date,origin' })
 
-        // Detect degradations vs previous
         if (prevCWV) {
           const THRESHOLD = 0.05
           const degradations = []
@@ -176,7 +216,7 @@ export async function GET(request: Request) {
               title: `CWV degradation on ${origin}`,
               message: degradations.map(d => d.metric).join(', '),
               severity: 'warning',
-              slack_sent: true,
+              slack_sent: !!process.env.SLACK_WEBHOOK_URL,
               metadata: { degradations },
             })
           }

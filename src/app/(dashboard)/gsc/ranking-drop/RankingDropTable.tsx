@@ -1,7 +1,26 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import type { PageDropWithQueries } from './page'
+
+export type PageDropWithQueries = {
+  page: string
+  currentClicks: number
+  previousClicks: number
+  clicksDrop: number
+  currentImpressions: number
+  previousImpressions: number
+  impressionsDrop: number
+  currentPosition: number
+  previousPosition: number
+  positionChange: number
+  queries: {
+    query: string
+    clicks: number
+    impressions: number
+    ctr: number
+    position: number
+  }[]
+}
 
 interface Props {
   drops: PageDropWithQueries[]

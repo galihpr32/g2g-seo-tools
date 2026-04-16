@@ -1,19 +1,10 @@
 import { createClient } from '@/lib/supabase/server'
 import { getRefreshedClient } from '@/lib/gsc/auth'
-import { getSearchAnalytics, getDateRange, detectRankingDrops, type RankingDrop } from '@/lib/gsc/client'
+import { getSearchAnalytics, getDateRange, detectRankingDrops } from '@/lib/gsc/client'
 import { RankingDropTable } from './RankingDropTable'
+import type { PageDropWithQueries } from './RankingDropTable'
 
 export const dynamic = 'force-dynamic'
-
-export type PageDropWithQueries = RankingDrop & {
-  queries: {
-    query: string
-    clicks: number
-    impressions: number
-    ctr: number
-    position: number
-  }[]
-}
 
 export default async function RankingDropPage() {
   const supabase = await createClient()
@@ -26,60 +17,115 @@ export default async function RankingDropPage() {
   let drops: PageDropWithQueries[] = []
   let totalTracked = 0
   let fetchError: string | null = null
+  let dataSource: 'db' | 'live' | 'none' = 'none'
   const today = getDateRange(0)
 
-  if (conn?.access_token) {
-    try {
-      const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
-      const siteUrl = conn.site_url
+  if (conn) {
+    // ── Step 1: Try reading today's drops from DB (fast, no API call) ────
+    const { data: dbDrops } = await supabase
+      .from('gsc_ranking_drops')
+      .select('*')
+      .eq('site_url', conn.site_url)
+      .eq('snapshot_date', today)
+      .order('clicks_drop', { ascending: false })
 
-      // Fetch page-level data (for WoW comparison) + query breakdown (for drill-down)
-      const [currentRaw, previousRaw, queryRaw] = await Promise.all([
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page'], 1000),
-        getSearchAnalytics(auth, siteUrl, getDateRange(14), getDateRange(8), ['page'], 1000),
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page', 'query'], 2000),
-      ])
+    const { data: snapshot } = await supabase
+      .from('gsc_ranking_snapshots')
+      .select('page')
+      .eq('site_url', conn.site_url)
+      .eq('snapshot_date', today)
 
-      const toRow = (rows: typeof currentRaw) => rows.map(r => ({
-        page: r.keys?.[0] ?? '',
-        clicks: r.clicks ?? 0,
-        impressions: r.impressions ?? 0,
-        ctr: r.ctr ?? 0,
-        position: r.position ?? 0,
-      }))
+    if (snapshot?.length) totalTracked = snapshot.length
 
-      const current = toRow(currentRaw)
-      const previous = toRow(previousRaw)
-      totalTracked = current.length
+    if (dbDrops && dbDrops.length > 0) {
+      // Drops exist in DB — load queries from DB too
+      dataSource = 'db'
 
-      const rawDrops = detectRankingDrops(current, previous)
+      const pages = dbDrops.map(d => d.page)
+      const { data: dbQueries } = await supabase
+        .from('gsc_ranking_drop_queries')
+        .select('*')
+        .eq('site_url', conn.site_url)
+        .eq('snapshot_date', today)
+        .in('page', pages)
+        .order('clicks', { ascending: false })
 
-      // Build query map: page → top queries
       const queryMap = new Map<string, PageDropWithQueries['queries']>()
-      for (const row of queryRaw) {
-        const page = row.keys?.[0] ?? ''
-        const query = row.keys?.[1] ?? ''
-        if (!queryMap.has(page)) queryMap.set(page, [])
-        queryMap.get(page)!.push({
-          query,
-          clicks: row.clicks ?? 0,
-          impressions: row.impressions ?? 0,
-          ctr: row.ctr ?? 0,
-          position: row.position ?? 0,
+      for (const q of dbQueries ?? []) {
+        if (!queryMap.has(q.page)) queryMap.set(q.page, [])
+        queryMap.get(q.page)!.push({
+          query: q.query,
+          clicks: q.clicks,
+          impressions: q.impressions,
+          ctr: q.ctr,
+          position: q.position,
         })
       }
 
-      // Sort queries by clicks desc, keep top 20 per page
-      for (const [page, queries] of queryMap.entries()) {
-        queryMap.set(page, queries.sort((a, b) => b.clicks - a.clicks).slice(0, 20))
-      }
-
-      drops = rawDrops.map(drop => ({
-        ...drop,
-        queries: queryMap.get(drop.page) ?? [],
+      drops = dbDrops.map(d => ({
+        page: d.page,
+        currentClicks: d.clicks_now,
+        previousClicks: d.clicks_prev,
+        clicksDrop: d.clicks_drop,
+        currentImpressions: d.impressions_now,
+        previousImpressions: d.impressions_prev,
+        impressionsDrop: d.impressions_drop,
+        currentPosition: d.position_now,
+        previousPosition: d.position_prev,
+        positionChange: d.position_diff,
+        queries: queryMap.get(d.page) ?? [],
       }))
-    } catch (e) {
-      fetchError = String(e)
+    } else if (conn.access_token) {
+      // ── Step 2: No DB data yet — fetch live from GSC API ─────────────
+      dataSource = 'live'
+      try {
+        const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
+        const siteUrl = conn.site_url
+
+        const [currentRaw, previousRaw, queryRaw] = await Promise.all([
+          getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(14), getDateRange(8), ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page', 'query'], 2000),
+        ])
+
+        const toRow = (rows: typeof currentRaw) => rows.map(r => ({
+          page: r.keys?.[0] ?? '',
+          clicks: r.clicks ?? 0,
+          impressions: r.impressions ?? 0,
+          ctr: r.ctr ?? 0,
+          position: r.position ?? 0,
+        }))
+
+        const current = toRow(currentRaw)
+        const previous = toRow(previousRaw)
+        if (!totalTracked) totalTracked = current.length
+
+        const rawDrops = detectRankingDrops(current, previous)
+
+        const queryMap = new Map<string, PageDropWithQueries['queries']>()
+        for (const row of queryRaw) {
+          const page = row.keys?.[0] ?? ''
+          const query = row.keys?.[1] ?? ''
+          if (!queryMap.has(page)) queryMap.set(page, [])
+          queryMap.get(page)!.push({
+            query,
+            clicks: row.clicks ?? 0,
+            impressions: row.impressions ?? 0,
+            ctr: row.ctr ?? 0,
+            position: row.position ?? 0,
+          })
+        }
+        for (const [p, qs] of queryMap) {
+          queryMap.set(p, qs.sort((a, b) => b.clicks - a.clicks).slice(0, 20))
+        }
+
+        drops = rawDrops.map(d => ({
+          ...d,
+          queries: queryMap.get(d.page) ?? [],
+        }))
+      } catch (e) {
+        fetchError = String(e)
+      }
     }
   }
 
@@ -97,9 +143,21 @@ export default async function RankingDropPage() {
           <h1 className="text-2xl font-bold text-white">📉 Ranking Drop Alert</h1>
           <p className="text-gray-400 text-sm mt-1">Pages with &gt;15% WoW drop in clicks or position change ≥5</p>
         </div>
-        <span className="text-xs text-gray-500 bg-gray-800 px-3 py-1.5 rounded-full">
-          {today} · live from GSC
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500 bg-gray-800 px-3 py-1.5 rounded-full">
+            {today}
+          </span>
+          {dataSource === 'db' && (
+            <span className="text-xs text-green-600 bg-green-500/10 border border-green-500/20 px-2.5 py-1 rounded-full">
+              ⚡ from DB
+            </span>
+          )}
+          {dataSource === 'live' && (
+            <span className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">
+              🔄 live
+            </span>
+          )}
+        </div>
       </div>
 
       {fetchError && (

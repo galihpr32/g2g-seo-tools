@@ -1,10 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 
-type Site = { url: string; level: string }
 type Connection = { connected: boolean; siteUrl?: string; propertyId?: string }
+type Site = { url: string; level: string }
 
 function StatusBadge({ connected }: { connected: boolean }) {
   return (
@@ -18,50 +17,43 @@ function StatusBadge({ connected }: { connected: boolean }) {
 }
 
 export default function SettingsPage() {
-  const supabase = createClient()
   const [gsc, setGsc] = useState<Connection>({ connected: false })
   const [ga4, setGa4] = useState<Connection>({ connected: false })
   const [slack, setSlack] = useState<Connection>({ connected: false })
   const [semrush, setSemrush] = useState<Connection>({ connected: false })
   const [sites, setSites] = useState<Site[]>([])
   const [loadingSites, setLoadingSites] = useState(false)
+  const [loadingStatus, setLoadingStatus] = useState(true)
   const [savingProperty, setSavingProperty] = useState(false)
   const [saved, setSaved] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<string | null>(null)
 
   useEffect(() => {
-    async function loadConnections() {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
+    async function loadStatus() {
+      setLoadingStatus(true)
+      try {
+        const res = await fetch('/api/settings/status')
+        const status = await res.json()
 
-      const { data: gscConn } = await supabase
-        .from('gsc_connections')
-        .select('site_url')
-        .eq('user_id', user.id)
-        .single()
+        setGsc({ connected: status.gsc.connected, siteUrl: status.gsc.siteUrl })
+        setGa4({ connected: status.ga4.connected, propertyId: status.ga4.propertyId })
+        setSlack({ connected: status.slack.connected })
+        setSemrush({ connected: status.semrush.connected })
 
-      if (gscConn) {
-        setGsc({ connected: true, siteUrl: gscConn.site_url })
-        // Load sites list
-        setLoadingSites(true)
-        const res = await fetch('/api/gsc/properties')
-        const data = await res.json()
-        setSites(data.sites ?? [])
-        setLoadingSites(false)
+        if (status.gsc.connected) {
+          setLoadingSites(true)
+          const sitesRes = await fetch('/api/gsc/properties')
+          const sitesData = await sitesRes.json()
+          setSites(sitesData.sites ?? [])
+          setLoadingSites(false)
+        }
+      } catch (e) {
+        console.error('Failed to load integration status', e)
       }
-
-      // GA4 — check if property ID is configured
-      const hasGA4 = !!process.env.NEXT_PUBLIC_GA4_PROPERTY_ID
-      setGa4({ connected: hasGA4 })
-
-      // Slack — just show pending until webhook is set
-      setSlack({ connected: false })
-
-      // SEMrush
-      setSemrush({ connected: false })
+      setLoadingStatus(false)
     }
-    loadConnections()
+    loadStatus()
   }, [])
 
   async function handleSync() {
@@ -71,7 +63,9 @@ export default function SettingsPage() {
       const res = await fetch('/api/cron/trigger', { method: 'POST' })
       const data = await res.json()
       if (data.success) {
-        const drops = Object.values(data.data?.results ?? {}).reduce((sum: number, r: unknown) => sum + ((r as { drops?: number }).drops ?? 0), 0)
+        const drops = Object.values(data.data?.results ?? {}).reduce(
+          (sum: number, r: unknown) => sum + ((r as { drops?: number }).drops ?? 0), 0
+        )
         setSyncResult(`✅ Sync complete! Found ${drops} ranking drop(s). Check the GSC pages for data.`)
       } else {
         setSyncResult(`❌ Sync failed: ${data.error}`)
@@ -103,13 +97,11 @@ export default function SettingsPage() {
       icon: '🔍',
       connection: gsc,
       action: (
-        <a
-          href="/api/auth/google"
-          className="text-sm font-medium text-red-400 hover:text-red-300 transition"
-        >
+        <a href="/api/auth/google" className="text-sm font-medium text-red-400 hover:text-red-300 transition">
           {gsc.connected ? 'Reconnect' : 'Connect →'}
         </a>
       ),
+      detail: null,
     },
     {
       key: 'ga4',
@@ -117,9 +109,14 @@ export default function SettingsPage() {
       description: 'Organic traffic, content performance, landing pages',
       icon: '📈',
       connection: ga4,
-      action: ga4.connected ? null : (
-        <span className="text-xs text-gray-500">Add GA4_PROPERTY_ID to Vercel env</span>
-      ),
+      action: ga4.connected ? (
+        <a href="/api/auth/google" className="text-sm font-medium text-red-400 hover:text-red-300 transition">
+          Reconnect
+        </a>
+      ) : null,
+      detail: ga4.connected
+        ? <span className="text-xs text-gray-500 mt-0.5 block">Property ID: {ga4.propertyId}</span>
+        : <span className="text-xs text-gray-500 mt-0.5 block">Add GA4_PROPERTY_ID to Vercel env</span>,
     },
     {
       key: 'slack',
@@ -127,9 +124,10 @@ export default function SettingsPage() {
       description: 'Daily alerts for ranking drops, index issues, CWV degradation',
       icon: '💬',
       connection: slack,
-      action: (
-        <span className="text-xs text-gray-500">Add SLACK_WEBHOOK_URL to Vercel env</span>
-      ),
+      action: slack.connected
+        ? <span className="text-xs text-green-500 font-medium">Webhook active ✓</span>
+        : <span className="text-xs text-gray-500">Add SLACK_WEBHOOK_URL to Vercel env</span>,
+      detail: null,
     },
     {
       key: 'semrush',
@@ -137,9 +135,10 @@ export default function SettingsPage() {
       description: 'Keyword rankings, clustering, site audit, competitor tracking',
       icon: '🎯',
       connection: semrush,
-      action: (
-        <span className="text-xs text-gray-500">Add SEMRUSH_API_KEY to Vercel env</span>
-      ),
+      action: semrush.connected
+        ? <span className="text-xs text-green-500 font-medium">API key active ✓</span>
+        : <span className="text-xs text-gray-500">Add SEMRUSH_API_KEY to Vercel env</span>,
+      detail: null,
     },
   ]
 
@@ -163,7 +162,7 @@ export default function SettingsPage() {
           className="flex items-center gap-2 bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition flex-shrink-0 ml-4"
         >
           {syncing ? (
-            <><span className="animate-spin">⟳</span> Syncing...</>
+            <><span className="animate-spin inline-block">⟳</span> Syncing...</>
           ) : (
             <>⟳ Sync Now</>
           )}
@@ -172,21 +171,28 @@ export default function SettingsPage() {
 
       {/* Integrations */}
       <div className="space-y-4 mb-10">
-        {integrations.map(int => (
-          <div key={int.key} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <span className="text-2xl">{int.icon}</span>
-              <div>
-                <div className="flex items-center gap-2.5">
-                  <p className="text-white font-medium">{int.name}</p>
-                  <StatusBadge connected={int.connection.connected} />
-                </div>
-                <p className="text-gray-400 text-sm mt-0.5">{int.description}</p>
-              </div>
-            </div>
-            <div>{int.action}</div>
+        {loadingStatus ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 text-gray-500 text-sm">
+            Loading integration status...
           </div>
-        ))}
+        ) : (
+          integrations.map(int => (
+            <div key={int.key} className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <span className="text-2xl">{int.icon}</span>
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <p className="text-white font-medium">{int.name}</p>
+                    <StatusBadge connected={int.connection.connected} />
+                  </div>
+                  <p className="text-gray-400 text-sm mt-0.5">{int.description}</p>
+                  {int.detail}
+                </div>
+              </div>
+              <div className="flex-shrink-0 ml-4">{int.action}</div>
+            </div>
+          ))
+        )}
       </div>
 
       {/* GSC Property Selector */}
