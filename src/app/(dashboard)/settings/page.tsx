@@ -27,6 +27,8 @@ export default function SettingsPage() {
   const [loadingSites, setLoadingSites] = useState(false)
   const [savingProperty, setSavingProperty] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadConnections() {
@@ -61,6 +63,24 @@ export default function SettingsPage() {
     }
     loadConnections()
   }, [])
+
+  async function handleSync() {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch('/api/cron/trigger', { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        const drops = Object.values(data.data?.results ?? {}).reduce((sum: number, r: unknown) => sum + ((r as { drops?: number }).drops ?? 0), 0)
+        setSyncResult(`✅ Sync complete! Found ${drops} ranking drop(s). Check the GSC pages for data.`)
+      } else {
+        setSyncResult(`❌ Sync failed: ${data.error}`)
+      }
+    } catch {
+      setSyncResult('❌ Sync failed — check Vercel logs')
+    }
+    setSyncing(false)
+  }
 
   async function selectProperty(siteUrl: string) {
     setSavingProperty(true)
@@ -128,6 +148,26 @@ export default function SettingsPage() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">⚙️ Settings & Connections</h1>
         <p className="text-gray-400 text-sm mt-1">Manage your API integrations and GSC property</p>
+      </div>
+
+      {/* Manual Sync */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
+        <div>
+          <p className="text-white font-medium">Manual Data Sync</p>
+          <p className="text-gray-400 text-sm mt-0.5">Pull latest GSC data now — normally runs automatically at 8am daily</p>
+          {syncResult && <p className="text-sm mt-2 font-medium text-green-400">{syncResult}</p>}
+        </div>
+        <button
+          onClick={handleSync}
+          disabled={syncing || !gsc.connected}
+          className="flex items-center gap-2 bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition flex-shrink-0 ml-4"
+        >
+          {syncing ? (
+            <><span className="animate-spin">⟳</span> Syncing...</>
+          ) : (
+            <>⟳ Sync Now</>
+          )}
+        </button>
       </div>
 
       {/* Integrations */}
