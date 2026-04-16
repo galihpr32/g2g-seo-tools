@@ -44,7 +44,7 @@ export default async function DashboardPage() {
       </div>
 
       {/* Phase 1 Banner */}
-      <div className="bg-blue-600/10 border border-blue-600/20 rounded-xl p-5 mb-8">
+      <div className="bg-red-900/20 border border-red-800/30 rounded-xl p-5 mb-8">
         <div className="flex items-start gap-3">
           <span className="text-2xl">🚀</span>
           <div>
