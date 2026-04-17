@@ -11,6 +11,7 @@ const navItems = [
     items: [
       { label: 'Dashboard', href: '/dashboard', icon: '▦' },
       { label: 'Campaigns', href: '/campaigns', icon: '🗂️' },
+      { label: 'Team Performance', href: '/team-performance', icon: '👥' },
       { label: 'Notifications', href: '/notifications', icon: '🔔' },
       { label: 'Settings & Connections', href: '/settings', icon: '⚙️' },
     ],
