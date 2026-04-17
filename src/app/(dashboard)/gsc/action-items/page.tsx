@@ -1,9 +1,13 @@
 import { createClient } from '@/lib/supabase/server'
-import { ActionItemsTable, type ActionItem, type BriefStatus } from './ActionItemsTable'
+import { ActionItemsTable, type ActionItem, type BriefSummary } from './ActionItemsTable'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ActionItemsPage() {
+export default async function ActionItemsPage({
+  searchParams,
+}: {
+  searchParams: { page?: string; limit?: string; from?: string; to?: string }
+}) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -13,37 +17,64 @@ export default async function ActionItemsPage() {
 
   const siteUrl = conn?.site_url
 
-  const { data: items } = siteUrl
-    ? await supabase
-        .from('seo_action_items')
-        .select('*')
-        .eq('site_url', siteUrl)
-        .order('created_at', { ascending: false })
-    : { data: [] }
+  // ── Pagination + date params ──────────────────────────────────────────────
+  const limit  = Math.min(Math.max(parseInt(searchParams.limit ?? '20'), 1), 100)
+  const page   = Math.max(parseInt(searchParams.page ?? '1'), 1)
+  const offset = (page - 1) * limit
+  const from   = searchParams.from ?? null   // ISO date string, e.g. "2025-01-01"
+  const to     = searchParams.to   ?? null   // ISO date string, e.g. "2025-03-31"
 
-  // Load brief status for each action item
-  const itemIds = (items ?? []).map(i => i.id)
+  // ── Query with pagination + optional date range ───────────────────────────
+  let totalCount = 0
+  let items: ActionItem[] = []
+
+  if (siteUrl) {
+    let query = supabase
+      .from('seo_action_items')
+      .select('*', { count: 'exact' })
+      .eq('site_url', siteUrl)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
+
+    if (from) query = query.gte('snapshot_date', from)
+    if (to)   query = query.lte('snapshot_date', to)
+
+    const { data, count } = await query
+    items      = (data ?? []) as ActionItem[]
+    totalCount = count ?? 0
+  }
+
+  const totalPages = Math.ceil(totalCount / limit)
+
+  // ── Load extended brief data for this page's items ────────────────────────
+  const itemIds = items.map(i => i.id)
   const { data: briefs } = itemIds.length
     ? await supabase
         .from('seo_content_briefs')
-        .select('action_item_id, status, brief_type')
+        .select('id, action_item_id, status, brief_type, content_ideas, content_draft')
         .in('action_item_id', itemIds)
     : { data: [] }
 
-  // Build a map: action_item_id → { status, brief_type }
-  const briefStatuses: Record<string, BriefStatus> = {}
+  const briefSummaries: Record<string, BriefSummary> = {}
   for (const b of briefs ?? []) {
-    // Only store the most recent brief per action item (order is not guaranteed,
-    // but for now take last one; page.tsx query doesn't order so just overwrite)
-    briefStatuses[b.action_item_id] = {
-      status: b.status as BriefStatus['status'],
-      brief_type: b.brief_type as BriefStatus['brief_type'],
+    const ideas = (b.content_ideas ?? []) as Array<{ content_type: string; draft?: string }>
+    briefSummaries[b.action_item_id] = {
+      brief_id: b.id,
+      status:     b.status     as BriefSummary['status'],
+      brief_type: b.brief_type as BriefSummary['brief_type'],
+      blog_count:          ideas.filter(i => i.content_type === 'blog_post').length,
+      forum_count:         ideas.filter(i => i.content_type === 'forum').length,
+      social_count:        ideas.filter(i => i.content_type === 'social').length,
+      draft_count:         ideas.filter(i => i.draft).length,
+      content_draft_words: b.content_draft
+        ? (b.content_draft as string).split(/\s+/).filter(Boolean).length
+        : 0,
     }
   }
 
-  const pendingCount    = items?.filter(i => i.status === 'pending').length    ?? 0
-  const inProgressCount = items?.filter(i => i.status === 'in_progress').length ?? 0
-  const briefCount      = Object.keys(briefStatuses).length
+  const pendingCount    = items.filter(i => i.status === 'pending').length
+  const inProgressCount = items.filter(i => i.status === 'in_progress').length
+  const briefCount      = Object.keys(briefSummaries).length
 
   return (
     <div className="p-8">
@@ -86,9 +117,17 @@ export default async function ActionItemsPage() {
         </div>
       ) : (
         <ActionItemsTable
-          items={(items ?? []) as ActionItem[]}
-          briefStatuses={briefStatuses}
+          items={items}
+          briefSummaries={briefSummaries}
           currentUserEmail={user?.email ?? ''}
+          pagination={{
+            page,
+            limit,
+            total: totalCount,
+            totalPages,
+            from: from ?? '',
+            to:   to   ?? '',
+          }}
         />
       )}
     </div>

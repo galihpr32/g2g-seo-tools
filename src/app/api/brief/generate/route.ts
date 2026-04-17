@@ -401,7 +401,7 @@ function buildOffPagePrompt(p: {
   const forumCount    = cfg.forum?.count       ?? 2
   const socialCount   = cfg.social?.count      ?? 1
 
-  // Build dynamic sections
+  // Build dynamic sections — ideas only (drafts are generated on-demand per idea)
   const contentSections = [
     blogEnabled && `## BLOG / ARTICLE IDEAS
 List ${blogCount} blog post or long-form article idea${blogCount > 1 ? 's' : ''} suitable for G2G's blog, Medium, or gaming publications.
@@ -410,10 +410,7 @@ For each use EXACTLY this format (one per line starting with the field name):
 - Angle: [hook or unique angle]
 - Target keyword: [1 keyword]
 - Platform: [Blog / Medium / Gaming publication]
-- Why: [1 sentence on how this helps the target page rank]
-
-## BLOG DRAFT
-Write a complete, publish-ready article (600-900 words) for the #1 blog idea above. Include an internal link back to ${p.page} near the end.`,
+- Why: [1 sentence on how this helps the target page rank]`,
 
     forumEnabled && `## FORUM / COMMUNITY IDEAS
 List ${forumCount} community content idea${forumCount > 1 ? 's' : ''} for Reddit, Discord, or gaming forums.
@@ -422,10 +419,7 @@ For each use EXACTLY this format:
 - Angle: [hook]
 - Target keyword: [1 keyword]
 - Platform: [e.g. Reddit r/gaming, Discord, GameFAQs]
-- Why: [1 sentence on how this helps]
-
-## FORUM DRAFT
-Write the complete Reddit post or forum thread for the #1 forum idea above (300-500 words). Include a natural mention and link to ${p.page}.`,
+- Why: [1 sentence on how this helps]`,
 
     socialEnabled && `## SOCIAL MEDIA IDEAS
 List ${socialCount} social media content idea${socialCount > 1 ? 's' : ''} for Twitter/X, Instagram, TikTok, or YouTube.
@@ -434,10 +428,7 @@ For each use EXACTLY this format:
 - Format: [Twitter thread / TikTok script / Instagram carousel / YouTube description]
 - Target keyword: [1 keyword]
 - Platform: [platform name]
-- Why: [1 sentence on how this helps]
-
-## SOCIAL DRAFT
-Write the complete social media content for the #1 social idea above (Twitter thread OR TikTok script OR Instagram caption with hashtags).`,
+- Why: [1 sentence on how this helps]`,
   ].filter(Boolean).join('\n\n')
 
   return `You are an expert SEO content strategist for G2G.com, a gaming marketplace platform. You are creating an off-page content plan to support a category page that has experienced a ranking drop.
@@ -534,14 +525,6 @@ function parseClaudeOffPageResponse(text: string) {
   const forumIdeas  = parseIdeas(get('FORUM / COMMUNITY IDEAS'), 'forum')
   const socialIdeas = parseIdeas(get('SOCIAL MEDIA IDEAS'),      'social')
 
-  // Embed the draft into the first idea of each type
-  const blogDraft   = get('BLOG DRAFT')
-  const forumDraft  = get('FORUM DRAFT')
-  const socialDraft = get('SOCIAL DRAFT')
-  if (blogIdeas[0]   && blogDraft)   blogIdeas[0].draft   = blogDraft
-  if (forumIdeas[0]  && forumDraft)  forumIdeas[0].draft  = forumDraft
-  if (socialIdeas[0] && socialDraft) socialIdeas[0].draft = socialDraft
-
   return {
     competitorAnalysis: get('COMPETITOR ANALYSIS'),
     contentIdeas: [...blogIdeas, ...forumIdeas, ...socialIdeas],
@@ -549,13 +532,14 @@ function parseClaudeOffPageResponse(text: string) {
   }
 }
 
-type ContentIdea = {
+export type ContentIdea = {
   content_type: 'blog_post' | 'forum' | 'social'
   title: string
   platform: string
   target_keyword: string
   notes: string
   draft?: string
+  draft_status?: 'generating' // set while background draft generation is running
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
