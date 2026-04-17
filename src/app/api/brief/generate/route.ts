@@ -1,11 +1,11 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
 import Anthropic from '@anthropic-ai/sdk'
 
-export const maxDuration = 120 // briefs take time
+export const maxDuration = 120 // briefs take time — requires Vercel Pro
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -67,10 +67,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: insertErr?.message ?? 'Insert failed' }, { status: 500 })
   }
 
-  // ── Run pipeline async — don't block the response ──────────────────────────
-  // Return brief ID immediately so the UI can poll for status
-  runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? []).catch(err =>
-    console.error('Brief pipeline error:', err)
+  // ── Schedule pipeline to run AFTER response is sent ──────────────────────
+  // `after()` keeps the serverless function alive until the promise resolves,
+  // even after the HTTP response is returned to the client.
+  after(
+    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [])
+      .catch(err => console.error('Brief pipeline error:', err))
   )
 
   return NextResponse.json({ brief_id: brief.id, status: 'generating' })
@@ -105,11 +107,16 @@ async function runBriefPipeline(
   siteUrl: string,
   gscQueries: any[]
 ) {
-  const supabase_server = (await import('@/lib/supabase/server')).createClient
-  const supabase = await supabase_server()
+  // Use service role client so writes always succeed regardless of auth context
+  const { createClient: createServiceClient } = await import('@supabase/supabase-js')
+  const supabase = createServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  )
 
   async function updateBrief(fields: Record<string, unknown>) {
-    await supabase.from('seo_content_briefs').update(fields).eq('id', briefId)
+    const { error } = await supabase.from('seo_content_briefs').update(fields).eq('id', briefId)
+    if (error) console.error('updateBrief error:', error.message)
   }
 
   try {
@@ -262,7 +269,8 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
       angle: r.description,
     })),
     content_ideas: sections.contentIdeas,
-    off_page_draft: sections.draft,
+    // off_page_draft stores the internal link strategy (global, not per content type)
+    off_page_draft: sections.internalLinkStrategy,
   })
 }
 
@@ -394,24 +402,49 @@ EDITOR NOTES: ${p.itemNotes || 'none'}
 
 ---
 
-Provide an off-page content plan with these EXACT sections:
+Provide an off-page content plan with these EXACT sections in this exact order:
 
 ## COMPETITOR ANALYSIS
-Analyze what angles competitors are using. What content types are working? What gaps exist that G2G can own?
+Analyze what angles the top competitors are using. What content formats are working? What gaps exist that G2G can own?
 
-## CONTENT IDEAS
-List 4-5 off-page content ideas. For each, provide:
-- Title
-- Content angle / hook
-- Target keyword
-- Recommended platform (e.g. blog, Reddit, Medium, gaming forum, YouTube script, guest post)
-- Why this will help the target page rank higher
+## BLOG / ARTICLE IDEAS
+List 2 blog post or long-form article ideas suitable for G2G's blog, Medium, or gaming publications.
+For each use EXACTLY this format (one per line starting with the field name):
+- Title: [idea title]
+- Angle: [hook or unique angle]
+- Target keyword: [1 keyword]
+- Platform: [Blog / Medium / Gaming publication]
+- Why: [1 sentence on how this helps the target page rank]
 
-## CONTENT DRAFT
-Write a complete, publish-ready draft for the HIGHEST PRIORITY content idea from above. This should be the full article/post — not a placeholder. Aim for 600-1000 words. Include internal link suggestion back to ${p.page}.
+## BLOG DRAFT
+Write a complete, publish-ready article (600-900 words) for the #1 blog idea above. Include an internal link back to ${p.page} near the end.
+
+## FORUM / COMMUNITY IDEAS
+List 2 community content ideas for Reddit, Discord, or gaming forums.
+For each use EXACTLY this format:
+- Title: [thread or post title]
+- Angle: [hook]
+- Target keyword: [1 keyword]
+- Platform: [e.g. Reddit r/gaming, Discord, GameFAQs]
+- Why: [1 sentence on how this helps]
+
+## FORUM DRAFT
+Write the complete Reddit post or forum thread for the #1 forum idea above (300-500 words). Include a natural mention and link to ${p.page}.
+
+## SOCIAL MEDIA IDEAS
+List 2 social media content ideas for Twitter/X, Instagram, TikTok, or YouTube.
+For each use EXACTLY this format:
+- Title: [hook or topic]
+- Format: [Twitter thread / TikTok script / Instagram carousel / YouTube description]
+- Target keyword: [1 keyword]
+- Platform: [platform name]
+- Why: [1 sentence on how this helps]
+
+## SOCIAL DRAFT
+Write the complete social media content for the #1 social idea above (Twitter thread OR TikTok script OR Instagram caption with hashtags).
 
 ## INTERNAL LINK STRATEGY
-Suggest 3-5 other pages on G2G.com that should link to the target page, with suggested anchor texts.`
+List 3-5 pages already on G2G.com that should link to ${p.page}, with the suggested anchor text for each.`
 }
 
 // ─── Response parsers ─────────────────────────────────────────────────────────
@@ -441,30 +474,59 @@ function parseClaudeOnPageResponse(text: string) {
 
 function parseClaudeOffPageResponse(text: string) {
   const get = (header: string) => {
-    const re = new RegExp(`## ${header}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, 'i')
+    // Escape special regex chars in header
+    const escaped = header.replace(/[/\\^$*+?.()|[\]{}]/g, '\\$&')
+    const re = new RegExp(`## ${escaped}\\s*\\n([\\s\\S]*?)(?=\\n## |$)`, 'i')
     return text.match(re)?.[1]?.trim() ?? ''
   }
 
-  const ideasRaw = get('CONTENT IDEAS')
-  // Parse ideas — each is a block starting with "- Title:" or numbered
-  const ideaBlocks = ideasRaw.split(/\n(?=\d+\.|-)/).filter(Boolean)
-  const contentIdeas = ideaBlocks.map(block => {
-    const titleMatch = block.match(/(?:Title|^\d+\.|^-)\s*[:\.]?\s*(.+)/i)
-    const platformMatch = block.match(/platform[:\s]+(.+)/i)
-    const kwMatch = block.match(/(?:target keyword|keyword)[:\s]+(.+)/i)
-    return {
-      title: titleMatch?.[1]?.trim() ?? block.split('\n')[0].replace(/^[\-\d\.]\s*/, '').trim(),
-      platform: platformMatch?.[1]?.trim() ?? '',
-      target_keyword: kwMatch?.[1]?.trim() ?? '',
-      notes: block,
-    }
-  })
+  // Parse a block of ideas formatted with "- Field: value" lines
+  function parseIdeas(raw: string, contentType: 'blog_post' | 'forum' | 'social'): ContentIdea[] {
+    if (!raw) return []
+    // Split into per-idea blocks (each starts with "- Title:")
+    const blocks = raw.split(/\n(?=-\s*Title:)/i).filter(Boolean)
+    return blocks.map(block => {
+      const titleMatch   = block.match(/Title:\s*(.+)/i)
+      const platformMatch = block.match(/Platform:\s*(.+)/i)
+      const kwMatch      = block.match(/Target keyword:\s*(.+)/i)
+      const angleMatch   = block.match(/(?:Angle|Format|Hook):\s*(.+)/i)
+      const whyMatch     = block.match(/Why:\s*(.+)/i)
+      return {
+        content_type: contentType,
+        title: titleMatch?.[1]?.trim() ?? '',
+        platform: platformMatch?.[1]?.trim() ?? '',
+        target_keyword: kwMatch?.[1]?.trim() ?? '',
+        notes: [angleMatch?.[1]?.trim(), whyMatch?.[1]?.trim()].filter(Boolean).join(' | '),
+      } as ContentIdea
+    }).filter(idea => idea.title)
+  }
+
+  const blogIdeas   = parseIdeas(get('BLOG / ARTICLE IDEAS'),    'blog_post')
+  const forumIdeas  = parseIdeas(get('FORUM / COMMUNITY IDEAS'), 'forum')
+  const socialIdeas = parseIdeas(get('SOCIAL MEDIA IDEAS'),      'social')
+
+  // Embed the draft into the first idea of each type
+  const blogDraft   = get('BLOG DRAFT')
+  const forumDraft  = get('FORUM DRAFT')
+  const socialDraft = get('SOCIAL DRAFT')
+  if (blogIdeas[0]   && blogDraft)   blogIdeas[0].draft   = blogDraft
+  if (forumIdeas[0]  && forumDraft)  forumIdeas[0].draft  = forumDraft
+  if (socialIdeas[0] && socialDraft) socialIdeas[0].draft = socialDraft
 
   return {
     competitorAnalysis: get('COMPETITOR ANALYSIS'),
-    contentIdeas,
-    draft: [get('CONTENT DRAFT'), get('INTERNAL LINK STRATEGY')].filter(Boolean).join('\n\n---\n\n'),
+    contentIdeas: [...blogIdeas, ...forumIdeas, ...socialIdeas],
+    internalLinkStrategy: get('INTERNAL LINK STRATEGY'),
   }
+}
+
+type ContentIdea = {
+  content_type: 'blog_post' | 'forum' | 'social'
+  title: string
+  platform: string
+  target_keyword: string
+  notes: string
+  draft?: string
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
