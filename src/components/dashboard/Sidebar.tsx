@@ -9,6 +9,7 @@ const navItems = [
     group: 'Overview',
     items: [
       { label: 'Dashboard', href: '/dashboard', icon: '▦' },
+      { label: 'Campaigns', href: '/campaigns', icon: '🗂️' },
       { label: 'Notifications', href: '/notifications', icon: '🔔' },
       { label: 'Settings & Connections', href: '/settings', icon: '⚙️' },
     ],
