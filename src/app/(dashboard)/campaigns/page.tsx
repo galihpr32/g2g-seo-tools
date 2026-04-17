@@ -14,8 +14,8 @@ export default async function CampaignsPage() {
     .from('campaigns')
     .select(`
       id, name, description, color, position, goals, gsc_site_url,
-      parent_campaign_id, created_at, updated_at,
-      campaign_pages (id, page_url, action_item_id, position)
+      parent_campaign_id, created_at, updated_at, status, campaign_notes,
+      campaign_pages (id, page_url, action_item_id, position, notes, status, eta)
     `)
     .eq('owner_user_id', ownerId)
     .order('position', { ascending: true })

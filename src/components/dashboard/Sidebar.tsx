@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { useState, useEffect } from 'react'
 
 const navItems = [
   {
@@ -58,8 +59,29 @@ const navItems = [
 
 export default function Sidebar() {
   const pathname = usePathname()
-  const router = useRouter()
+  const router   = useRouter()
   const supabase = createClient()
+  const [notifCount, setNotifCount] = useState(0)
+
+  useEffect(() => {
+    async function fetchCount() {
+      try {
+        const res = await fetch('/api/notifications/count')
+        if (res.ok) {
+          const data = await res.json()
+          setNotifCount(data.count ?? 0)
+        }
+      } catch { /* silent */ }
+    }
+    fetchCount()
+    const interval = setInterval(fetchCount, 5 * 60 * 1000) // refresh every 5 min
+    return () => clearInterval(interval)
+  }, [])
+
+  // Clear badge when user navigates to notifications
+  useEffect(() => {
+    if (pathname === '/notifications') setNotifCount(0)
+  }, [pathname])
 
   async function handleSignOut() {
     await supabase.auth.signOut()
@@ -105,7 +127,12 @@ export default function Sidebar() {
                       }`}
                     >
                       <span className="text-base leading-none">{item.icon}</span>
-                      {item.label}
+                      <span className="flex-1">{item.label}</span>
+                      {item.href === '/notifications' && notifCount > 0 && (
+                        <span className="ml-auto text-[10px] font-bold bg-red-600 text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                          {notifCount > 99 ? '99+' : notifCount}
+                        </span>
+                      )}
                     </Link>
                   </li>
                 )

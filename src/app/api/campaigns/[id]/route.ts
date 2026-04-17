@@ -20,15 +20,19 @@ export async function PATCH(request: Request, { params }: Params) {
     gsc_site_url?: string
     parent_campaign_id?: string | null
     goals?: Record<string, unknown>
+    status?: string
+    campaign_notes?: string | null
   }
 
   const updates: Record<string, unknown> = {}
-  if (body.name !== undefined)               updates.name               = body.name.trim()
-  if (body.description !== undefined)        updates.description        = body.description
-  if (body.color !== undefined)              updates.color              = body.color
-  if (body.gsc_site_url !== undefined)       updates.gsc_site_url       = body.gsc_site_url
+  if (body.name             !== undefined) updates.name               = body.name?.trim()
+  if (body.description      !== undefined) updates.description        = body.description
+  if (body.color            !== undefined) updates.color              = body.color
+  if (body.gsc_site_url     !== undefined) updates.gsc_site_url       = body.gsc_site_url
   if (body.parent_campaign_id !== undefined) updates.parent_campaign_id = body.parent_campaign_id
-  if (body.goals !== undefined)              updates.goals              = body.goals
+  if (body.goals            !== undefined) updates.goals              = body.goals
+  if (body.status           !== undefined) updates.status             = body.status
+  if (body.campaign_notes   !== undefined) updates.campaign_notes     = body.campaign_notes
 
   const { error } = await supabase
     .from('campaigns')
