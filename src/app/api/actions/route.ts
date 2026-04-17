@@ -47,22 +47,44 @@ export async function POST(request: Request) {
   return NextResponse.json({ created: data?.length ?? 0 })
 }
 
-// PATCH /api/actions — update status (and optionally notes) of a single action item
+// PATCH /api/actions — update status, notes, and/or assigned_to
 export async function PATCH(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await request.json()
-  const { id, status, notes } = body as { id: string; status?: string; notes?: string }
+  const { id, status, notes, assigned_to } = body as {
+    id: string
+    status?: string
+    notes?: string
+    assigned_to?: string | null
+  }
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
 
   const updates: Record<string, unknown> = {}
+
   if (status) {
     updates.status = status
     updates.completed_at = status === 'done' ? new Date().toISOString() : null
+    // Auto-assign to current user when moving to in_progress (only if not already assigned)
+    if (status === 'in_progress') {
+      // Check if already assigned
+      const { data: existing } = await supabase
+        .from('seo_action_items')
+        .select('assigned_to')
+        .eq('id', id)
+        .single()
+      if (!existing?.assigned_to) {
+        updates.assigned_to = user.email
+      }
+    }
   }
+
   if (notes !== undefined) updates.notes = notes
+
+  // Allow explicit assignee override
+  if (assigned_to !== undefined) updates.assigned_to = assigned_to
 
   // RLS ensures user can only update their own items
   const { error } = await supabase

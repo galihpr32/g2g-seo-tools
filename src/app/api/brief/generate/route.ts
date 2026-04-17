@@ -26,7 +26,11 @@ export async function POST(request: Request) {
     .single()
   if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
 
-  const { action_item_id } = await request.json()
+  const reqBody = await request.json()
+  const { action_item_id, content_type_config } = reqBody as {
+    action_item_id: string
+    content_type_config?: Record<string, { enabled: boolean; count: number }>
+  }
   if (!action_item_id) return NextResponse.json({ error: 'Missing action_item_id' }, { status: 400 })
 
   // Load the action item
@@ -71,7 +75,7 @@ export async function POST(request: Request) {
   // `after()` keeps the serverless function alive until the promise resolves,
   // even after the HTTP response is returned to the client.
   after(
-    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [])
+    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config)
       .catch(err => console.error('Brief pipeline error:', err))
   )
 
@@ -98,6 +102,8 @@ export async function GET(request: Request) {
   return NextResponse.json(brief)
 }
 
+type ContentTypeConfig = Record<string, { enabled: boolean; count: number }>
+
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 async function runBriefPipeline(
   briefId: string,
@@ -105,7 +111,8 @@ async function runBriefPipeline(
   topQueries: string[],
   primaryKeyword: string,
   siteUrl: string,
-  gscQueries: any[]
+  gscQueries: any[],
+  contentTypeConfig?: ContentTypeConfig
 ) {
   // Use service role client so writes always succeed regardless of auth context
   const { createClient: createServiceClient } = await import('@supabase/supabase-js')
@@ -123,7 +130,7 @@ async function runBriefPipeline(
     if (item.action_type === 'on_page') {
       await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief })
     } else {
-      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief })
+      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -213,13 +220,14 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
 }
 
 // ─── OFF-PAGE Pipeline ─────────────────────────────────────────────────────────
-async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief }: {
+async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig }: {
   briefId: string
   item: any
   topQueries: string[]
   primaryKeyword: string
   gscQueries: any[]
   updateBrief: (f: Record<string, unknown>) => Promise<void>
+  contentTypeConfig?: ContentTypeConfig
 }) {
   // Derive topic from URL
   const topic = deriveTopicFromUrl(item.page)
@@ -250,6 +258,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
     relatedSearches: serpData.relatedSearches.slice(0, 12),
     kwSuggestions: kwSuggestions.slice(0, 15),
     itemNotes: item.notes ?? '',
+    contentTypeConfig,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -376,7 +385,61 @@ function buildOffPagePrompt(p: {
   relatedSearches: any[]
   kwSuggestions: any[]
   itemNotes: string
+  contentTypeConfig?: ContentTypeConfig
 }) {
+  // Resolve which content types to include and how many ideas each
+  const cfg = p.contentTypeConfig ?? {
+    blog_post: { enabled: true,  count: 2 },
+    forum:     { enabled: true,  count: 2 },
+    social:    { enabled: false, count: 1 },
+  }
+
+  const blogEnabled   = cfg.blog_post?.enabled ?? true
+  const forumEnabled  = cfg.forum?.enabled     ?? true
+  const socialEnabled = cfg.social?.enabled    ?? false
+  const blogCount     = cfg.blog_post?.count   ?? 2
+  const forumCount    = cfg.forum?.count       ?? 2
+  const socialCount   = cfg.social?.count      ?? 1
+
+  // Build dynamic sections
+  const contentSections = [
+    blogEnabled && `## BLOG / ARTICLE IDEAS
+List ${blogCount} blog post or long-form article idea${blogCount > 1 ? 's' : ''} suitable for G2G's blog, Medium, or gaming publications.
+For each use EXACTLY this format (one per line starting with the field name):
+- Title: [idea title]
+- Angle: [hook or unique angle]
+- Target keyword: [1 keyword]
+- Platform: [Blog / Medium / Gaming publication]
+- Why: [1 sentence on how this helps the target page rank]
+
+## BLOG DRAFT
+Write a complete, publish-ready article (600-900 words) for the #1 blog idea above. Include an internal link back to ${p.page} near the end.`,
+
+    forumEnabled && `## FORUM / COMMUNITY IDEAS
+List ${forumCount} community content idea${forumCount > 1 ? 's' : ''} for Reddit, Discord, or gaming forums.
+For each use EXACTLY this format:
+- Title: [thread or post title]
+- Angle: [hook]
+- Target keyword: [1 keyword]
+- Platform: [e.g. Reddit r/gaming, Discord, GameFAQs]
+- Why: [1 sentence on how this helps]
+
+## FORUM DRAFT
+Write the complete Reddit post or forum thread for the #1 forum idea above (300-500 words). Include a natural mention and link to ${p.page}.`,
+
+    socialEnabled && `## SOCIAL MEDIA IDEAS
+List ${socialCount} social media content idea${socialCount > 1 ? 's' : ''} for Twitter/X, Instagram, TikTok, or YouTube.
+For each use EXACTLY this format:
+- Title: [hook or topic]
+- Format: [Twitter thread / TikTok script / Instagram carousel / YouTube description]
+- Target keyword: [1 keyword]
+- Platform: [platform name]
+- Why: [1 sentence on how this helps]
+
+## SOCIAL DRAFT
+Write the complete social media content for the #1 social idea above (Twitter thread OR TikTok script OR Instagram caption with hashtags).`,
+  ].filter(Boolean).join('\n\n')
+
   return `You are an expert SEO content strategist for G2G.com, a gaming marketplace platform. You are creating an off-page content plan to support a category page that has experienced a ranking drop.
 
 TARGET PAGE: ${p.page}
@@ -407,41 +470,7 @@ Provide an off-page content plan with these EXACT sections in this exact order:
 ## COMPETITOR ANALYSIS
 Analyze what angles the top competitors are using. What content formats are working? What gaps exist that G2G can own?
 
-## BLOG / ARTICLE IDEAS
-List 2 blog post or long-form article ideas suitable for G2G's blog, Medium, or gaming publications.
-For each use EXACTLY this format (one per line starting with the field name):
-- Title: [idea title]
-- Angle: [hook or unique angle]
-- Target keyword: [1 keyword]
-- Platform: [Blog / Medium / Gaming publication]
-- Why: [1 sentence on how this helps the target page rank]
-
-## BLOG DRAFT
-Write a complete, publish-ready article (600-900 words) for the #1 blog idea above. Include an internal link back to ${p.page} near the end.
-
-## FORUM / COMMUNITY IDEAS
-List 2 community content ideas for Reddit, Discord, or gaming forums.
-For each use EXACTLY this format:
-- Title: [thread or post title]
-- Angle: [hook]
-- Target keyword: [1 keyword]
-- Platform: [e.g. Reddit r/gaming, Discord, GameFAQs]
-- Why: [1 sentence on how this helps]
-
-## FORUM DRAFT
-Write the complete Reddit post or forum thread for the #1 forum idea above (300-500 words). Include a natural mention and link to ${p.page}.
-
-## SOCIAL MEDIA IDEAS
-List 2 social media content ideas for Twitter/X, Instagram, TikTok, or YouTube.
-For each use EXACTLY this format:
-- Title: [hook or topic]
-- Format: [Twitter thread / TikTok script / Instagram carousel / YouTube description]
-- Target keyword: [1 keyword]
-- Platform: [platform name]
-- Why: [1 sentence on how this helps]
-
-## SOCIAL DRAFT
-Write the complete social media content for the #1 social idea above (Twitter thread OR TikTok script OR Instagram caption with hashtags).
+${contentSections}
 
 ## INTERNAL LINK STRATEGY
 List 3-5 pages already on G2G.com that should link to ${p.page}, with the suggested anchor text for each.`

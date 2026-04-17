@@ -46,6 +46,109 @@ const CONTENT_TYPE_CONFIG: Record<string, { label: string; emoji: string; color:
   other:     { label: 'Other', emoji: '📄', color: 'text-gray-400' },
 }
 
+// ── Off-page pre-generation config ───────────────────────────────────────────
+
+type OffPageTypeConfig = { enabled: boolean; count: number }
+type OffPageConfig = {
+  blog_post: OffPageTypeConfig
+  forum: OffPageTypeConfig
+  social: OffPageTypeConfig
+}
+
+const DEFAULT_OFF_PAGE_CONFIG: OffPageConfig = {
+  blog_post: { enabled: true,  count: 2 },
+  forum:     { enabled: true,  count: 2 },
+  social:    { enabled: false, count: 1 },
+}
+
+const OFF_PAGE_TYPE_LABELS: Record<keyof OffPageConfig, { emoji: string; label: string; desc: string }> = {
+  blog_post: { emoji: '📝', label: 'Blog / Article', desc: 'Long-form content for G2G blog, Medium, or gaming publications' },
+  forum:     { emoji: '💬', label: 'Forum / Community', desc: 'Reddit posts, Discord threads, or gaming forum discussions' },
+  social:    { emoji: '📱', label: 'Social Media', desc: 'Twitter/X threads, TikTok scripts, Instagram carousels' },
+}
+
+function OffPageConfigPanel({
+  config,
+  onChange,
+}: {
+  config: OffPageConfig
+  onChange: (c: OffPageConfig) => void
+}) {
+  function toggle(type: keyof OffPageConfig) {
+    onChange({ ...config, [type]: { ...config[type], enabled: !config[type].enabled } })
+  }
+  function setCount(type: keyof OffPageConfig, count: number) {
+    onChange({ ...config, [type]: { ...config[type], count } })
+  }
+
+  const anyEnabled = Object.values(config).some(c => c.enabled)
+
+  return (
+    <div className="bg-gray-900 border border-gray-700 rounded-xl p-5 mb-4">
+      <p className="text-white font-semibold text-sm mb-1">Choose what to generate</p>
+      <p className="text-gray-500 text-xs mb-4">Select content types and how many ideas per type</p>
+
+      <div className="space-y-3">
+        {(Object.keys(OFF_PAGE_TYPE_LABELS) as (keyof OffPageConfig)[]).map(type => {
+          const meta = OFF_PAGE_TYPE_LABELS[type]
+          const cfg  = config[type]
+          return (
+            <div
+              key={type}
+              onClick={() => toggle(type)}
+              className={`flex items-center gap-4 rounded-xl p-3.5 border cursor-pointer transition ${
+                cfg.enabled
+                  ? 'border-red-600/50 bg-red-600/5'
+                  : 'border-gray-700 bg-gray-800/50 opacity-60'
+              }`}
+            >
+              {/* Checkbox */}
+              <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition ${
+                cfg.enabled ? 'bg-red-600 border-red-600' : 'border-gray-600'
+              }`}>
+                {cfg.enabled && <span className="text-white text-xs leading-none">✓</span>}
+              </div>
+
+              {/* Label */}
+              <div className="flex-1 min-w-0">
+                <p className="text-white text-sm font-medium">{meta.emoji} {meta.label}</p>
+                <p className="text-gray-500 text-xs truncate">{meta.desc}</p>
+              </div>
+
+              {/* Count selector */}
+              <div
+                className="flex items-center gap-1"
+                onClick={e => e.stopPropagation()} // don't toggle when clicking count
+              >
+                <button
+                  onClick={() => cfg.count > 1 && setCount(type, cfg.count - 1)}
+                  disabled={!cfg.enabled || cfg.count <= 1}
+                  className="w-6 h-6 rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 disabled:opacity-30 transition text-sm flex items-center justify-center"
+                >
+                  −
+                </button>
+                <span className="text-white text-sm font-semibold w-4 text-center">{cfg.count}</span>
+                <button
+                  onClick={() => cfg.count < 5 && setCount(type, cfg.count + 1)}
+                  disabled={!cfg.enabled || cfg.count >= 5}
+                  className="w-6 h-6 rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 disabled:opacity-30 transition text-sm flex items-center justify-center"
+                >
+                  +
+                </button>
+                <span className="text-gray-500 text-xs ml-1">ideas</span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {!anyEnabled && (
+        <p className="text-yellow-400 text-xs mt-3">Select at least one content type to generate.</p>
+      )}
+    </div>
+  )
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
@@ -390,6 +493,7 @@ export function BriefViewer({
   const [publishedUrl, setPublishedUrl] = useState('')
   const [savingUrl, setSavingUrl] = useState(false)
   const [markingReviewed, setMarkingReviewed] = useState(false)
+  const [offPageConfig, setOffPageConfig] = useState<OffPageConfig>(DEFAULT_OFF_PAGE_CONFIG)
 
   // Tab state — on-page: 'analysis' | 'draft'
   //             off-page: 'analysis' | 'blog_post' | 'forum' | 'social' | 'links'
@@ -420,7 +524,11 @@ export function BriefViewer({
       const res = await fetch('/api/brief/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action_item_id: actionItemId }),
+        body: JSON.stringify({
+          action_item_id: actionItemId,
+          // Pass content type config for off-page briefs
+          ...(actionType === 'off_page' && { content_type_config: offPageConfig }),
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
@@ -457,27 +565,62 @@ export function BriefViewer({
 
   // ── Not yet generated ──────────────────────────────────────────────────────
   if (!brief && !generating) {
+    const anyEnabled = Object.values(offPageConfig).some(c => c.enabled)
+
     return (
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
-        <p className="text-3xl mb-3">{actionType === 'on_page' ? '✏️' : '📣'}</p>
-        <h2 className="text-white font-bold text-lg mb-2">
-          {actionType === 'on_page' ? 'On-Page Optimization Brief' : 'Off-Page Content Brief'}
-        </h2>
-        <p className="text-gray-400 text-sm mb-1">
-          {actionType === 'on_page'
-            ? 'Claude will crawl the page, analyze GSC data + SERP, and generate keyword recommendations, content outline, and a full draft.'
-            : 'Claude will analyze the SERP landscape, find content gaps, and generate content ideas + full drafts for Blog, Forum, and Social.'}
-        </p>
-        <p className="text-gray-600 text-xs mb-6">Takes ~30-60 seconds</p>
-        {error && (
-          <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>
+      <div className={actionType === 'off_page' ? '' : 'bg-gray-900 border border-gray-800 rounded-xl p-10 text-center'}>
+        {/* On-page: centered panel */}
+        {actionType === 'on_page' && (
+          <>
+            <p className="text-3xl mb-3">✏️</p>
+            <h2 className="text-white font-bold text-lg mb-2">On-Page Optimization Brief</h2>
+            <p className="text-gray-400 text-sm mb-1">
+              Claude will crawl the page, analyze GSC data + SERP, and generate keyword recommendations, content outline, and a full draft.
+            </p>
+            <p className="text-gray-600 text-xs mb-6">Takes ~30-60 seconds</p>
+            {error && (
+              <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>
+            )}
+            <button
+              onClick={handleGenerate}
+              className="bg-red-700 hover:bg-red-600 text-white font-semibold px-6 py-3 rounded-xl transition"
+            >
+              Generate Brief →
+            </button>
+          </>
         )}
-        <button
-          onClick={handleGenerate}
-          className="bg-red-700 hover:bg-red-600 text-white font-semibold px-6 py-3 rounded-xl transition"
-        >
-          Generate Brief →
-        </button>
+
+        {/* Off-page: config first, then generate */}
+        {actionType === 'off_page' && (
+          <>
+            <div className="mb-4">
+              <h2 className="text-white font-bold text-lg mb-1">📣 Off-Page Content Brief</h2>
+              <p className="text-gray-400 text-sm">
+                Claude will analyze the SERP landscape and generate ideas + full drafts for each content type you select.
+              </p>
+            </div>
+
+            <OffPageConfigPanel config={offPageConfig} onChange={setOffPageConfig} />
+
+            {error && (
+              <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleGenerate}
+                disabled={!anyEnabled}
+                className="bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-xl transition"
+              >
+                Generate Brief →
+              </button>
+              <p className="text-gray-500 text-xs">
+                Generating {Object.entries(offPageConfig).filter(([, c]) => c.enabled).map(([k, c]) => `${c.count} ${OFF_PAGE_TYPE_LABELS[k as keyof OffPageConfig].label}`).join(', ')} ideas
+                {' · '}~30-60 sec
+              </p>
+            </div>
+          </>
+        )}
       </div>
     )
   }
