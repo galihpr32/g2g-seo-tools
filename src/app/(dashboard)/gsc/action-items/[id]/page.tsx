@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getEffectiveOwnerId } from '@/lib/workspace'
 import { notFound } from 'next/navigation'
 import { BriefViewer } from './BriefViewer'
 
@@ -10,8 +11,9 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  const { data: conn } = user
-    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', user.id).single()
+  const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
+  const { data: conn } = effectiveOwnerId
+    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
     : { data: null }
 
   // Load the action item

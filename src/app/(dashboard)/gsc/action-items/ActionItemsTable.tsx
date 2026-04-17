@@ -202,6 +202,131 @@ function BriefPreviewSection({ summary }: { summary: BriefSummary }) {
   )
 }
 
+// ─── Add Item Modal ───────────────────────────────────────────────────────────
+function AddItemModal({ onAdded, onClose }: {
+  onAdded: (item: ActionItem) => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [url, setUrl] = useState('')
+  const [actionType, setActionType] = useState<'on_page' | 'off_page'>('on_page')
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!url.trim()) { setError('URL is required'); return }
+    setSaving(true)
+    setError('')
+    try {
+      const res = await fetch('/api/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page: url.trim(), action_type: actionType, notes: notes.trim() || undefined }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Failed')
+      onAdded(json.item as ActionItem)
+      onClose()
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div ref={ref} className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-800">
+          <h2 className="text-white font-semibold text-base">Add Action Item</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition text-lg leading-none">✕</button>
+        </div>
+
+        <form onSubmit={submit} className="p-6 space-y-4">
+          {/* URL */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5 font-medium">Page URL <span className="text-red-400">*</span></label>
+            <input
+              type="text"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              placeholder="https://g2g.com/categories/... or /categories/..."
+              autoFocus
+              className="w-full bg-gray-800 border border-gray-600 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600 focus:border-transparent"
+            />
+          </div>
+
+          {/* Action type */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5 font-medium">Action Type</label>
+            <div className="grid grid-cols-2 gap-2">
+              {(['on_page', 'off_page'] as const).map(type => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setActionType(type)}
+                  className={`px-3 py-2.5 rounded-xl border text-sm font-medium transition ${
+                    actionType === type
+                      ? type === 'on_page'
+                        ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                        : 'bg-purple-600/20 border-purple-500 text-purple-300'
+                      : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500'
+                  }`}
+                >
+                  {type === 'on_page' ? '✏️ On-Page' : '📣 Off-Page'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5 font-medium">Notes <span className="text-gray-600">(optional)</span></label>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              rows={2}
+              placeholder="Why is this page being added? Any context..."
+              className="w-full bg-gray-800 border border-gray-600 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600 focus:border-transparent resize-none"
+            />
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
+          )}
+
+          <div className="flex gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 text-sm px-4 py-2.5 rounded-xl border border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200 transition"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !url.trim()}
+              className="flex-1 text-sm px-4 py-2.5 rounded-xl bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition"
+            >
+              {saving ? 'Adding…' : 'Add Item'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Table ───────────────────────────────────────────────────────────────
 type Filter = 'all' | ActionItem['status'] | ActionItem['action_type']
 
@@ -222,6 +347,7 @@ export function ActionItemsTable({
   const [items, setItems] = useState(initialItems)
   const [briefSummaries, setBriefSummaries] = useState(initialBriefSummaries)
   const [filter, setFilter] = useState<Filter>('all')
+  const [assigneeFilter, setAssigneeFilter] = useState<string>('all') // 'all' | email | 'unassigned'
 
   // Date range local state (mirrors URL but editable before applying)
   const [fromInput, setFromInput] = useState(pagination.from)
@@ -260,11 +386,24 @@ export function ActionItemsTable({
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set())
   const [bulkGenerating, setBulkGenerating] = useState(false)
   const [assigneePopoverId, setAssigneePopoverId] = useState<string | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
 
   const filtered = items.filter(item => {
-    if (filter === 'all') return true
-    return item.status === filter || item.action_type === filter
+    const matchesType =
+      filter === 'all' ||
+      item.status === filter ||
+      item.action_type === filter
+    const matchesAssignee =
+      assigneeFilter === 'all' ||
+      (assigneeFilter === 'unassigned' ? !item.assigned_to : item.assigned_to === assigneeFilter)
+    return matchesType && matchesAssignee
   })
+
+  // Unique assignees from ALL items on this page (for the dropdown)
+  const assignees = Array.from(
+    new Set(items.map(i => i.assigned_to).filter((a): a is string => !!a))
+  ).sort()
+  const hasUnassignedInProgress = items.some(i => i.status === 'in_progress' && !i.assigned_to)
 
   const counts = {
     all: items.length,
@@ -457,6 +596,32 @@ export function ActionItemsTable({
 
   return (
     <>
+      {/* ── Add Item Modal ───────────────────────────────────────────────────── */}
+      {showAddModal && (
+        <AddItemModal
+          onAdded={item => setItems(prev => [item, ...prev])}
+          onClose={() => setShowAddModal(false)}
+        />
+      )}
+
+      {/* ── Top bar: summary strip + Add Item button ─────────────────────── */}
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs text-gray-500">
+          {pagination.total.toLocaleString()} item{pagination.total !== 1 ? 's' : ''} total
+          {(pagination.from || pagination.to) && (
+            <span className="ml-1 text-gray-600">
+              · filtered by date
+            </span>
+          )}
+        </p>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white transition"
+        >
+          <span className="text-base leading-none">+</span> Add Item
+        </button>
+      </div>
+
       {/* ── Summary strip ───────────────────────────────────────────────────── */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         <div
@@ -511,6 +676,51 @@ export function ActionItemsTable({
           </button>
         ))}
       </div>
+
+      {/* ── Assignee filter ───────────────────────────────────────────────── */}
+      {(assignees.length > 0 || hasUnassignedInProgress) && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-xs text-gray-500">Assignee:</span>
+          <button
+            onClick={() => setAssigneeFilter('all')}
+            className={`text-xs px-3 py-1 rounded-full border transition ${
+              assigneeFilter === 'all'
+                ? 'bg-gray-700 border-gray-600 text-white'
+                : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+            }`}
+          >
+            All
+          </button>
+          {hasUnassignedInProgress && (
+            <button
+              onClick={() => setAssigneeFilter('unassigned')}
+              className={`text-xs px-3 py-1 rounded-full border transition ${
+                assigneeFilter === 'unassigned'
+                  ? 'bg-yellow-700/40 border-yellow-600 text-yellow-300'
+                  : 'border-yellow-700/30 text-yellow-600 hover:border-yellow-600 hover:text-yellow-400'
+              }`}
+            >
+              ⚠ Unassigned
+            </button>
+          )}
+          {assignees.map(email => (
+            <button
+              key={email}
+              onClick={() => setAssigneeFilter(email)}
+              className={`text-xs px-3 py-1 rounded-full border transition inline-flex items-center gap-1.5 ${
+                assigneeFilter === email
+                  ? 'bg-indigo-700/40 border-indigo-600 text-indigo-200'
+                  : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+              }`}
+            >
+              <span className="w-4 h-4 rounded-full bg-indigo-600 flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0">
+                {initials(email)}
+              </span>
+              {email.split('@')[0]}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ── Date range + limit selector row ──────────────────────────────── */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
@@ -669,58 +879,48 @@ export function ActionItemsTable({
                           +{item.position_change.toFixed(1)} pos
                         </span>
                       )}
-                      {/* Assignee badge (or Unassigned for in_progress) */}
-                      {item.status === 'in_progress' && (
-                        <div className="relative">
-                          <button
-                            onClick={() => setAssigneePopoverId(prev => prev === item.id ? null : item.id)}
-                            className={`inline-flex items-center gap-1.5 text-xs border px-2 py-0.5 rounded-full transition ${
-                              item.assigned_to
-                                ? 'text-gray-300 bg-gray-800 border-gray-700 hover:border-gray-500'
-                                : 'text-yellow-500 bg-yellow-500/10 border-yellow-500/30 hover:border-yellow-400'
-                            }`}
-                            title={item.assigned_to ?? 'Click to assign'}
-                          >
-                            {item.assigned_to ? (
-                              <>
-                                <span className="w-4 h-4 rounded-full bg-indigo-600 flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0">
-                                  {initials(item.assigned_to)}
-                                </span>
-                                {item.assigned_to.split('@')[0]}
-                              </>
-                            ) : (
-                              <>
-                                <span className="w-4 h-4 rounded-full bg-gray-700 flex items-center justify-center text-[9px] text-gray-400 flex-shrink-0">?</span>
-                                Unassigned
-                              </>
-                            )}
-                          </button>
-                          {assigneePopoverId === item.id && (
-                            <AssigneePopover
-                              item={item}
-                              currentUserEmail={currentUserEmail}
-                              onAssigned={email => {
-                                setItems(prev => prev.map(i =>
-                                  i.id === item.id ? { ...i, assigned_to: email } : i
-                                ))
-                              }}
-                              onClose={() => setAssigneePopoverId(null)}
-                            />
-                          )}
-                        </div>
-                      )}
-                      {/* Assignee badge for non-in_progress items */}
-                      {item.status !== 'in_progress' && item.assigned_to && (
-                        <span
-                          className="inline-flex items-center gap-1.5 text-xs text-gray-300 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-full"
-                          title={item.assigned_to}
+                      {/* Assignee — unified for all statuses */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setAssigneePopoverId(prev => prev === item.id ? null : item.id)}
+                          className={`inline-flex items-center gap-1.5 text-xs border px-2 py-0.5 rounded-full transition ${
+                            item.assigned_to
+                              ? 'text-gray-300 bg-gray-800 border-gray-700 hover:border-gray-500'
+                              : item.status === 'in_progress'
+                              ? 'text-yellow-500 bg-yellow-500/10 border-yellow-500/30 hover:border-yellow-400'
+                              : 'text-gray-600 border-gray-800 border-dashed hover:border-gray-600 hover:text-gray-400'
+                          }`}
+                          title={item.assigned_to ? `Assigned to ${item.assigned_to} — click to change` : 'Click to assign'}
                         >
-                          <span className="w-4 h-4 rounded-full bg-indigo-600 flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0">
-                            {initials(item.assigned_to)}
-                          </span>
-                          {item.assigned_to.split('@')[0]}
-                        </span>
-                      )}
+                          {item.assigned_to ? (
+                            <>
+                              <span className="w-4 h-4 rounded-full bg-indigo-600 flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0">
+                                {initials(item.assigned_to)}
+                              </span>
+                              {item.assigned_to.split('@')[0]}
+                            </>
+                          ) : item.status === 'in_progress' ? (
+                            <>
+                              <span className="w-4 h-4 rounded-full bg-gray-700 flex items-center justify-center text-[9px] text-gray-400 flex-shrink-0">?</span>
+                              Unassigned
+                            </>
+                          ) : (
+                            <span className="text-gray-600">+ assign</span>
+                          )}
+                        </button>
+                        {assigneePopoverId === item.id && (
+                          <AssigneePopover
+                            item={item}
+                            currentUserEmail={currentUserEmail}
+                            onAssigned={email => {
+                              setItems(prev => prev.map(i =>
+                                i.id === item.id ? { ...i, assigned_to: email } : i
+                              ))
+                            }}
+                            onClose={() => setAssigneePopoverId(null)}
+                          />
+                        )}
+                      </div>
                     </div>
 
                     {/* URL row + expand toggle */}

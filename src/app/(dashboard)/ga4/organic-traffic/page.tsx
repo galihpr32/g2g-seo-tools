@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getGA4OrganicTraffic, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
 
@@ -8,8 +9,9 @@ export default async function OrganicTrafficPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  const { data: conn } = user
-    ? await supabase.from('gsc_connections').select('*').eq('user_id', user.id).single()
+  const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
+  const { data: conn } = effectiveOwnerId
+    ? await supabase.from('gsc_connections').select('*').eq('user_id', effectiveOwnerId).single()
     : { data: null }
 
   const propertyId = process.env.GA4_PROPERTY_ID

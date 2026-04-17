@@ -334,6 +334,7 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   const [publishedUrl, setPublishedUrl] = useState('')
   const [savingUrl, setSavingUrl] = useState(false)
   const [markingReviewed, setMarkingReviewed] = useState(false)
+  const [markingPublished, setMarkingPublished] = useState(false)
   const [offPageConfig, setOffPageConfig] = useState<OffPageConfig>(DEFAULT_OFF_PAGE_CONFIG)
   const [activeTab, setActiveTab] = useState<string>('analysis')
   // Track which ideas are generating their draft: key = `${content_type}::${title}`
@@ -411,6 +412,22 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
       body: JSON.stringify({ id: brief.id, status: 'reviewed' }) })
     setBrief(b => b ? { ...b, status: 'reviewed' } : b)
     setMarkingReviewed(false)
+  }
+
+  async function markPublished() {
+    if (!brief) return
+    setMarkingPublished(true)
+    await fetch('/api/brief/update', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: brief.id, status: 'published' }) })
+    setBrief(b => b ? { ...b, status: 'published' } : b)
+    setMarkingPublished(false)
+  }
+
+  async function revertStatus(to: 'draft' | 'reviewed') {
+    if (!brief) return
+    await fetch('/api/brief/update', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: brief.id, status: to }) })
+    setBrief(b => b ? { ...b, status: to } : b)
   }
 
   async function savePublishedUrl() {
@@ -516,11 +533,32 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
           </span>
           <span className="text-gray-500 text-xs">Generated {new Date(brief.created_at).toLocaleString('id-ID')}</span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Workflow: draft → reviewed → published */}
           {brief.status === 'draft' && hasDraftContent && (
             <button onClick={markReviewed} disabled={markingReviewed}
-              className="text-xs px-3 py-1.5 rounded-lg border border-blue-700 text-blue-400 hover:bg-blue-700 hover:text-white transition disabled:opacity-50">
-              {markingReviewed ? '…' : '✓ Mark Reviewed'}
+              className="text-xs px-3 py-1.5 rounded-lg border border-blue-600 bg-blue-600/10 text-blue-400 hover:bg-blue-700 hover:text-white transition disabled:opacity-50">
+              {markingReviewed ? '…' : '★ Mark Reviewed'}
+            </button>
+          )}
+          {brief.status === 'reviewed' && (
+            <>
+              <button onClick={markPublished} disabled={markingPublished}
+                className="text-xs px-3 py-1.5 rounded-lg border border-green-600 bg-green-600/10 text-green-400 hover:bg-green-700 hover:text-white transition disabled:opacity-50">
+                {markingPublished ? '…' : '↗ Mark Published'}
+              </button>
+              <button onClick={() => revertStatus('draft')}
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500 transition"
+                title="Revert to draft">
+                ← Back to Draft
+              </button>
+            </>
+          )}
+          {brief.status === 'published' && (
+            <button onClick={() => revertStatus('reviewed')}
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-700 text-gray-500 hover:text-gray-300 hover:border-gray-500 transition"
+              title="Revert to reviewed">
+              ← Back to Reviewed
             </button>
           )}
           <button onClick={handleGenerate} disabled={generating}

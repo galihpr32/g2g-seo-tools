@@ -1,5 +1,6 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getEffectiveOwnerId } from '@/lib/workspace'
 import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
@@ -19,10 +20,11 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const { data: conn } = await supabase
     .from('gsc_connections')
     .select('site_url')
-    .eq('user_id', user.id)
+    .eq('user_id', effectiveOwnerId)
     .single()
   if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
 

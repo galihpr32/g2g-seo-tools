@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const dynamic = 'force-dynamic'
 
@@ -6,8 +7,9 @@ export default async function IndexCoveragePage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  const { data: conn } = user
-    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', user.id).single()
+  const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
+  const { data: conn } = effectiveOwnerId
+    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
     : { data: null }
 
   const siteUrl = conn?.site_url
