@@ -614,12 +614,30 @@ export function ActionItemsTable({
             </span>
           )}
         </p>
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white transition"
-        >
-          <span className="text-base leading-none">+</span> Add Item
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Export CSV */}
+          <a
+            href={`/api/actions/export${pagination.from || pagination.to
+              ? '?' + new URLSearchParams(
+                  Object.fromEntries([
+                    pagination.from ? ['from', pagination.from] : [],
+                    pagination.to   ? ['to',   pagination.to]   : [],
+                  ].filter(e => e.length > 0) as [string, string][])
+                ).toString()
+              : ''}`}
+            download
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition"
+            title="Export all items as CSV"
+          >
+            ↓ Export CSV
+          </a>
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white transition"
+          >
+            <span className="text-base leading-none">+</span> Add Item
+          </button>
+        </div>
       </div>
 
       {/* ── Summary strip ───────────────────────────────────────────────────── */}
