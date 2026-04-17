@@ -2,7 +2,7 @@
 // Docs: https://docs.firecrawl.dev/api-reference
 // Env:  FIRECRAWL_API_KEY
 
-const BASE = 'https://api.firecrawl.dev/v1'
+const BASE = 'https://api.firecrawl.dev/v2'
 
 function headers() {
   return {
@@ -123,4 +123,53 @@ export async function smartScrape(url: string): Promise<Partial<CrawledPage> | n
     return await scrapePage(url)
   }
   return await scrapePageFallback(url)
+}
+
+// ── Search: discover pages by query (useful for off-page research) ─────────────
+// Returns top results with clean markdown content included
+export interface SearchResult {
+  url: string
+  title: string
+  description: string
+  markdown?: string
+}
+
+export async function searchWeb(
+  query: string,
+  limit = 5,
+  includeContent = false
+): Promise<SearchResult[]> {
+  if (!process.env.FIRECRAWL_API_KEY) return []
+
+  try {
+    const res = await fetch(`${BASE}/search`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        query,
+        limit,
+        scrapeOptions: includeContent
+          ? { formats: ['markdown'], onlyMainContent: true }
+          : undefined,
+      }),
+    })
+
+    if (!res.ok) {
+      console.error('Firecrawl search error:', res.status)
+      return []
+    }
+
+    const data = await res.json()
+    const results = data.data ?? []
+
+    return results.map((r: any) => ({
+      url: r.url,
+      title: r.title ?? '',
+      description: r.description ?? '',
+      markdown: r.markdown ?? undefined,
+    }))
+  } catch (err) {
+    console.error('Firecrawl search error:', err)
+    return []
+  }
 }

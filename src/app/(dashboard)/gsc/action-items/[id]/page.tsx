@@ -4,7 +4,9 @@ import { BriefViewer } from './BriefViewer'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ActionItemBriefPage({ params }: { params: { id: string } }) {
+export default async function ActionItemBriefPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -16,7 +18,7 @@ export default async function ActionItemBriefPage({ params }: { params: { id: st
   const { data: item } = await supabase
     .from('seo_action_items')
     .select('*')
-    .eq('id', params.id)
+    .eq('id', id)
     .single()
 
   if (!item) notFound()
