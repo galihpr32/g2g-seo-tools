@@ -13,6 +13,7 @@ import {
   sendIndexCoverageAlert,
   sendCWVAlert,
 } from '@/lib/slack/alerts'
+import { getGA4OrganicTraffic, getGA4ContentPerformance, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
 
 export const maxDuration = 60
 
@@ -57,6 +58,16 @@ export async function GET(request: Request) {
           ctr: r.ctr ?? 0,
           position: r.position ?? 0,
         }))
+
+      // ── URL pre-filter — only alert on relevant pages ───────────────────
+      const ALERT_URL_INCLUDE = ['/categories/']
+      const ALERT_URL_EXCLUDE = ['/offer/']
+      function isAlertablePage(url: string) {
+        const p = url.toLowerCase()
+        if (ALERT_URL_INCLUDE.length > 0 && !ALERT_URL_INCLUDE.some(inc => p.includes(inc))) return false
+        if (ALERT_URL_EXCLUDE.some(ex => p.includes(ex))) return false
+        return true
+      }
 
       const current = toRankingRow(currentRows)
       const previous = toRankingRow(previousRows)
@@ -135,17 +146,20 @@ export async function GET(request: Request) {
           })
         }
 
-        // Send Slack alert + log
-        await sendRankingDropAlert(drops)
-        await supabase.from('alert_log').insert({
-          alert_type: 'ranking_drop',
-          site_url: siteUrl,
-          title: `${drops.length} pages dropped >15% WoW`,
-          message: drops.map(d => d.page).join(', '),
-          severity: drops.length > 5 ? 'critical' : 'warning',
-          slack_sent: !!process.env.SLACK_WEBHOOK_URL,
-          metadata: { drops },
-        })
+        // Send Slack alert only for alertable pages (respects URL pre-filter)
+        const alertableDrops = drops.filter(d => isAlertablePage(d.page))
+        if (alertableDrops.length) {
+          await sendRankingDropAlert(alertableDrops)
+          await supabase.from('alert_log').insert({
+            alert_type: 'ranking_drop',
+            site_url: siteUrl,
+            title: `${alertableDrops.length} pages dropped >15% WoW`,
+            message: alertableDrops.map(d => d.page).join(', '),
+            severity: alertableDrops.length > 5 ? 'critical' : 'warning',
+            slack_sent: !!process.env.SLACK_WEBHOOK_URL,
+            metadata: { drops: alertableDrops },
+          })
+        }
       }
 
       // ── Task 2: Index Coverage ──────────────────────────────────────────
@@ -220,6 +234,55 @@ export async function GET(request: Request) {
               metadata: { degradations },
             })
           }
+        }
+      }
+
+      // ── Task 11 & 14: GA4 Organic Traffic + Content Performance ───────────
+      const ga4PropertyId = process.env.GA4_PROPERTY_ID
+      if (ga4PropertyId) {
+        try {
+          const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
+
+          // Task 11: Weekly organic traffic snapshot
+          const { thisWeek } = await getGA4OrganicTraffic(ga4Auth, ga4PropertyId)
+          const weekRows = parseGA4Rows(thisWeek)
+          const ga4Sessions = Math.round(sumMetric(weekRows, 'sessions'))
+          const ga4Engaged = Math.round(sumMetric(weekRows, 'engagedSessions'))
+          const ga4Views = Math.round(sumMetric(weekRows, 'screenPageViews'))
+          const ga4Bounce = weekRows.length > 0
+            ? weekRows.reduce((s, r) => s + parseFloat(r.bounceRate ?? '0'), 0) / weekRows.length
+            : 0
+
+          await supabase.from('ga4_organic_snapshots').upsert({
+            site_url: siteUrl,
+            snapshot_date: today,
+            sessions: ga4Sessions,
+            engaged_sessions: ga4Engaged,
+            page_views: ga4Views,
+            bounce_rate: ga4Bounce,
+          }, { onConflict: 'site_url,snapshot_date' })
+
+          // Task 14: Monthly content performance snapshot
+          const { thisMonth } = await getGA4ContentPerformance(ga4Auth, ga4PropertyId)
+          const contentRows = parseGA4Rows(thisMonth)
+          const topPages = contentRows.slice(0, 50).map(r => ({
+            path: r.pagePath ?? '',
+            sessions: parseInt(r.sessions ?? '0'),
+            engaged: parseInt(r.engagedSessions ?? '0'),
+            bounce: parseFloat(r.bounceRate ?? '0'),
+            views: parseInt(r.screenPageViews ?? '0'),
+            avgDuration: parseFloat(r.averageSessionDuration ?? '0'),
+          }))
+
+          await supabase.from('ga4_content_snapshots').upsert({
+            site_url: siteUrl,
+            snapshot_date: today,
+            pages: topPages,
+          }, { onConflict: 'site_url,snapshot_date' })
+
+        } catch (ga4Err) {
+          // GA4 errors shouldn't fail the whole cron — just log
+          console.error('GA4 cron error:', ga4Err)
         }
       }
 

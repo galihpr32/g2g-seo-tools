@@ -93,7 +93,7 @@ export function detectRankingDrops(
     }
   }
 
-  return drops.sort((a, b) => b.clicksDrop - a.clicksDrop).slice(0, 20)
+  return drops.sort((a, b) => b.clicksDrop - a.clicksDrop)
 }
 
 // ─── Chrome UX Report API (Task 3) ────────────────────────────────────────────

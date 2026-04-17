@@ -6,6 +6,18 @@ import type { PageDropWithQueries } from './RankingDropTable'
 
 export const dynamic = 'force-dynamic'
 
+// ── URL pre-filter — only fetch query data for relevant pages ─────────────────
+// Change these to adjust which pages are tracked (applies to UI defaults + alerts)
+const URL_INCLUDE = ['/categories/'] // page must contain one of these
+const URL_EXCLUDE = ['/offer/']      // page must NOT contain any of these
+
+function isRelevantPage(url: string) {
+  const p = url.toLowerCase()
+  if (URL_INCLUDE.length > 0 && !URL_INCLUDE.some(inc => p.includes(inc))) return false
+  if (URL_EXCLUDE.some(ex => p.includes(ex))) return false
+  return true
+}
+
 export default async function RankingDropPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -102,9 +114,15 @@ export default async function RankingDropPage() {
 
         const rawDrops = detectRankingDrops(current, previous)
 
+        // Pre-filter before fetching queries — saves API calls for irrelevant pages
+        const relevantDrops = rawDrops.filter(d => isRelevantPage(d.page))
+
+        // Build query map only from pre-filtered pages
+        const relevantPages = new Set(relevantDrops.map(d => d.page))
         const queryMap = new Map<string, PageDropWithQueries['queries']>()
         for (const row of queryRaw) {
           const page = row.keys?.[0] ?? ''
+          if (!relevantPages.has(page)) continue // skip irrelevant pages
           const query = row.keys?.[1] ?? ''
           if (!queryMap.has(page)) queryMap.set(page, [])
           queryMap.get(page)!.push({
@@ -119,7 +137,7 @@ export default async function RankingDropPage() {
           queryMap.set(p, qs.sort((a, b) => b.clicks - a.clicks).slice(0, 20))
         }
 
-        drops = rawDrops.map(d => ({
+        drops = relevantDrops.map(d => ({
           ...d,
           queries: queryMap.get(d.page) ?? [],
         }))
@@ -176,6 +194,7 @@ export default async function RankingDropPage() {
           drops={drops}
           totalTracked={totalTracked}
           alerts={alerts ?? []}
+          snapshotDate={today}
         />
       )}
     </div>
