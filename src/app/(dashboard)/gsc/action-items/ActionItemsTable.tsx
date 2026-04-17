@@ -42,7 +42,7 @@ const BRIEF_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
 
 function initials(email: string) {
   const parts = email.split('@')[0].split(/[._-]/)
-  return parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || email[0]?.toUpperCase() ?? '?'
+  return parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || (email[0]?.toUpperCase() ?? '?')
 }
 
 type Filter = 'all' | ActionItem['status'] | ActionItem['action_type']
