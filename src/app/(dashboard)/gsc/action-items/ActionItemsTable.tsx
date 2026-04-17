@@ -247,20 +247,30 @@ export function ActionItemsTable({ items: initialItems }: { items: ActionItem[] 
                     </p>
                   </div>
 
-                  {/* Right: action button */}
-                  <button
-                    onClick={() => advanceStatus(item)}
-                    disabled={isUpdating}
-                    className={`flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border transition disabled:opacity-50 ${
-                      item.status === 'done'
-                        ? 'border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300'
-                        : item.status === 'in_progress'
-                        ? 'bg-green-700 hover:bg-green-600 border-green-600 text-white'
-                        : 'bg-red-700 hover:bg-red-600 border-red-600 text-white'
-                    }`}
-                  >
-                    {isUpdating ? '…' : st.nextLabel}
-                  </button>
+                  {/* Right: buttons */}
+                  <div className="flex flex-col gap-2 flex-shrink-0">
+                    {/* Brief link */}
+                    <a
+                      href={`/gsc/action-items/${item.id}`}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-red-700 bg-red-700/20 text-red-300 hover:bg-red-700 hover:text-white transition text-center"
+                    >
+                      {item.action_type === 'on_page' ? '✏️ Brief' : '📣 Brief'}
+                    </a>
+                    {/* Status advance */}
+                    <button
+                      onClick={() => advanceStatus(item)}
+                      disabled={isUpdating}
+                      className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition disabled:opacity-50 ${
+                        item.status === 'done'
+                          ? 'border-gray-700 text-gray-500 hover:border-gray-500 hover:text-gray-300'
+                          : item.status === 'in_progress'
+                          ? 'bg-green-700 hover:bg-green-600 border-green-600 text-white'
+                          : 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300'
+                      }`}
+                    >
+                      {isUpdating ? '…' : st.nextLabel}
+                    </button>
+                  </div>
                 </div>
               </div>
             )
