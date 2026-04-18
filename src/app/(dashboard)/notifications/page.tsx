@@ -19,6 +19,14 @@ type EtaPage = {
   campaign_id: string; campaign_name: string; campaign_color: string
 }
 
+type DmcaBriefHit = {
+  briefId: string
+  briefPage: string
+  briefTitle: string | null
+  actionItemId: string | null
+  terms: Array<{ hitId: string; original: string; replacement: string; detectedAt: string }>
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function pagePath(url: string) {
   try { return new URL(url).pathname } catch { return url }
@@ -132,16 +140,16 @@ export default async function NotificationsPage() {
 
   const siteUrl = conn?.site_url
 
-  let staleItems:     ActionItem[] = []
-  let unassignedItems: ActionItem[] = []
-  let etaPages:        EtaPage[]    = []
+  let staleItems:     ActionItem[]   = []
+  let unassignedItems: ActionItem[]  = []
+  let etaPages:        EtaPage[]     = []
+  let dmcaBriefHits:   DmcaBriefHit[] = []
 
   if (ownerId) {
     const staleThreshold = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString()
     const etaThreshold   = new Date(Date.now() + ETA_WARN_DAYS * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-    const today          = new Date().toISOString().slice(0, 10)
 
-    const [staleRes, unassignedRes, etaRes] = await Promise.all([
+    const [staleRes, unassignedRes, etaRes, dmcaRes] = await Promise.all([
       // Stale in_progress action items
       siteUrl
         ? supabase.from('seo_action_items')
@@ -166,6 +174,17 @@ export default async function NotificationsPage() {
         .not('eta', 'is', null)
         .lte('eta', etaThreshold)
         .order('eta', { ascending: true }),
+
+      // Unresolved DMCA hits for published briefs
+      supabase.from('dmca_hits')
+        .select(`
+          id, detected_at,
+          dmca_terms!inner ( original_term, replacement_term ),
+          seo_content_briefs!inner ( id, page, title, action_item_id )
+        `)
+        .eq('owner_user_id', ownerId)
+        .eq('resolved', false)
+        .order('detected_at', { ascending: false }),
     ])
 
     staleItems      = (staleRes.data      ?? []) as ActionItem[]
@@ -184,13 +203,44 @@ export default async function NotificationsPage() {
         campaign_name: camp?.name ?? '', campaign_color: camp?.color ?? '#6366f1',
       }
     })
+
+    // Group DMCA hits by brief
+    const dmcaHitsRaw = (dmcaRes.data ?? []) as Array<{
+      id: string; detected_at: string
+      dmca_terms: { original_term: string; replacement_term: string } | { original_term: string; replacement_term: string }[]
+      seo_content_briefs: { id: string; page: string; title: string | null; action_item_id: string | null } |
+                          { id: string; page: string; title: string | null; action_item_id: string | null }[]
+    }>
+
+    const briefMap = new Map<string, DmcaBriefHit>()
+    for (const hit of dmcaHitsRaw) {
+      const brief = Array.isArray(hit.seo_content_briefs) ? hit.seo_content_briefs[0] : hit.seo_content_briefs
+      const term  = Array.isArray(hit.dmca_terms) ? hit.dmca_terms[0] : hit.dmca_terms
+      if (!brief || !term) continue
+      if (!briefMap.has(brief.id)) {
+        briefMap.set(brief.id, {
+          briefId: brief.id,
+          briefPage: brief.page,
+          briefTitle: brief.title,
+          actionItemId: brief.action_item_id,
+          terms: [],
+        })
+      }
+      briefMap.get(brief.id)!.terms.push({
+        hitId:       hit.id,
+        original:    term.original_term,
+        replacement: term.replacement_term,
+        detectedAt:  hit.detected_at,
+      })
+    }
+    dmcaBriefHits = Array.from(briefMap.values())
   }
 
   // De-duplicate stale + unassigned
   const staleIds       = new Set(staleItems.map(i => i.id))
   const unassignedOnly = unassignedItems.filter(i => !staleIds.has(i.id))
 
-  const totalNotifs = staleItems.length + unassignedOnly.length + etaPages.length
+  const totalNotifs = staleItems.length + unassignedOnly.length + etaPages.length + dmcaBriefHits.length
 
   return (
     <div className="p-8 max-w-3xl">
@@ -232,6 +282,54 @@ export default async function NotificationsPage() {
               </p>
               <div className="space-y-2">
                 {etaPages.map(p => <EtaCard key={p.id} page={p} />)}
+              </div>
+            </section>
+          )}
+
+          {/* ── DMCA hits ────────────────────────────────────────────────── */}
+          {dmcaBriefHits.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-red-400 text-lg">🚫</span>
+                <h2 className="text-white font-semibold">
+                  DMCA Terms in Published Briefs
+                  <span className="ml-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full font-normal">
+                    {dmcaBriefHits.length}
+                  </span>
+                </h2>
+              </div>
+              <p className="text-gray-500 text-xs mb-3">
+                Published briefs containing restricted terms. Open the brief to edit and resolve.
+              </p>
+              <div className="space-y-2">
+                {dmcaBriefHits.map(hit => {
+                  const path = (() => { try { return new URL(hit.briefPage).pathname } catch { return hit.briefPage } })()
+                  return (
+                    <div key={hit.briefId} className="bg-gray-900 border border-red-800/40 hover:border-red-700/60 rounded-xl px-4 py-3 flex items-center gap-4 transition">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
+                            🚫 {hit.terms.length} restricted term{hit.terms.length !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                        <p className="text-blue-400 text-sm font-medium truncate" title={hit.briefPage}>{path}</p>
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {hit.terms.map(t => (
+                            <span key={t.hitId} className="text-xs font-mono bg-red-900/40 border border-red-700/50 text-red-300 px-1.5 py-0.5 rounded">
+                              {t.original} → {t.replacement}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      {hit.actionItemId && (
+                        <Link href={`/gsc/action-items/${hit.actionItemId}`}
+                          className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white transition flex-shrink-0">
+                          View Brief →
+                        </Link>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </section>
           )}

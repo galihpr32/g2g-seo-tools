@@ -36,6 +36,7 @@ const navItems = [
     group: 'Weekly — Content',
     items: [
       { label: 'Content Briefs', href: '/content/briefs', icon: '✍️' },
+      { label: 'Knowledge Base', href: '/knowledge-base', icon: '🧠' },
       { label: 'Meta Generator', href: '/content/meta', icon: '🏷️' },
     ],
   },

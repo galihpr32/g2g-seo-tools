@@ -339,6 +339,9 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   const [activeTab, setActiveTab] = useState<string>('analysis')
   // Track which ideas are generating their draft: key = `${content_type}::${title}`
   const [draftGenerating, setDraftGenerating] = useState<Set<string>>(new Set())
+  // DMCA hit tracking
+  const [dmcaHits, setDmcaHits] = useState<Array<{ id: string; dmca_terms: { original_term: string; replacement_term: string } }>>([])
+  const [resolvingDmca, setResolvingDmca] = useState(false)
 
   // Returns true if we should keep polling (initial gen OR any idea is generating)
   function shouldPoll(b: Brief): boolean {
@@ -372,6 +375,26 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   useEffect(() => {
     if (existingBriefId) pollBrief(existingBriefId)
   }, [existingBriefId, pollBrief])
+
+  // Fetch DMCA hits when brief is published
+  useEffect(() => {
+    if (brief?.id && brief.status === 'published') {
+      fetch(`/api/dmca/brief/${brief.id}`)
+        .then(r => r.json())
+        .then(d => setDmcaHits(d.hits ?? []))
+        .catch(() => {})
+    } else {
+      setDmcaHits([])
+    }
+  }, [brief?.id, brief?.status])
+
+  async function resolveAllDmcaHits() {
+    if (!brief) return
+    setResolvingDmca(true)
+    await fetch(`/api/dmca/brief/${brief.id}`, { method: 'DELETE' })
+    setDmcaHits([])
+    setResolvingDmca(false)
+  }
 
   async function handleGenerate() {
     setGenerating(true); setError(null); setActiveTab('analysis')
@@ -567,6 +590,34 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
           </button>
         </div>
       </div>
+
+      {/* DMCA Warning Banner (published briefs with flagged terms) */}
+      {brief.status === 'published' && dmcaHits.length > 0 && (
+        <div className="mb-4 bg-red-900/30 border border-red-700/50 rounded-xl px-4 py-3 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-red-300 font-semibold text-sm">
+              🚫 {dmcaHits.length} DMCA term{dmcaHits.length !== 1 ? 's' : ''} detected in this published brief
+            </p>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {dmcaHits.map(hit => (
+                <span key={hit.id} className="text-xs bg-red-900/50 border border-red-700 text-red-300 rounded px-2 py-0.5 font-mono">
+                  {hit.dmca_terms.original_term} → {hit.dmca_terms.replacement_term}
+                </span>
+              ))}
+            </div>
+            <p className="text-red-400/70 text-xs mt-2">
+              Edit the draft to replace these terms, then mark as resolved.
+            </p>
+          </div>
+          <button
+            onClick={resolveAllDmcaHits}
+            disabled={resolvingDmca}
+            className="flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border border-red-600 text-red-300 hover:bg-red-700 hover:text-white transition disabled:opacity-50"
+          >
+            {resolvingDmca ? 'Resolving…' : '✓ Mark Resolved'}
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-0 mb-5 border-b border-gray-800 overflow-x-auto">

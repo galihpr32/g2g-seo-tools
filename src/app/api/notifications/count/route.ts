@@ -24,7 +24,7 @@ export async function GET() {
   const staleThreshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
   const etaThreshold   = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
-  const [staleRes, unassignedRes, etaRes] = await Promise.all([
+  const [staleRes, unassignedRes, etaRes, dmcaRes] = await Promise.all([
     siteUrl
       ? supabase.from('seo_action_items')
           .select('id', { count: 'exact', head: true })
@@ -45,15 +45,21 @@ export async function GET() {
       .neq('status', 'done')
       .not('eta', 'is', null)
       .lte('eta', etaThreshold),
+
+    // Count distinct briefs with unresolved DMCA hits
+    supabase.from('dmca_hits')
+      .select('brief_id', { count: 'exact', head: false })
+      .eq('owner_user_id', ownerId)
+      .eq('resolved', false),
   ])
 
-  // stale + unassigned may overlap — use max heuristic (not critical to be exact)
   const stale      = staleRes.count ?? 0
   const unassigned = unassignedRes.count ?? 0
   const eta        = etaRes.count ?? 0
+  // DMCA: count distinct briefs (not individual hits)
+  const dmcaBriefs = new Set((dmcaRes.data ?? []).map((r: { brief_id: string }) => r.brief_id)).size
 
-  // Can't easily de-duplicate stale/unassigned without fetching rows, so sum with cap
-  const count = stale + unassigned + eta
+  const count = stale + unassigned + eta + dmcaBriefs
 
   return NextResponse.json({ count })
 }

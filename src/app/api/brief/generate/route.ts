@@ -106,6 +106,133 @@ export async function GET(request: Request) {
 
 type ContentTypeConfig = Record<string, { enabled: boolean; count: number }>
 
+// ─── Knowledge Base context types ─────────────────────────────────────────────
+interface KBContext {
+  brandTone: string
+  brandAudience: string
+  brandDos: string[]
+  brandDonts: string[]
+  brandNotes: string
+  categoryDescription: string
+  categoryBuyerIntent: string
+  categoryKeywords: string[]
+  categoryAngle: string
+  categoryNotes: string
+  dmcaTerms: Array<{ original: string; replacement: string }>
+}
+
+// ─── Load knowledge base context ──────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadKBContext(
+  supabase: any,
+  ownerId: string,
+  pageUrl: string
+): Promise<KBContext> {
+  const empty: KBContext = {
+    brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
+    categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
+    dmcaTerms: [],
+  }
+
+  try {
+    // Load all KB items for this owner
+    const { data: kbItems } = await supabase
+      .from('knowledge_base_items')
+      .select('category, name, data')
+      .eq('owner_user_id', ownerId)
+
+    // Load active DMCA terms
+    const { data: dmcaTerms } = await supabase
+      .from('dmca_terms')
+      .select('original_term, replacement_term')
+      .eq('owner_user_id', ownerId)
+      .eq('active', true)
+
+    if (!kbItems) return empty
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const brand = (kbItems as any[]).find((i: any) => i.category === 'brand')
+    const brandData = (brand?.data ?? {}) as Record<string, unknown>
+
+    // Try to find a matching category from the URL slug
+    const urlSlug = (() => {
+      try { return new URL(pageUrl).pathname.split('/').filter(Boolean).join(' ').toLowerCase() }
+      catch { return pageUrl.toLowerCase() }
+    })()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const categoryItems = (kbItems as any[]).filter((i: any) => i.category === 'category')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const matchedCategory = categoryItems.find((i: any) =>
+      urlSlug.includes(i.name.toLowerCase()) ||
+      i.name.toLowerCase().split(/\s+/).some((word: string) => urlSlug.includes(word))
+    )
+    const catData = (matchedCategory?.data ?? {}) as Record<string, unknown>
+
+    return {
+      brandTone:            (brandData.tone         as string) ?? '',
+      brandAudience:        (brandData.audience     as string) ?? '',
+      brandDos:             (brandData.dos          as string[]) ?? [],
+      brandDonts:           (brandData.donts        as string[]) ?? [],
+      brandNotes:           (brandData.notes        as string) ?? '',
+      categoryDescription:  (catData.description   as string) ?? '',
+      categoryBuyerIntent:  (catData.buyer_intent  as string) ?? '',
+      categoryKeywords:     (catData.keywords      as string[]) ?? [],
+      categoryAngle:        (catData.angle         as string) ?? '',
+      categoryNotes:        (catData.notes         as string) ?? '',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      dmcaTerms: ((dmcaTerms ?? []) as any[]).map((t: any) => ({ original: t.original_term, replacement: t.replacement_term })),
+    }
+  } catch {
+    return empty
+  }
+}
+
+// ─── Build KB context injection block ─────────────────────────────────────────
+function buildKBBlock(kb: KBContext, includeDmca = true): string {
+  const parts: string[] = []
+
+  if (kb.brandTone || kb.brandAudience || kb.brandDos.length || kb.brandDonts.length) {
+    parts.push(`BRAND CONTEXT (MUST FOLLOW):
+Tone: ${kb.brandTone || 'Not specified'}
+Audience: ${kb.brandAudience || 'Not specified'}
+${kb.brandDos.filter(Boolean).length ? `DOs:\n${kb.brandDos.filter(Boolean).map(d => `- ${d}`).join('\n')}` : ''}
+${kb.brandDonts.filter(Boolean).length ? `DON'Ts:\n${kb.brandDonts.filter(Boolean).map(d => `- ${d}`).join('\n')}` : ''}
+${kb.brandNotes ? `Notes: ${kb.brandNotes}` : ''}`.trim())
+  }
+
+  if (kb.categoryDescription || kb.categoryAngle || kb.categoryKeywords.length) {
+    parts.push(`CATEGORY CONTEXT:
+${kb.categoryDescription ? `Description: ${kb.categoryDescription}` : ''}
+${kb.categoryBuyerIntent ? `Buyer intent: ${kb.categoryBuyerIntent}` : ''}
+${kb.categoryAngle ? `Content angle: ${kb.categoryAngle}` : ''}
+${kb.categoryKeywords.filter(Boolean).length ? `Category keywords: ${kb.categoryKeywords.filter(Boolean).join(', ')}` : ''}
+${kb.categoryNotes ? `Notes: ${kb.categoryNotes}` : ''}`.trim())
+  }
+
+  if (includeDmca && kb.dmcaTerms.length) {
+    parts.push(`RESTRICTED TERMS (apply replacements in all content):
+${kb.dmcaTerms.map(t => `- Replace "${t.original}" with "${t.replacement}"`).join('\n')}`)
+  }
+
+  return parts.length ? `\n---\n${parts.join('\n\n')}\n---\n` : ''
+}
+
+// ─── Apply DMCA replacements to generated text ────────────────────────────────
+function applyDmcaReplacements(text: string, terms: Array<{ original: string; replacement: string }>): string {
+  let result = text
+  for (const term of terms) {
+    if (!term.original) continue
+    // Case-insensitive whole-word replacement, preserving case shape
+    const re = new RegExp(`\\b${term.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi')
+    result = result.replace(re, (match) => {
+      if (match === match.toUpperCase()) return term.replacement.toUpperCase()
+      if (match[0] === match[0].toUpperCase()) return term.replacement.charAt(0).toUpperCase() + term.replacement.slice(1)
+      return term.replacement
+    })
+  }
+  return result
+}
+
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 async function runBriefPipeline(
   briefId: string,
@@ -129,10 +256,25 @@ async function runBriefPipeline(
   }
 
   try {
+    // Load the brief to get owner_user_id
+    const { data: briefRow } = await supabase
+      .from('seo_content_briefs')
+      .select('owner_user_id')
+      .eq('id', briefId)
+      .single()
+    const ownerId: string = briefRow?.owner_user_id ?? ''
+
+    // Load KB context once for the pipeline
+    const kb = ownerId
+      ? await loadKBContext(supabase as any, ownerId, item.page)
+      : { brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
+          categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
+          dmcaTerms: [] }
+
     if (item.action_type === 'on_page') {
-      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief })
+      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb })
     } else {
-      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig })
+      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -141,13 +283,14 @@ async function runBriefPipeline(
 }
 
 // ─── ON-PAGE Pipeline ──────────────────────────────────────────────────────────
-async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief }: {
+async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb }: {
   briefId: string
   item: any
   topQueries: string[]
   primaryKeyword: string
   gscQueries: any[]
   updateBrief: (f: Record<string, unknown>) => Promise<void>
+  kb: KBContext
 }) {
   // Step 1: Crawl the page
   const crawled = await smartScrape(item.page)
@@ -199,6 +342,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
     relatedSearches: serpData.relatedSearches.slice(0, 12),
     kwSuggestions: kwSuggestions.slice(0, 15),
     itemNotes: item.notes ?? '',
+    kb,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -212,17 +356,22 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
   // Parse structured sections from Claude's response
   const sections = parseClaudeOnPageResponse(rawText)
 
+  // Apply DMCA replacements to the content draft
+  const cleanDraft = kb.dmcaTerms.length
+    ? applyDmcaReplacements(sections.draft, kb.dmcaTerms)
+    : sections.draft
+
   await updateBrief({
     status: 'draft',
     current_content_summary: sections.currentSummary,
     content_gaps: sections.contentGaps,
     content_outline: sections.outline,
-    content_draft: sections.draft,
+    content_draft: cleanDraft,
   })
 }
 
 // ─── OFF-PAGE Pipeline ─────────────────────────────────────────────────────────
-async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig }: {
+async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -230,6 +379,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   gscQueries: any[]
   updateBrief: (f: Record<string, unknown>) => Promise<void>
   contentTypeConfig?: ContentTypeConfig
+  kb: KBContext
 }) {
   // Derive topic from URL
   const topic = deriveTopicFromUrl(item.page)
@@ -261,6 +411,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
     kwSuggestions: kwSuggestions.slice(0, 15),
     itemNotes: item.notes ?? '',
     contentTypeConfig,
+    kb,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -300,6 +451,7 @@ function buildOnPagePrompt(p: {
   relatedSearches: any[]
   kwSuggestions: any[]
   itemNotes: string
+  kb: KBContext
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword)
@@ -341,7 +493,7 @@ ${hasCategoryTemplate ? `
 G2G CATEGORY CONTENT TEMPLATE (MUST FOLLOW):
 This page follows G2G's official content structure for this category.
 ${categoryInstructions}
-` : ''}
+` : ''}${buildKBBlock(p.kb, true)}
 ---
 
 Now provide your analysis and draft with these EXACT sections:
@@ -388,6 +540,7 @@ function buildOffPagePrompt(p: {
   kwSuggestions: any[]
   itemNotes: string
   contentTypeConfig?: ContentTypeConfig
+  kb: KBContext
 }) {
   // Resolve which content types to include and how many ideas each
   const cfg = p.contentTypeConfig ?? {
@@ -455,7 +608,7 @@ KEYWORD IDEAS:
 ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'}`).join('\n')}
 
 EDITOR NOTES: ${p.itemNotes || 'none'}
-
+${buildKBBlock(p.kb, false)}
 ---
 
 Provide an off-page content plan with these EXACT sections in this exact order:
