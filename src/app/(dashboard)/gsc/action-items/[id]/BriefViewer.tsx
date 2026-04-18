@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { SERP_COUNTRIES } from '@/lib/country-config'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -64,12 +65,14 @@ const OFF_PAGE_TYPE_LABELS: Record<keyof OffPageConfig, { emoji: string; label: 
 }
 
 function OffPageConfigPanel({
-  config, onChange, customInstructions, onCustomInstructionsChange,
+  config, onChange, customInstructions, onCustomInstructionsChange, serpCountry, onSerpCountryChange,
 }: {
   config: OffPageConfig
   onChange: (c: OffPageConfig) => void
   customInstructions: string
   onCustomInstructionsChange: (v: string) => void
+  serpCountry: string
+  onSerpCountryChange: (v: string) => void
 }) {
   function toggle(type: keyof OffPageConfig) {
     onChange({ ...config, [type]: { ...config[type], enabled: !config[type].enabled } })
@@ -137,8 +140,13 @@ function OffPageConfigPanel({
       </div>
       {!anyEnabled && <p className="text-yellow-400 text-xs mt-3">Select at least one content type.</p>}
 
+      {/* SERP country + custom instructions */}
+      <div className="mt-4 border-t border-gray-800 pt-4 space-y-3">
+        <CountrySelector value={serpCountry} onChange={onSerpCountryChange} />
+      </div>
+
       {/* Custom instructions */}
-      <div className="mt-4 border-t border-gray-800 pt-4">
+      <div className="mt-3">
         <label className="block text-gray-400 text-xs font-medium mb-1.5">
           Custom instructions <span className="text-gray-600 font-normal">(optional — Claude will follow these for this brief)</span>
         </label>
@@ -163,6 +171,25 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
       className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition">
       {copied ? '✓ Copied!' : label}
     </button>
+  )
+}
+
+// ── SERP Country Selector ─────────────────────────────────────────────────────
+function CountrySelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-gray-500 text-xs">SERP country:</span>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500 cursor-pointer"
+      >
+        <option value="">🌐 Auto-detect</option>
+        {SERP_COUNTRIES.map(c => (
+          <option key={c.code} value={c.code}>{c.flag} {c.label}</option>
+        ))}
+      </select>
+    </div>
   )
 }
 
@@ -396,6 +423,7 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   const [kwCandidates, setKwCandidates] = useState<KwCandidate[]>([])
   const [manualKw, setManualKw]       = useState('')
   const [customInstructions, setCustomInstructions] = useState('')
+  const [serpCountry, setSerpCountry] = useState('')  // '' = auto-detect from page URL
 
   // Returns true if we should keep polling (initial gen OR any idea is generating)
   function shouldPoll(b: Brief): boolean {
@@ -486,6 +514,7 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
           ...(actionType === 'off_page' && { content_type_config: offPageConfig }),
           ...(selectedKws && selectedKws.length > 0 && { selected_keywords: selectedKws }),
           ...(customInstructions.trim() && { custom_instructions: customInstructions.trim() }),
+          ...(serpCountry && { serp_country: serpCountry }),
         }),
       })
       const data = await res.json()
@@ -660,6 +689,10 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
               />
             </div>
 
+            <div className="mb-4">
+              <CountrySelector value={serpCountry} onChange={setSerpCountry} />
+            </div>
+
             {error && <p className="text-red-400 text-sm mb-3 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>}
 
             <div className="flex items-center gap-3">
@@ -686,6 +719,8 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
               onChange={setOffPageConfig}
               customInstructions={customInstructions}
               onCustomInstructionsChange={setCustomInstructions}
+              serpCountry={serpCountry}
+              onSerpCountryChange={setSerpCountry}
             />
             {error && <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>}
             <div className="flex items-center gap-3">

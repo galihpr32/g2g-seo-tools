@@ -5,6 +5,7 @@ import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
 import { detectPageLanguage, type PageLanguage } from '@/lib/language-detect'
+import { countryFromLanguageCode, getCountryPreset, type CountryPreset } from '@/lib/country-config'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 120 // briefs take time — requires Vercel Pro
@@ -30,11 +31,12 @@ export async function POST(request: Request) {
   if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
 
   const reqBody = await request.json()
-  const { action_item_id, content_type_config, selected_keywords, custom_instructions } = reqBody as {
+  const { action_item_id, content_type_config, selected_keywords, custom_instructions, serp_country } = reqBody as {
     action_item_id: string
     content_type_config?: Record<string, { enabled: boolean; count: number; format?: 'short' | 'long' }>
     selected_keywords?: string[]   // user-curated keywords from pre-generate step
     custom_instructions?: string   // editor-supplied freeform instructions
+    serp_country?: string          // ISO2 country code override for SERP data (default: auto from page URL)
   }
   if (!action_item_id) return NextResponse.json({ error: 'Missing action_item_id' }, { status: 400 })
 
@@ -80,7 +82,7 @@ export async function POST(request: Request) {
   // `after()` keeps the serverless function alive until the promise resolves,
   // even after the HTTP response is returned to the client.
   after(
-    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions)
+    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions, serp_country)
       .catch(err => console.error('Brief pipeline error:', err))
   )
 
@@ -246,7 +248,8 @@ async function runBriefPipeline(
   gscQueries: any[],
   contentTypeConfig?: ContentTypeConfig,
   selectedKeywords?: string[],
-  customInstructions?: string
+  customInstructions?: string,
+  serpCountryCode?: string
 ) {
   // Use service role client so writes always succeed regardless of auth context
   const { createClient: createServiceClient } = await import('@supabase/supabase-js')
@@ -278,11 +281,15 @@ async function runBriefPipeline(
 
     // Detect language from the target page URL
     const lang = detectPageLanguage(item.page)
+    // Resolve SERP country: explicit override > language-auto-detected > Indonesia default
+    const country: CountryPreset = serpCountryCode
+      ? getCountryPreset(serpCountryCode)
+      : countryFromLanguageCode(lang.code)
 
     if (item.action_type === 'on_page') {
-      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, selectedKeywords, customInstructions })
+      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
     } else {
-      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, customInstructions })
+      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -291,7 +298,7 @@ async function runBriefPipeline(
 }
 
 // ─── ON-PAGE Pipeline ──────────────────────────────────────────────────────────
-async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, selectedKeywords, customInstructions }: {
+async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -300,6 +307,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
   updateBrief: (f: Record<string, unknown>) => Promise<void>
   kb: KBContext
   lang: PageLanguage
+  country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
 }) {
@@ -308,11 +316,11 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
 
   // Step 2: Get SERP data (PAA + related searches + competitor URLs) for top queries
   const serpData = topQueries.length
-    ? await batchSerpData(topQueries)
+    ? await batchSerpData(topQueries, country.dfsLocationCode, country.dfsLanguageCode)
     : { organicResults: [], peopleAlsoAsk: [], relatedSearches: [] }
 
   // Step 3: Get keyword suggestions from primary keyword
-  const kwSuggestions = await getKeywordSuggestions(primaryKeyword)
+  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
 
   // Store raw data
   await updateBrief({
@@ -355,6 +363,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
     itemNotes: item.notes ?? '',
     kb,
     lang,
+    country,
     selectedKeywords,
     customInstructions,
   })
@@ -385,7 +394,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
 }
 
 // ─── OFF-PAGE Pipeline ─────────────────────────────────────────────────────────
-async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, customInstructions }: {
+async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -395,16 +404,17 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   contentTypeConfig?: ContentTypeConfig
   kb: KBContext
   lang: PageLanguage
+  country: CountryPreset
   customInstructions?: string
 }) {
   // Derive topic from URL
   const topic = deriveTopicFromUrl(item.page)
 
   // Step 1: SERP for main keyword + topic
-  const serpData = await batchSerpData([primaryKeyword, topic].filter(Boolean))
+  const serpData = await batchSerpData([primaryKeyword, topic].filter(Boolean), country.dfsLocationCode, country.dfsLanguageCode)
 
   // Step 2: Keyword suggestions for off-page content ideas
-  const kwSuggestions = await getKeywordSuggestions(primaryKeyword)
+  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
 
   await updateBrief({
     topic,
@@ -429,6 +439,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
     contentTypeConfig,
     kb,
     lang,
+    country,
     customInstructions,
   })
 
@@ -477,6 +488,7 @@ function buildOnPagePrompt(p: {
   itemNotes: string
   kb: KBContext
   lang: PageLanguage
+  country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
 }) {
@@ -495,6 +507,7 @@ CURRENT DATE: ${today}
 ${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}
 PAGE URL: ${p.page}
 PAGE LANGUAGE: ${p.lang.name}
+SERP COUNTRY: ${p.country.flag} ${p.country.label} (SERP data pulled for this market)
 PRIMARY KEYWORD (from GSC, highest clicks): ${p.primaryKeyword}
 GAME/PRODUCT NAME: ${gameName}
 
@@ -591,6 +604,7 @@ function buildOffPagePrompt(p: {
   contentTypeConfig?: ContentTypeConfig
   kb: KBContext
   lang: PageLanguage
+  country: CountryPreset
   customInstructions?: string
 }) {
   // Resolve which content types to include and how many ideas each
@@ -641,6 +655,7 @@ For each use EXACTLY this format:
 ${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}
 TARGET PAGE: ${p.page}
 PAGE LANGUAGE: ${p.lang.name}
+SERP COUNTRY: ${p.country.flag} ${p.country.label}
 TOPIC: ${p.topic}
 PRIMARY KEYWORD: ${p.primaryKeyword}
 

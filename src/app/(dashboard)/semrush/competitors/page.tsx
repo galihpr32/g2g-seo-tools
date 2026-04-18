@@ -1,11 +1,22 @@
 import { getCompetitors, getDomainOverview } from '@/lib/semrush/client'
+import { SERP_COUNTRIES } from '@/lib/country-config'
+import { CountryPicker } from './CountryPicker'
+import { Suspense } from 'react'
 
 export const dynamic = 'force-dynamic'
 
 const TARGET_DOMAIN = 'g2g.com'
-const DB = 'id'
 
-export default async function CompetitorTrackingPage() {
+export default async function CompetitorTrackingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ db?: string }>
+}) {
+  const { db: dbParam } = await searchParams
+  // Validate the db param against known markets; default to 'id'
+  const db = SERP_COUNTRIES.find(c => c.semrushDb === dbParam)?.semrushDb ?? 'id'
+  const currentCountry = SERP_COUNTRIES.find(c => c.semrushDb === db) ?? SERP_COUNTRIES[0]
+
   const hasKey = !!process.env.SEMRUSH_API_KEY
 
   let competitors: Awaited<ReturnType<typeof getCompetitors>> = []
@@ -15,8 +26,8 @@ export default async function CompetitorTrackingPage() {
   if (hasKey) {
     try {
       ;[competitors, overview] = await Promise.all([
-        getCompetitors(TARGET_DOMAIN, DB, 15),
-        getDomainOverview(TARGET_DOMAIN, DB),
+        getCompetitors(TARGET_DOMAIN, db, 15),
+        getDomainOverview(TARGET_DOMAIN, db),
       ])
     } catch (e) {
       fetchError = String(e)
@@ -25,11 +36,19 @@ export default async function CompetitorTrackingPage() {
 
   return (
     <div className="p-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">👁️ Competitor Tracking</h1>
-        <p className="text-gray-400 text-sm mt-1">
-          Top organic competitors of <span className="text-white font-medium">{TARGET_DOMAIN}</span>
-        </p>
+      <div className="mb-6 flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">👁️ Competitor Tracking</h1>
+          <p className="text-gray-400 text-sm mt-1">
+            Top organic competitors of{' '}
+            <span className="text-white font-medium">{TARGET_DOMAIN}</span>
+            {' '}in{' '}
+            <span className="text-white font-medium">{currentCountry.flag} {currentCountry.label}</span>
+          </p>
+        </div>
+        <Suspense fallback={null}>
+          <CountryPicker currentDb={db} />
+        </Suspense>
       </div>
 
       {!hasKey && (
@@ -54,6 +73,7 @@ export default async function CompetitorTrackingPage() {
             <div className="flex items-center gap-3">
               <span className="text-white font-bold">{TARGET_DOMAIN}</span>
               <span className="text-xs text-red-400 bg-red-700/20 px-2 py-0.5 rounded-full">You</span>
+              <span className="text-xs text-gray-500">{currentCountry.flag} {currentCountry.label}</span>
             </div>
             <div className="flex items-center gap-6 text-sm">
               <span className="text-gray-400">Keywords: <span className="text-white font-medium">{overview.organicKeywords.toLocaleString()}</span></span>
@@ -110,6 +130,12 @@ export default async function CompetitorTrackingPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {hasKey && !fetchError && competitors.length === 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center text-gray-500 text-sm">
+          No competitor data available for {currentCountry.flag} {currentCountry.label}.
         </div>
       )}
     </div>
