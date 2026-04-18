@@ -48,12 +48,12 @@ const CONTENT_TYPE_CONFIG: Record<string, { label: string; emoji: string; color:
 
 // ── Pre-generation config (off-page only) ─────────────────────────────────────
 
-type OffPageTypeConfig = { enabled: boolean; count: number }
+type OffPageTypeConfig = { enabled: boolean; count: number; format?: 'short' | 'long' }
 type OffPageConfig = { blog_post: OffPageTypeConfig; forum: OffPageTypeConfig; social: OffPageTypeConfig }
 
 const DEFAULT_OFF_PAGE_CONFIG: OffPageConfig = {
   blog_post: { enabled: true,  count: 2 },
-  forum:     { enabled: true,  count: 2 },
+  forum:     { enabled: true,  count: 2, format: 'short' },
   social:    { enabled: false, count: 1 },
 }
 
@@ -63,12 +63,22 @@ const OFF_PAGE_TYPE_LABELS: Record<keyof OffPageConfig, { emoji: string; label: 
   social:    { emoji: '📱', label: 'Social Media',      desc: 'Twitter/X threads, TikTok scripts, Instagram carousels' },
 }
 
-function OffPageConfigPanel({ config, onChange }: { config: OffPageConfig; onChange: (c: OffPageConfig) => void }) {
+function OffPageConfigPanel({
+  config, onChange, customInstructions, onCustomInstructionsChange,
+}: {
+  config: OffPageConfig
+  onChange: (c: OffPageConfig) => void
+  customInstructions: string
+  onCustomInstructionsChange: (v: string) => void
+}) {
   function toggle(type: keyof OffPageConfig) {
     onChange({ ...config, [type]: { ...config[type], enabled: !config[type].enabled } })
   }
   function setCount(type: keyof OffPageConfig, count: number) {
     onChange({ ...config, [type]: { ...config[type], count } })
+  }
+  function setFormat(type: keyof OffPageConfig, format: 'short' | 'long') {
+    onChange({ ...config, [type]: { ...config[type], format } })
   }
   const anyEnabled = Object.values(config).some(c => c.enabled)
   return (
@@ -80,29 +90,66 @@ function OffPageConfigPanel({ config, onChange }: { config: OffPageConfig; onCha
           const meta = OFF_PAGE_TYPE_LABELS[type]
           const cfg  = config[type]
           return (
-            <div key={type} onClick={() => toggle(type)}
-              className={`flex items-center gap-4 rounded-xl p-3.5 border cursor-pointer transition ${cfg.enabled ? 'border-red-600/50 bg-red-600/5' : 'border-gray-700 bg-gray-800/50 opacity-60'}`}
-            >
-              <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition ${cfg.enabled ? 'bg-red-600 border-red-600' : 'border-gray-600'}`}>
-                {cfg.enabled && <span className="text-white text-xs leading-none">✓</span>}
+            <div key={type}>
+              <div onClick={() => toggle(type)}
+                className={`flex items-center gap-4 rounded-xl p-3.5 border cursor-pointer transition ${cfg.enabled ? 'border-red-600/50 bg-red-600/5' : 'border-gray-700 bg-gray-800/50 opacity-60'}`}
+              >
+                <div className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition ${cfg.enabled ? 'bg-red-600 border-red-600' : 'border-gray-600'}`}>
+                  {cfg.enabled && <span className="text-white text-xs leading-none">✓</span>}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-sm font-medium">{meta.emoji} {meta.label}</p>
+                  <p className="text-gray-500 text-xs truncate">{meta.desc}</p>
+                </div>
+                <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                  <button onClick={() => cfg.count > 1 && setCount(type, cfg.count - 1)} disabled={!cfg.enabled || cfg.count <= 1}
+                    className="w-6 h-6 rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 disabled:opacity-30 transition text-sm flex items-center justify-center">−</button>
+                  <span className="text-white text-sm font-semibold w-4 text-center">{cfg.count}</span>
+                  <button onClick={() => cfg.count < 5 && setCount(type, cfg.count + 1)} disabled={!cfg.enabled || cfg.count >= 5}
+                    className="w-6 h-6 rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 disabled:opacity-30 transition text-sm flex items-center justify-center">+</button>
+                  <span className="text-gray-500 text-xs ml-1">ideas</span>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-white text-sm font-medium">{meta.emoji} {meta.label}</p>
-                <p className="text-gray-500 text-xs truncate">{meta.desc}</p>
-              </div>
-              <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                <button onClick={() => cfg.count > 1 && setCount(type, cfg.count - 1)} disabled={!cfg.enabled || cfg.count <= 1}
-                  className="w-6 h-6 rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 disabled:opacity-30 transition text-sm flex items-center justify-center">−</button>
-                <span className="text-white text-sm font-semibold w-4 text-center">{cfg.count}</span>
-                <button onClick={() => cfg.count < 5 && setCount(type, cfg.count + 1)} disabled={!cfg.enabled || cfg.count >= 5}
-                  className="w-6 h-6 rounded border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 disabled:opacity-30 transition text-sm flex items-center justify-center">+</button>
-                <span className="text-gray-500 text-xs ml-1">ideas</span>
-              </div>
+              {/* Forum format toggle — only when forum row is enabled */}
+              {type === 'forum' && cfg.enabled && (
+                <div className="ml-8 mt-1.5 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                  <span className="text-gray-500 text-xs">Draft style:</span>
+                  <button
+                    onClick={() => setFormat('forum', 'short')}
+                    className={`text-xs px-2.5 py-1 rounded-lg border transition ${cfg.format !== 'long' ? 'border-green-600 bg-green-600/10 text-green-300' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}
+                  >
+                    Short (50-150w)
+                  </button>
+                  <button
+                    onClick={() => setFormat('forum', 'long')}
+                    className={`text-xs px-2.5 py-1 rounded-lg border transition ${cfg.format === 'long' ? 'border-blue-600 bg-blue-600/10 text-blue-300' : 'border-gray-700 text-gray-500 hover:text-gray-300'}`}
+                  >
+                    Long (300-500w)
+                  </button>
+                  <span className="text-gray-600 text-xs">
+                    {cfg.format === 'long' ? '— full Reddit thread with context' : '— native comment-style, no hard sell'}
+                  </span>
+                </div>
+              )}
             </div>
           )
         })}
       </div>
       {!anyEnabled && <p className="text-yellow-400 text-xs mt-3">Select at least one content type.</p>}
+
+      {/* Custom instructions */}
+      <div className="mt-4 border-t border-gray-800 pt-4">
+        <label className="block text-gray-400 text-xs font-medium mb-1.5">
+          Custom instructions <span className="text-gray-600 font-normal">(optional — Claude will follow these for this brief)</span>
+        </label>
+        <textarea
+          value={customInstructions}
+          onChange={e => onCustomInstructionsChange(e.target.value)}
+          placeholder="e.g. Focus on Valorant points economy, avoid mentioning specific prices, write for beginners…"
+          rows={3}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500 resize-none"
+        />
+      </div>
     </div>
   )
 }
@@ -343,6 +390,13 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   const [dmcaHits, setDmcaHits] = useState<Array<{ id: string; dmca_terms: { original_term: string; replacement_term: string } }>>([])
   const [resolvingDmca, setResolvingDmca] = useState(false)
 
+  // Keyword selection (on-page pre-generate step)
+  type KwCandidate = { keyword: string; search_volume?: number | null; cpc?: number | null; source: 'gsc' | 'dataforseo'; selected: boolean }
+  const [kwStep, setKwStep]           = useState<'hidden' | 'loading' | 'selecting'>('hidden')
+  const [kwCandidates, setKwCandidates] = useState<KwCandidate[]>([])
+  const [manualKw, setManualKw]       = useState('')
+  const [customInstructions, setCustomInstructions] = useState('')
+
   // Returns true if we should keep polling (initial gen OR any idea is generating)
   function shouldPoll(b: Brief): boolean {
     if (b.status === 'generating') return true
@@ -396,14 +450,42 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
     setResolvingDmca(false)
   }
 
-  async function handleGenerate() {
-    setGenerating(true); setError(null); setActiveTab('analysis')
+  async function loadKeywordsForSelection() {
+    setKwStep('loading')
+    try {
+      const res = await fetch(`/api/brief/keywords?action_item_id=${actionItemId}`)
+      const json = await res.json()
+      const gscKws: KwCandidate[] = (json.gsc_queries ?? []).map((q: { keyword: string; clicks: number; position: number }) => ({
+        keyword: q.keyword, search_volume: null, cpc: null, source: 'gsc' as const, selected: true,
+      }))
+      const dfKws: KwCandidate[] = (json.suggestions ?? []).map((s: { keyword: string; search_volume: number | null; cpc: number | null }) => ({
+        keyword: s.keyword, search_volume: s.search_volume, cpc: s.cpc, source: 'dataforseo' as const,
+        selected: false,
+      }))
+      // De-dupe: remove DataForSEO entries already in GSC list
+      const gscSet = new Set(gscKws.map(k => k.keyword.toLowerCase()))
+      const unique = dfKws.filter(k => !gscSet.has(k.keyword.toLowerCase()))
+      setKwCandidates([...gscKws, ...unique])
+      setKwStep('selecting')
+    } catch {
+      setKwStep('hidden')
+    }
+  }
+
+  async function handleGenerate(skipKwSelect = false) {
+    const selectedKws = skipKwSelect
+      ? undefined
+      : kwCandidates.filter(k => k.selected).map(k => k.keyword).filter(Boolean)
+
+    setGenerating(true); setError(null); setActiveTab('analysis'); setKwStep('hidden')
     try {
       const res = await fetch('/api/brief/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action_item_id: actionItemId,
           ...(actionType === 'off_page' && { content_type_config: offPageConfig }),
+          ...(selectedKws && selectedKws.length > 0 && { selected_keywords: selectedKws }),
+          ...(customInstructions.trim() && { custom_instructions: customInstructions.trim() }),
         }),
       })
       const data = await res.json()
@@ -466,16 +548,132 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   if (!brief && !generating) {
     const anyEnabled = Object.values(offPageConfig).some(c => c.enabled)
     return (
-      <div className={actionType === 'off_page' ? '' : 'bg-gray-900 border border-gray-800 rounded-xl p-10 text-center'}>
-        {actionType === 'on_page' && (
+      <div className={actionType === 'off_page' ? '' : `bg-gray-900 border border-gray-800 rounded-xl p-10 ${kwStep !== 'selecting' ? 'text-center' : ''}`}>
+        {actionType === 'on_page' && kwStep === 'hidden' && (
           <>
             <p className="text-3xl mb-3">✏️</p>
             <h2 className="text-white font-bold text-lg mb-2">On-Page Optimization Brief</h2>
-            <p className="text-gray-400 text-sm mb-1">Claude will crawl the page, analyze GSC data + SERP, and generate keyword recommendations, content outline, and a full draft.</p>
-            <p className="text-gray-600 text-xs mb-6">Takes ~30-60 seconds</p>
+            <p className="text-gray-400 text-sm mb-1">Claude will refresh the page content based on GSC data, SERP analysis, and your chosen keywords.</p>
+            <p className="text-gray-600 text-xs mb-6">Takes ~30–60 seconds</p>
             {error && <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>}
-            <button onClick={handleGenerate} className="bg-red-700 hover:bg-red-600 text-white font-semibold px-6 py-3 rounded-xl transition">Generate Brief →</button>
+            <div className="flex items-center gap-3 justify-center">
+              <button
+                onClick={loadKeywordsForSelection}
+                className="bg-red-700 hover:bg-red-600 text-white font-semibold px-6 py-3 rounded-xl transition"
+              >
+                Select Keywords →
+              </button>
+              <button
+                onClick={() => handleGenerate(true)}
+                className="text-sm text-gray-500 hover:text-gray-300 underline transition"
+              >
+                Skip & generate now
+              </button>
+            </div>
           </>
+        )}
+
+        {actionType === 'on_page' && kwStep === 'loading' && (
+          <div className="text-center py-8">
+            <div className="animate-spin text-2xl mb-3">⟳</div>
+            <p className="text-gray-400 text-sm">Fetching keyword suggestions…</p>
+          </div>
+        )}
+
+        {actionType === 'on_page' && kwStep === 'selecting' && (
+          <div className="text-left">
+            <h2 className="text-white font-bold text-lg mb-1">Select Focus Keywords</h2>
+            <p className="text-gray-400 text-sm mb-4">
+              Checked keywords will be prioritised in the content draft. GSC keywords are pre-selected (they already drive traffic).
+            </p>
+
+            {/* Keyword list */}
+            <div className="space-y-1 max-h-80 overflow-y-auto mb-4 pr-1">
+              {kwCandidates.map((kw, i) => (
+                <label
+                  key={i}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition ${
+                    kw.selected ? 'bg-red-700/10 border border-red-700/30' : 'bg-gray-800 border border-gray-700'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={kw.selected}
+                    onChange={() => setKwCandidates(prev => prev.map((k, j) => j === i ? { ...k, selected: !k.selected } : k))}
+                    className="accent-red-600 w-4 h-4 flex-shrink-0"
+                  />
+                  <span className="flex-1 text-sm text-white font-medium">{kw.keyword}</span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {kw.source === 'gsc' && (
+                      <span className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded">GSC</span>
+                    )}
+                    {kw.search_volume != null && (
+                      <span className="text-xs text-gray-500">{kw.search_volume.toLocaleString()} vol</span>
+                    )}
+                    {kw.cpc != null && (
+                      <span className="text-xs text-gray-600">${kw.cpc.toFixed(2)}</span>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            {/* Manual keyword input */}
+            <div className="flex gap-2 mb-4">
+              <input
+                type="text"
+                value={manualKw}
+                onChange={e => setManualKw(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && manualKw.trim()) {
+                    setKwCandidates(prev => [...prev, { keyword: manualKw.trim(), source: 'dataforseo', selected: true }])
+                    setManualKw('')
+                  }
+                }}
+                placeholder="Add a keyword manually…"
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
+              />
+              <button
+                onClick={() => {
+                  if (manualKw.trim()) {
+                    setKwCandidates(prev => [...prev, { keyword: manualKw.trim(), source: 'dataforseo', selected: true }])
+                    setManualKw('')
+                  }
+                }}
+                className="px-3 py-2 text-sm bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition"
+              >
+                + Add
+              </button>
+            </div>
+
+            {/* Custom instructions */}
+            <div className="mb-5">
+              <label className="block text-gray-400 text-xs font-medium mb-1.5">
+                Custom instructions <span className="text-gray-600 font-normal">(optional)</span>
+              </label>
+              <textarea
+                value={customInstructions}
+                onChange={e => setCustomInstructions(e.target.value)}
+                placeholder="e.g. Prioritise mobile-first angle, include seasonal promotions, avoid mentioning competitor prices…"
+                rows={3}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500 resize-none"
+              />
+            </div>
+
+            {error && <p className="text-red-400 text-sm mb-3 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>}
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => handleGenerate(false)}
+                className="bg-red-700 hover:bg-red-600 text-white font-semibold px-6 py-3 rounded-xl transition"
+              >
+                Generate Brief with {kwCandidates.filter(k => k.selected).length} keyword{kwCandidates.filter(k => k.selected).length !== 1 ? 's' : ''} →
+              </button>
+              <button onClick={() => setKwStep('hidden')} className="text-sm text-gray-500 hover:text-gray-300 transition">
+                ← Back
+              </button>
+            </div>
+          </div>
         )}
         {actionType === 'off_page' && (
           <>
@@ -483,10 +681,15 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
               <h2 className="text-white font-bold text-lg mb-1">📣 Off-Page Content Brief</h2>
               <p className="text-gray-400 text-sm">Claude will analyze the SERP landscape and generate ideas for each content type. Drafts are written on-demand per idea.</p>
             </div>
-            <OffPageConfigPanel config={offPageConfig} onChange={setOffPageConfig} />
+            <OffPageConfigPanel
+              config={offPageConfig}
+              onChange={setOffPageConfig}
+              customInstructions={customInstructions}
+              onCustomInstructionsChange={setCustomInstructions}
+            />
             {error && <p className="text-red-400 text-sm mb-4 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2">{error}</p>}
             <div className="flex items-center gap-3">
-              <button onClick={handleGenerate} disabled={!anyEnabled}
+              <button onClick={() => handleGenerate(true)} disabled={!anyEnabled}
                 className="bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-xl transition">
                 Generate Brief →
               </button>
@@ -584,7 +787,9 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
               ← Back to Reviewed
             </button>
           )}
-          <button onClick={handleGenerate} disabled={generating}
+          <button
+            onClick={() => { setBrief(null); setKwStep('hidden') }}
+            disabled={generating}
             className="text-xs px-3 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition disabled:opacity-50">
             ↺ Regenerate
           </button>

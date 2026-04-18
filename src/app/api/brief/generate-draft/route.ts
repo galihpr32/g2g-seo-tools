@@ -13,6 +13,7 @@ type ContentIdea = {
   platform: string
   target_keyword: string
   notes: string
+  format?: 'short' | 'long'   // forum only: 'short' = compact Reddit comment, 'long' = full thread post
   draft?: string
   draft_status?: 'generating'
 }
@@ -174,6 +175,21 @@ Requirements:
   }
 
   if (contentType === 'forum') {
+    const isShort = (idea.format ?? 'short') === 'short'
+
+    if (isShort) {
+      return `You are a real gamer writing a short comment or reply on Reddit. Write a brief, punchy Reddit comment (50-150 words) for the following idea:
+${langBlock}${base}
+
+Requirements:
+- Write entirely in ${lang.name}
+- Sound like a genuine community member — casual, direct, no marketing language
+- Add a natural, non-promotional mention of ${page} (e.g. "I found a good deal on G2G" style — no hard sell)
+- No headers, no bullet sections — write as flowing natural text the way Redditors actually type
+- Do NOT use phrases like "In conclusion", "Overall", "I highly recommend" — keep it conversational
+- Aim for 60-120 words maximum`
+    }
+
     return `You are writing on behalf of a G2G.com user. Write a complete Reddit post or forum thread (300-500 words) for the following idea:
 ${langBlock}${base}
 

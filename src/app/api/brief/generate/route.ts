@@ -30,9 +30,11 @@ export async function POST(request: Request) {
   if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
 
   const reqBody = await request.json()
-  const { action_item_id, content_type_config } = reqBody as {
+  const { action_item_id, content_type_config, selected_keywords, custom_instructions } = reqBody as {
     action_item_id: string
-    content_type_config?: Record<string, { enabled: boolean; count: number }>
+    content_type_config?: Record<string, { enabled: boolean; count: number; format?: 'short' | 'long' }>
+    selected_keywords?: string[]   // user-curated keywords from pre-generate step
+    custom_instructions?: string   // editor-supplied freeform instructions
   }
   if (!action_item_id) return NextResponse.json({ error: 'Missing action_item_id' }, { status: 400 })
 
@@ -78,7 +80,7 @@ export async function POST(request: Request) {
   // `after()` keeps the serverless function alive until the promise resolves,
   // even after the HTTP response is returned to the client.
   after(
-    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config)
+    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions)
       .catch(err => console.error('Brief pipeline error:', err))
   )
 
@@ -105,7 +107,7 @@ export async function GET(request: Request) {
   return NextResponse.json(brief)
 }
 
-type ContentTypeConfig = Record<string, { enabled: boolean; count: number }>
+type ContentTypeConfig = Record<string, { enabled: boolean; count: number; format?: 'short' | 'long' }>
 
 // ─── Knowledge Base context types ─────────────────────────────────────────────
 interface KBContext {
@@ -242,7 +244,9 @@ async function runBriefPipeline(
   primaryKeyword: string,
   siteUrl: string,
   gscQueries: any[],
-  contentTypeConfig?: ContentTypeConfig
+  contentTypeConfig?: ContentTypeConfig,
+  selectedKeywords?: string[],
+  customInstructions?: string
 ) {
   // Use service role client so writes always succeed regardless of auth context
   const { createClient: createServiceClient } = await import('@supabase/supabase-js')
@@ -276,9 +280,9 @@ async function runBriefPipeline(
     const lang = detectPageLanguage(item.page)
 
     if (item.action_type === 'on_page') {
-      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang })
+      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, selectedKeywords, customInstructions })
     } else {
-      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang })
+      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, customInstructions })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -287,7 +291,7 @@ async function runBriefPipeline(
 }
 
 // ─── ON-PAGE Pipeline ──────────────────────────────────────────────────────────
-async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang }: {
+async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, selectedKeywords, customInstructions }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -296,6 +300,8 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
   updateBrief: (f: Record<string, unknown>) => Promise<void>
   kb: KBContext
   lang: PageLanguage
+  selectedKeywords?: string[]
+  customInstructions?: string
 }) {
   // Step 1: Crawl the page
   const crawled = await smartScrape(item.page)
@@ -349,6 +355,8 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
     itemNotes: item.notes ?? '',
     kb,
     lang,
+    selectedKeywords,
+    customInstructions,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -377,7 +385,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
 }
 
 // ─── OFF-PAGE Pipeline ─────────────────────────────────────────────────────────
-async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang }: {
+async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, customInstructions }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -387,6 +395,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   contentTypeConfig?: ContentTypeConfig
   kb: KBContext
   lang: PageLanguage
+  customInstructions?: string
 }) {
   // Derive topic from URL
   const topic = deriveTopicFromUrl(item.page)
@@ -420,6 +429,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
     contentTypeConfig,
     kb,
     lang,
+    customInstructions,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -431,6 +441,12 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   const rawText = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : ''
   const sections = parseClaudeOffPageResponse(rawText)
 
+  // Tag forum ideas with the requested format (short/long) so draft generation knows which style to use
+  const forumFormat = contentTypeConfig?.forum?.format ?? 'short'
+  const taggedIdeas = sections.contentIdeas.map(idea =>
+    idea.content_type === 'forum' ? { ...idea, format: forumFormat } : idea
+  )
+
   await updateBrief({
     status: 'draft',
     competitor_analysis: serpData.organicResults.slice(0, 5).map(r => ({
@@ -438,7 +454,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
       title: r.title,
       angle: r.description,
     })),
-    content_ideas: sections.contentIdeas,
+    content_ideas: taggedIdeas,
     // off_page_draft stores the internal link strategy (global, not per content type)
     off_page_draft: sections.internalLinkStrategy,
   })
@@ -461,13 +477,21 @@ function buildOnPagePrompt(p: {
   itemNotes: string
   kb: KBContext
   lang: PageLanguage
+  selectedKeywords?: string[]
+  customInstructions?: string
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword)
   const categoryTemplate = detectCategory(p.page)
   const hasCategoryTemplate = !!categoryTemplate
 
-  return `You are an expert SEO content strategist for G2G.com, a gaming marketplace platform. You are analyzing a category page that has experienced a ranking drop and needs full content optimization.
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+
+  return `You are an expert SEO content strategist for G2G.com, a gaming marketplace platform. Your job is to REFRESH and UPDATE an existing category page that has experienced a ranking drop — NOT to rewrite it from scratch.
+
+REFRESH MINDSET: The goal is targeted improvement. Preserve what is already working. Add what is missing. Update what is outdated. Only replace sections where the current content is significantly weaker than competitors or factually stale. Think: "what is the minimum set of changes that will recover and improve this page's ranking?"
+
+CURRENT DATE: ${today}
 ${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}
 PAGE URL: ${p.page}
 PAGE LANGUAGE: ${p.lang.name}
@@ -493,7 +517,11 @@ ${p.paa.map(q => `- ${q.question}`).join('\n')}
 RELATED SEARCHES (long-tail opportunities):
 ${p.relatedSearches.map(r => `- ${r.query}`).join('\n')}
 
-KEYWORD SUGGESTIONS (volume from DataForSEO):
+${p.selectedKeywords && p.selectedKeywords.filter(Boolean).length > 0 ? `
+FOCUS KEYWORDS (hand-picked by editor — prioritise these above all others in the draft):
+${p.selectedKeywords.filter(Boolean).map(k => `- ${k}`).join('\n')}
+` : ''}
+KEYWORD SUGGESTIONS (volume from DataForSEO — use for additional coverage):
 ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'} | CPC: $${k.cpc ?? '?'}`).join('\n')}
 
 EDITOR NOTES: ${p.itemNotes || 'none'}
@@ -506,25 +534,36 @@ ${categoryInstructions}
 ` : ''}${buildKBBlock(p.kb, true)}
 ---
 
-Now provide your analysis and draft with these EXACT sections:
+${p.customInstructions?.trim() ? `CUSTOM EDITOR INSTRUCTIONS (override defaults where relevant):\n${p.customInstructions.trim()}\n\n` : ''}Now provide your analysis and refresh plan with these EXACT sections:
 
 ## CURRENT CONTENT SUMMARY
-2-3 sentences focused ONLY on substance — not formatting, HTML structure, or meta tags. Cover: (1) what topics and data points this page currently addresses, (2) its depth vs top competitors, (3) any unique angles present or missing. Do not mention page layout, headings structure, or technical formatting.
+2-3 sentences focused ONLY on substance — not formatting, HTML structure, or meta tags. Cover: (1) what topics and data points the page currently addresses, (2) its depth vs top competitors, (3) what is already working that should be kept. Do not mention page layout or technical formatting.
 
 ## CONTENT GAPS
-3-5 specific topical gaps vs competitors — meaning subjects, questions, use cases, or data points that competitors cover but this page does not. Focus on content substance, not structural differences.
+3-5 specific topical gaps — subjects, questions, use cases, or data points that competitors cover but this page does not. For each gap, specify whether it's a missing section, outdated info, or thin coverage. Focus on substance, not structure.
+
+## FRESHNESS OPPORTUNITIES
+2-3 specific ways to make this content feel current as of ${today}:
+- Any game updates, new features, or meta changes relevant to "${gameName}" that should be mentioned
+- Seasonal or trending search angles to incorporate
+- Outdated claims or figures in the current content that need updating
+If nothing specific is known, suggest adding "Last updated" signals and recency markers.
 
 ## RECOMMENDED KEYWORDS
-5-8 high-value keywords to add or strengthen. Format: keyword | search intent | priority
+5-8 high-value keywords to add or strengthen (from the suggestions above + PAA data). Format: keyword | search intent | priority (high/medium)
 
 ## CONTENT OUTLINE
-${hasCategoryTemplate ? 'Follow the G2G category template sections above exactly.' : 'Propose an improved H2/H3 structure with notes on what each section should cover.'}
+${hasCategoryTemplate
+  ? 'Follow the G2G category template sections above exactly. Mark which sections need updating vs which can stay as-is.'
+  : 'Propose the refreshed H2/H3 structure. For each section: keep / update / add — and briefly explain why.'}
 
 ## FAQ SECTION
-${hasCategoryTemplate ? 'Write 5-6 Q&A pairs focused on: ' + (categoryTemplate?.faqFocus ?? 'buyer safety, delivery, refunds') : 'Write 5-6 Q&A pairs based on People Also Ask data.'}
+${hasCategoryTemplate
+  ? 'Write 5-6 Q&A pairs focused on: ' + (categoryTemplate?.faqFocus ?? 'buyer safety, delivery, refunds')
+  : 'Write 5-6 Q&A pairs based on People Also Ask data. Prioritise questions not already answered on the page.'}
 
 ## CONTENT DRAFT
-Write a complete, publish-ready content draft.
+Write the refreshed, publish-ready content draft. This is a content UPDATE — preserve the page's existing strengths, enrich with missing topics, and ensure freshness.
 ${hasCategoryTemplate ? `
 CRITICAL: Follow the G2G category template structure EXACTLY:
 - Use HTML format with <br><br> between paragraphs (NO <p> tags)
@@ -533,7 +572,7 @@ CRITICAL: Follow the G2G category template structure EXACTLY:
 - Follow keyword density rules from the template
 - Follow all writing rules and forbidden words from the template
 - Write the FULL draft including ALL sections from the template
-` : 'Aim for 800-1200 words. Include natural keyword placement.'}
+` : 'Aim for 800-1200 words. Weave in the target keyword and long-tail variants naturally. Do not pad with filler content.'}
 Also output:
 META TITLE: (≤60 chars)
 META DESCRIPTION: (≤110 chars)`
@@ -552,6 +591,7 @@ function buildOffPagePrompt(p: {
   contentTypeConfig?: ContentTypeConfig
   kb: KBContext
   lang: PageLanguage
+  customInstructions?: string
 }) {
   // Resolve which content types to include and how many ideas each
   const cfg = p.contentTypeConfig ?? {
@@ -622,7 +662,7 @@ ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'}`).
 EDITOR NOTES: ${p.itemNotes || 'none'}
 ${buildKBBlock(p.kb, false)}
 ---
-
+${p.customInstructions?.trim() ? `\nCUSTOM EDITOR INSTRUCTIONS (override defaults where relevant):\n${p.customInstructions.trim()}\n` : ''}
 Provide an off-page content plan with these EXACT sections in this exact order:
 
 ## COMPETITOR ANALYSIS
@@ -705,6 +745,7 @@ export type ContentIdea = {
   platform: string
   target_keyword: string
   notes: string
+  format?: 'short' | 'long'   // forum only: 'short' = 50-150 word native Reddit post, 'long' = 300-500 word thread
   draft?: string
   draft_status?: 'generating' // set while background draft generation is running
 }
