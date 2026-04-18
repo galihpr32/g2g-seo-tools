@@ -1,6 +1,7 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getKeywordSuggestions, batchSerpData } from '@/lib/dataforseo/client'
+import { detectPageLanguage } from '@/lib/language-detect'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -87,9 +88,13 @@ async function runAddIdeas(
       social: 'Twitter/X / TikTok / Instagram',
     }
 
-    const prompt = `You are an SEO content strategist for G2G.com, a gaming marketplace. Generate ${count} NEW ${TYPE_LABELS[contentType]} idea${count > 1 ? 's' : ''} to support this target page:
+    const lang = detectPageLanguage(brief.page)
+    const langBlock = lang.instruction ? `\n${lang.instruction}\n` : ''
 
+    const prompt = `You are an SEO content strategist for G2G.com, a gaming marketplace. Generate ${count} NEW ${TYPE_LABELS[contentType]} idea${count > 1 ? 's' : ''} to support this target page:
+${langBlock}
 TARGET PAGE: ${brief.page}
+PAGE LANGUAGE: ${lang.name}
 PRIMARY KEYWORD: ${primaryKeyword}
 TOPIC: ${brief.topic ?? primaryKeyword}
 

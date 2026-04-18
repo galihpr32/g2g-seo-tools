@@ -1,5 +1,6 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { detectPageLanguage } from '@/lib/language-detect'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -69,6 +70,7 @@ export async function POST(request: Request) {
       .catch(err => console.error('Draft generation error:', err))
   )
 
+
   return NextResponse.json({ ok: true, status: 'generating' })
 }
 
@@ -86,7 +88,8 @@ async function runDraftGeneration(
   )
 
   try {
-    const prompt = buildDraftPrompt(idea, contentType, page, primaryKeyword)
+    const lang = detectPageLanguage(page)
+    const prompt = buildDraftPrompt(idea, contentType, page, primaryKeyword, lang)
 
     const aiResponse = await anthropic.messages.create({
       model: 'claude-opus-4-6',
@@ -139,21 +142,31 @@ async function runDraftGeneration(
   }
 }
 
-function buildDraftPrompt(idea: ContentIdea, contentType: string, page: string, keyword: string): string {
+function buildDraftPrompt(
+  idea: ContentIdea,
+  contentType: string,
+  page: string,
+  keyword: string,
+  lang: ReturnType<typeof detectPageLanguage>
+): string {
+  const langBlock = lang.instruction ? `\n${lang.instruction}\n` : ''
+
   const base = `
 Idea title: ${idea.title}
 Angle: ${idea.notes || '(see title)'}
 Target keyword: ${idea.target_keyword || keyword}
 Platform: ${idea.platform}
 Target page to link back to: ${page}
+Content language: ${lang.name}
 
 Write ONLY the finished content — no preamble, no "here is the draft" intro. Start directly.`
 
   if (contentType === 'blog_post') {
     return `You are an expert SEO content writer for G2G.com, a gaming marketplace. Write a complete, publish-ready blog article (600-900 words) for the following idea:
-${base}
+${langBlock}${base}
 
 Requirements:
+- Write entirely in ${lang.name}
 - Use markdown (# H1, ## H2, **bold**)
 - Mention and link to ${page} naturally near the end
 - Target the keyword "${idea.target_keyword || keyword}" without stuffing
@@ -162,9 +175,10 @@ Requirements:
 
   if (contentType === 'forum') {
     return `You are writing on behalf of a G2G.com user. Write a complete Reddit post or forum thread (300-500 words) for the following idea:
-${base}
+${langBlock}${base}
 
 Requirements:
+- Write entirely in ${lang.name}
 - Sound natural and community-oriented — not promotional
 - Include a relevant, natural mention and link to ${page}
 - Provide genuine value to the forum community
@@ -173,9 +187,10 @@ Requirements:
 
   if (contentType === 'social') {
     return `You are a social media content creator for G2G.com. Write complete social media content for the following idea:
-${base}
+${langBlock}${base}
 
 Requirements:
+- Write entirely in ${lang.name}
 - Match the format for ${idea.platform}
 - If Twitter/X: write a numbered thread (1/, 2/, etc.)
 - If TikTok: write a script with [visual cues]
@@ -185,6 +200,6 @@ Requirements:
   }
 
   return `Write a complete content draft (400-600 words) for this idea:
-${base}
-Include a natural reference to ${page}.`
+${langBlock}${base}
+Write entirely in ${lang.name}. Include a natural reference to ${page}.`
 }

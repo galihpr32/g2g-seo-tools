@@ -68,5 +68,6 @@ export async function canSeeTeamPerformance(
   userId: string
 ): Promise<boolean> {
   const role = await getWorkspaceRole(supabase, userId)
-  return role === 'owner' || role === 'manager'
+  // null = solo user (no workspace set up yet) → full access
+  return role === 'owner' || role === 'manager' || role === null
 }

@@ -4,6 +4,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
+import { detectPageLanguage, type PageLanguage } from '@/lib/language-detect'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 120 // briefs take time — requires Vercel Pro
@@ -271,10 +272,13 @@ async function runBriefPipeline(
           categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
           dmcaTerms: [] }
 
+    // Detect language from the target page URL
+    const lang = detectPageLanguage(item.page)
+
     if (item.action_type === 'on_page') {
-      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb })
+      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang })
     } else {
-      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb })
+      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -283,7 +287,7 @@ async function runBriefPipeline(
 }
 
 // ─── ON-PAGE Pipeline ──────────────────────────────────────────────────────────
-async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb }: {
+async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -291,6 +295,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
   gscQueries: any[]
   updateBrief: (f: Record<string, unknown>) => Promise<void>
   kb: KBContext
+  lang: PageLanguage
 }) {
   // Step 1: Crawl the page
   const crawled = await smartScrape(item.page)
@@ -343,6 +348,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
     kwSuggestions: kwSuggestions.slice(0, 15),
     itemNotes: item.notes ?? '',
     kb,
+    lang,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -371,7 +377,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
 }
 
 // ─── OFF-PAGE Pipeline ─────────────────────────────────────────────────────────
-async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb }: {
+async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -380,6 +386,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   updateBrief: (f: Record<string, unknown>) => Promise<void>
   contentTypeConfig?: ContentTypeConfig
   kb: KBContext
+  lang: PageLanguage
 }) {
   // Derive topic from URL
   const topic = deriveTopicFromUrl(item.page)
@@ -412,6 +419,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
     itemNotes: item.notes ?? '',
     contentTypeConfig,
     kb,
+    lang,
   })
 
   const aiResponse = await anthropic.messages.create({
@@ -452,6 +460,7 @@ function buildOnPagePrompt(p: {
   kwSuggestions: any[]
   itemNotes: string
   kb: KBContext
+  lang: PageLanguage
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword)
@@ -459,8 +468,9 @@ function buildOnPagePrompt(p: {
   const hasCategoryTemplate = !!categoryTemplate
 
   return `You are an expert SEO content strategist for G2G.com, a gaming marketplace platform. You are analyzing a category page that has experienced a ranking drop and needs full content optimization.
-
+${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}
 PAGE URL: ${p.page}
+PAGE LANGUAGE: ${p.lang.name}
 PRIMARY KEYWORD (from GSC, highest clicks): ${p.primaryKeyword}
 GAME/PRODUCT NAME: ${gameName}
 
@@ -499,10 +509,10 @@ ${categoryInstructions}
 Now provide your analysis and draft with these EXACT sections:
 
 ## CURRENT CONTENT SUMMARY
-2-3 sentences: what the page currently covers and its main weaknesses vs competitors.
+2-3 sentences focused ONLY on substance — not formatting, HTML structure, or meta tags. Cover: (1) what topics and data points this page currently addresses, (2) its depth vs top competitors, (3) any unique angles present or missing. Do not mention page layout, headings structure, or technical formatting.
 
 ## CONTENT GAPS
-3-5 specific gaps vs competitors (what they cover that this page misses).
+3-5 specific topical gaps vs competitors — meaning subjects, questions, use cases, or data points that competitors cover but this page does not. Focus on content substance, not structural differences.
 
 ## RECOMMENDED KEYWORDS
 5-8 high-value keywords to add or strengthen. Format: keyword | search intent | priority
@@ -541,6 +551,7 @@ function buildOffPagePrompt(p: {
   itemNotes: string
   contentTypeConfig?: ContentTypeConfig
   kb: KBContext
+  lang: PageLanguage
 }) {
   // Resolve which content types to include and how many ideas each
   const cfg = p.contentTypeConfig ?? {
@@ -587,8 +598,9 @@ For each use EXACTLY this format:
   ].filter(Boolean).join('\n\n')
 
   return `You are an expert SEO content strategist for G2G.com, a gaming marketplace platform. You are creating an off-page content plan to support a category page that has experienced a ranking drop.
-
+${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}
 TARGET PAGE: ${p.page}
+PAGE LANGUAGE: ${p.lang.name}
 TOPIC: ${p.topic}
 PRIMARY KEYWORD: ${p.primaryKeyword}
 
