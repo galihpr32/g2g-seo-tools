@@ -54,6 +54,7 @@ const navItems = [
     items: [
       { label: 'URL Analysis', href: '/tools/url-analysis', icon: '🔍' },
       { label: 'Backlink Tracker', href: '/backlinks', icon: '🔗' },
+      { label: 'API Cost Tracker', href: '/tools/api-costs', icon: '💰' },
     ],
   },
   {

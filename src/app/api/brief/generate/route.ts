@@ -6,6 +6,7 @@ import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
 import { detectPageLanguage, type PageLanguage } from '@/lib/language-detect'
 import { countryFromLanguageCode, getCountryPreset, type CountryPreset } from '@/lib/country-config'
+import { logApiUsage } from '@/lib/api-logger'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 120 // briefs take time — requires Vercel Pro
@@ -290,6 +291,16 @@ async function runBriefPipeline(
       await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
     } else {
       await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions })
+    }
+
+    // Log API usage (fire-and-forget)
+    if (ownerId) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sb = supabase as any
+      logApiUsage(sb, ownerId, { api: 'firecrawl', endpoint: 'scrape', triggeredBy: 'brief_generate', metadata: { page: item.page } })
+      logApiUsage(sb, ownerId, { api: 'dataforseo', endpoint: 'serp/google/organic', triggeredBy: 'brief_generate', callCount: topQueries.length || 1, metadata: { page: item.page } })
+      logApiUsage(sb, ownerId, { api: 'dataforseo', endpoint: 'keywords_data/google/suggestions', triggeredBy: 'brief_generate', metadata: { keyword: primaryKeyword } })
+      logApiUsage(sb, ownerId, { api: 'claude', endpoint: 'messages', triggeredBy: 'brief_generate', metadata: { model: 'claude-opus-4-6', action_type: item.action_type } })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)

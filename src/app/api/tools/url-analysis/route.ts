@@ -5,6 +5,7 @@ import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { getDomainOverview } from '@/lib/semrush/client'
 import { getCountryPreset, SERP_COUNTRIES } from '@/lib/country-config'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { logApiUsage } from '@/lib/api-logger'
 
 export const maxDuration = 60
 
@@ -200,6 +201,14 @@ export async function POST(request: Request) {
         }
       })(),
     ])
+
+    // Log API usage (fire-and-forget)
+    logApiUsage(supabase, effectiveOwnerId, { api: 'firecrawl', endpoint: 'scrape', triggeredBy: 'url_analysis', metadata: { url: normalizedUrl } })
+    logApiUsage(supabase, effectiveOwnerId, { api: 'dataforseo', endpoint: 'serp/google/organic', triggeredBy: 'url_analysis', metadata: { keyword: primaryKeyword } })
+    logApiUsage(supabase, effectiveOwnerId, { api: 'dataforseo', endpoint: 'keywords_data/google/suggestions', triggeredBy: 'url_analysis', metadata: { keyword: primaryKeyword } })
+    if (domainOverview) {
+      logApiUsage(supabase, effectiveOwnerId, { api: 'semrush', endpoint: 'domain_overview', triggeredBy: 'url_analysis', metadata: { domain } })
+    }
 
     const response: UrlAnalysisResponse = {
       url: normalizedUrl,

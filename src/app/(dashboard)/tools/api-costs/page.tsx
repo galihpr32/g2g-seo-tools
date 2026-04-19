@@ -1,0 +1,435 @@
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+interface BalanceData {
+  dataforseo: {
+    money_balance: number | null
+    api_calls_today: number | null
+    api_calls_total: number | null
+    error?: string
+  }
+  semrush: {
+    units_remaining: number | null
+    error?: string
+  }
+  checked_at: string
+}
+
+interface UsageData {
+  period_months: number
+  total_calls: number
+  totals_by_api: { api: string; calls: number }[]
+  monthly: { month: string; api: string; calls: number }[]
+  by_trigger: { trigger: string; calls: number }[]
+  recent: {
+    api: string
+    endpoint: string | null
+    call_count: number
+    triggered_by: string | null
+    created_at: string
+  }[]
+}
+
+const API_COLORS: Record<string, string> = {
+  dataforseo: 'text-blue-400',
+  semrush:    'text-orange-400',
+  firecrawl:  'text-green-400',
+  claude:     'text-purple-400',
+}
+
+const API_BG: Record<string, string> = {
+  dataforseo: 'bg-blue-900/30 border-blue-700/50',
+  semrush:    'bg-orange-900/30 border-orange-700/50',
+  firecrawl:  'bg-green-900/30 border-green-700/50',
+  claude:     'bg-purple-900/30 border-purple-700/50',
+}
+
+const TRIGGER_LABELS: Record<string, string> = {
+  brief_generate:   '✍️ Brief Generate',
+  brief_draft:      '📝 Brief Draft',
+  url_analysis:     '🔍 URL Analysis',
+  backlink_refresh: '🔗 Backlink Refresh',
+  backlink_check:   '🔗 Backlink Check',
+  keyword_load:     '🔑 Keyword Load',
+  other:            '⚙️ Other',
+}
+
+// ── Cost Reference ─────────────────────────────────────────────────────────────
+const COST_REFERENCE = [
+  { api: 'DataForSEO', endpoint: 'SERP organic (top 20)', unit: 'per task', est: '$0.0006 – $0.003' },
+  { api: 'DataForSEO', endpoint: 'Keyword suggestions', unit: 'per keyword', est: '~$0.01' },
+  { api: 'SEMrush', endpoint: 'Domain overview', unit: 'per call', est: '10 API units' },
+  { api: 'SEMrush', endpoint: 'Domain organic keywords', unit: 'per row', est: '10 API units/row' },
+  { api: 'Firecrawl', endpoint: 'Scrape page', unit: 'per page', est: '1 credit' },
+  { api: 'Claude', endpoint: 'claude-opus-4-6 (brief)', unit: 'per call', est: '~$0.03 – $0.15' },
+]
+
+// ── Stat Card ──────────────────────────────────────────────────────────────────
+function StatCard({ label, value, sub, colorClass }: { label: string; value: string; sub?: string; colorClass?: string }) {
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <p className="text-gray-400 text-xs font-semibold uppercase tracking-wide mb-1">{label}</p>
+      <p className={`text-2xl font-bold ${colorClass ?? 'text-white'}`}>{value}</p>
+      {sub && <p className="text-gray-500 text-xs mt-1">{sub}</p>}
+    </div>
+  )
+}
+
+// ── Monthly bar chart (simple CSS bars) ────────────────────────────────────────
+function MonthlyChart({ monthly }: { monthly: UsageData['monthly'] }) {
+  const apis = ['dataforseo', 'semrush', 'firecrawl', 'claude']
+
+  // Build per-month totals (all APIs combined) for last 6 months
+  const monthTotals = new Map<string, number>()
+  for (const row of monthly) {
+    monthTotals.set(row.month, (monthTotals.get(row.month) ?? 0) + row.calls)
+  }
+  const sortedMonths = Array.from(monthTotals.keys()).sort().slice(-6)
+  const maxVal = Math.max(...Array.from(monthTotals.values()), 1)
+
+  // Per-month, per-API breakdown
+  const monthApiMap = new Map<string, Map<string, number>>()
+  for (const row of monthly) {
+    if (!monthApiMap.has(row.month)) monthApiMap.set(row.month, new Map())
+    monthApiMap.get(row.month)!.set(row.api, row.calls)
+  }
+
+  if (sortedMonths.length === 0) {
+    return <p className="text-gray-500 text-sm text-center py-8">No data yet — usage will appear here after your first API calls.</p>
+  }
+
+  return (
+    <div className="space-y-3">
+      {sortedMonths.reverse().map(month => {
+        const total = monthTotals.get(month) ?? 0
+        const pct   = Math.round((total / maxVal) * 100)
+        const apiData = monthApiMap.get(month)
+
+        return (
+          <div key={month} className="space-y-1">
+            <div className="flex justify-between text-xs text-gray-400">
+              <span>{month}</span>
+              <span>{total.toLocaleString()} calls</span>
+            </div>
+            {/* Stacked bar */}
+            <div className="h-6 bg-gray-800 rounded-lg overflow-hidden flex" style={{ width: `${Math.max(pct, 2)}%` }}>
+              {apis.map(api => {
+                const calls   = apiData?.get(api) ?? 0
+                const apiPct  = total > 0 ? (calls / total) * 100 : 0
+                const bgColor = api === 'dataforseo' ? 'bg-blue-600' : api === 'semrush' ? 'bg-orange-500' : api === 'firecrawl' ? 'bg-green-600' : 'bg-purple-600'
+                return calls > 0 ? (
+                  <div
+                    key={api}
+                    className={`${bgColor} h-full`}
+                    style={{ width: `${apiPct}%` }}
+                    title={`${api}: ${calls}`}
+                  />
+                ) : null
+              })}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* Legend */}
+      <div className="flex gap-4 pt-2">
+        {apis.map(api => (
+          <div key={api} className="flex items-center gap-1.5 text-xs text-gray-400">
+            <span className={`w-2.5 h-2.5 rounded-sm ${api === 'dataforseo' ? 'bg-blue-600' : api === 'semrush' ? 'bg-orange-500' : api === 'firecrawl' ? 'bg-green-600' : 'bg-purple-600'}`} />
+            {api}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
+export default function ApiCostsPage() {
+  const [balance, setBalance]       = useState<BalanceData | null>(null)
+  const [usage, setUsage]           = useState<UsageData | null>(null)
+  const [loadingBalance, setLB]     = useState(false)
+  const [loadingUsage, setLU]       = useState(true)
+  const [months, setMonths]         = useState(3)
+  const [activeTab, setActiveTab]   = useState<'overview' | 'recent' | 'reference'>('overview')
+  const [balanceErr, setBalanceErr] = useState<string | null>(null)
+
+  const fetchUsage = useCallback(async (m: number) => {
+    setLU(true)
+    try {
+      const res = await fetch(`/api/costs/usage?months=${m}`)
+      if (res.ok) setUsage(await res.json())
+    } catch { /* silent */ }
+    setLU(false)
+  }, [])
+
+  useEffect(() => { fetchUsage(months) }, [fetchUsage, months])
+
+  async function checkBalance() {
+    setLB(true)
+    setBalanceErr(null)
+    try {
+      const res = await fetch('/api/costs/balance')
+      if (res.ok) setBalance(await res.json())
+      else setBalanceErr('Failed to fetch balance')
+    } catch { setBalanceErr('Network error') }
+    setLB(false)
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-950 p-8">
+      <div className="max-w-5xl mx-auto space-y-8">
+
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-white mb-1">💰 API Cost Tracker</h1>
+            <p className="text-gray-400">Live balances + call volume by API and feature</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <select
+              value={months}
+              onChange={e => setMonths(parseInt(e.target.value))}
+              className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-red-700"
+            >
+              {[1, 2, 3, 6, 12].map(m => (
+                <option key={m} value={m}>Last {m} month{m > 1 ? 's' : ''}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Live Balance Section */}
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h2 className="text-white font-semibold text-lg">Live API Balances</h2>
+            <button
+              onClick={checkBalance}
+              disabled={loadingBalance}
+              className="px-4 py-2 bg-red-700 text-white text-sm font-medium rounded-lg hover:bg-red-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loadingBalance ? '⟳ Checking…' : '🔄 Check Balances'}
+            </button>
+          </div>
+
+          {balanceErr && <p className="text-red-400 text-sm">{balanceErr}</p>}
+
+          {!balance && !loadingBalance && (
+            <p className="text-gray-500 text-sm">Click "Check Balances" to fetch live credit info from DataForSEO and SEMrush.</p>
+          )}
+
+          {balance && (
+            <div className="grid grid-cols-2 gap-4">
+              {/* DataForSEO */}
+              <div className={`border rounded-xl p-5 ${API_BG.dataforseo}`}>
+                <p className="text-blue-400 font-semibold mb-3">📊 DataForSEO</p>
+                {balance.dataforseo.error ? (
+                  <p className="text-red-400 text-sm">{balance.dataforseo.error}</p>
+                ) : (
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-gray-400 text-xs">Money Balance</p>
+                      <p className="text-2xl font-bold text-white">
+                        ${balance.dataforseo.money_balance?.toFixed(2) ?? '—'}
+                      </p>
+                    </div>
+                    <div className="flex gap-6 text-sm">
+                      <div>
+                        <p className="text-gray-500 text-xs">Calls today</p>
+                        <p className="text-gray-300">{balance.dataforseo.api_calls_today?.toLocaleString() ?? '—'}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500 text-xs">All-time calls</p>
+                        <p className="text-gray-300">{balance.dataforseo.api_calls_total?.toLocaleString() ?? '—'}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* SEMrush */}
+              <div className={`border rounded-xl p-5 ${API_BG.semrush}`}>
+                <p className="text-orange-400 font-semibold mb-3">🎯 SEMrush</p>
+                {balance.semrush.error ? (
+                  <p className="text-red-400 text-sm">{balance.semrush.error}</p>
+                ) : (
+                  <div>
+                    <p className="text-gray-400 text-xs">API Units Remaining</p>
+                    <p className="text-2xl font-bold text-white">
+                      {balance.semrush.units_remaining?.toLocaleString() ?? '—'}
+                    </p>
+                    <p className="text-gray-500 text-xs mt-2">Resets monthly with subscription</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {balance && (
+            <p className="text-gray-600 text-xs">Last checked: {new Date(balance.checked_at).toLocaleString()}</p>
+          )}
+        </div>
+
+        {/* Usage Stats */}
+        {loadingUsage ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+            <div className="w-6 h-6 border-2 border-gray-700 border-t-red-700 rounded-full animate-spin mx-auto mb-3" />
+            <p className="text-gray-500 text-sm">Loading usage data…</p>
+          </div>
+        ) : usage ? (
+          <div className="space-y-6">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-4 gap-4">
+              <StatCard
+                label="Total API Calls"
+                value={usage.total_calls.toLocaleString()}
+                sub={`last ${usage.period_months} month${usage.period_months > 1 ? 's' : ''}`}
+              />
+              {usage.totals_by_api.slice(0, 3).map(({ api, calls }) => (
+                <StatCard
+                  key={api}
+                  label={api.charAt(0).toUpperCase() + api.slice(1)}
+                  value={calls.toLocaleString()}
+                  sub="calls"
+                  colorClass={API_COLORS[api] ?? 'text-white'}
+                />
+              ))}
+            </div>
+
+            {/* Tabs */}
+            <div className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+              <div className="flex border-b border-gray-800">
+                {[
+                  { id: 'overview' as const,   label: '📊 Monthly Usage' },
+                  { id: 'recent'   as const,   label: '🕐 Recent Calls' },
+                  { id: 'reference' as const,  label: '💡 Cost Reference' },
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`flex-1 px-6 py-4 font-medium text-sm transition border-b-2 ${
+                      activeTab === tab.id
+                        ? 'text-white border-b-red-700'
+                        : 'text-gray-400 border-b-transparent hover:text-white'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="p-6">
+                {/* Monthly Chart */}
+                {activeTab === 'overview' && (
+                  <div className="space-y-8">
+                    <MonthlyChart monthly={usage.monthly} />
+
+                    {/* By Trigger */}
+                    {usage.by_trigger.length > 0 && (
+                      <div>
+                        <p className="text-gray-400 text-xs font-semibold uppercase mb-4">Calls by Feature</p>
+                        <div className="space-y-2">
+                          {usage.by_trigger.map(({ trigger, calls }) => {
+                            const maxCalls = usage.by_trigger[0].calls
+                            const pct = Math.round((calls / maxCalls) * 100)
+                            return (
+                              <div key={trigger} className="flex items-center gap-3">
+                                <span className="text-gray-300 text-sm w-44 flex-shrink-0">
+                                  {TRIGGER_LABELS[trigger] ?? trigger}
+                                </span>
+                                <div className="flex-1 bg-gray-800 rounded-full h-2">
+                                  <div className="bg-red-700 h-2 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                                </div>
+                                <span className="text-gray-400 text-sm w-16 text-right">{calls.toLocaleString()}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Recent Calls */}
+                {activeTab === 'recent' && (
+                  <div className="overflow-x-auto">
+                    {usage.recent.length === 0 ? (
+                      <p className="text-gray-500 text-sm text-center py-8">No recent calls recorded yet.</p>
+                    ) : (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-700">
+                            <th className="text-left py-3 px-3 text-gray-400 font-semibold">API</th>
+                            <th className="text-left py-3 px-3 text-gray-400 font-semibold">Endpoint</th>
+                            <th className="text-left py-3 px-3 text-gray-400 font-semibold">Feature</th>
+                            <th className="text-right py-3 px-3 text-gray-400 font-semibold">Calls</th>
+                            <th className="text-right py-3 px-3 text-gray-400 font-semibold">Time</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {usage.recent.map((row, i) => (
+                            <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/50 transition">
+                              <td className="py-2.5 px-3">
+                                <span className={`font-medium ${API_COLORS[row.api] ?? 'text-gray-300'}`}>{row.api}</span>
+                              </td>
+                              <td className="py-2.5 px-3 text-gray-300 text-xs font-mono">{row.endpoint ?? '—'}</td>
+                              <td className="py-2.5 px-3 text-gray-400 text-xs">
+                                {TRIGGER_LABELS[row.triggered_by ?? ''] ?? row.triggered_by ?? '—'}
+                              </td>
+                              <td className="text-right py-2.5 px-3 text-gray-300">{row.call_count}</td>
+                              <td className="text-right py-2.5 px-3 text-gray-500 text-xs">
+                                {new Date(row.created_at).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+
+                {/* Cost Reference */}
+                {activeTab === 'reference' && (
+                  <div className="space-y-4">
+                    <p className="text-gray-400 text-sm">Estimated costs per API call — use this as a reference for monthly budget planning.</p>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-700">
+                          <th className="text-left py-3 px-3 text-gray-400 font-semibold">API</th>
+                          <th className="text-left py-3 px-3 text-gray-400 font-semibold">Endpoint</th>
+                          <th className="text-left py-3 px-3 text-gray-400 font-semibold">Unit</th>
+                          <th className="text-right py-3 px-3 text-gray-400 font-semibold">Est. Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {COST_REFERENCE.map((row, i) => (
+                          <tr key={i} className="border-b border-gray-800">
+                            <td className="py-3 px-3 text-gray-300 font-medium">{row.api}</td>
+                            <td className="py-3 px-3 text-gray-300 text-xs">{row.endpoint}</td>
+                            <td className="py-3 px-3 text-gray-500 text-xs">{row.unit}</td>
+                            <td className="text-right py-3 px-3 text-green-400 font-mono text-xs">{row.est}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="text-gray-600 text-xs pt-2">
+                      * DataForSEO costs depend on task depth. SERP top-10 ≈ $0.0006, top-100 ≈ $0.003.
+                      Claude costs vary by model — Opus is ~5× more expensive than Haiku.
+                      Check your provider dashboards for exact figures.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
+            <p className="text-gray-500">No usage data available</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}

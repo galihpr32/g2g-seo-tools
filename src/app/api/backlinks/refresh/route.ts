@@ -5,6 +5,7 @@ import { getSerpData } from '@/lib/dataforseo/client'
 import { getCountryPreset, countryFromLanguageCode } from '@/lib/country-config'
 import { detectPageLanguage } from '@/lib/language-detect'
 import { checkLinkLive } from '../check/route'
+import { logApiUsage } from '@/lib/api-logger'
 
 export const maxDuration = 60
 
@@ -108,6 +109,19 @@ export async function POST(request: Request) {
   const active = results.filter(r => r.status === 'active').length
   const broken = results.filter(r => r.status === 'broken').length
   const errors = results.filter(r => r.status === 'error').length
+
+  // Log API usage (fire-and-forget)
+  const serpCount = backlinks.filter(bl => bl.target_keyword && bl.target_page).length
+  logApiUsage(supabase, ownerId, {
+    api: 'dataforseo', endpoint: 'serp/google/organic',
+    triggeredBy: 'backlink_refresh', callCount: serpCount,
+    metadata: { backlink_count: backlinks.length },
+  })
+  logApiUsage(supabase, ownerId, {
+    api: 'firecrawl', endpoint: 'scrape',
+    triggeredBy: 'backlink_refresh', callCount: backlinks.length,
+    metadata: { backlink_count: backlinks.length },
+  })
 
   return NextResponse.json({
     ok: true,
