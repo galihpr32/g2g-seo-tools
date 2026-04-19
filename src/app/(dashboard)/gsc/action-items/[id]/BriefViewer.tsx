@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
+import { PageLoader } from '@/components/ui/LottieLoader'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -758,15 +759,14 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
   // ── Generating ─────────────────────────────────────────────────────────────
   if (generating && brief?.status === 'generating') {
     return (
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center">
-        <div className="animate-spin text-3xl mb-4">⚙️</div>
-        <p className="text-white font-semibold mb-2">Generating brief…</p>
-        <div className="text-gray-500 text-sm space-y-1">
-          <p>🔍 {actionType === 'on_page' ? 'Crawling page' : 'Analyzing SERP landscape'}</p>
-          <p>📊 Pulling keyword data from DataForSEO</p>
-          <p>🤖 Claude is writing the analysis</p>
-        </div>
-      </div>
+      <PageLoader
+        title="Generating brief…"
+        steps={[
+          `🔍 ${actionType === 'on_page' ? 'Crawling page' : 'Analyzing SERP landscape'}`,
+          '📊 Pulling keyword data from DataForSEO',
+          '🤖 Claude is writing the analysis',
+        ]}
+      />
     )
   }
 

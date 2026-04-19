@@ -19,7 +19,7 @@ const navItems = [
   {
     group: 'Daily — GSC',
     items: [
-      { label: 'Ranking Drop Alert', href: '/gsc/ranking-drop', icon: '📉' },
+      { label: 'Clicks Drop Alert', href: '/gsc/ranking-drop', icon: '📉' },
       { label: 'Action Items', href: '/gsc/action-items', icon: '🎯' },
       { label: 'Index Coverage', href: '/gsc/index-coverage', icon: '🔍' },
       { label: 'Core Web Vitals', href: '/gsc/core-web-vitals', icon: '⚡' },

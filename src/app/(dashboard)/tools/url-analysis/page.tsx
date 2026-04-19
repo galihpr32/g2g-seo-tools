@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import type { UrlAnalysisResponse } from '@/app/api/tools/url-analysis/route'
+import { LottieLoader } from '@/components/ui/LottieLoader'
 
 type LoadingStep = 'crawling' | 'serp' | 'keywords' | 'domain'
 
@@ -133,8 +134,8 @@ export default function UrlAnalysisPage() {
         {/* Loading State */}
         {loading && (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
-            <div className="inline-flex items-center justify-center w-16 h-16 mb-4 rounded-full bg-gray-800">
-              <div className="w-8 h-8 border-2 border-gray-700 border-t-red-700 rounded-full animate-spin" />
+            <div className="flex justify-center mb-2">
+              <LottieLoader size={90} />
             </div>
             <p className="text-white font-medium mb-6">Analyzing page...</p>
             <div className="space-y-2">

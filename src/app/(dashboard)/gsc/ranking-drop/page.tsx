@@ -160,8 +160,8 @@ export default async function RankingDropPage() {
     <div className="p-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">📉 Ranking Drop Alert</h1>
-          <p className="text-gray-400 text-sm mt-1">Pages with &gt;15% WoW drop in clicks or position change ≥5</p>
+          <h1 className="text-2xl font-bold text-white">📉 Clicks Drop Alert</h1>
+          <p className="text-gray-400 text-sm mt-1">Pages with &gt;15% week-over-week drop in organic clicks</p>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-500 bg-gray-800 px-3 py-1.5 rounded-full">

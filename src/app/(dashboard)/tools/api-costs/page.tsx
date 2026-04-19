@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { LottieLoader } from '@/components/ui/LottieLoader'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface BalanceData {
@@ -275,8 +276,7 @@ export default function ApiCostsPage() {
         {/* Usage Stats */}
         {loadingUsage ? (
           <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 text-center">
-            <div className="w-6 h-6 border-2 border-gray-700 border-t-red-700 rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-gray-500 text-sm">Loading usage data…</p>
+            <LottieLoader size={70} text="Loading usage data…" />
           </div>
         ) : usage ? (
           <div className="space-y-6">

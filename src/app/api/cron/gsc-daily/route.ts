@@ -147,8 +147,9 @@ export async function GET(request: Request) {
         }
 
         // Send Slack alert only for alertable pages (respects URL pre-filter)
+        // Opt-in: set SLACK_CLICKS_ALERTS=true in Vercel env to enable
         const alertableDrops = drops.filter(d => isAlertablePage(d.page))
-        if (alertableDrops.length) {
+        if (alertableDrops.length && process.env.SLACK_CLICKS_ALERTS === 'true') {
           await sendRankingDropAlert(alertableDrops)
           await supabase.from('alert_log').insert({
             alert_type: 'ranking_drop',

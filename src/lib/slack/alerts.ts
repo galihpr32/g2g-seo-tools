@@ -36,20 +36,20 @@ export async function sendRankingDropAlert(drops: {
   return sendSlackMessage([
     {
       type: 'header',
-      text: { type: 'plain_text', text: '📉 GSC Ranking Drop Alert' }
+      text: { type: 'plain_text', text: '📉 GSC Clicks Drop Alert' }
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${drops.length} page(s) dropped >15% WoW*\n${rows}`
+        text: `*${drops.length} page(s) dropped >15% clicks WoW*\n${rows}`
       }
     },
     {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `G2G SEO Tools · ${new Date().toLocaleDateString('en-GB')}` }]
     }
-  ], `📉 ${drops.length} pages dropped >15% WoW`)
+  ], `📉 ${drops.length} pages lost >15% clicks WoW`)
 }
 
 export async function sendIndexCoverageAlert(data: {
