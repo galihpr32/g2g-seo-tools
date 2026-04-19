@@ -1,0 +1,544 @@
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+type PositionHistory = { date: string; position: number | null }[]
+
+type Backlink = {
+  id: string
+  site_name: string
+  external_url: string
+  anchor_text: string
+  target_page: string
+  target_keyword: string | null
+  utm_source: string | null
+  utm_medium: string | null
+  utm_campaign: string | null
+  utm_term: string | null
+  utm_content: string | null
+  link_status: 'active' | 'broken' | 'pending'
+  last_checked_at: string | null
+  check_method: string | null
+  position_history: PositionHistory
+  position_current: number | null
+  position_at_creation: number | null
+  cost_amount: number | null
+  cost_currency: string
+  live_date: string | null
+  notes: string | null
+  created_at: string
+}
+
+type FormData = {
+  site_name: string
+  external_url: string
+  anchor_text: string
+  target_page: string
+  target_keyword: string
+  cost_amount: string
+  cost_currency: string
+  live_date: string
+  notes: string
+  utm_source: string
+  utm_medium: string
+  utm_campaign: string
+  utm_term: string
+  utm_content: string
+}
+
+const EMPTY_FORM: FormData = {
+  site_name: '', external_url: '', anchor_text: '', target_page: '',
+  target_keyword: '', cost_amount: '', cost_currency: 'USD', live_date: '',
+  notes: '', utm_source: '', utm_medium: 'referral', utm_campaign: '', utm_term: '', utm_content: '',
+}
+
+// ── UTM Generator ─────────────────────────────────────────────────────────────
+function buildUtmUrl(baseUrl: string, form: FormData): string {
+  if (!baseUrl) return ''
+  try {
+    const url = new URL(baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`)
+    if (form.utm_source)   url.searchParams.set('utm_source',   form.utm_source)
+    if (form.utm_medium)   url.searchParams.set('utm_medium',   form.utm_medium)
+    if (form.utm_campaign) url.searchParams.set('utm_campaign', form.utm_campaign)
+    if (form.utm_term)     url.searchParams.set('utm_term',     form.utm_term)
+    if (form.utm_content)  url.searchParams.set('utm_content',  form.utm_content)
+    return url.toString()
+  } catch { return '' }
+}
+
+function UtmPanel({ form, onChange }: { form: FormData; onChange: (f: FormData) => void }) {
+  const [showUtm, setShowUtm] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const utmUrl = buildUtmUrl(form.target_page, form)
+
+  function set(key: keyof FormData, val: string) { onChange({ ...form, [key]: val }) }
+
+  return (
+    <div className="border border-gray-700 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setShowUtm(v => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-gray-800 text-sm text-gray-300 hover:text-white transition"
+      >
+        <span className="font-medium">🔗 UTM Parameters</span>
+        <span className="text-gray-500 text-xs">{showUtm ? '▲ collapse' : '▼ expand'}</span>
+      </button>
+      {showUtm && (
+        <div className="bg-gray-900 px-4 pb-4 pt-3 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            {(['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'] as (keyof FormData)[]).map(field => (
+              <div key={field} className={field === 'utm_campaign' ? 'col-span-2' : ''}>
+                <label className="block text-gray-500 text-xs mb-1">{field.replace('utm_', 'utm_')}</label>
+                <input
+                  type="text"
+                  value={form[field] as string}
+                  onChange={e => set(field, e.target.value)}
+                  placeholder={field === 'utm_source' ? 'e.g. ign' : field === 'utm_medium' ? 'referral' : field === 'utm_campaign' ? 'e.g. r6-accounts-q2-2026' : ''}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500"
+                />
+              </div>
+            ))}
+          </div>
+          {utmUrl && (
+            <div className="mt-2">
+              <p className="text-gray-500 text-xs mb-1">Generated tracking URL (add this to your target page link):</p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-green-400 break-all">{utmUrl}</code>
+                <button
+                  type="button"
+                  onClick={async () => { await navigator.clipboard.writeText(utmUrl); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+                  className="flex-shrink-0 text-xs px-3 py-2 rounded-lg border border-gray-700 text-gray-400 hover:text-white transition"
+                >
+                  {copied ? '✓' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Add / Edit Form ───────────────────────────────────────────────────────────
+function BacklinkForm({
+  initial, onSave, onCancel,
+}: {
+  initial?: Backlink
+  onSave: (data: FormData) => Promise<void>
+  onCancel: () => void
+}) {
+  const [form, setForm] = useState<FormData>(initial ? {
+    site_name: initial.site_name,
+    external_url: initial.external_url,
+    anchor_text: initial.anchor_text,
+    target_page: initial.target_page,
+    target_keyword: initial.target_keyword ?? '',
+    cost_amount: initial.cost_amount?.toString() ?? '',
+    cost_currency: initial.cost_currency ?? 'USD',
+    live_date: initial.live_date ?? '',
+    notes: initial.notes ?? '',
+    utm_source: initial.utm_source ?? '',
+    utm_medium: initial.utm_medium ?? 'referral',
+    utm_campaign: initial.utm_campaign ?? '',
+    utm_term: initial.utm_term ?? '',
+    utm_content: initial.utm_content ?? '',
+  } : EMPTY_FORM)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!form.site_name || !form.external_url || !form.anchor_text || !form.target_page) {
+      setError('Site name, external URL, anchor text, and target page are required.')
+      return
+    }
+    setSaving(true); setError(null)
+    try { await onSave(form) } catch (err) { setError(String(err)) } finally { setSaving(false) }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Site name *</label>
+          <input value={form.site_name} onChange={e => setForm(f => ({ ...f, site_name: e.target.value }))}
+            placeholder="e.g. IGN, PCGamer Blog"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Live date</label>
+          <input type="date" value={form.live_date} onChange={e => setForm(f => ({ ...f, live_date: e.target.value }))}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-gray-400 text-xs font-medium mb-1">External URL (page containing the backlink) *</label>
+        <input value={form.external_url} onChange={e => setForm(f => ({ ...f, external_url: e.target.value }))}
+          placeholder="https://www.ign.com/articles/best-r6-accounts"
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Anchor text *</label>
+          <input value={form.anchor_text} onChange={e => setForm(f => ({ ...f, anchor_text: e.target.value }))}
+            placeholder="e.g. buy r6 accounts"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Target keyword (for ranking tracking)</label>
+          <input value={form.target_keyword} onChange={e => setForm(f => ({ ...f, target_keyword: e.target.value }))}
+            placeholder="e.g. r6 accounts for sale"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-gray-400 text-xs font-medium mb-1">Target page (our G2G page) *</label>
+        <input value={form.target_page} onChange={e => setForm(f => ({ ...f, target_page: e.target.value }))}
+          placeholder="https://www.g2g.com/categories/rainbow-six-siege-account"
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Cost paid</label>
+          <div className="flex gap-2">
+            <input type="number" min="0" step="0.01" value={form.cost_amount} onChange={e => setForm(f => ({ ...f, cost_amount: e.target.value }))}
+              placeholder="0.00"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+            <select value={form.cost_currency} onChange={e => setForm(f => ({ ...f, cost_currency: e.target.value }))}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-2 text-sm text-white focus:outline-none">
+              {['USD', 'EUR', 'GBP', 'IDR', 'SGD', 'MYR'].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Notes</label>
+          <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+            placeholder="Optional notes"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      {/* UTM Generator */}
+      <UtmPanel form={form} onChange={setForm} />
+
+      {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
+
+      <div className="flex items-center gap-3">
+        <button type="submit" disabled={saving}
+          className="bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition">
+          {saving ? 'Saving…' : initial ? '✓ Save Changes' : '+ Add Backlink'}
+        </button>
+        <button type="button" onClick={onCancel} className="text-sm text-gray-500 hover:text-gray-300 transition">Cancel</button>
+      </div>
+    </form>
+  )
+}
+
+// ── Position change indicator ─────────────────────────────────────────────────
+function PositionDelta({ current, creation }: { current: number | null; creation: number | null }) {
+  if (current == null) return <span className="text-gray-600 text-xs">—</span>
+  if (creation == null) return <span className="text-gray-400 text-xs">#{current}</span>
+  const delta = creation - current // positive = improved (lower position number is better)
+  return (
+    <span className="text-xs font-medium">
+      <span className="text-gray-400">#{current}</span>
+      {delta !== 0 && (
+        <span className={`ml-1 ${delta > 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {delta > 0 ? `▲${delta}` : `▼${Math.abs(delta)}`}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// ── Mini sparkline for position history ───────────────────────────────────────
+function PositionSparkline({ history }: { history: PositionHistory }) {
+  const recent = history.filter(h => h.position != null).slice(-6)
+  if (recent.length < 2) return <span className="text-gray-600 text-xs">no history</span>
+  return (
+    <div className="flex items-end gap-0.5 h-5">
+      {recent.map((h, i) => {
+        const pos = h.position!
+        const maxPos = Math.max(...recent.map(r => r.position!))
+        const minPos = Math.min(...recent.map(r => r.position!))
+        const range = maxPos - minPos || 1
+        const heightPct = 1 - ((pos - minPos) / range) // higher = better rank
+        const barH = Math.max(2, Math.round(heightPct * 16))
+        return (
+          <div key={i} title={`${h.date}: #${pos}`}
+            className="w-2 bg-blue-500 rounded-sm opacity-80 hover:opacity-100 transition"
+            style={{ height: `${barH}px` }} />
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+export default function BacklinksPage() {
+  const [backlinks, setBacklinks] = useState<Backlink[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [checkingId, setCheckingId] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshResult, setRefreshResult] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/backlinks')
+      const data = await res.json()
+      setBacklinks(data.backlinks ?? [])
+    } catch { /* ignore */ }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleAdd(form: FormData) {
+    const res = await fetch('/api/backlinks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error)
+    setBacklinks(prev => [data.backlink, ...prev])
+    setShowForm(false)
+  }
+
+  async function handleEdit(id: string, form: FormData) {
+    const res = await fetch(`/api/backlinks/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(form),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error)
+    setBacklinks(prev => prev.map(b => b.id === id ? data.backlink : b))
+    setEditingId(null)
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this backlink?')) return
+    setDeletingId(id)
+    await fetch(`/api/backlinks/${id}`, { method: 'DELETE' })
+    setBacklinks(prev => prev.filter(b => b.id !== id))
+    setDeletingId(null)
+  }
+
+  async function handleCheck(id: string) {
+    setCheckingId(id)
+    const res = await fetch('/api/backlinks/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setBacklinks(prev => prev.map(b => b.id === id
+        ? { ...b, link_status: data.link_status, last_checked_at: new Date().toISOString(), check_method: data.method }
+        : b
+      ))
+    }
+    setCheckingId(null)
+  }
+
+  async function handleRefreshAll() {
+    setRefreshing(true); setRefreshResult(null)
+    try {
+      const res = await fetch('/api/backlinks/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const data = await res.json()
+      setRefreshResult(`✓ Refreshed ${data.checked} backlinks — ${data.active} active, ${data.broken} broken`)
+      await load() // reload to get updated position data
+    } catch (err) { setRefreshResult(`✗ Failed: ${err}`) }
+    setRefreshing(false)
+  }
+
+  const totalCost = backlinks
+    .filter(b => b.cost_amount && b.cost_currency === 'USD')
+    .reduce((sum, b) => sum + (b.cost_amount ?? 0), 0)
+
+  const activeCount = backlinks.filter(b => b.link_status === 'active').length
+  const brokenCount = backlinks.filter(b => b.link_status === 'broken').length
+
+  return (
+    <div className="p-8 max-w-6xl">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">🔗 Paid Backlink Tracker</h1>
+          <p className="text-gray-400 text-sm mt-1">Track paid links and guest posts — monitor if they&apos;re still live and their ranking impact</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={handleRefreshAll} disabled={refreshing || backlinks.length === 0}
+            className="text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 disabled:opacity-40 transition flex items-center gap-2">
+            {refreshing ? <><span className="animate-spin inline-block">⟳</span> Refreshing…</> : '⟳ Monthly Refresh'}
+          </button>
+          <button onClick={() => { setShowForm(true); setEditingId(null) }}
+            className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">
+            + Add Backlink
+          </button>
+        </div>
+      </div>
+
+      {refreshResult && (
+        <div className={`mb-4 text-sm px-4 py-2 rounded-lg border ${refreshResult.startsWith('✓') ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'}`}>
+          {refreshResult}
+        </div>
+      )}
+
+      {/* Stats row */}
+      {backlinks.length > 0 && (
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          {[
+            { label: 'Total Backlinks', value: backlinks.length, color: 'text-white' },
+            { label: 'Active', value: activeCount, color: 'text-green-400' },
+            { label: 'Broken', value: brokenCount, color: brokenCount > 0 ? 'text-red-400' : 'text-gray-500' },
+            { label: 'Total Cost (USD)', value: `$${totalCost.toFixed(0)}`, color: 'text-yellow-400' },
+          ].map(s => (
+            <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+              <p className="text-gray-500 text-xs mb-1">{s.label}</p>
+              <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add form */}
+      {showForm && !editingId && (
+        <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 mb-6">
+          <h2 className="text-white font-semibold mb-4">Add New Backlink</h2>
+          <BacklinkForm onSave={handleAdd} onCancel={() => setShowForm(false)} />
+        </div>
+      )}
+
+      {/* Backlink list */}
+      {loading ? (
+        <div className="text-gray-500 text-sm text-center py-12">Loading backlinks…</div>
+      ) : backlinks.length === 0 && !showForm ? (
+        <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
+          <p className="text-3xl mb-3">🔗</p>
+          <p className="text-white font-semibold mb-1">No backlinks tracked yet</p>
+          <p className="text-gray-500 text-sm mb-5">Add your first paid backlink or guest post to start tracking</p>
+          <button onClick={() => setShowForm(true)}
+            className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition">
+            + Add First Backlink
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {backlinks.map(bl => (
+            <div key={bl.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+              {editingId === bl.id ? (
+                <div className="p-6">
+                  <h3 className="text-white font-semibold mb-4">Edit Backlink</h3>
+                  <BacklinkForm
+                    initial={bl}
+                    onSave={form => handleEdit(bl.id, form)}
+                    onCancel={() => setEditingId(null)}
+                  />
+                </div>
+              ) : (
+                <div className="p-4">
+                  {/* Top row */}
+                  <div className="flex items-start justify-between gap-4 flex-wrap">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="text-white font-semibold text-sm">{bl.site_name}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${
+                          bl.link_status === 'active'  ? 'text-green-400 bg-green-500/10 border-green-500/20' :
+                          bl.link_status === 'broken'  ? 'text-red-400 bg-red-500/10 border-red-500/20' :
+                          'text-yellow-400 bg-yellow-500/10 border-yellow-500/20'
+                        }`}>{bl.link_status}</span>
+                        {bl.cost_amount && (
+                          <span className="text-xs text-gray-500">{bl.cost_currency} {bl.cost_amount.toFixed(0)}</span>
+                        )}
+                        {bl.live_date && (
+                          <span className="text-xs text-gray-600">live: {bl.live_date}</span>
+                        )}
+                      </div>
+                      <a href={bl.external_url} target="_blank" rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 text-xs truncate block max-w-lg">
+                        {bl.external_url}
+                      </a>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <button onClick={() => handleCheck(bl.id)} disabled={checkingId === bl.id}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition disabled:opacity-50">
+                        {checkingId === bl.id ? '⟳' : '🔍 Check'}
+                      </button>
+                      <button onClick={() => { setEditingId(bl.id); setShowForm(false) }}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-700 text-gray-400 hover:text-white transition">
+                        ✏️ Edit
+                      </button>
+                      <button onClick={() => handleDelete(bl.id)} disabled={deletingId === bl.id}
+                        className="text-xs px-2.5 py-1.5 rounded-lg border border-gray-800 text-gray-600 hover:border-red-800 hover:text-red-500 transition disabled:opacity-50">
+                        {deletingId === bl.id ? '…' : '✕'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Details row */}
+                  <div className="mt-3 flex items-center gap-6 flex-wrap text-xs">
+                    <div>
+                      <span className="text-gray-500">Anchor: </span>
+                      <span className="text-gray-300 font-medium">&ldquo;{bl.anchor_text}&rdquo;</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Target: </span>
+                      <a href={bl.target_page} target="_blank" rel="noopener noreferrer"
+                        className="text-gray-400 hover:text-blue-400 transition truncate max-w-xs inline-block align-bottom">
+                        {(() => { try { return new URL(bl.target_page).pathname } catch { return bl.target_page } })()}
+                      </a>
+                    </div>
+                    {bl.target_keyword && (
+                      <div>
+                        <span className="text-gray-500">Keyword: </span>
+                        <span className="text-gray-300">{bl.target_keyword}</span>
+                      </div>
+                    )}
+                    {bl.position_current != null && (
+                      <div>
+                        <span className="text-gray-500">Rank: </span>
+                        <PositionDelta current={bl.position_current} creation={bl.position_at_creation} />
+                      </div>
+                    )}
+                    {bl.position_history.length > 1 && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-gray-500">Trend:</span>
+                        <PositionSparkline history={bl.position_history} />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* UTM + last checked */}
+                  <div className="mt-2 flex items-center gap-4 flex-wrap text-xs text-gray-600">
+                    {bl.utm_campaign && (
+                      <span>utm_campaign: <span className="text-gray-500">{bl.utm_campaign}</span></span>
+                    )}
+                    {bl.last_checked_at && (
+                      <span>
+                        Last checked: {new Date(bl.last_checked_at).toLocaleDateString('id-ID')}
+                        {bl.check_method && <span className="text-gray-700"> via {bl.check_method}</span>}
+                      </span>
+                    )}
+                    {bl.notes && <span className="text-gray-600 italic">{bl.notes}</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

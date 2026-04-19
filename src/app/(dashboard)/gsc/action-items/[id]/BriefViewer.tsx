@@ -397,10 +397,11 @@ function CrewVuePanel({ brief }: { brief: Brief }) {
 }
 
 // ── Main BriefViewer ──────────────────────────────────────────────────────────
-export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
+export function BriefViewer({ actionItemId, existingBriefId, actionType, initialGscQueries = [] }: {
   actionItemId: string
   existingBriefId: string | null
   actionType: 'on_page' | 'off_page'
+  initialGscQueries?: { keyword: string; clicks: number; position: number }[]
 }) {
   const [brief, setBrief] = useState<Brief | null>(null)
   const [generating, setGenerating] = useState(false)
@@ -421,6 +422,7 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   type KwCandidate = { keyword: string; search_volume?: number | null; cpc?: number | null; source: 'gsc' | 'dataforseo'; selected: boolean }
   const [kwStep, setKwStep]           = useState<'hidden' | 'loading' | 'selecting'>('hidden')
   const [kwCandidates, setKwCandidates] = useState<KwCandidate[]>([])
+  const [kwEnriching, setKwEnriching] = useState(false)  // DataForSEO suggestions loading in bg
   const [manualKw, setManualKw]       = useState('')
   const [customInstructions, setCustomInstructions] = useState('')
   const [serpCountry, setSerpCountry] = useState('')  // '' = auto-detect from page URL
@@ -479,25 +481,42 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
   }
 
   async function loadKeywordsForSelection() {
-    setKwStep('loading')
+    // Immediately show GSC queries from server-side prop (instant, no API latency)
+    const seedKws: KwCandidate[] = initialGscQueries.map(q => ({
+      keyword: q.keyword, search_volume: null, cpc: null, source: 'gsc' as const, selected: true,
+    }))
+    setKwCandidates(seedKws)
+    setKwStep('selecting')   // show UI immediately with GSC data
+    setKwEnriching(true)
+
+    // Enrich in background: fetch DataForSEO suggestions + any additional GSC queries
     try {
       const res = await fetch(`/api/brief/keywords?action_item_id=${actionItemId}`)
       const json = await res.json()
-      const gscKws: KwCandidate[] = (json.gsc_queries ?? []).map((q: { keyword: string; clicks: number; position: number }) => ({
-        keyword: q.keyword, search_volume: null, cpc: null, source: 'gsc' as const, selected: true,
-      }))
-      const dfKws: KwCandidate[] = (json.suggestions ?? []).map((s: { keyword: string; search_volume: number | null; cpc: number | null }) => ({
-        keyword: s.keyword, search_volume: s.search_volume, cpc: s.cpc, source: 'dataforseo' as const,
-        selected: false,
-      }))
-      // De-dupe: remove DataForSEO entries already in GSC list
-      const gscSet = new Set(gscKws.map(k => k.keyword.toLowerCase()))
-      const unique = dfKws.filter(k => !gscSet.has(k.keyword.toLowerCase()))
-      setKwCandidates([...gscKws, ...unique])
-      setKwStep('selecting')
-    } catch {
-      setKwStep('hidden')
-    }
+
+      // Merge any extra GSC queries not already in seed (handles case where seed was empty)
+      const seedSet = new Set(seedKws.map(k => k.keyword.toLowerCase()))
+      const extraGsc: KwCandidate[] = (json.gsc_queries ?? [])
+        .filter((q: { keyword: string }) => !seedSet.has(q.keyword.toLowerCase()))
+        .map((q: { keyword: string; clicks: number; position: number }) => ({
+          keyword: q.keyword, search_volume: null, cpc: null, source: 'gsc' as const, selected: true,
+        }))
+
+      const allGscSet = new Set([...seedKws, ...extraGsc].map(k => k.keyword.toLowerCase()))
+      const dfKws: KwCandidate[] = (json.suggestions ?? [])
+        .filter((s: { keyword: string }) => !allGscSet.has(s.keyword.toLowerCase()))
+        .map((s: { keyword: string; search_volume: number | null; cpc: number | null }) => ({
+          keyword: s.keyword, search_volume: s.search_volume, cpc: s.cpc,
+          source: 'dataforseo' as const, selected: false,
+        }))
+
+      setKwCandidates(prev => {
+        // Keep any manual additions the user already made
+        const prevManual = prev.filter(k => k.source !== 'gsc' && !dfKws.some(d => d.keyword.toLowerCase() === k.keyword.toLowerCase()))
+        return [...seedKws, ...extraGsc, ...dfKws, ...prevManual]
+      })
+    } catch { /* DataForSEO enrichment failed — GSC keywords still visible, that's fine */ }
+    finally { setKwEnriching(false) }
   }
 
   async function handleGenerate(skipKwSelect = false) {
@@ -602,16 +621,14 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType }: {
           </>
         )}
 
-        {actionType === 'on_page' && kwStep === 'loading' && (
-          <div className="text-center py-8">
-            <div className="animate-spin text-2xl mb-3">⟳</div>
-            <p className="text-gray-400 text-sm">Fetching keyword suggestions…</p>
-          </div>
-        )}
+        {/* 'loading' step is now instant — keywords show immediately from server data */}
 
         {actionType === 'on_page' && kwStep === 'selecting' && (
           <div className="text-left">
-            <h2 className="text-white font-bold text-lg mb-1">Select Focus Keywords</h2>
+            <div className="flex items-center gap-3 mb-1">
+              <h2 className="text-white font-bold text-lg">Select Focus Keywords</h2>
+              {kwEnriching && <span className="text-xs text-gray-500 animate-pulse">⟳ Loading suggestions…</span>}
+            </div>
             <p className="text-gray-400 text-sm mb-4">
               Checked keywords will be prioritised in the content draft. GSC keywords are pre-selected (they already drive traffic).
             </p>

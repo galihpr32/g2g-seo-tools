@@ -50,6 +50,13 @@ const navItems = [
     ],
   },
   {
+    group: 'Tools',
+    items: [
+      { label: 'URL Analysis', href: '/tools/url-analysis', icon: '🔍' },
+      { label: 'Backlink Tracker', href: '/backlinks', icon: '🔗' },
+    ],
+  },
+  {
     group: 'Monthly',
     items: [
       { label: 'SEO Report', href: '/reports/monthly', icon: '📊' },

@@ -648,6 +648,9 @@ export default function SettingsPage() {
 
       {/* ── Team tab ─────────────────────────────────────────────────────────── */}
       {activeTab === 'team' && <TeamSection />}
+
+      {/* ── API Diagnostic (always visible at bottom) ────────────────────────── */}
+      <DiagnosticPanel />
     </div>
   )
 }

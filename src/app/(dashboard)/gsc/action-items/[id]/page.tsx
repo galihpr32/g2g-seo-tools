@@ -25,6 +25,17 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
 
   if (!item) notFound()
 
+  // Load GSC queries for this page (pre-populate keyword selector — avoids client-side URL mismatch)
+  const { data: gscPageQueries } = conn?.site_url
+    ? await supabase
+        .from('gsc_ranking_drop_queries')
+        .select('query, clicks, impressions, ctr, position')
+        .eq('site_url', conn.site_url)
+        .eq('page', item.page)
+        .order('clicks', { ascending: false })
+        .limit(20)
+    : { data: null }
+
   // Check if a brief already exists for this action item
   const { data: existingBrief } = await supabase
     .from('seo_content_briefs')
@@ -95,6 +106,11 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
         actionItemId={item.id}
         existingBriefId={existingBrief?.id ?? null}
         actionType={item.action_type}
+        initialGscQueries={(gscPageQueries ?? []).map(q => ({
+          keyword: q.query,
+          clicks: q.clicks,
+          position: q.position,
+        }))}
       />
     </div>
   )
