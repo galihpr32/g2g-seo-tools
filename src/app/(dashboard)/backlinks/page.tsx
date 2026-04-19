@@ -53,68 +53,102 @@ const EMPTY_FORM: FormData = {
   notes: '', utm_source: '', utm_medium: 'referral', utm_campaign: '', utm_term: '', utm_content: '',
 }
 
-// ── UTM Generator ─────────────────────────────────────────────────────────────
-function buildUtmUrl(baseUrl: string, form: FormData): string {
+// ── UTM URL builder ───────────────────────────────────────────────────────────
+function buildUtmUrl(baseUrl: string, params: { source: string; medium: string; campaign: string; term: string; content: string }): string {
   if (!baseUrl) return ''
   try {
     const url = new URL(baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`)
-    if (form.utm_source)   url.searchParams.set('utm_source',   form.utm_source)
-    if (form.utm_medium)   url.searchParams.set('utm_medium',   form.utm_medium)
-    if (form.utm_campaign) url.searchParams.set('utm_campaign', form.utm_campaign)
-    if (form.utm_term)     url.searchParams.set('utm_term',     form.utm_term)
-    if (form.utm_content)  url.searchParams.set('utm_content',  form.utm_content)
+    if (params.source)   url.searchParams.set('utm_source',   params.source)
+    if (params.medium)   url.searchParams.set('utm_medium',   params.medium)
+    if (params.campaign) url.searchParams.set('utm_campaign', params.campaign)
+    if (params.term)     url.searchParams.set('utm_term',     params.term)
+    if (params.content)  url.searchParams.set('utm_content',  params.content)
     return url.toString()
   } catch { return '' }
 }
 
-function UtmPanel({ form, onChange }: { form: FormData; onChange: (f: FormData) => void }) {
-  const [showUtm, setShowUtm] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const utmUrl = buildUtmUrl(form.target_page, form)
+// ── Standalone UTM Generator Card ─────────────────────────────────────────────
+function UtmGeneratorCard() {
+  const [targetPage, setTargetPage] = useState('')
+  const [source, setSource]         = useState('')
+  const [medium, setMedium]         = useState('referral')
+  const [campaign, setCampaign]     = useState('')
+  const [term, setTerm]             = useState('')
+  const [content, setContent]       = useState('')
+  const [copied, setCopied]         = useState(false)
 
-  function set(key: keyof FormData, val: string) { onChange({ ...form, [key]: val }) }
+  const utmUrl = buildUtmUrl(targetPage, { source, medium, campaign, term, content })
+
+  async function handleCopy() {
+    if (!utmUrl) return
+    await navigator.clipboard.writeText(utmUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   return (
-    <div className="border border-gray-700 rounded-xl overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setShowUtm(v => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-gray-800 text-sm text-gray-300 hover:text-white transition"
-      >
-        <span className="font-medium">🔗 UTM Parameters</span>
-        <span className="text-gray-500 text-xs">{showUtm ? '▲ collapse' : '▼ expand'}</span>
-      </button>
-      {showUtm && (
-        <div className="bg-gray-900 px-4 pb-4 pt-3 space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            {(['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'] as (keyof FormData)[]).map(field => (
-              <div key={field} className={field === 'utm_campaign' ? 'col-span-2' : ''}>
-                <label className="block text-gray-500 text-xs mb-1">{field.replace('utm_', 'utm_')}</label>
-                <input
-                  type="text"
-                  value={form[field] as string}
-                  onChange={e => set(field, e.target.value)}
-                  placeholder={field === 'utm_source' ? 'e.g. ign' : field === 'utm_medium' ? 'referral' : field === 'utm_campaign' ? 'e.g. r6-accounts-q2-2026' : ''}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500"
-                />
-              </div>
-            ))}
-          </div>
-          {utmUrl && (
-            <div className="mt-2">
-              <p className="text-gray-500 text-xs mb-1">Generated tracking URL (add this to your target page link):</p>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-green-400 break-all">{utmUrl}</code>
-                <button
-                  type="button"
-                  onClick={async () => { await navigator.clipboard.writeText(utmUrl); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-                  className="flex-shrink-0 text-xs px-3 py-2 rounded-lg border border-gray-700 text-gray-400 hover:text-white transition"
-                >
-                  {copied ? '✓' : 'Copy'}
-                </button>
-              </div>
-            </div>
-          )}
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4 sticky top-6">
+      <div>
+        <h2 className="text-white font-semibold text-sm mb-0.5">🔗 UTM Generator</h2>
+        <p className="text-gray-500 text-xs">Generate a tracking URL to send to the partner site</p>
+      </div>
+
+      <div>
+        <label className="block text-gray-500 text-xs mb-1">Target page (G2G URL)</label>
+        <input value={targetPage} onChange={e => setTargetPage(e.target.value)}
+          placeholder="https://www.g2g.com/categories/wow-gold"
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-gray-500 text-xs mb-1">utm_source</label>
+          <input value={source} onChange={e => setSource(e.target.value)}
+            placeholder="e.g. ign"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+        <div>
+          <label className="block text-gray-500 text-xs mb-1">utm_medium</label>
+          <input value={medium} onChange={e => setMedium(e.target.value)}
+            placeholder="referral"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-gray-500 text-xs mb-1">utm_campaign</label>
+        <input value={campaign} onChange={e => setCampaign(e.target.value)}
+          placeholder="e.g. r6-accounts-q2-2026"
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-gray-500 text-xs mb-1">utm_term</label>
+          <input value={term} onChange={e => setTerm(e.target.value)}
+            placeholder="optional"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+        <div>
+          <label className="block text-gray-500 text-xs mb-1">utm_content</label>
+          <input value={content} onChange={e => setContent(e.target.value)}
+            placeholder="optional"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      {utmUrl ? (
+        <div className="space-y-2">
+          <p className="text-gray-500 text-xs">Generated URL — share this with the partner:</p>
+          <code className="block bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-green-400 break-all leading-relaxed">{utmUrl}</code>
+          <button onClick={handleCopy}
+            className={`w-full py-2 rounded-lg text-xs font-medium transition ${copied ? 'bg-green-700 text-white' : 'bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500'}`}>
+            {copied ? '✓ Copied!' : 'Copy URL'}
+          </button>
+        </div>
+      ) : (
+        <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg px-3 py-3 text-center">
+          <p className="text-gray-600 text-xs">Fill in Target Page + Source + Campaign to generate URL</p>
         </div>
       )}
     </div>
@@ -224,8 +258,29 @@ function BacklinkForm({
         </div>
       </div>
 
-      {/* UTM Generator */}
-      <UtmPanel form={form} onChange={setForm} />
+      {/* UTM fields (record what was used) */}
+      <div className="border border-gray-700/60 rounded-xl p-4 space-y-3 bg-gray-800/30">
+        <p className="text-gray-500 text-xs font-medium uppercase tracking-wide">UTM Parameters (optional — record what was given to the partner)</p>
+        <div className="grid grid-cols-2 gap-3">
+          {([
+            { key: 'utm_source', placeholder: 'e.g. ign' },
+            { key: 'utm_medium', placeholder: 'referral' },
+          ] as { key: keyof FormData; placeholder: string }[]).map(({ key, placeholder }) => (
+            <div key={key}>
+              <label className="block text-gray-500 text-xs mb-1">{key}</label>
+              <input value={form[key] as string} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                placeholder={placeholder}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+            </div>
+          ))}
+        </div>
+        <div>
+          <label className="block text-gray-500 text-xs mb-1">utm_campaign</label>
+          <input value={form.utm_campaign} onChange={e => setForm(f => ({ ...f, utm_campaign: e.target.value }))}
+            placeholder="e.g. r6-accounts-q2-2026"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
 
       {error && <p className="text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
 
@@ -371,9 +426,9 @@ export default function BacklinksPage() {
   const brokenCount = backlinks.filter(b => b.link_status === 'broken').length
 
   return (
-    <div className="p-8 max-w-6xl">
+    <div className="p-8 min-h-screen">
       {/* Header */}
-      <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
+      <div className="flex items-start justify-between mb-6 flex-wrap gap-4 max-w-7xl">
         <div>
           <h1 className="text-2xl font-bold text-white">🔗 Paid Backlink Tracker</h1>
           <p className="text-gray-400 text-sm mt-1">Track paid links and guest posts — monitor if they&apos;re still live and their ranking impact</p>
@@ -391,52 +446,56 @@ export default function BacklinksPage() {
       </div>
 
       {refreshResult && (
-        <div className={`mb-4 text-sm px-4 py-2 rounded-lg border ${refreshResult.startsWith('✓') ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'}`}>
+        <div className={`mb-4 text-sm px-4 py-2 rounded-lg border max-w-7xl ${refreshResult.startsWith('✓') ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'}`}>
           {refreshResult}
         </div>
       )}
 
-      {/* Stats row */}
-      {backlinks.length > 0 && (
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          {[
-            { label: 'Total Backlinks', value: backlinks.length, color: 'text-white' },
-            { label: 'Active', value: activeCount, color: 'text-green-400' },
-            { label: 'Broken', value: brokenCount, color: brokenCount > 0 ? 'text-red-400' : 'text-gray-500' },
-            { label: 'Total Cost (USD)', value: `$${totalCost.toFixed(0)}`, color: 'text-yellow-400' },
-          ].map(s => (
-            <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <p className="text-gray-500 text-xs mb-1">{s.label}</p>
-              <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+      {/* 2-column layout: main content + UTM Generator sidebar */}
+      <div className="flex gap-6 max-w-7xl items-start">
+        {/* Left: main tracker */}
+        <div className="flex-1 min-w-0 space-y-5">
+          {/* Stats row */}
+          {backlinks.length > 0 && (
+            <div className="grid grid-cols-4 gap-4">
+              {[
+                { label: 'Total Backlinks', value: backlinks.length, color: 'text-white' },
+                { label: 'Active', value: activeCount, color: 'text-green-400' },
+                { label: 'Broken', value: brokenCount, color: brokenCount > 0 ? 'text-red-400' : 'text-gray-500' },
+                { label: 'Total Cost (USD)', value: `$${totalCost.toFixed(0)}`, color: 'text-yellow-400' },
+              ].map(s => (
+                <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <p className="text-gray-500 text-xs mb-1">{s.label}</p>
+                  <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* Add form */}
-      {showForm && !editingId && (
-        <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 mb-6">
-          <h2 className="text-white font-semibold mb-4">Add New Backlink</h2>
-          <BacklinkForm onSave={handleAdd} onCancel={() => setShowForm(false)} />
-        </div>
-      )}
+          {/* Add form */}
+          {showForm && !editingId && (
+            <div className="bg-gray-900 border border-gray-700 rounded-xl p-6">
+              <h2 className="text-white font-semibold mb-4">Add New Backlink</h2>
+              <BacklinkForm onSave={handleAdd} onCancel={() => setShowForm(false)} />
+            </div>
+          )}
 
-      {/* Backlink list */}
-      {loading ? (
-        <div className="text-gray-500 text-sm text-center py-12">Loading backlinks…</div>
-      ) : backlinks.length === 0 && !showForm ? (
-        <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
-          <p className="text-3xl mb-3">🔗</p>
-          <p className="text-white font-semibold mb-1">No backlinks tracked yet</p>
-          <p className="text-gray-500 text-sm mb-5">Add your first paid backlink or guest post to start tracking</p>
-          <button onClick={() => setShowForm(true)}
-            className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition">
-            + Add First Backlink
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {backlinks.map(bl => (
+          {/* Backlink list */}
+          {loading ? (
+            <div className="text-gray-500 text-sm text-center py-12">Loading backlinks…</div>
+          ) : backlinks.length === 0 && !showForm ? (
+            <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
+              <p className="text-3xl mb-3">🔗</p>
+              <p className="text-white font-semibold mb-1">No backlinks tracked yet</p>
+              <p className="text-gray-500 text-sm mb-5">Add your first paid backlink or guest post to start tracking</p>
+              <button onClick={() => setShowForm(true)}
+                className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition">
+                + Add First Backlink
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {backlinks.map(bl => (
             <div key={bl.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               {editingId === bl.id ? (
                 <div className="p-6">
@@ -537,8 +596,15 @@ export default function BacklinksPage() {
               )}
             </div>
           ))}
+            </div>
+          )}
+        </div>{/* end left column */}
+
+        {/* Right: UTM Generator */}
+        <div className="w-80 flex-shrink-0">
+          <UtmGeneratorCard />
         </div>
-      )}
+      </div>{/* end 2-column */}
     </div>
   )
 }

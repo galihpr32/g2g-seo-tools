@@ -207,51 +207,70 @@ export default function UrlAnalysisPage() {
               {/* Tab Content */}
               <div className="p-6">
                 {/* Page Overview */}
-                {activeTab === 'overview' && result.page_data && (
-                  <div className="space-y-6">
-                    <div>
-                      <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Title</p>
-                      <p className="text-white">{result.page_data.title || '(Not found)'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Meta Description</p>
-                      <p className="text-gray-300">{result.page_data.description || '(Not found)'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase text-gray-500 font-semibold mb-2">H1</p>
-                      <p className="text-gray-300">{result.page_data.h1[0] || '(Not found)'}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase text-gray-500 font-semibold mb-2">H2 Headings</p>
-                      {result.page_data.h2.length > 0 ? (
-                        <ul className="space-y-1">
-                          {result.page_data.h2.map((h, i) => (
-                            <li key={i} className="text-gray-300 text-sm">• {h}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-gray-500 text-sm">(No H2 headings found)</p>
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Content Preview</p>
-                      <div className="bg-gray-800 rounded-lg p-4 max-h-64 overflow-y-auto">
-                        <p className="text-gray-300 text-sm whitespace-pre-wrap">
-                          {showMoreContent
-                            ? result.page_data.contentPreview
-                            : result.page_data.contentPreview.slice(0, 500)}
-                        </p>
-                        {result.page_data.contentPreview.length > 500 && (
-                          <button
-                            onClick={() => setShowMoreContent(!showMoreContent)}
-                            className="mt-3 text-red-700 hover:text-red-600 text-sm font-medium transition"
-                          >
-                            {showMoreContent ? 'Show less' : 'Show more'}
-                          </button>
+                {activeTab === 'overview' && (
+                  result.page_data ? (
+                    <div className="space-y-6">
+                      <div>
+                        <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Title</p>
+                        <p className="text-white">{result.page_data.title || '(Not found)'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Meta Description</p>
+                        <p className="text-gray-300">{result.page_data.description || '(Not found)'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-gray-500 font-semibold mb-2">H1</p>
+                        <p className="text-gray-300">{result.page_data.h1[0] || '(Not found)'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase text-gray-500 font-semibold mb-2">H2 Headings</p>
+                        {result.page_data.h2.length > 0 ? (
+                          <ul className="space-y-1">
+                            {result.page_data.h2.map((h, i) => (
+                              <li key={i} className="text-gray-300 text-sm">• {h}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-gray-500 text-sm">(No H2 headings found)</p>
                         )}
                       </div>
+                      <div>
+                        <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Content Preview</p>
+                        <div className="bg-gray-800 rounded-lg p-4 max-h-64 overflow-y-auto">
+                          <p className="text-gray-300 text-sm whitespace-pre-wrap">
+                            {showMoreContent
+                              ? result.page_data.contentPreview
+                              : result.page_data.contentPreview.slice(0, 500)}
+                          </p>
+                          {result.page_data.contentPreview.length > 500 && (
+                            <button
+                              onClick={() => setShowMoreContent(!showMoreContent)}
+                              className="mt-3 text-red-700 hover:text-red-600 text-sm font-medium transition"
+                            >
+                              {showMoreContent ? 'Show less' : 'Show more'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="py-6 text-center space-y-3">
+                      <p className="text-4xl">🚫</p>
+                      <p className="text-white font-medium">Page could not be crawled</p>
+                      <p className="text-gray-400 text-sm max-w-md mx-auto">
+                        Firecrawl was blocked by this page (anti-bot protection, login wall, or JS-rendered content).
+                        SERP + keyword data above is still accurate — only the on-page content scan failed.
+                      </p>
+                      <a
+                        href={result.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-block mt-2 text-blue-400 hover:text-blue-300 text-sm transition"
+                      >
+                        Open page manually →
+                      </a>
+                    </div>
+                  )
                 )}
 
                 {/* Competitors */}
