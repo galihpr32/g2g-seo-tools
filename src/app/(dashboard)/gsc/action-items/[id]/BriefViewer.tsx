@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
-import { PageLoader } from '@/components/ui/LottieLoader'
+import { PageLoader, LottieLoader } from '@/components/ui/LottieLoader'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -177,6 +177,11 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
 
 // ── SERP Country Selector ─────────────────────────────────────────────────────
 function CountrySelector({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  // US-first order: US at top, then rest
+  const usFirst = [
+    SERP_COUNTRIES.find(c => c.code === 'us')!,
+    ...SERP_COUNTRIES.filter(c => c.code !== 'us'),
+  ]
   return (
     <div className="flex items-center gap-2">
       <span className="text-gray-500 text-xs">SERP country:</span>
@@ -185,10 +190,10 @@ function CountrySelector({ value, onChange }: { value: string; onChange: (v: str
         onChange={e => onChange(e.target.value)}
         className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500 cursor-pointer"
       >
-        <option value="">🌐 Auto-detect</option>
-        {SERP_COUNTRIES.map(c => (
+        {usFirst.map(c => (
           <option key={c.code} value={c.code}>{c.flag} {c.label}</option>
         ))}
+        <option value="">🌐 Auto-detect</option>
       </select>
     </div>
   )
@@ -302,23 +307,31 @@ function IdeaDraftEditor({ brief, idea, onSaved }: {
 
 // ── Add More Ideas Panel (off-page) ───────────────────────────────────────────
 function AddMoreIdeasPanel({ brief, onAdded }: { brief: Brief; onAdded: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [type, setType] = useState<'blog_post' | 'forum' | 'social'>('blog_post')
+  const [open, setOpen]   = useState(false)
+  const [type, setType]   = useState<'blog_post' | 'forum' | 'social'>('blog_post')
   const [count, setCount] = useState(2)
   const [adding, setAdding] = useState(false)
-  const [msg, setMsg] = useState<string | null>(null)
+  const [done, setDone]   = useState(false)
+  const [err, setErr]     = useState<string | null>(null)
 
   async function handleAdd() {
-    setAdding(true); setMsg(null)
+    setAdding(true); setErr(null); setDone(false)
     try {
-      const res = await fetch('/api/brief/add-ideas', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief_id: brief.id, content_type: type, count }) })
+      const res = await fetch('/api/brief/add-ideas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brief_id: brief.id, content_type: type, count }),
+      })
       if (!res.ok) throw new Error()
-      setMsg('✓ Generating — refresh in ~20 sec')
+      setDone(true)
       onAdded()
-      setOpen(false)
-    } catch { setMsg('✗ Failed') } finally { setAdding(false) }
+      // Auto-close after showing success state
+      setTimeout(() => { setOpen(false); setDone(false) }, 2500)
+    } catch { setErr('Generation failed. Please try again.') }
+    finally { setAdding(false) }
   }
+
+  function handleClose() { setOpen(false); setDone(false); setErr(null) }
 
   return (
     <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-4 mt-4">
@@ -326,11 +339,28 @@ function AddMoreIdeasPanel({ brief, onAdded }: { brief: Brief; onAdded: () => vo
         <button onClick={() => setOpen(true)} className="w-full text-sm text-gray-400 hover:text-white transition flex items-center justify-center gap-2">
           <span className="text-lg">+</span> Add more ideas
         </button>
+      ) : adding ? (
+        /* ── Loading state ── */
+        <div className="flex flex-col items-center gap-3 py-4">
+          <LottieLoader size={70} />
+          <div className="text-center">
+            <p className="text-white text-sm font-semibold">Generating {count} {type === 'blog_post' ? 'Blog / Article' : type === 'forum' ? 'Forum' : 'Social'} idea{count !== 1 ? 's' : ''}…</p>
+            <p className="text-gray-500 text-xs mt-1">This takes ~20 seconds. Results will appear automatically.</p>
+          </div>
+        </div>
+      ) : done ? (
+        /* ── Success state ── */
+        <div className="flex flex-col items-center gap-2 py-3 text-center">
+          <p className="text-2xl">✅</p>
+          <p className="text-green-400 text-sm font-semibold">Ideas queued for generation!</p>
+          <p className="text-gray-500 text-xs">New ideas will appear on this page shortly.</p>
+        </div>
       ) : (
+        /* ── Form state ── */
         <>
           <p className="text-white text-sm font-semibold mb-3">Add more ideas</p>
           <div className="flex items-center gap-3 flex-wrap">
-            <select value={type} onChange={e => setType(e.target.value as any)}
+            <select value={type} onChange={e => setType(e.target.value as 'blog_post' | 'forum' | 'social')}
               className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-red-600">
               <option value="blog_post">📝 Blog / Article</option>
               <option value="forum">💬 Forum / Community</option>
@@ -342,18 +372,19 @@ function AddMoreIdeasPanel({ brief, onAdded }: { brief: Brief; onAdded: () => vo
               <button onClick={() => count < 5 && setCount(c => c + 1)} className="w-7 h-7 rounded border border-gray-600 text-gray-400 hover:text-white flex items-center justify-center">+</button>
               <span className="text-gray-500 text-xs">ideas</span>
             </div>
-            <button onClick={handleAdd} disabled={adding}
-              className="bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">
-              {adding ? 'Generating…' : 'Generate'}
+            <button onClick={handleAdd}
+              className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition">
+              Generate
             </button>
-            <button onClick={() => setOpen(false)} className="text-gray-500 hover:text-gray-300 text-xs transition">Cancel</button>
+            <button onClick={handleClose} className="text-gray-500 hover:text-gray-300 text-xs transition">Cancel</button>
           </div>
-          {msg && <p className={`text-xs mt-2 ${msg.startsWith('✓') ? 'text-green-400' : 'text-red-400'}`}>{msg}</p>}
+          {err && <p className="text-red-400 text-xs mt-2">{err}</p>}
         </>
       )}
     </div>
   )
 }
+
 
 // ── crew-vue Publish Panel (on-page only) ─────────────────────────────────────
 function CrewVuePanel({ brief }: { brief: Brief }) {
@@ -420,13 +451,27 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
   const [resolvingDmca, setResolvingDmca] = useState(false)
 
   // Keyword selection (on-page pre-generate step)
-  type KwCandidate = { keyword: string; search_volume?: number | null; cpc?: number | null; source: 'gsc' | 'dataforseo'; selected: boolean }
+  type KwCandidate = { keyword: string; search_volume?: number | null; cpc?: number | null; keyword_difficulty?: number | null; source: 'gsc' | 'dataforseo'; selected: boolean }
+  type KwSort = 'default' | 'volume_desc' | 'volume_asc' | 'words_asc' | 'words_desc'
   const [kwStep, setKwStep]           = useState<'hidden' | 'loading' | 'selecting'>('hidden')
   const [kwCandidates, setKwCandidates] = useState<KwCandidate[]>([])
   const [kwEnriching, setKwEnriching] = useState(false)  // DataForSEO suggestions loading in bg
+  const [kwVolEnriching, setKwVolEnriching] = useState(false)  // SEMrush volume enrichment
+  const [kwSort, setKwSort]           = useState<KwSort>('default')
   const [manualKw, setManualKw]       = useState('')
   const [customInstructions, setCustomInstructions] = useState('')
-  const [serpCountry, setSerpCountry] = useState('')  // '' = auto-detect from page URL
+  const [serpCountry, setSerpCountry] = useState('us')  // default to US (primary market)
+
+  // Sorted view of kwCandidates (does not mutate state order)
+  const kwSorted = (() => {
+    const indexed = kwCandidates.map((k, i) => ({ ...k, _idx: i }))
+    if (kwSort === 'default') return indexed
+    if (kwSort === 'volume_desc') return [...indexed].sort((a, b) => (b.search_volume ?? -1) - (a.search_volume ?? -1))
+    if (kwSort === 'volume_asc')  return [...indexed].sort((a, b) => (a.search_volume ?? 9999999) - (b.search_volume ?? 9999999))
+    if (kwSort === 'words_desc')  return [...indexed].sort((a, b) => b.keyword.split(' ').length - a.keyword.split(' ').length)
+    if (kwSort === 'words_asc')   return [...indexed].sort((a, b) => a.keyword.split(' ').length - b.keyword.split(' ').length)
+    return indexed
+  })()
 
   // Returns true if we should keep polling (initial gen OR any idea is generating)
   function shouldPoll(b: Brief): boolean {
@@ -518,6 +563,33 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
       })
     } catch { /* DataForSEO enrichment failed — GSC keywords still visible, that's fine */ }
     finally { setKwEnriching(false) }
+
+    // ── SEMrush volume enrichment (background) ──────────────────────────
+    // Enrich GSC keywords that have null search_volume using SEMrush phrase_these
+    setKwVolEnriching(true)
+    try {
+      // All GSC keywords lack volume — enrich them specifically
+      const gscKeywordsToEnrich = [...seedKws.map(k => k.keyword)]
+      if (gscKeywordsToEnrich.length > 0) {
+        const semRes = await fetch('/api/brief/keyword-volumes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keywords: gscKeywordsToEnrich, database: 'us' }),
+        })
+        if (semRes.ok) {
+          const { volumes } = await semRes.json() as {
+            volumes: Record<string, { search_volume: number; cpc: number; keyword_difficulty: number }>
+          }
+          setKwCandidates(prev => prev.map(k => {
+            if (k.search_volume != null) return k
+            const data = volumes[k.keyword.toLowerCase()]
+            if (!data) return k
+            return { ...k, search_volume: data.search_volume || null, cpc: data.cpc || null, keyword_difficulty: data.keyword_difficulty || null }
+          }))
+        }
+      }
+    } catch { /* SEMrush enrichment failed — volume stays null, not critical */ }
+    finally { setKwVolEnriching(false) }
   }
 
   async function handleGenerate(skipKwSelect = false) {
@@ -628,17 +700,50 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
           <div className="text-left">
             <div className="flex items-center gap-3 mb-1">
               <h2 className="text-white font-bold text-lg">Select Focus Keywords</h2>
-              {kwEnriching && <span className="text-xs text-gray-500 animate-pulse">⟳ Loading suggestions…</span>}
+              {kwEnriching    && <span className="text-xs text-gray-500 animate-pulse">⟳ Loading suggestions…</span>}
+              {kwVolEnriching && <span className="text-xs text-blue-400 animate-pulse">⟳ Fetching SEMrush volume…</span>}
             </div>
-            <p className="text-gray-400 text-sm mb-4">
+            <p className="text-gray-400 text-sm mb-3">
               Checked keywords will be prioritised in the content draft. GSC keywords are pre-selected (they already drive traffic).
             </p>
 
+            {/* Toolbar: Select All / Clear + Sort */}
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setKwCandidates(prev => prev.map(k => ({ ...k, selected: true })))}
+                  className="text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded transition"
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={() => setKwCandidates(prev => prev.map(k => ({ ...k, selected: false })))}
+                  className="text-xs px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded transition"
+                >
+                  Clear
+                </button>
+                <span className="text-xs text-gray-600">
+                  {kwCandidates.filter(k => k.selected).length}/{kwCandidates.length} selected
+                </span>
+              </div>
+              <select
+                value={kwSort}
+                onChange={e => setKwSort(e.target.value as typeof kwSort)}
+                className="text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded px-2 py-1 focus:outline-none focus:border-red-500"
+              >
+                <option value="default">Sort: default</option>
+                <option value="volume_desc">Volume ↓</option>
+                <option value="volume_asc">Volume ↑</option>
+                <option value="words_desc">Word count ↓</option>
+                <option value="words_asc">Word count ↑</option>
+              </select>
+            </div>
+
             {/* Keyword list */}
             <div className="space-y-1 max-h-80 overflow-y-auto mb-4 pr-1">
-              {kwCandidates.map((kw, i) => (
+              {kwSorted.map((kw) => (
                 <label
-                  key={i}
+                  key={kw._idx}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer transition ${
                     kw.selected ? 'bg-red-700/10 border border-red-700/30' : 'bg-gray-800 border border-gray-700'
                   }`}
@@ -646,7 +751,7 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
                   <input
                     type="checkbox"
                     checked={kw.selected}
-                    onChange={() => setKwCandidates(prev => prev.map((k, j) => j === i ? { ...k, selected: !k.selected } : k))}
+                    onChange={() => setKwCandidates(prev => prev.map((k, j) => j === kw._idx ? { ...k, selected: !k.selected } : k))}
                     className="accent-red-600 w-4 h-4 flex-shrink-0"
                   />
                   <span className="flex-1 text-sm text-white font-medium">{kw.keyword}</span>
@@ -654,10 +759,19 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
                     {kw.source === 'gsc' && (
                       <span className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded">GSC</span>
                     )}
-                    {kw.search_volume != null && (
-                      <span className="text-xs text-gray-500">{kw.search_volume.toLocaleString()} vol</span>
+                    {kw.search_volume != null ? (
+                      <span className="text-xs text-gray-400 font-medium">{kw.search_volume.toLocaleString()} vol</span>
+                    ) : kwVolEnriching ? (
+                      <span className="text-xs text-gray-600 animate-pulse">…</span>
+                    ) : null}
+                    {kw.keyword_difficulty != null && (
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                        kw.keyword_difficulty >= 70 ? 'bg-red-900/40 text-red-400' :
+                        kw.keyword_difficulty >= 40 ? 'bg-yellow-900/40 text-yellow-400' :
+                        'bg-green-900/40 text-green-400'
+                      }`}>KD {kw.keyword_difficulty}</span>
                     )}
-                    {kw.cpc != null && (
+                    {kw.cpc != null && kw.cpc > 0 && (
                       <span className="text-xs text-gray-600">${kw.cpc.toFixed(2)}</span>
                     )}
                   </div>

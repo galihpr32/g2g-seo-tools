@@ -73,6 +73,13 @@ export async function GET(request: Request) {
       const previous = toRankingRow(previousRows)
       const drops = detectRankingDrops(current, previous)
 
+      // Load notification prefs once per user (used by all 3 alert types below)
+      const { data: notifSettings } = await supabase
+        .from('notification_settings')
+        .select('slack_clicks_alerts, slack_cwv_alerts, slack_index_alerts')
+        .eq('user_id', conn.user_id)
+        .single()
+
       // Save raw ranking snapshot
       if (current.length) {
         await supabase.from('gsc_ranking_snapshots').upsert(
@@ -147,9 +154,8 @@ export async function GET(request: Request) {
         }
 
         // Send Slack alert only for alertable pages (respects URL pre-filter)
-        // Opt-in: set SLACK_CLICKS_ALERTS=true in Vercel env to enable
         const alertableDrops = drops.filter(d => isAlertablePage(d.page))
-        if (alertableDrops.length && process.env.SLACK_CLICKS_ALERTS === 'true') {
+        if (alertableDrops.length && (notifSettings?.slack_clicks_alerts ?? false)) {
           await sendRankingDropAlert(alertableDrops)
           await supabase.from('alert_log').insert({
             alert_type: 'ranking_drop',
@@ -184,12 +190,14 @@ export async function GET(request: Request) {
         errors: 0,
       }, { onConflict: 'site_url,snapshot_date' })
 
-      await sendIndexCoverageAlert({
-        indexedPages: totalIndexed,
-        previousIndexed: prevIndexed,
-        errors: 0,
-        previousErrors: prevErrors,
-      })
+      if (notifSettings?.slack_index_alerts ?? true) {
+        await sendIndexCoverageAlert({
+          indexedPages: totalIndexed,
+          previousIndexed: prevIndexed,
+          errors: 0,
+          previousErrors: prevErrors,
+        })
+      }
 
       // ── Task 3: Core Web Vitals ─────────────────────────────────────────
       const origin = new URL(siteUrl.replace('sc-domain:', 'https://')).origin
@@ -223,7 +231,7 @@ export async function GET(request: Request) {
           if (cwv.inp.poor - prevCWV.inp_poor > THRESHOLD)
             degradations.push({ origin, metric: 'INP', current: cwv.inp.poor, previous: prevCWV.inp_poor })
 
-          if (degradations.length) {
+          if (degradations.length && (notifSettings?.slack_cwv_alerts ?? false)) {
             await sendCWVAlert(degradations)
             await supabase.from('alert_log').insert({
               alert_type: 'cwv',

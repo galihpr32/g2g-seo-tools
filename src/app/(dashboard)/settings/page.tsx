@@ -405,6 +405,41 @@ export default function SettingsPage() {
   const [syncResult, setSyncResult] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'connections' | 'team'>('connections')
 
+  // Notification settings
+  const [notifLoading, setNotifLoading] = useState(false)
+  const [notifSaving, setNotifSaving] = useState(false)
+  const [notifSettings, setNotifSettings] = useState({
+    slack_clicks_alerts: false,
+    slack_cwv_alerts:    false,
+    slack_index_alerts:  true,
+  })
+
+  useEffect(() => {
+    async function loadNotifSettings() {
+      try {
+        setNotifLoading(true)
+        const res = await fetch('/api/settings/notifications')
+        if (res.ok) setNotifSettings(await res.json())
+      } catch { /* silent */ }
+      finally { setNotifLoading(false) }
+    }
+    loadNotifSettings()
+  }, [])
+
+  async function saveNotifSetting(key: keyof typeof notifSettings, value: boolean) {
+    const updated = { ...notifSettings, [key]: value }
+    setNotifSettings(updated)
+    setNotifSaving(true)
+    try {
+      await fetch('/api/settings/notifications', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      })
+    } catch { /* silent */ }
+    finally { setNotifSaving(false) }
+  }
+
   useEffect(() => {
     async function loadStatus() {
       setLoadingStatus(true)
@@ -648,6 +683,50 @@ export default function SettingsPage() {
 
       {/* ── Team tab ─────────────────────────────────────────────────────────── */}
       {activeTab === 'team' && <TeamSection />}
+
+      {/* ── Slack Notification Toggles ───────────────────────────────────────── */}
+      {slack.connected && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-white font-semibold">🔔 Slack Notification Settings</h2>
+              <p className="text-gray-500 text-xs mt-0.5">
+                Control which alerts get sent to your Slack channel via the GSC daily cron.
+              </p>
+            </div>
+            {notifSaving && <span className="text-xs text-gray-500 animate-pulse">Saving…</span>}
+            {notifLoading && <span className="text-xs text-gray-500 animate-pulse">Loading…</span>}
+          </div>
+
+          <div className="space-y-3">
+            {([
+              { key: 'slack_clicks_alerts' as const, label: 'Clicks Drop Alert', desc: 'Notify when pages lose >15% organic clicks WoW', icon: '📉' },
+              { key: 'slack_index_alerts'  as const, label: 'Index Coverage Alert', desc: 'Notify when indexed pages drop by 50+ or new crawl errors appear', icon: '🔍' },
+              { key: 'slack_cwv_alerts'    as const, label: 'Core Web Vitals Alert', desc: 'Notify when LCP / CLS / INP poor ratio degrades by >5%', icon: '⚡' },
+            ] as const).map(({ key, label, desc, icon }) => (
+              <div key={key} className="flex items-center justify-between py-2 border-b border-gray-800 last:border-0">
+                <div>
+                  <p className="text-sm text-white font-medium">{icon} {label}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{desc}</p>
+                </div>
+                <button
+                  onClick={() => saveNotifSetting(key, !notifSettings[key])}
+                  disabled={notifLoading || notifSaving}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                    notifSettings[key] ? 'bg-red-600' : 'bg-gray-700'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      notifSettings[key] ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── API Diagnostic (always visible at bottom) ────────────────────────── */}
       <DiagnosticPanel />
