@@ -335,6 +335,13 @@ function PositionSparkline({ history }: { history: PositionHistory }) {
   )
 }
 
+// ── Types for GA4 analytics ──────────────────────────────────────────────────
+type BacklinkAnalytics = {
+  id: string
+  sessions: number | null
+  conversions: number | null
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function BacklinksPage() {
   const [backlinks, setBacklinks] = useState<Backlink[]>([])
@@ -345,6 +352,10 @@ export default function BacklinksPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [refreshResult, setRefreshResult] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [analyticsMap, setAnalyticsMap] = useState<Map<string, BacklinkAnalytics>>(new Map())
+  const [analyticsNote, setAnalyticsNote] = useState<string | null>(null)
+  const [analyticsDays, setAnalyticsDays] = useState(30)
+  const [analyticsTotals, setAnalyticsTotals] = useState<{ sessions: number | null; conversions: number | null } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -356,7 +367,20 @@ export default function BacklinksPage() {
     setLoading(false)
   }, [])
 
+  const loadAnalytics = useCallback(async (days: number) => {
+    try {
+      const res = await fetch(`/api/backlinks/analytics?days=${days}`)
+      const data = await res.json()
+      if (data.note) setAnalyticsNote(data.note)
+      const map = new Map<string, BacklinkAnalytics>()
+      for (const b of data.byBacklink ?? []) map.set(b.id, b)
+      setAnalyticsMap(map)
+      setAnalyticsTotals(data.summary ?? null)
+    } catch { /* silent */ }
+  }, [])
+
   useEffect(() => { load() }, [load])
+  useEffect(() => { loadAnalytics(analyticsDays) }, [loadAnalytics, analyticsDays])
 
   async function handleAdd(form: FormData) {
     const res = await fetch('/api/backlinks', {
@@ -469,6 +493,82 @@ export default function BacklinksPage() {
                   <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* GA4 Analytics panel */}
+          {backlinks.length > 0 && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-white font-semibold text-sm">📈 GA4 Click Analytics</h2>
+                  <p className="text-gray-500 text-xs mt-0.5">Sessions driven from each backlink via UTM / referral matching</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {[7, 30, 90].map(d => (
+                    <button key={d} onClick={() => setAnalyticsDays(d)}
+                      className={`text-xs px-2.5 py-1 rounded-lg transition ${analyticsDays === d ? 'bg-red-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}>
+                      {d}d
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {analyticsNote && (
+                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2 text-yellow-400 text-xs mb-4">
+                  {analyticsNote}
+                </div>
+              )}
+
+              {analyticsTotals && analyticsTotals.sessions !== null && (
+                <div className="flex gap-6 mb-4 pb-4 border-b border-gray-800">
+                  <div>
+                    <p className="text-2xl font-bold text-white">{analyticsTotals.sessions?.toLocaleString()}</p>
+                    <p className="text-xs text-gray-500">Total sessions (last {analyticsDays}d)</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-green-400">{analyticsTotals.conversions?.toLocaleString()}</p>
+                    <p className="text-xs text-gray-500">Total conversions</p>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                {backlinks
+                  .filter(b => b.link_status === 'active')
+                  .map(b => {
+                    const analytics = analyticsMap.get(b.id)
+                    const sessions    = analytics?.sessions
+                    const conversions = analytics?.conversions
+                    const maxSessions = Math.max(...Array.from(analyticsMap.values()).map(a => a.sessions ?? 0), 1)
+                    return (
+                      <div key={b.id} className="flex items-center gap-3">
+                        <div className="w-40 flex-shrink-0">
+                          <p className="text-xs text-gray-300 truncate">{b.site_name}</p>
+                          <p className="text-[10px] text-gray-600 truncate">{b.anchor_text}</p>
+                        </div>
+                        <div className="flex-1">
+                          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-blue-600 rounded-full transition-all"
+                              style={{ width: sessions != null ? `${((sessions) / maxSessions) * 100}%` : '0%' }} />
+                          </div>
+                        </div>
+                        <div className="text-right flex-shrink-0 w-28">
+                          {sessions != null ? (
+                            <span className="text-xs text-white font-medium">
+                              {sessions.toLocaleString()} sessions
+                              {conversions != null && conversions > 0 && (
+                                <span className="text-green-400 ml-1">· {conversions} conv</span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-600">—</span>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+              </div>
             </div>
           )}
 

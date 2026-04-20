@@ -45,6 +45,12 @@ interface ActionItemsData {
   byAssignee: { email: string; assigned: number; completed: number; inProgress: number }[]
 }
 
+interface SovRow {
+  domain: string
+  sov: number
+  keywords: number
+}
+
 interface ReportData {
   weekStart: string
   weekEnd: string
@@ -52,7 +58,11 @@ interface ReportData {
   ga4: Ga4Data | null
   semrush: SemrushData
   actionItems: ActionItemsData
-  competitive: { trackedCompetitors: { domain: string; name?: string }[] }
+  competitive: {
+    trackedCompetitors: { domain: string; name?: string }[]
+    sovTable: SovRow[]
+    sovKeywordCount: number
+  }
 }
 
 interface WeeklyReport {
@@ -571,23 +581,71 @@ export default function WeeklyReportPage() {
                 )}
               </div>
 
-              {/* ── Competitive ── */}
-              {d.competitive.trackedCompetitors.length > 0 && (
-                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                  <h3 className="text-sm font-semibold text-white mb-3">👁️ Tracked Competitors</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {d.competitive.trackedCompetitors.map(c => (
-                      <span key={c.domain} className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded-full flex items-center gap-1.5">
-                        <img src={`https://www.google.com/s2/favicons?domain=${c.domain}&sz=16`} alt="" className="w-3 h-3" />
-                        {c.name || c.domain}
-                      </span>
-                    ))}
-                  </div>
-                  <p className="text-xs text-gray-600 mt-2">
-                    Run <a href="/competitive/serp-tracker" className="text-red-400 hover:text-red-300">SERP Tracker</a> for full Share of Voice breakdown.
-                  </p>
+              {/* ── Competitive SoV ── */}
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-semibold text-white">👁️ Share of Voice</h3>
+                  {d.competitive.sovKeywordCount > 0 && (
+                    <span className="text-xs text-gray-500">{d.competitive.sovKeywordCount} tracked keywords</span>
+                  )}
                 </div>
-              )}
+
+                {d.competitive.sovTable.length > 0 ? (
+                  <div className="space-y-2.5">
+                    {d.competitive.sovTable.map(row => {
+                      const isG2G = row.domain === 'g2g.com'
+                      const maxSov = d.competitive.sovTable[0]?.sov ?? 1
+                      return (
+                        <div key={row.domain} className="flex items-center gap-3">
+                          <div className="flex items-center gap-1.5 w-36 flex-shrink-0">
+                            <img src={`https://www.google.com/s2/favicons?domain=${row.domain}&sz=16`} alt="" className="w-3 h-3 flex-shrink-0" />
+                            <span className={`text-xs truncate ${isG2G ? 'text-white font-semibold' : 'text-gray-300'}`}>{row.domain}</span>
+                          </div>
+                          <div className="flex-1">
+                            <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${isG2G ? 'bg-red-600' : 'bg-gray-600'}`}
+                                style={{ width: `${(row.sov / maxSov) * 100}%` }}
+                              />
+                            </div>
+                          </div>
+                          <span className={`text-xs font-semibold w-12 text-right flex-shrink-0 ${isG2G ? 'text-red-400' : 'text-gray-400'}`}>
+                            {row.sov}%
+                          </span>
+                          <span className="text-[10px] text-gray-600 w-16 text-right flex-shrink-0">
+                            {row.keywords} kws
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div>
+                    {d.competitive.trackedCompetitors.length > 0 ? (
+                      <div>
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          {d.competitive.trackedCompetitors.map(c => (
+                            <span key={c.domain} className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded-full flex items-center gap-1.5">
+                              <img src={`https://www.google.com/s2/favicons?domain=${c.domain}&sz=16`} alt="" className="w-3 h-3" />
+                              {c.name || c.domain}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          No SERP snapshot data yet. Run{' '}
+                          <a href="/competitive/serp-tracker" className="text-red-400 hover:text-red-300">SERP Tracker</a>{' '}
+                          to start tracking Share of Voice for your keywords.
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        No competitors tracked yet.{' '}
+                        <a href="/competitive/competitors" className="text-red-400 hover:text-red-300">Add competitors →</a>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* ── AI Action Plan ── */}
               {report.ai_action_plan && (

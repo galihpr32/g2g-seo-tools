@@ -3,8 +3,16 @@ import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getDomainKeywords } from '@/lib/semrush/client'
 import { getRefreshedClient } from '@/lib/gsc/auth'
+import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
 import Anthropic from '@anthropic-ai/sdk'
+
+// CTR curve for SoV calculation (positions 1–10)
+const CTR_CURVE: Record<number, number> = {
+  1: 0.284, 2: 0.146, 3: 0.099, 4: 0.073, 5: 0.057,
+  6: 0.045, 7: 0.036, 8: 0.029, 9: 0.023, 10: 0.019,
+}
+function normalizeDomain(d: string) { return d.replace(/^www\./, '').toLowerCase() }
 
 export const maxDuration = 60
 
@@ -166,9 +174,37 @@ export async function POST(req: Request) {
       .limit(5),
   ])
 
-  // ── Process GSC ─────────────────────────────────────────────────────────────
-  const curSnaps  = gscCurrent.data  ?? []
-  const prevSnaps = gscPrevious.data ?? []
+  // ── Process GSC — fallback to live API if no snapshot data exists ───────────
+  let curSnaps  = gscCurrent.data  ?? []
+  let prevSnaps = gscPrevious.data ?? []
+
+  if (curSnaps.length === 0 && conn?.access_token && siteUrl) {
+    try {
+      const gscAuth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
+      const [curRows, prevRows] = await Promise.all([
+        getSearchAnalytics(gscAuth, siteUrl, weekStart, weekEnd, ['page'], 1000),
+        getSearchAnalytics(gscAuth, siteUrl, prevWeekStart, prevWeekEnd, ['page'], 1000),
+      ])
+      curSnaps = curRows.map(r => ({
+        page:         r.keys?.[0] ?? '',
+        clicks:       r.clicks ?? 0,
+        impressions:  r.impressions ?? 0,
+        ctr:          r.ctr ?? 0,
+        position:     r.position ?? 0,
+        snapshot_date: weekEnd,
+      }))
+      prevSnaps = prevRows.map(r => ({
+        page:         r.keys?.[0] ?? '',
+        clicks:       r.clicks ?? 0,
+        impressions:  r.impressions ?? 0,
+        ctr:          r.ctr ?? 0,
+        position:     r.position ?? 0,
+        snapshot_date: prevWeekEnd,
+      }))
+    } catch (e) {
+      console.warn('[weekly-report] GSC live API fallback failed:', e)
+    }
+  }
 
   const sumBy = (rows: typeof curSnaps) => {
     let clicks = 0, impressions = 0, posSum = 0, count = 0
@@ -290,10 +326,14 @@ export async function POST(req: Request) {
         const avgBounce    = bounceArr.length ? bounceArr.reduce((a, b) => a + b, 0) / bounceArr.length : 0
 
         const organicPages = topRows
-          .filter(r => r.sessionDefaultChannelGroup?.toLowerCase().includes('organic'))
+          .filter(r =>
+            r.sessionDefaultChannelGroup?.toLowerCase().includes('organic') &&
+            (r.pagePath ?? '').includes('/categories/') &&
+            !(r.pagePath ?? '').includes('/offer/')
+          )
           .map(r => ({ pagePath: r.pagePath ?? '', sessions: parseInt(r.sessions ?? '0') }))
           .sort((a, b) => b.sessions - a.sessions)
-          .slice(0, 8)
+          .slice(0, 10)
 
         ga4Data = {
           weekSessions,
@@ -309,9 +349,71 @@ export async function POST(req: Request) {
     console.warn('[weekly-report] GA4 fetch failed:', e)
   }
 
-  // ── Competitive ──────────────────────────────────────────────────────────────
+  // ── Competitive: SoV from serp_snapshots ────────────────────────────────────
+  const competitorList = (competitors.data ?? []).map(c => ({ domain: c.domain, name: c.name }))
+
+  let sovTable: { domain: string; sov: number; keywords: number }[] = []
+  let sovKeywordCount = 0
+
+  try {
+    // Get most recent serp snapshots (last 30 days, latest per keyword)
+    const { data: snapshots } = await supabase
+      .from('serp_snapshots')
+      .select('keyword, search_volume, results, snapshot_date')
+      .eq('owner_user_id', ownerId)
+      .gte('snapshot_date', new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10))
+      .order('snapshot_date', { ascending: false })
+
+    if (snapshots && snapshots.length > 0) {
+      // Keep latest snapshot per keyword
+      const latestByKeyword = new Map<string, typeof snapshots[0]>()
+      for (const snap of snapshots) {
+        if (!latestByKeyword.has(snap.keyword)) latestByKeyword.set(snap.keyword, snap)
+      }
+      sovKeywordCount = latestByKeyword.size
+
+      // Compute raw SoV per domain
+      const rawSov = new Map<string, number>()
+      const kwCount = new Map<string, number>()
+      for (const snap of latestByKeyword.values()) {
+        const vol = snap.search_volume ?? 0
+        const results = (snap.results ?? []) as { domain?: string; rank_absolute?: number }[]
+        for (const r of results) {
+          if (!r.domain) continue
+          const dom = normalizeDomain(r.domain)
+          const pos = r.rank_absolute ?? 99
+          const ctr = CTR_CURVE[pos] ?? 0
+          rawSov.set(dom, (rawSov.get(dom) ?? 0) + ctr * vol)
+          kwCount.set(dom, (kwCount.get(dom) ?? 0) + 1)
+        }
+      }
+
+      // Normalize to percentages
+      const totalRaw = Array.from(rawSov.values()).reduce((a, b) => a + b, 0)
+      if (totalRaw > 0) {
+        // Include G2G + tracked competitors
+        const allDomains = new Set([
+          'g2g.com',
+          ...competitorList.map(c => normalizeDomain(c.domain)),
+        ])
+        sovTable = Array.from(allDomains)
+          .map(dom => ({
+            domain:   dom,
+            sov:      Math.round(((rawSov.get(dom) ?? 0) / totalRaw) * 1000) / 10,
+            keywords: kwCount.get(dom) ?? 0,
+          }))
+          .filter(r => r.sov > 0 || r.domain === 'g2g.com')
+          .sort((a, b) => b.sov - a.sov)
+      }
+    }
+  } catch (e) {
+    console.warn('[weekly-report] SoV computation failed:', e)
+  }
+
   const competitiveData = {
-    trackedCompetitors: (competitors.data ?? []).map(c => ({ domain: c.domain, name: c.name })),
+    trackedCompetitors: competitorList,
+    sovTable,
+    sovKeywordCount,
   }
 
   // ── Assemble report_data ─────────────────────────────────────────────────────
