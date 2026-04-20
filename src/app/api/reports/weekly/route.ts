@@ -219,7 +219,8 @@ export async function POST(req: Request) {
       p.impressions += r.impressions ?? 0
       pageMap.set(r.page, p)
     }
-    return { clicks, impressions, avgPosition: count ? +(posSum / count).toFixed(1) : 0, pageMap }
+    const ctr = impressions > 0 ? +(clicks / impressions * 100).toFixed(2) : 0
+    return { clicks, impressions, avgPosition: count ? +(posSum / count).toFixed(1) : 0, ctr, pageMap }
   }
 
   const cur  = sumBy(curSnaps)
@@ -242,6 +243,9 @@ export async function POST(req: Request) {
     weekImpressions:     cur.impressions,
     prevWeekImpressions: prev.impressions,
     impressionsPct:      pctChange(cur.impressions, prev.impressions),
+    weekCtr:             cur.ctr,
+    prevWeekCtr:         prev.ctr,
+    ctrPct:              pctChange(Math.round(cur.ctr * 100), Math.round(prev.ctr * 100)),
     avgPosition:         cur.avgPosition,
     totalUniquePages:    cur.pageMap.size,
     topGainers:          topGainers.map(p => ({ page: p.page, delta: p.delta, clicks: p.curClicks })),
@@ -302,7 +306,9 @@ export async function POST(req: Request) {
   let ga4Data: {
     weekSessions: number; prevWeekSessions: number; sessionsPct: number | null
     engagedSessions: number; bounceRate: number
-    topPages: { pagePath: string; sessions: number }[]
+    totalConversions: number; prevConversions: number; conversionsPct: number | null
+    totalRevenue: number; prevRevenue: number; revenuePct: number | null
+    topPages: { pagePath: string; sessions: number; conversions: number; revenue: number }[]
   } | null = null
 
   try {
@@ -311,19 +317,26 @@ export async function POST(req: Request) {
       if (ga4PropertyId) {
         const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
         const [thisWeekRaw, prevWeekRaw, topPagesRaw] = await Promise.all([
-          getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd, ['date'], ['sessions', 'engagedSessions', 'bounceRate'], 7),
-          getGA4Report(ga4Auth, ga4PropertyId, prevWeekStart, prevWeekEnd, ['date'], ['sessions', 'engagedSessions', 'bounceRate'], 7),
-          getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd, ['pagePath', 'sessionDefaultChannelGroup'], ['sessions'], 20),
+          getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd,
+            ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'conversions', 'purchaseRevenue'], 7),
+          getGA4Report(ga4Auth, ga4PropertyId, prevWeekStart, prevWeekEnd,
+            ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'conversions', 'purchaseRevenue'], 7),
+          getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd,
+            ['pagePath', 'sessionDefaultChannelGroup'], ['sessions', 'conversions', 'purchaseRevenue'], 30),
         ])
         const thisRows = parseGA4Rows(thisWeekRaw)
         const prevRows = parseGA4Rows(prevWeekRaw)
         const topRows  = parseGA4Rows(topPagesRaw)
 
-        const weekSessions = sumMetric(thisRows, 'sessions')
-        const prevSessions = sumMetric(prevRows, 'sessions')
-        const weekEngaged  = sumMetric(thisRows, 'engagedSessions')
-        const bounceArr    = thisRows.map(r => parseFloat(r.bounceRate ?? '0')).filter(n => !isNaN(n))
-        const avgBounce    = bounceArr.length ? bounceArr.reduce((a, b) => a + b, 0) / bounceArr.length : 0
+        const weekSessions    = sumMetric(thisRows, 'sessions')
+        const prevSessions    = sumMetric(prevRows, 'sessions')
+        const weekEngaged     = sumMetric(thisRows, 'engagedSessions')
+        const totalConversions = sumMetric(thisRows, 'conversions')
+        const prevConversions  = sumMetric(prevRows, 'conversions')
+        const totalRevenue     = thisRows.reduce((s, r) => s + parseFloat(r.purchaseRevenue ?? '0'), 0)
+        const prevRevenue      = prevRows.reduce((s, r) => s + parseFloat(r.purchaseRevenue ?? '0'), 0)
+        const bounceArr        = thisRows.map(r => parseFloat(r.bounceRate ?? '0')).filter(n => !isNaN(n))
+        const avgBounce        = bounceArr.length ? bounceArr.reduce((a, b) => a + b, 0) / bounceArr.length : 0
 
         const organicPages = topRows
           .filter(r =>
@@ -331,7 +344,12 @@ export async function POST(req: Request) {
             (r.pagePath ?? '').includes('/categories/') &&
             !(r.pagePath ?? '').includes('/offer/')
           )
-          .map(r => ({ pagePath: r.pagePath ?? '', sessions: parseInt(r.sessions ?? '0') }))
+          .map(r => ({
+            pagePath:    r.pagePath ?? '',
+            sessions:    parseInt(r.sessions ?? '0'),
+            conversions: parseInt(r.conversions ?? '0'),
+            revenue:     parseFloat(r.purchaseRevenue ?? '0'),
+          }))
           .sort((a, b) => b.sessions - a.sessions)
           .slice(0, 10)
 
@@ -341,6 +359,12 @@ export async function POST(req: Request) {
           sessionsPct:      pctChange(weekSessions, prevSessions),
           engagedSessions:  weekEngaged,
           bounceRate:       +avgBounce.toFixed(2),
+          totalConversions,
+          prevConversions,
+          conversionsPct:   pctChange(totalConversions, prevConversions),
+          totalRevenue:     +totalRevenue.toFixed(2),
+          prevRevenue:      +prevRevenue.toFixed(2),
+          revenuePct:       pctChange(Math.round(totalRevenue), Math.round(prevRevenue)),
           topPages:         organicPages,
         }
       }
@@ -497,27 +521,34 @@ function buildNarrativePrompt(d: {
   weekStart: string; weekEnd: string
   gsc: {
     weekClicks: number; prevWeekClicks: number; clicksPct: number | null
-    weekImpressions: number; avgPosition: number
+    weekImpressions: number; weekCtr: number; prevWeekCtr: number; avgPosition: number
     topGainers: { page: string; delta: number }[]
     topDroppers: { page: string; delta: number }[]
   }
-  ga4: { weekSessions: number; prevWeekSessions: number; sessionsPct: number | null; bounceRate: number } | null
+  ga4: {
+    weekSessions: number; prevWeekSessions: number; sessionsPct: number | null
+    bounceRate: number
+    totalConversions: number; prevConversions: number; conversionsPct: number | null
+    totalRevenue: number; prevRevenue: number; revenuePct: number | null
+  } | null
   semrush: { totalKeywords: number; top3: number; top10: number; topMoversUp: { keyword: string; position: number; positionDiff: number; volume: number }[]; topMoversDown: { keyword: string; position: number; positionDiff: number; volume: number }[] }
   actionItems: { total: number; pending: number; inProgress: number; done: number; assignedThisWeek: number; completedThisWeek: number }
   competitive: { trackedCompetitors: { domain: string; name?: string }[] }
 }): string {
   const fmtUrl = (url: string) => url.replace('https://www.g2g.com', '').replace('https://g2g.com', '') || '/'
-  const gainers = d.gsc.topGainers.map(g => `  • ${fmtUrl(g.page)} (+${g.delta} clicks)`).join('\n') || '  None'
+  const fmtUsd = (n: number) => n > 0 ? `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '$0'
+  const gainers  = d.gsc.topGainers.map(g => `  • ${fmtUrl(g.page)} (+${g.delta} clicks)`).join('\n') || '  None'
   const droppers = d.gsc.topDroppers.map(g => `  • ${fmtUrl(g.page)} (${g.delta} clicks)`).join('\n') || '  None'
-  const kwUp   = d.semrush.topMoversUp.slice(0, 5).map(k => `  • "${k.keyword}" pos ${k.position} (↑${k.positionDiff})`).join('\n') || '  None'
-  const kwDown = d.semrush.topMoversDown.slice(0, 5).map(k => `  • "${k.keyword}" pos ${k.position} (↓${Math.abs(k.positionDiff)})`).join('\n') || '  None'
+  const kwUp     = d.semrush.topMoversUp.slice(0, 5).map(k => `  • "${k.keyword}" pos ${k.position} (↑${k.positionDiff})`).join('\n') || '  None'
+  const kwDown   = d.semrush.topMoversDown.slice(0, 5).map(k => `  • "${k.keyword}" pos ${k.position} (↓${Math.abs(k.positionDiff)})`).join('\n') || '  None'
   const competitors = d.competitive.trackedCompetitors.map(c => c.domain).join(', ') || 'none tracked'
+  const pctStr = (v: number | null) => v != null ? `${v > 0 ? '+' : ''}${v}%` : 'n/a'
 
   return `You are an expert SEO strategist analyzing weekly performance data for G2G.com — a gaming marketplace (gift cards, game items, top-up) primarily targeting the US market.
 
 Analyze the following weekly SEO data (${d.weekStart} to ${d.weekEnd}) and write:
 1. A clear, insightful narrative (3–4 paragraphs) that:
-   - Explains what happened this week (use actual numbers)
+   - Explains what happened this week (use actual numbers including revenue when available)
    - Gives context for WHY metrics moved (seasonal, competitive, technical, content quality)
    - Highlights key risks and opportunities
    - Uses confident, direct language — no fluff
@@ -525,16 +556,19 @@ Analyze the following weekly SEO data (${d.weekStart} to ${d.weekEnd}) and write
 
 DATA:
 GSC Performance:
-- Clicks this week: ${d.gsc.weekClicks.toLocaleString()} (prev: ${d.gsc.prevWeekClicks.toLocaleString()}, ${d.gsc.clicksPct != null ? (d.gsc.clicksPct > 0 ? '+' : '') + d.gsc.clicksPct + '%' : 'n/a'})
+- Clicks: ${d.gsc.weekClicks.toLocaleString()} (prev: ${d.gsc.prevWeekClicks.toLocaleString()}, ${pctStr(d.gsc.clicksPct)})
 - Impressions: ${d.gsc.weekImpressions.toLocaleString()}
+- CTR: ${d.gsc.weekCtr}% (prev: ${d.gsc.prevWeekCtr}%)
 - Avg position: ${d.gsc.avgPosition}
 Top gaining pages:
 ${gainers}
 Top dropping pages:
 ${droppers}
 
-${d.ga4 ? `GA4 Organic Sessions:
-- This week: ${d.ga4.weekSessions.toLocaleString()} (prev: ${d.ga4.prevWeekSessions.toLocaleString()}, ${d.ga4.sessionsPct != null ? (d.ga4.sessionsPct > 0 ? '+' : '') + d.ga4.sessionsPct + '%' : 'n/a'})
+${d.ga4 ? `GA4 Performance:
+- Organic sessions: ${d.ga4.weekSessions.toLocaleString()} (prev: ${d.ga4.prevWeekSessions.toLocaleString()}, ${pctStr(d.ga4.sessionsPct)})
+- Conversions: ${d.ga4.totalConversions.toLocaleString()} (prev: ${d.ga4.prevConversions.toLocaleString()}, ${pctStr(d.ga4.conversionsPct)})
+- Revenue: ${fmtUsd(d.ga4.totalRevenue)} (prev: ${fmtUsd(d.ga4.prevRevenue)}, ${pctStr(d.ga4.revenuePct)})
 - Bounce rate: ${(d.ga4.bounceRate * 100).toFixed(1)}%` : 'GA4: Not available'}
 
 SEMrush Keywords:

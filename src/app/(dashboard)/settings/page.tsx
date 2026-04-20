@@ -151,7 +151,7 @@ function TeamSection() {
           {pending.length > 0 && (
             <div>
               <h4 className="text-xs font-semibold text-yellow-400 uppercase tracking-wider mb-2 px-1">
-                ⏳ Waiting for sign-up / approval ({pending.length})
+                ⏳ Pending ({pending.length}) — approve after sign-up, or ⚡ Force Activate if invited via Supabase
               </h4>
               <div className="space-y-2">
                 {pending.map(m => (
@@ -259,14 +259,19 @@ function MemberRow({
 
       {/* Actions */}
       <div className="flex items-center gap-2 flex-shrink-0">
-        {m.status === 'pending' && hasSignedUp && (
+        {m.status === 'pending' && (
           <>
             <button
               onClick={() => onAction(m.id, 'approve')}
               disabled={isBusy('approve')}
-              className="text-xs px-3 py-1.5 rounded-lg bg-green-700 hover:bg-green-600 text-white font-medium transition disabled:opacity-50"
+              title={hasSignedUp ? 'Member has signed up — approve access' : 'Force activate (e.g. invited manually via Supabase)'}
+              className={`text-xs px-3 py-1.5 rounded-lg font-medium transition disabled:opacity-50 ${
+                hasSignedUp
+                  ? 'bg-green-700 hover:bg-green-600 text-white'
+                  : 'border border-gray-600 text-gray-400 hover:border-green-600 hover:text-green-400'
+              }`}
             >
-              {isBusy('approve') ? '…' : '✓ Approve'}
+              {isBusy('approve') ? '…' : hasSignedUp ? '✓ Approve' : '⚡ Force Activate'}
             </button>
             <button
               onClick={() => onAction(m.id, 'reject')}

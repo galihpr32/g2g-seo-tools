@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type KBCategory = 'brand' | 'category' | 'platform'
+type KBCategory = 'brand' | 'category' | 'platform' | 'usp'
 
 interface KBItem {
   id: string
@@ -31,7 +31,6 @@ interface ScanResult {
   resolved: number
 }
 
-// ─── Brand data shape ─────────────────────────────────────────────────────────
 interface BrandData {
   tone?: string
   audience?: string
@@ -40,16 +39,14 @@ interface BrandData {
   notes?: string
 }
 
-// ─── Category data shape ──────────────────────────────────────────────────────
 interface CategoryData {
   description?: string
   buyer_intent?: string
-  keywords?: string[]
-  angle?: string
+  keywords?: string[]          // SEO Search Terms
+  content_angles?: string[]    // dedicated Content Angle section (multi-line)
   notes?: string
 }
 
-// ─── Platform data shape ──────────────────────────────────────────────────────
 interface PlatformData {
   writing_rules?: string
   format?: string
@@ -59,25 +56,32 @@ interface PlatformData {
   notes?: string
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+interface UspData {
+  description?: string
+  applicable_category_ids?: string[]
+}
+
+// ─── Shared field components ──────────────────────────────────────────────────
 
 function ArrayField({
   label,
   value,
   onChange,
   placeholder,
+  rows = 4,
 }: {
   label: string
   value: string[]
   onChange: (v: string[]) => void
   placeholder?: string
+  rows?: number
 }) {
   const text = (value ?? []).join('\n')
   return (
     <div>
       <label className="block text-xs font-medium text-gray-400 mb-1">{label}</label>
       <textarea
-        rows={4}
+        rows={rows}
         value={text}
         onChange={e => onChange(e.target.value.split('\n'))}
         placeholder={placeholder ?? 'One item per line'}
@@ -190,13 +194,7 @@ function BrandTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void
           disabled={suggesting}
           className="flex items-center gap-2 px-3 py-1.5 text-sm bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white rounded-lg transition"
         >
-          {suggesting ? (
-            <>
-              <span className="animate-spin text-base">⟳</span> Generating…
-            </>
-          ) : (
-            <>✨ AI Suggest</>
-          )}
+          {suggesting ? <><span className="animate-spin text-base">⟳</span> Generating…</> : <>✨ AI Suggest</>}
         </button>
       </div>
 
@@ -319,19 +317,33 @@ function CategoryItemForm({
             rows={2}
             placeholder="Transactional? Informational? Specific game?"
           />
+
+          {/* SEO Search Terms (renamed from Keywords) */}
           <ArrayField
-            label="Keywords (one per line)"
+            label="SEO Search Terms (one per line)"
             value={data.keywords ?? []}
             onChange={v => setData(d => ({ ...d, keywords: v }))}
-            placeholder={"buy mobile legends diamonds\ncheap in-game currency\n…"}
+            placeholder={"buy mobile legends diamonds\ncheap in-game currency\nml diamond top up\n…"}
           />
-          <TextField
-            label="Content Angle"
-            value={data.angle ?? ''}
-            onChange={v => setData(d => ({ ...d, angle: v }))}
-            rows={1}
-            placeholder="e.g. Safety/trust, price comparison, fastest delivery"
-          />
+
+          {/* Content Angle — dedicated section */}
+          <div className="rounded-xl border border-indigo-800/50 bg-indigo-950/30 p-4 space-y-2">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-indigo-400 text-sm">🎯</span>
+              <p className="text-indigo-300 text-xs font-semibold uppercase tracking-wider">Content Angles</p>
+            </div>
+            <p className="text-gray-500 text-xs mb-2">
+              The strategic angles writers should use for this category (one per line). e.g. "Safety & buyer protection", "Fastest delivery guarantee", "Price comparison vs competitors"
+            </p>
+            <textarea
+              rows={4}
+              value={(data.content_angles ?? []).join('\n')}
+              onChange={e => setData(d => ({ ...d, content_angles: e.target.value.split('\n') }))}
+              placeholder={"Safety & buyer protection\nFastest delivery guarantee\nPrice comparison vs competitors\n…"}
+              className="w-full bg-gray-800 border border-indigo-800/40 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 resize-none"
+            />
+          </div>
+
           <TextField
             label="Notes"
             value={data.notes ?? ''}
@@ -410,11 +422,10 @@ function CategoriesTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () =>
       <div>
         <h2 className="text-white font-semibold">Product Categories</h2>
         <p className="text-gray-400 text-sm mt-0.5">
-          Per-category context injected when generating briefs for that category.
+          Per-category context injected when generating briefs. SEO Search Terms = keyword variants for that category (e.g. "Buy WoW Gold", "Cheap WoW Gold").
         </p>
       </div>
 
-      {/* Add new */}
       <div className="flex gap-2">
         <input
           type="text"
@@ -660,6 +671,208 @@ function PlatformsTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => 
   )
 }
 
+// ─── USP Item Form ────────────────────────────────────────────────────────────
+
+function UspItemForm({
+  item,
+  categoryItems,
+  onSave,
+  onDelete,
+}: {
+  item: KBItem
+  categoryItems: KBItem[]
+  onSave: (id: string, name: string, data: UspData) => Promise<void>
+  onDelete: (id: string) => Promise<void>
+}) {
+  const [name, setName] = useState(item.name)
+  const [data, setData] = useState<UspData>(item.data as UspData)
+  const [saving, setSaving] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  function toggleCategory(catId: string) {
+    const current = data.applicable_category_ids ?? []
+    const updated = current.includes(catId)
+      ? current.filter(id => id !== catId)
+      : [...current, catId]
+    setData(d => ({ ...d, applicable_category_ids: updated }))
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    await onSave(item.id, name, data)
+    setSaving(false)
+  }
+
+  const selectedCount = (data.applicable_category_ids ?? []).length
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800 transition text-left"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-white font-medium text-sm">{item.name}</span>
+          {selectedCount > 0 && (
+            <span className="text-xs px-1.5 py-0.5 rounded-full bg-amber-700/40 text-amber-300 border border-amber-700/50">
+              {selectedCount} {selectedCount === 1 ? 'category' : 'categories'}
+            </span>
+          )}
+        </div>
+        <span className="text-gray-400 text-sm">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-4 border-t border-gray-800 pt-4">
+          <TextField
+            label="USP Name"
+            value={name}
+            onChange={setName}
+            rows={1}
+            placeholder="e.g. Fastest Delivery, Buyer Protection, Lowest Price Guarantee"
+          />
+          <TextField
+            label="Description"
+            value={data.description ?? ''}
+            onChange={v => setData(d => ({ ...d, description: v }))}
+            rows={3}
+            placeholder="Explain this unique selling point — what it means for buyers and how writers should convey it…"
+          />
+
+          {/* Category checkboxes */}
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-2">
+              Applies to Categories
+            </label>
+            {categoryItems.length === 0 ? (
+              <p className="text-gray-600 text-xs italic">No categories defined yet — add them in the Categories tab.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {categoryItems.map(cat => {
+                  const checked = (data.applicable_category_ids ?? []).includes(cat.id)
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => toggleCategory(cat.id)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                        checked
+                          ? 'bg-amber-700/30 border-amber-600 text-amber-300'
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+                      }`}
+                    >
+                      <span>{checked ? '✓' : '+'}</span>
+                      {cat.name}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg transition"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              onClick={() => onDelete(item.id)}
+              className="text-xs text-gray-500 hover:text-red-400 transition"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── USP Tab ──────────────────────────────────────────────────────────────────
+
+function UspTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void }) {
+  const uspItems      = items.filter(i => i.category === 'usp')
+  const categoryItems = items.filter(i => i.category === 'category')
+  const [newName, setNewName] = useState('')
+  const [adding, setAdding]   = useState(false)
+
+  async function handleAdd() {
+    if (!newName.trim()) return
+    setAdding(true)
+    await fetch('/api/knowledge-base', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: 'usp', name: newName.trim(), data: { applicable_category_ids: [] } }),
+    })
+    setNewName('')
+    setAdding(false)
+    onRefresh()
+  }
+
+  async function handleSave(id: string, name: string, data: UspData) {
+    await fetch(`/api/knowledge-base/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, data }),
+    })
+    onRefresh()
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this USP?')) return
+    await fetch(`/api/knowledge-base/${id}`, { method: 'DELETE' })
+    onRefresh()
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-white font-semibold">Unique Selling Points (USPs)</h2>
+        <p className="text-gray-400 text-sm mt-0.5">
+          Global USPs that writers should emphasize. Tick which categories each USP applies to — this gets injected into brief generation.
+        </p>
+      </div>
+
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={newName}
+          onChange={e => setNewName(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleAdd()}
+          placeholder="New USP name (e.g. Fastest Delivery, Buyer Protection)…"
+          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
+        />
+        <button
+          onClick={handleAdd}
+          disabled={adding || !newName.trim()}
+          className="px-4 py-2 text-sm bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg transition"
+        >
+          {adding ? 'Adding…' : '+ Add'}
+        </button>
+      </div>
+
+      {uspItems.length === 0 ? (
+        <p className="text-gray-500 text-sm text-center py-8">No USPs yet. Add one above.</p>
+      ) : (
+        <div className="space-y-2">
+          {uspItems.map(item => (
+            <UspItemForm
+              key={item.id}
+              item={item}
+              categoryItems={categoryItems}
+              onSave={handleSave}
+              onDelete={handleDelete}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── DMCA Terms Tab ───────────────────────────────────────────────────────────
 
 function DmcaTab() {
@@ -695,9 +908,7 @@ function DmcaTab() {
         notes:            newNotes.trim() || undefined,
       }),
     })
-    setNewOriginal('')
-    setNewReplacement('')
-    setNewNotes('')
+    setNewOriginal(''); setNewReplacement(''); setNewNotes('')
     setAdding(false)
     fetchTerms()
   }
@@ -740,15 +951,10 @@ function DmcaTab() {
           disabled={scanning}
           className="flex items-center gap-2 px-3 py-1.5 text-sm bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white rounded-lg transition"
         >
-          {scanning ? (
-            <><span className="animate-spin">⟳</span> Scanning…</>
-          ) : (
-            <>🔍 Scan Published Briefs</>
-          )}
+          {scanning ? <><span className="animate-spin">⟳</span> Scanning…</> : <>🔍 Scan Published Briefs</>}
         </button>
       </div>
 
-      {/* Scan result banner */}
       {scanResult && (
         <div className={`rounded-lg px-4 py-3 text-sm border ${
           scanResult.hits > 0
@@ -756,22 +962,13 @@ function DmcaTab() {
             : 'bg-green-900/30 border-green-700 text-green-300'
         }`}>
           {scanResult.hits > 0 ? (
-            <>
-              ⚠️ Found <strong>{scanResult.hits}</strong> flagged term
-              {scanResult.hits !== 1 ? 's' : ''} across <strong>{scanResult.scanned}</strong> published
-              briefs. Go to <span className="underline cursor-pointer">Notifications</span> to review.
-            </>
+            <>⚠️ Found <strong>{scanResult.hits}</strong> flagged term{scanResult.hits !== 1 ? 's' : ''} across <strong>{scanResult.scanned}</strong> published briefs. Go to Notifications to review.</>
           ) : (
-            <>
-              ✓ All clear — scanned {scanResult.scanned} published briefs,
-              no restricted terms found.{' '}
-              {scanResult.resolved > 0 && `(${scanResult.resolved} previously flagged items resolved)`}
-            </>
+            <>✓ All clear — scanned {scanResult.scanned} published briefs, no restricted terms found.{scanResult.resolved > 0 && ` (${scanResult.resolved} previously flagged items resolved)`}</>
           )}
         </div>
       )}
 
-      {/* Add new term */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 space-y-3">
         <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Add Term</p>
         <div className="grid grid-cols-2 gap-3">
@@ -812,7 +1009,6 @@ function DmcaTab() {
         </button>
       </div>
 
-      {/* Terms table */}
       {loading ? (
         <p className="text-gray-500 text-sm text-center py-8">Loading…</p>
       ) : terms.length === 0 ? (
@@ -822,29 +1018,16 @@ function DmcaTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-800">
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  Original Term
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  Replace With
-                </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider hidden md:table-cell">
-                  Notes
-                </th>
-                <th className="text-center px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  Active
-                </th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Original Term</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Replace With</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider hidden md:table-cell">Notes</th>
+                <th className="text-center px-4 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">Active</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody>
               {terms.map((term, i) => (
-                <tr
-                  key={term.id}
-                  className={`border-b border-gray-800 last:border-0 ${
-                    i % 2 === 0 ? '' : 'bg-gray-800/30'
-                  }`}
-                >
+                <tr key={term.id} className={`border-b border-gray-800 last:border-0 ${i % 2 === 0 ? '' : 'bg-gray-800/30'}`}>
                   {editId === term.id ? (
                     <EditTermRow
                       term={term}
@@ -863,38 +1046,20 @@ function DmcaTab() {
                     <>
                       <td className="px-4 py-3 text-white font-mono">{term.original_term}</td>
                       <td className="px-4 py-3 text-green-400 font-mono">{term.replacement_term}</td>
-                      <td className="px-4 py-3 text-gray-400 hidden md:table-cell">
-                        {term.notes ?? '—'}
-                      </td>
+                      <td className="px-4 py-3 text-gray-400 hidden md:table-cell">{term.notes ?? '—'}</td>
                       <td className="px-4 py-3 text-center">
                         <button
                           onClick={() => handleToggleActive(term)}
-                          className={`w-8 h-4 rounded-full transition-colors ${
-                            term.active ? 'bg-green-600' : 'bg-gray-600'
-                          }`}
+                          className={`w-8 h-4 rounded-full transition-colors ${term.active ? 'bg-green-600' : 'bg-gray-600'}`}
                           title={term.active ? 'Active — click to disable' : 'Inactive — click to enable'}
                         >
-                          <span
-                            className={`block w-3 h-3 bg-white rounded-full transition-transform mx-0.5 ${
-                              term.active ? 'translate-x-4' : 'translate-x-0'
-                            }`}
-                          />
+                          <span className={`block w-3 h-3 bg-white rounded-full transition-transform mx-0.5 ${term.active ? 'translate-x-4' : 'translate-x-0'}`} />
                         </button>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2 justify-end">
-                          <button
-                            onClick={() => setEditId(term.id)}
-                            className="text-xs text-gray-400 hover:text-white transition"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDelete(term.id)}
-                            className="text-xs text-gray-500 hover:text-red-400 transition"
-                          >
-                            Del
-                          </button>
+                          <button onClick={() => setEditId(term.id)} className="text-xs text-gray-400 hover:text-white transition">Edit</button>
+                          <button onClick={() => handleDelete(term.id)} className="text-xs text-gray-500 hover:text-red-400 transition">Del</button>
                         </div>
                       </td>
                     </>
@@ -910,66 +1075,42 @@ function DmcaTab() {
 }
 
 function EditTermRow({
-  term,
-  onSave,
-  onCancel,
+  term, onSave, onCancel,
 }: {
   term: DmcaTerm
   onSave: (patch: Partial<DmcaTerm>) => Promise<void>
   onCancel: () => void
 }) {
-  const [original, setOriginal] = useState(term.original_term)
+  const [original, setOriginal]       = useState(term.original_term)
   const [replacement, setReplacement] = useState(term.replacement_term)
-  const [notes, setNotes] = useState(term.notes ?? '')
-  const [saving, setSaving] = useState(false)
+  const [notes, setNotes]             = useState(term.notes ?? '')
+  const [saving, setSaving]           = useState(false)
 
   async function handleSave() {
     setSaving(true)
-    await onSave({
-      original_term:    original,
-      replacement_term: replacement,
-      notes:            notes || null,
-    })
+    await onSave({ original_term: original, replacement_term: replacement, notes: notes || null })
     setSaving(false)
   }
 
   return (
     <>
       <td className="px-4 py-2">
-        <input
-          value={original}
-          onChange={e => setOriginal(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-red-500"
-        />
+        <input value={original} onChange={e => setOriginal(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-red-500" />
       </td>
       <td className="px-4 py-2">
-        <input
-          value={replacement}
-          onChange={e => setReplacement(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-green-500"
-        />
+        <input value={replacement} onChange={e => setReplacement(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-green-500" />
       </td>
       <td className="px-4 py-2 hidden md:table-cell">
-        <input
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-500"
-          placeholder="Notes…"
-        />
+        <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Notes…"
+          className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-500" />
       </td>
       <td />
       <td className="px-4 py-2">
         <div className="flex gap-2 justify-end">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="text-xs text-green-400 hover:text-green-300 transition"
-          >
-            {saving ? '…' : 'Save'}
-          </button>
-          <button onClick={onCancel} className="text-xs text-gray-500 hover:text-white transition">
-            Cancel
-          </button>
+          <button onClick={handleSave} disabled={saving} className="text-xs text-green-400 hover:text-green-300 transition">{saving ? '…' : 'Save'}</button>
+          <button onClick={onCancel} className="text-xs text-gray-500 hover:text-white transition">Cancel</button>
         </div>
       </td>
     </>
@@ -978,12 +1119,12 @@ function EditTermRow({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-type Tab = 'brand' | 'categories' | 'platforms' | 'dmca'
+type Tab = 'brand' | 'categories' | 'usp' | 'platforms' | 'dmca'
 
 export default function KnowledgeBaseClient() {
   const [activeTab, setActiveTab] = useState<Tab>('brand')
-  const [items, setItems] = useState<KBItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const [items, setItems]         = useState<KBItem[]>([])
+  const [loading, setLoading]     = useState(true)
 
   const fetchItems = useCallback(async () => {
     const res = await fetch('/api/knowledge-base')
@@ -995,34 +1136,23 @@ export default function KnowledgeBaseClient() {
   useEffect(() => { fetchItems() }, [fetchItems])
 
   const tabs: { key: Tab; label: string; icon: string; count?: number }[] = [
-    { key: 'brand', label: 'Brand', icon: '🏷️' },
-    {
-      key: 'categories',
-      label: 'Categories',
-      icon: '🗂️',
-      count: items.filter(i => i.category === 'category').length,
-    },
-    {
-      key: 'platforms',
-      label: 'Platforms',
-      icon: '📡',
-      count: items.filter(i => i.category === 'platform').length,
-    },
-    { key: 'dmca', label: 'DMCA Terms', icon: '🚫' },
+    { key: 'brand',      label: 'Brand',      icon: '🏷️' },
+    { key: 'categories', label: 'Categories', icon: '🗂️', count: items.filter(i => i.category === 'category').length },
+    { key: 'usp',        label: 'USPs',       icon: '⭐', count: items.filter(i => i.category === 'usp').length },
+    { key: 'platforms',  label: 'Platforms',  icon: '📡', count: items.filter(i => i.category === 'platform').length },
+    { key: 'dmca',       label: 'DMCA Terms', icon: '🚫' },
   ]
 
   return (
     <div className="p-8 max-w-4xl">
-      {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">🧠 Knowledge Base</h1>
         <p className="text-gray-400 mt-1 text-sm">
-          Brand context, category rules, and platform guidelines injected into all AI content generation.
+          Brand context, category rules, USPs, and platform guidelines injected into all AI content generation.
         </p>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 mb-6 w-fit">
+      <div className="flex gap-1 bg-gray-900 border border-gray-800 rounded-xl p-1 mb-6 w-fit flex-wrap">
         {tabs.map(tab => (
           <button
             key={tab.key}
@@ -1036,9 +1166,7 @@ export default function KnowledgeBaseClient() {
             <span>{tab.icon}</span>
             <span>{tab.label}</span>
             {tab.count !== undefined && tab.count > 0 && (
-              <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                activeTab === tab.key ? 'bg-red-600' : 'bg-gray-700'
-              }`}>
+              <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab.key ? 'bg-red-600' : 'bg-gray-700'}`}>
                 {tab.count}
               </span>
             )}
@@ -1046,13 +1174,13 @@ export default function KnowledgeBaseClient() {
         ))}
       </div>
 
-      {/* Tab content */}
       {loading ? (
         <div className="text-center py-16 text-gray-500">Loading knowledge base…</div>
       ) : (
         <>
           {activeTab === 'brand'      && <BrandTab      items={items} onRefresh={fetchItems} />}
           {activeTab === 'categories' && <CategoriesTab items={items} onRefresh={fetchItems} />}
+          {activeTab === 'usp'        && <UspTab        items={items} onRefresh={fetchItems} />}
           {activeTab === 'platforms'  && <PlatformsTab  items={items} onRefresh={fetchItems} />}
           {activeTab === 'dmca'       && <DmcaTab />}
         </>

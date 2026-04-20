@@ -12,6 +12,9 @@ interface GscData {
   weekImpressions: number
   prevWeekImpressions: number
   impressionsPct: number | null
+  weekCtr: number
+  prevWeekCtr: number
+  ctrPct: number | null
   avgPosition: number
   totalUniquePages: number
   topGainers: { page: string; delta: number; clicks: number }[]
@@ -24,7 +27,13 @@ interface Ga4Data {
   sessionsPct: number | null
   engagedSessions: number
   bounceRate: number
-  topPages: { pagePath: string; sessions: number }[]
+  totalConversions: number
+  prevConversions: number
+  conversionsPct: number | null
+  totalRevenue: number
+  prevRevenue: number
+  revenuePct: number | null
+  topPages: { pagePath: string; sessions: number; conversions: number; revenue: number }[]
 }
 
 interface SemrushData {
@@ -86,6 +95,11 @@ interface ReportSummary {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number) { return n.toLocaleString() }
+function fmtUsd(n: number) {
+  if (n >= 1000000) return `$${(n / 1000000).toFixed(1)}M`
+  if (n >= 1000)    return `$${(n / 1000).toFixed(1)}K`
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+}
 function pctBadge(pct: number | null) {
   if (pct == null) return null
   const up = pct >= 0
@@ -396,24 +410,34 @@ export default function WeeklyReportPage() {
                 </div>
               </div>
 
-              {/* ── KPI Cards ── */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {/* ── KPI Cards — 2 rows of 3 ── */}
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                {/* Row 1: Search */}
                 <StatCard icon="🖱️" label="Clicks"
                   value={fmt(d.gsc.weekClicks)} pct={d.gsc.clicksPct}
                   sub={`prev ${fmt(d.gsc.prevWeekClicks)}`} />
                 <StatCard icon="👁️" label="Impressions"
                   value={fmt(d.gsc.weekImpressions)} pct={d.gsc.impressionsPct}
-                  sub={`pos ${d.gsc.avgPosition}`} />
+                  sub={`avg pos ${d.gsc.avgPosition}`} />
+                <StatCard icon="🎯" label="CTR"
+                  value={`${d.gsc.weekCtr}%`} pct={d.gsc.ctrPct}
+                  sub={`prev ${d.gsc.prevWeekCtr}%`} />
+                {/* Row 2: Revenue */}
                 {d.ga4 ? (
-                  <StatCard icon="📈" label="Organic Sessions"
-                    value={fmt(d.ga4.weekSessions)} pct={d.ga4.sessionsPct}
-                    sub={`prev ${fmt(d.ga4.prevWeekSessions)}`} />
+                  <>
+                    <StatCard icon="📈" label="Organic Sessions"
+                      value={fmt(d.ga4.weekSessions)} pct={d.ga4.sessionsPct}
+                      sub={`prev ${fmt(d.ga4.prevWeekSessions)}`} />
+                    <StatCard icon="💰" label="Revenue"
+                      value={fmtUsd(d.ga4.totalRevenue)} pct={d.ga4.revenuePct}
+                      sub={`prev ${fmtUsd(d.ga4.prevRevenue)}`} />
+                    <StatCard icon="🛒" label="Conversions"
+                      value={fmt(d.ga4.totalConversions)} pct={d.ga4.conversionsPct}
+                      sub={`prev ${fmt(d.ga4.prevConversions)}`} />
+                  </>
                 ) : (
                   <StatCard icon="📈" label="Organic Sessions" value="—" sub="GA4 not connected" />
                 )}
-                <StatCard icon="✅" label="Tasks Done"
-                  value={String(d.actionItems.completedThisWeek)}
-                  sub={`${d.actionItems.inProgress} in progress · ${d.actionItems.pending} pending`} />
               </div>
 
               {/* ── AI Narrative ── */}
@@ -525,18 +549,48 @@ export default function WeeklyReportPage() {
               {/* ── GA4 top pages ── */}
               {d.ga4 && d.ga4.topPages.length > 0 && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                  <h3 className="text-sm font-semibold text-white mb-4">📄 Top Organic Pages (GA4)</h3>
-                  <div className="space-y-2">
-                    {(() => {
-                      const maxSessions = Math.max(...d.ga4!.topPages.map(p => p.sessions))
-                      return d.ga4!.topPages.map(p => (
-                        <div key={p.pagePath} className="flex items-center gap-3">
-                          <p className="text-xs text-gray-300 truncate w-64">{p.pagePath}</p>
-                          <Bar value={p.sessions} max={maxSessions} color="bg-blue-600" />
-                          <p className="text-xs text-gray-400 w-16 text-right flex-shrink-0">{fmt(p.sessions)}</p>
-                        </div>
-                      ))
-                    })()}
+                  <h3 className="text-sm font-semibold text-white mb-4">📄 Top Organic Category Pages (GA4)</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-gray-800">
+                          <th className="text-left pb-2 text-gray-500 font-semibold uppercase tracking-wider">Page</th>
+                          <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-20">Sessions</th>
+                          <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Conversions</th>
+                          <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Revenue</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const maxSessions = Math.max(...d.ga4!.topPages.map(p => p.sessions), 1)
+                          return d.ga4!.topPages.map(p => (
+                            <tr key={p.pagePath} className="border-b border-gray-800/50 last:border-0">
+                              <td className="py-2 pr-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-gray-300 truncate max-w-xs">{p.pagePath}</p>
+                                    <div className="h-1 bg-gray-800 rounded-full mt-1 overflow-hidden w-full">
+                                      <div className="h-full bg-blue-600 rounded-full" style={{ width: `${Math.round((p.sessions / maxSessions) * 100)}%` }} />
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-2 text-right text-gray-300 font-medium">{fmt(p.sessions)}</td>
+                              <td className="py-2 text-right">
+                                <span className={p.conversions > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
+                                  {fmt(p.conversions)}
+                                </span>
+                              </td>
+                              <td className="py-2 text-right">
+                                <span className={p.revenue > 0 ? 'text-amber-400 font-medium' : 'text-gray-600'}>
+                                  {p.revenue > 0 ? fmtUsd(p.revenue) : '—'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        })()}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
