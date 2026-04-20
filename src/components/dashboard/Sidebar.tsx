@@ -69,9 +69,10 @@ const navItems = [
     ],
   },
   {
-    group: 'Monthly',
+    group: 'Reports',
     items: [
-      { label: 'SEO Report', href: '/reports/monthly', icon: '📊' },
+      { label: 'Weekly Pulse', href: '/reports/weekly', icon: '📊' },
+      { label: 'Monthly SEO', href: '/reports/monthly', icon: '📅' },
       { label: 'Backlink Audit', href: '/reports/backlinks', icon: '🔗' },
       { label: 'SERP Features', href: '/reports/serp-features', icon: '⭐' },
     ],
