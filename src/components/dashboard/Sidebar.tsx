@@ -53,10 +53,11 @@ const navItems = [
   {
     group: 'Competitive Analysis',
     items: [
-      { label: 'Competitors',        href: '/competitive/competitors',   icon: '👁️' },
-      { label: 'Keyword Gap',        href: '/competitive/keyword-gap',   icon: '🔍' },
-      { label: 'SERP & Share of Voice', href: '/competitive/serp-tracker', icon: '📊' },
-      { label: 'Page Analyzer',      href: '/competitive/page-analyzer', icon: '🔎' },
+      { label: 'Competitors',           href: '/competitive/competitors',   icon: '👁️' },
+      { label: 'Keyword Gap',           href: '/competitive/keyword-gap',   icon: '🔍' },
+      { label: 'Page Opportunities',    href: '/competitive/opportunities',  icon: '🆕' },
+      { label: 'SERP & Share of Voice', href: '/competitive/serp-tracker',  icon: '📊' },
+      { label: 'Page Analyzer',         href: '/competitive/page-analyzer', icon: '🔎' },
     ],
   },
   {

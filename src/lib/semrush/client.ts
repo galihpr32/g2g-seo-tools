@@ -32,7 +32,7 @@ export interface CompetitorDomain {
 // ─── Organic keyword rankings for a domain ───────────────────────────────────
 export async function getDomainKeywords(
   domain: string,
-  database = 'id',
+  database = 'us',
   limit = 100
 ): Promise<KeywordRanking[]> {
   const params = new URLSearchParams({
@@ -72,7 +72,7 @@ export async function getDomainKeywords(
 }
 
 // ─── Domain overview (backlinks, traffic estimate) ───────────────────────────
-export async function getDomainOverview(domain: string, database = 'id') {
+export async function getDomainOverview(domain: string, database = 'us') {
   const params = new URLSearchParams({
     type: 'domain_ranks',
     key: API_KEY,
@@ -107,7 +107,7 @@ export async function getDomainOverview(domain: string, database = 'id') {
 }
 
 // ─── Competitor domains ───────────────────────────────────────────────────────
-export async function getCompetitors(domain: string, database = 'id', limit = 10): Promise<CompetitorDomain[]> {
+export async function getCompetitors(domain: string, database = 'us', limit = 10): Promise<CompetitorDomain[]> {
   const params = new URLSearchParams({
     type: 'domain_organic_organic',
     key: API_KEY,

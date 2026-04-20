@@ -15,6 +15,9 @@ function estimatedCtr(position: number): number {
   return CTR_CURVE[position] ?? 0.01
 }
 
+// DataForSEO returns domains with www. prefix (e.g. "www.g2g.com") — normalize for consistent keys
+function normalizeDomain(d: string): string { return d.replace(/^www\./, '') }
+
 /**
  * POST /api/competitive/serp-track
  * Body: { keywords: string[], country_code: string, search_volumes?: Record<string,number> }
@@ -61,7 +64,7 @@ export async function POST(req: Request) {
       const vol = (search_volumes as Record<string, number>)[keyword.toLowerCase()] ?? 0
 
       const results = serpData.organicResults.map(r => ({
-        domain:   r.domain,
+        domain:   normalizeDomain(r.domain),   // normalize www. prefix
         position: r.rank_absolute,
         url:      r.url,
         title:    r.title,
@@ -145,10 +148,11 @@ export async function GET(req: Request) {
     const vol = snap.search_volume ?? 0
     for (const r of (snap.results as { domain: string; position: number }[]) ?? []) {
       if (r.position > 10) continue
+      const domain = normalizeDomain(r.domain)
       const ctr   = estimatedCtr(r.position)
       const score = ctr * 100
-      const existing = sovMap.get(r.domain) ?? { score: 0, kwCount: 0, estClicks: 0 }
-      sovMap.set(r.domain, {
+      const existing = sovMap.get(domain) ?? { score: 0, kwCount: 0, estClicks: 0 }
+      sovMap.set(domain, {
         score:     existing.score + score,
         kwCount:   existing.kwCount + 1,
         estClicks: existing.estClicks + vol * ctr,

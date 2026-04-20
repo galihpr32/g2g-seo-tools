@@ -13,9 +13,9 @@ export default async function CompetitorTrackingPage({
   searchParams: Promise<{ db?: string }>
 }) {
   const { db: dbParam } = await searchParams
-  // Validate the db param against known markets; default to 'id'
-  const db = SERP_COUNTRIES.find(c => c.semrushDb === dbParam)?.semrushDb ?? 'id'
-  const currentCountry = SERP_COUNTRIES.find(c => c.semrushDb === db) ?? SERP_COUNTRIES[0]
+  // Validate the db param against known markets; default to 'us'
+  const db = SERP_COUNTRIES.find(c => c.semrushDb === dbParam)?.semrushDb ?? 'us'
+  const currentCountry = SERP_COUNTRIES.find(c => c.semrushDb === db) ?? SERP_COUNTRIES.find(c => c.code === 'us')!
 
   const hasKey = !!process.env.SEMRUSH_API_KEY
 

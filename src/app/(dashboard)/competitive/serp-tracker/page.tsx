@@ -6,6 +6,9 @@ import { LottieLoader } from '@/components/ui/LottieLoader'
 
 const G2G_DOMAIN = 'g2g.com'
 
+// Strip www. prefix for domain comparison (DataForSEO returns www.g2g.com)
+function normalizeDomain(d: string) { return d.replace(/^www\./, '') }
+
 // CTR curve (same as backend)
 const CTR_CURVE: Record<number, number> = {
   1: 0.284, 2: 0.146, 3: 0.099, 4: 0.073, 5: 0.057,
@@ -22,7 +25,7 @@ interface Competitor     { id: string; domain: string; name: string; active: boo
 // ── Position badge ────────────────────────────────────────────────────────────
 function PosBadge({ pos, domain }: { pos: number | null; domain: string }) {
   if (pos === null) return <span className="text-gray-700 text-xs">—</span>
-  const isG2G  = domain === G2G_DOMAIN
+  const isG2G  = normalizeDomain(domain) === G2G_DOMAIN
   const color  = pos === 1 ? 'bg-green-500/20 text-green-400' : pos <= 3 ? 'bg-green-500/10 text-green-500' :
                  pos <= 10 ? 'bg-yellow-500/10 text-yellow-400' : 'bg-gray-800 text-gray-400'
   return (
@@ -34,7 +37,7 @@ function PosBadge({ pos, domain }: { pos: number | null; domain: string }) {
 
 // ── SoV bar ───────────────────────────────────────────────────────────────────
 function SovBar({ pct, domain }: { pct: number; domain: string }) {
-  const isG2G  = domain === G2G_DOMAIN
+  const isG2G  = normalizeDomain(domain) === G2G_DOMAIN
   const color  = isG2G ? 'bg-red-600' : 'bg-blue-600'
   return (
     <div className="flex items-center gap-2">
@@ -117,9 +120,9 @@ export default function SerpTrackerPage() {
   )
 
   // Domains to highlight in SERP view (G2G + active competitors)
+  // Normalized domain set for comparison (strip www.)
   const trackedDomains = useMemo(() => {
-    const domains = new Set([G2G_DOMAIN, ...competitors.map(c => c.domain)])
-    return domains
+    return new Set([G2G_DOMAIN, ...competitors.map(c => normalizeDomain(c.domain))])
   }, [competitors])
 
   async function runTracking() {
@@ -273,9 +276,9 @@ export default function SerpTrackerPage() {
                     <div key={domain} className="grid grid-cols-[1fr,2fr,80px,80px] items-center gap-4">
                       <div className="flex items-center gap-2 min-w-0">
                         <img src={`https://www.google.com/s2/favicons?sz=16&domain_url=${domain}`} alt="" className="w-4 h-4 flex-shrink-0" />
-                        <span className={`text-xs font-medium truncate ${domain === G2G_DOMAIN ? 'text-red-400' : trackedDomains.has(domain) ? 'text-blue-400' : 'text-gray-400'}`}>
+                        <span className={`text-xs font-medium truncate ${normalizeDomain(domain) === G2G_DOMAIN ? 'text-red-400' : trackedDomains.has(normalizeDomain(domain)) ? 'text-blue-400' : 'text-gray-400'}`}>
                           {domain}
-                          {domain === G2G_DOMAIN && <span className="ml-1 text-[10px] text-red-600">(us)</span>}
+                          {normalizeDomain(domain) === G2G_DOMAIN && <span className="ml-1 text-[10px] text-red-600">(us)</span>}
                         </span>
                       </div>
                       <SovBar pct={entry.sov_pct} domain={domain} />
@@ -352,7 +355,7 @@ export default function SerpTrackerPage() {
             <div className="space-y-2">
               {snapshots.map(snap => {
                 const isExpanded = expandedKw === snap.keyword
-                const g2gResult  = snap.results.find(r => r.domain === G2G_DOMAIN)
+                const g2gResult  = snap.results.find(r => normalizeDomain(r.domain) === G2G_DOMAIN)
 
                 return (
                   <div key={snap.keyword} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
@@ -386,8 +389,8 @@ export default function SerpTrackerPage() {
                           </thead>
                           <tbody>
                             {snap.results.map((r, i) => {
-                              const isG2G_   = r.domain === G2G_DOMAIN
-                              const isComp   = trackedDomains.has(r.domain) && !isG2G_
+                              const isG2G_   = normalizeDomain(r.domain) === G2G_DOMAIN
+                              const isComp   = trackedDomains.has(normalizeDomain(r.domain)) && !isG2G_
                               return (
                                 <tr key={i} className={`border-b border-gray-800/50 ${isG2G_ ? 'bg-red-500/5' : isComp ? 'bg-blue-500/5' : ''}`}>
                                   <td className="py-2 w-8">

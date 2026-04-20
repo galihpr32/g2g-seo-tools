@@ -9,7 +9,7 @@ type LoadingStep = 'crawling' | 'serp' | 'keywords' | 'domain'
 
 export default function UrlAnalysisPage() {
   const [url, setUrl] = useState('')
-  const [country, setCountry] = useState('id')
+  const [country, setCountry] = useState('us')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<UrlAnalysisResponse | null>(null)

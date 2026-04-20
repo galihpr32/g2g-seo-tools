@@ -28,9 +28,10 @@ export const SERP_COUNTRIES: CountryPreset[] = [
   { code: 'kr', label: 'South Korea',    flag: '🇰🇷', semrushDb: 'kr', dfsLocationCode: 2410, dfsLanguageCode: 'ko' },
 ]
 
-export const DEFAULT_COUNTRY = SERP_COUNTRIES[0] // Indonesia
+// G2G's primary market is the United States
+export const DEFAULT_COUNTRY = SERP_COUNTRIES.find(c => c.code === 'us')!
 
-/** Look up a preset by its code (case-insensitive). Falls back to Indonesia. */
+/** Look up a preset by its code (case-insensitive). Falls back to US. */
 export function getCountryPreset(code: string): CountryPreset {
   return SERP_COUNTRIES.find(c => c.code === code.toLowerCase()) ?? DEFAULT_COUNTRY
 }
