@@ -20,7 +20,7 @@ const navItems = [
     group: 'Daily — GSC',
     items: [
       { label: 'Clicks Drop Alert', href: '/gsc/ranking-drop', icon: '📉' },
-      { label: 'Product Rankings', href: '/gsc/product-rankings', icon: '🎯' },
+      { label: 'Top Product Tracker', href: '/gsc/product-rankings', icon: '🎯' },
       { label: 'Action Items', href: '/gsc/action-items', icon: '🎯' },
       { label: 'Index Coverage', href: '/gsc/index-coverage', icon: '🔍' },
       { label: 'Core Web Vitals', href: '/gsc/core-web-vitals', icon: '⚡' },
@@ -48,6 +48,15 @@ const navItems = [
       { label: 'Keyword Clustering', href: '/semrush/clustering', icon: '🗂️' },
       { label: 'Site Audit Digest', href: '/semrush/site-audit', icon: '🔧' },
       { label: 'Competitor Tracking', href: '/semrush/competitors', icon: '👁️' },
+    ],
+  },
+  {
+    group: 'Competitive Analysis',
+    items: [
+      { label: 'Competitors',        href: '/competitive/competitors',   icon: '👁️' },
+      { label: 'Keyword Gap',        href: '/competitive/keyword-gap',   icon: '🔍' },
+      { label: 'SERP & Share of Voice', href: '/competitive/serp-tracker', icon: '📊' },
+      { label: 'Page Analyzer',      href: '/competitive/page-analyzer', icon: '🔎' },
     ],
   },
   {

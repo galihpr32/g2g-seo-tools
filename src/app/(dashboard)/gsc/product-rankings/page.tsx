@@ -232,7 +232,7 @@ export default function ProductRankingsPage() {
       {/* Header */}
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">🎯 Product Rankings</h1>
+          <h1 className="text-2xl font-bold text-white">🎯 Top Product Tracker</h1>
           <p className="text-gray-400 text-sm mt-1">
             Track daily keyword positions for your top G2G product pages.
             {products.length > 0 && ` ${activeProducts.length} active · ${products.length} total`}

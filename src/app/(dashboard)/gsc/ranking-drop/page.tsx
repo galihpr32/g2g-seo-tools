@@ -197,6 +197,7 @@ export default async function RankingDropPage() {
           totalTracked={totalTracked}
           alerts={alerts ?? []}
           snapshotDate={today}
+          siteUrl={conn.site_url}
         />
       )}
     </div>
