@@ -63,22 +63,26 @@ export async function POST(request: Request) {
     u => u.email?.toLowerCase() === email.toLowerCase()
   )
 
+  // Only treat as an existing confirmed user if they've actually verified their email.
+  // An unconfirmed user (e.g. from a previous broken invite) still needs a new invite email.
+  const isConfirmed = !!existingUser?.email_confirmed_at
+
   const { data: member, error } = await supabase
     .from('workspace_members')
     .insert({
       owner_user_id:  user.id,
       member_email:   email.toLowerCase(),
-      member_user_id: existingUser?.id ?? null,
+      member_user_id: isConfirmed ? existingUser!.id : null,
       role:           role === 'manager' ? 'manager' : 'member',
-      status:         existingUser ? 'active' : 'pending',
+      status:         isConfirmed ? 'active' : 'pending',
     })
     .select()
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // Send invitation email via Supabase if user doesn't exist yet
-  if (!existingUser) {
+  // Send invitation email for any user who hasn't confirmed their account yet
+  if (!isConfirmed) {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.NEXTAUTH_URL ?? ''
     await serviceSupabase.auth.admin.inviteUserByEmail(email.toLowerCase(), {
       redirectTo: `${appUrl}/dashboard`,
