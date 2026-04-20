@@ -80,6 +80,7 @@ export async function GET(req: Request) {
 // ── POST /api/reports/weekly — generate a new weekly report ───────────────────
 // Body: { week_start?: string, week_end?: string }  (defaults to latest completed week)
 export async function POST(req: Request) {
+  try {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -481,8 +482,8 @@ export async function POST(req: Request) {
     sovEstimated,
   }
 
-  // ── Assemble report_data (AI sections added after generation below) ──────────
-  const reportData: Record<string, unknown> = {
+  // ── Base report data (AI sections added below after generation) ─────────────
+  const baseReportData = {
     weekStart,
     weekEnd,
     gsc: gscData,
@@ -497,7 +498,7 @@ export async function POST(req: Request) {
   // ── Generate AI narrative + issues + action plans ────────────────────────────
   const narrativePrompt = buildNarrativePrompt({
     weekStart, weekEnd,
-    gsc: gscData,
+    gsc:  gscData,
     ga4: ga4Data,
     semrush: semrushData,
     actionItems: actionItemsData,
@@ -533,10 +534,13 @@ export async function POST(req: Request) {
     aiNarrative  = '_AI narrative could not be generated. Check Anthropic API key._'
   }
 
-  // Stash new AI sections into report_data so old reports degrade gracefully
-  reportData.aiIssues         = aiIssues
-  reportData.aiManagementPlan = aiManagementPlan
-  reportData.aiTeamPlan       = aiTeamPlan
+  // ── Assemble final report_data (includes AI sections for new reports) ────────
+  const reportData = {
+    ...baseReportData,
+    aiIssues,
+    aiManagementPlan,
+    aiTeamPlan,
+  }
 
   // ── Save report ──────────────────────────────────────────────────────────────
   const { data: saved, error: saveErr } = await supabase
@@ -554,6 +558,10 @@ export async function POST(req: Request) {
 
   if (saveErr) return NextResponse.json({ error: saveErr.message }, { status: 500 })
   return NextResponse.json({ report: saved })
+  } catch (err: unknown) {
+    console.error('[weekly-report] Unhandled POST error:', err)
+    return NextResponse.json({ error: String(err) }, { status: 500 })
+  }
 }
 
 // ── DELETE /api/reports/weekly?id=xxx ─────────────────────────────────────────
