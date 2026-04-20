@@ -51,7 +51,7 @@ interface ActionItemsData {
   done: number
   assignedThisWeek: number
   completedThisWeek: number
-  byAssignee: { email: string; assigned: number; completed: number; inProgress: number }[]
+  byAssignee?: { email: string; assigned: number; completed: number; inProgress: number }[]
 }
 
 interface SovRow {
@@ -68,9 +68,9 @@ interface ReportData {
   semrush: SemrushData
   actionItems: ActionItemsData
   competitive: {
-    trackedCompetitors: { domain: string; name?: string }[]
-    sovTable: SovRow[]
-    sovKeywordCount: number
+    trackedCompetitors?: { domain: string; name?: string }[]
+    sovTable?: SovRow[]
+    sovKeywordCount?: number
   }
 }
 
@@ -615,11 +615,11 @@ export default function WeeklyReportPage() {
                     <p className="text-[10px] text-gray-500 mt-0.5">Still open</p>
                   </div>
                 </div>
-                {d.actionItems.byAssignee.filter(a => a.email !== '(unassigned)').length > 0 && (
+                {(d.actionItems.byAssignee ?? []).filter(a => a.email !== '(unassigned)').length > 0 && (
                   <>
                     <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-3">By Team Member</p>
                     <div className="space-y-2">
-                      {d.actionItems.byAssignee.filter(a => a.email !== '(unassigned)').map(a => {
+                      {(d.actionItems.byAssignee ?? []).filter(a => a.email !== '(unassigned)').map(a => {
                         const completionRate = a.assigned > 0 ? Math.round((a.completed / a.assigned) * 100) : 0
                         return (
                           <div key={a.email} className="flex items-center gap-3">
@@ -642,16 +642,16 @@ export default function WeeklyReportPage() {
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-white">👁️ Share of Voice</h3>
-                  {d.competitive.sovKeywordCount > 0 && (
+                  {(d.competitive.sovKeywordCount ?? 0) > 0 && (
                     <span className="text-xs text-gray-500">{d.competitive.sovKeywordCount} tracked keywords</span>
                   )}
                 </div>
 
-                {d.competitive.sovTable.length > 0 ? (
+                {(d.competitive.sovTable ?? []).length > 0 ? (
                   <div className="space-y-2.5">
-                    {d.competitive.sovTable.map(row => {
+                    {(d.competitive.sovTable ?? []).map(row => {
                       const isG2G = row.domain === 'g2g.com'
-                      const maxSov = d.competitive.sovTable[0]?.sov ?? 1
+                      const maxSov = (d.competitive.sovTable ?? [])[0]?.sov ?? 1
                       return (
                         <div key={row.domain} className="flex items-center gap-3">
                           <div className="flex items-center gap-1.5 w-36 flex-shrink-0">
@@ -678,10 +678,10 @@ export default function WeeklyReportPage() {
                   </div>
                 ) : (
                   <div>
-                    {d.competitive.trackedCompetitors.length > 0 ? (
+                    {(d.competitive.trackedCompetitors ?? []).length > 0 ? (
                       <div>
                         <div className="flex flex-wrap gap-2 mb-3">
-                          {d.competitive.trackedCompetitors.map(c => (
+                          {(d.competitive.trackedCompetitors ?? []).map(c => (
                             <span key={c.domain} className="text-xs bg-gray-800 text-gray-300 px-3 py-1.5 rounded-full flex items-center gap-1.5">
                               <img src={`https://www.google.com/s2/favicons?domain=${c.domain}&sz=16`} alt="" className="w-3 h-3" />
                               {c.name || c.domain}
