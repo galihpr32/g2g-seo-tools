@@ -41,7 +41,8 @@ const navItems = [
     group: 'Content',
     defaultOpen: false,
     items: [
-      { label: 'Content Studio',   href: '/content/briefs',  icon: '✍️' },
+      { label: 'Game Trends',     href: '/content/trends',  icon: '🎮' },
+      { label: 'Content Studio',  href: '/content/studio',  icon: '✍️' },
       { label: 'Knowledge Base',  href: '/knowledge-base',  icon: '🧠' },
     ],
   },

@@ -206,6 +206,40 @@ export async function getDomainRankedKeywords(
   })).filter(i => i.keyword)
 }
 
+// ─── Google Trends ────────────────────────────────────────────────────────────
+// Returns relative interest (0-100) over the past 30 days for each keyword.
+export interface TrendPoint { date: string; values: Record<string, number> }
+
+export async function getGoogleTrends(
+  keywords: string[],
+  locationCode = 2840,  // United States
+  languageCode  = 'en',
+  timeRange     = 'past_30_days'
+): Promise<TrendPoint[]> {
+  if (!keywords.length) return []
+  const data = await dfsPost<any>('/keywords_data/google_trends/explore/live', [
+    {
+      keywords: keywords.slice(0, 5),  // max 5 per request
+      time_range: timeRange,
+      type: 'web_search',
+      category_code: 0,
+      location_code: locationCode,
+      language_code: languageCode,
+    },
+  ])
+
+  const items: any[] = data?.tasks?.[0]?.result?.[0]?.items ?? []
+  const timelineItem = items.find((i: any) => i.type === 'google_trends_graph')
+  if (!timelineItem?.data) return []
+
+  // data is an array of {date_from, date_to, values: [{keyword, value}]}
+  return (timelineItem.data as any[]).map(point => {
+    const values: Record<string, number> = {}
+    for (const v of point.values ?? []) values[v.keyword] = v.value ?? 0
+    return { date: point.date_from?.split('T')[0] ?? '', values }
+  })
+}
+
 // ─── SERP for multiple keywords (batch) ─────────────────────────────────────
 // Run SERP for top 3 GSC queries of the page to get comprehensive PAA + related
 export async function batchSerpData(
