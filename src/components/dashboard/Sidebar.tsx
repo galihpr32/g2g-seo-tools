@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useState, useEffect } from 'react'
+import SiteSwitcher from './SiteSwitcher'
 
 const navItems = [
   {
@@ -79,11 +80,19 @@ const navItems = [
   },
 ]
 
+const KNOWN_SITE_SLUGS = ['g2g', 'offgamers']
+
 export default function Sidebar() {
   const pathname = usePathname()
   const router   = useRouter()
   const supabase = createClient()
   const [notifCount, setNotifCount] = useState(0)
+
+  // Detect current site from URL prefix (e.g. /offgamers/reports/weekly → offgamers)
+  const pathParts = pathname.split('/').filter(Boolean)
+  const activeSite = pathParts.length > 0 && KNOWN_SITE_SLUGS.includes(pathParts[0])
+    ? pathParts[0]
+    : null
 
   useEffect(() => {
     async function fetchCount() {
@@ -114,8 +123,8 @@ export default function Sidebar() {
   return (
     <aside className="w-60 min-h-screen bg-gray-900 border-r border-gray-800 flex flex-col">
       {/* Brand */}
-      <div className="px-5 py-5 border-b border-gray-800">
-        <div className="flex items-center gap-2.5">
+      <div className="px-5 pt-5 pb-3 border-b border-gray-800">
+        <div className="flex items-center gap-2.5 mb-3">
           <div className="w-8 h-8 rounded-lg bg-red-700 flex items-center justify-center flex-shrink-0">
             <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -126,6 +135,8 @@ export default function Sidebar() {
             <p className="text-gray-500 text-xs">Marketing · SEO</p>
           </div>
         </div>
+        {/* Site switcher */}
+        <SiteSwitcher />
       </div>
 
       {/* Nav */}
@@ -137,11 +148,18 @@ export default function Sidebar() {
             </p>
             <ul className="space-y-0.5">
               {group.items.map(item => {
-                const active = pathname === item.href
+                // For site-aware pages (weekly report), prefix with active site slug
+                const siteAwarePaths = ['/reports/weekly']
+                const resolvedHref = activeSite && siteAwarePaths.includes(item.href)
+                  ? `/${activeSite}${item.href}`
+                  : item.href
+
+                // Active when exact match or matches with site prefix
+                const active = pathname === item.href || pathname === resolvedHref
                 return (
                   <li key={item.href}>
                     <Link
-                      href={item.href}
+                      href={resolvedHref}
                       className={`flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition ${
                         active
                           ? 'bg-red-700 text-white font-medium'

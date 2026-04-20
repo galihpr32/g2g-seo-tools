@@ -124,9 +124,7 @@ function pctBadge(pct: number | null) {
   )
 }
 
-function fmtUrl(url: string) {
-  return url.replace('https://www.g2g.com', '').replace('https://g2g.com', '') || '/'
-}
+// fmtUrl is defined inside the component to capture the site prop — see below
 
 function weekLabel(start: string, end: string) {
   const s = new Date(start + 'T00:00:00')
@@ -228,7 +226,19 @@ function ActionPlan({ raw }: { raw: string }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function WeeklyReportPage() {
+export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
+  // Site-aware URL formatter — strips the site's origin from page URLs
+  const fmtUrl = (url: string) => {
+    const origins = [`https://www.${site}.com`, `https://${site}.com`]
+    let result = url
+    for (const o of origins) result = result.replace(o, '')
+    // Handle offgamers specifically
+    if (site === 'offgamers') {
+      result = result.replace('https://www.offgamers.com', '').replace('https://offgamers.com', '')
+    }
+    return result || '/'
+  }
+
   const [reports, setReports]         = useState<ReportSummary[]>([])
   const [selectedId, setSelectedId]   = useState<string | null>(null)
   const [report, setReport]           = useState<WeeklyReport | null>(null)
@@ -247,7 +257,7 @@ export default function WeeklyReportPage() {
   const loadList = useCallback(async () => {
     setLoadingList(true)
     try {
-      const res = await fetch('/api/reports/weekly')
+      const res = await fetch(`/api/reports/weekly?site=${site}`)
       if (res.ok) {
         const { reports: list } = await res.json()
         setReports(list ?? [])
@@ -279,7 +289,7 @@ export default function WeeklyReportPage() {
       const res = await fetch('/api/reports/weekly', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ week_start: customStart, week_end: customEnd }),
+        body: JSON.stringify({ site, week_start: customStart, week_end: customEnd }),
       })
       const { report: r, error: e } = await res.json()
       if (e) { setError(e); return }
@@ -823,10 +833,51 @@ export default function WeeklyReportPage() {
       {/* Print styles */}
       <style jsx global>{`
         @media print {
-          body { background: white; color: black; }
+          /* Preserve all background colors & gradients */
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
+          }
+
+          /* Keep dark theme */
+          html, body {
+            background: #030712 !important;
+            color: #f9fafb !important;
+            font-size: 11px;
+          }
+
+          /* Remove page margins */
+          @page {
+            margin: 16mm 12mm;
+            size: A4 portrait;
+          }
+
+          /* Hide nav & sidebar */
           .print\\:hidden { display: none !important; }
           .print\\:block  { display: block !important; }
-          aside { display: none !important; }
+          aside, nav     { display: none !important; }
+
+          /* Main layout: collapse sidebar, full width */
+          .flex.gap-6 { display: block !important; }
+
+          /* Cards: avoid breaking across pages */
+          .rounded-xl { page-break-inside: avoid; break-inside: avoid; }
+
+          /* Slightly tighter spacing for print */
+          .space-y-6 > * + * { margin-top: 14px !important; }
+          .p-5 { padding: 14px !important; }
+          .p-6 { padding: 16px !important; }
+
+          /* Ensure grid columns work in print */
+          .grid-cols-2, .md\\:grid-cols-2 { grid-template-columns: 1fr 1fr !important; }
+          .md\\:grid-cols-3               { grid-template-columns: 1fr 1fr 1fr !important; }
+
+          /* Prevent stat cards from being too large */
+          .text-2xl { font-size: 1.25rem !important; }
+
+          /* Links — don't show URL in print */
+          a[href]:after { content: '' !important; }
         }
       `}</style>
     </div>

@@ -136,7 +136,37 @@ export async function PATCH(request: Request) {
   let updates: Record<string, unknown> = {}
 
   if (action === 'approve') {
-    updates = { status: 'active', approved_at: new Date().toISOString() }
+    // Look up the member's confirmed auth user ID so workspace data is shared correctly
+    let memberUserId: string | null = null
+    try {
+      const { data: memberRow } = await supabase
+        .from('workspace_members')
+        .select('member_email, member_user_id')
+        .eq('id', id)
+        .single()
+
+      // Only look up if not already linked
+      if (memberRow && !memberRow.member_user_id && memberRow.member_email) {
+        const { createClient: createServiceClient } = await import('@supabase/supabase-js')
+        const svc = createServiceClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!
+        )
+        const { data: authUsers } = await svc.auth.admin.listUsers({ perPage: 1000 })
+        const match = authUsers?.users?.find(
+          u => u.email?.toLowerCase() === memberRow.member_email && u.email_confirmed_at
+        )
+        if (match) memberUserId = match.id
+      }
+    } catch (e) {
+      console.warn('[team approve] Could not look up member user ID:', e)
+    }
+
+    updates = {
+      status: 'active',
+      approved_at: new Date().toISOString(),
+      ...(memberUserId ? { member_user_id: memberUserId } : {}),
+    }
   } else if (action === 'reject') {
     updates = { status: 'rejected' }
   } else if (action === 'remove') {
