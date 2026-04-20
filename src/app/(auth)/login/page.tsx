@@ -1,17 +1,34 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import Link from 'next/link'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [hashError, setHashError] = useState<{ code: string; description: string } | null>(null)
   const router = useRouter()
   const supabase = createClient()
+
+  // Read Supabase error params from URL hash BEFORE Supabase clears them
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const hash = window.location.hash
+    if (!hash) return
+
+    const params = new URLSearchParams(hash.replace(/^#/, ''))
+    const errorCode   = params.get('error_code') ?? ''
+    const description = params.get('error_description') ?? ''
+
+    if (errorCode) {
+      setHashError({ code: errorCode, description: decodeURIComponent(description.replace(/\+/g, ' ')) })
+      // Clear hash from URL without triggering a navigation/reload
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+  }, [])
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -29,6 +46,15 @@ export default function LoginPage() {
     }
   }
 
+  function goToForgotPassword(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    // Use window.location to bypass any Supabase hash-processing interference
+    window.location.href = '/forgot-password' + (email ? `?email=${encodeURIComponent(email)}` : '')
+  }
+
+  const isExpiredInvite = hashError?.code === 'otp_expired'
+
   return (
     <div className="min-h-screen bg-gray-950 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
@@ -42,6 +68,16 @@ export default function LoginPage() {
           <h1 className="text-2xl font-bold text-white">G2G SEO Tools</h1>
           <p className="text-gray-400 text-sm mt-1">Sign in to your account</p>
         </div>
+
+        {/* Expired invite banner */}
+        {isExpiredInvite && (
+          <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4">
+            <p className="text-amber-300 text-sm font-semibold mb-1">⏰ Invite link expired</p>
+            <p className="text-amber-200/70 text-xs leading-relaxed">
+              Your invite link is no longer valid. Enter your email below and click <strong>"Set up password"</strong> to get a fresh link in your inbox.
+            </p>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleLogin} className="bg-gray-900 rounded-2xl p-6 border border-gray-800 space-y-4">
@@ -65,32 +101,49 @@ export default function LoginPage() {
             />
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-sm font-medium text-gray-300">
-                Password
-              </label>
-              <Link href="/forgot-password" className="text-xs text-red-400 hover:text-red-300 transition">
-                Forgot password?
-              </Link>
-            </div>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              placeholder="••••••••"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-red-600 focus:border-transparent transition"
-            />
-          </div>
+          {isExpiredInvite ? (
+            /* For expired invites — skip password, show set-up button */
+            <button
+              type="button"
+              onClick={goToForgotPassword}
+              className="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold rounded-lg py-2.5 text-sm transition"
+            >
+              Set up password →
+            </button>
+          ) : (
+            <>
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-sm font-medium text-gray-300">
+                    Password
+                  </label>
+                  <button
+                    type="button"
+                    onClick={goToForgotPassword}
+                    className="text-xs text-red-400 hover:text-red-300 transition"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  placeholder="••••••••"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-red-600 focus:border-transparent transition"
+                />
+              </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-2.5 text-sm transition"
-          >
-            {loading ? 'Signing in...' : 'Sign in'}
-          </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-red-700 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-2.5 text-sm transition"
+              >
+                {loading ? 'Signing in...' : 'Sign in'}
+              </button>
+            </>
+          )}
         </form>
 
         <p className="text-center text-gray-600 text-xs mt-6">

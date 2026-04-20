@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 
@@ -10,6 +10,14 @@ export default function ForgotPasswordPage() {
   const [sent, setSent]       = useState(false)
   const [loading, setLoading] = useState(false)
   const supabase = createClient()
+
+  // Pre-fill email from query param (set by login page when redirecting from expired invite)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const emailParam = params.get('email')
+    if (emailParam) setEmail(decodeURIComponent(emailParam))
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
