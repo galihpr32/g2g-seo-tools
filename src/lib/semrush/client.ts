@@ -190,6 +190,232 @@ export async function getKeywordVolumes(
   return result
 }
 
+// ─── SERP feature codes ───────────────────────────────────────────────────────
+export const SERP_FEATURE_LABELS: Record<number, string> = {
+  1:  'Instant Answer',
+  2:  'Knowledge Panel',
+  3:  'Carousel',
+  4:  'Local Pack',
+  5:  'Image Pack',
+  7:  'Featured Snippet',
+  8:  'Shopping Results',
+  10: 'Reviews',
+  11: 'Sitelinks',
+  12: 'Video',
+  13: 'Twitter / X',
+  14: 'News',
+  15: 'People Also Ask',
+  16: 'App Pack',
+  17: 'AMP',
+  22: 'Featured Video',
+}
+
+export const SERP_FEATURE_ICONS: Record<number, string> = {
+  1:  '💡',
+  2:  '🧠',
+  3:  '🎠',
+  4:  '📍',
+  5:  '🖼️',
+  7:  '⭐',
+  8:  '🛒',
+  10: '⭐',
+  11: '🔗',
+  12: '▶️',
+  13: '🐦',
+  14: '📰',
+  15: '❓',
+  16: '📱',
+  17: '⚡',
+  22: '🎬',
+}
+
+export interface SerpFeatureRow {
+  keyword:      string
+  position:     number
+  searchVolume: number
+  url:          string
+  captured:     number[]   // feature codes where G2G appears
+  available:    number[]   // all feature codes present on SERP
+}
+
+// Fetch organic keywords with SERP feature columns (Fp = G2G captures, Fk = all on SERP)
+export async function getDomainKeywordsWithFeatures(
+  domain:   string,
+  database = 'us',
+  limit    = 1000
+): Promise<SerpFeatureRow[]> {
+  const params = new URLSearchParams({
+    type:            'domain_organic',
+    key:             API_KEY,
+    domain,
+    database,
+    display_limit:   String(limit),
+    display_sort:    'nq_desc',
+    export_columns:  'Ph,Po,Nq,Ur,Fp,Fk',
+    export_escape:   '1',
+  })
+
+  const res = await fetch(`${BASE_URL}/?${params}`)
+  if (!res.ok) throw new Error(`SEMrush API error: ${res.status}`)
+  const text = await res.text()
+  if (text.startsWith('ERROR')) throw new Error(`SEMrush: ${text}`)
+
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return []
+
+  function parseCodes(raw: string): number[] {
+    if (!raw || raw === '0') return []
+    return raw.split('|').map(Number).filter(n => !isNaN(n) && n > 0)
+  }
+
+  return lines.slice(1).map(line => {
+    const parts = line.split(';').map(s => s.replace(/"/g, '').trim())
+    return {
+      keyword:      parts[0] ?? '',
+      position:     parseInt(parts[1])  || 0,
+      searchVolume: parseInt(parts[2])  || 0,
+      url:          parts[3] ?? '',
+      captured:     parseCodes(parts[4]),
+      available:    parseCodes(parts[5]),
+    }
+  }).filter(r => r.keyword)
+}
+
+// ─── Backlinks ────────────────────────────────────────────────────────────────
+export interface BacklinkOverview {
+  total:           number
+  domains:         number
+  ips:             number
+  subnets:         number
+  followLinks:     number
+  nofollowLinks:   number
+  authorityScore:  number
+}
+
+export interface BacklinkRow {
+  sourceUrl:      string
+  sourceDomain:   string
+  targetUrl:      string
+  anchorText:     string
+  type:           string   // 'text' | 'image' | 'form' | 'frame'
+  dofollow:       boolean
+  authorityScore: number
+  externalLinks:  number
+  firstSeen:      string
+  lastSeen:       string
+}
+
+export interface ReferringDomainRow {
+  domain:         string
+  authorityScore: number
+  backlinks:      number
+  follows:        number
+  noFollows:      number
+  firstSeen:      string
+  lastSeen:       string
+}
+
+export async function getBacklinkOverview(target: string): Promise<BacklinkOverview | null> {
+  const params = new URLSearchParams({
+    type:           'backlinks_overview',
+    key:            API_KEY,
+    target,
+    target_type:    'root_domain',
+    export_columns: 'total,domains_num,ips_num,subnets_num,follows_num,nofollows_num,ascore',
+    export_escape:  '1',
+  })
+
+  const res = await fetch(`${BASE_URL}/?${params}`)
+  if (!res.ok) return null
+  const text = await res.text()
+  if (!text || text.startsWith('ERROR')) return null
+
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return null
+
+  const [total, domains, ips, subnets, follows, noFollows, ascore] = lines[1].split(';').map(s => s.replace(/"/g, ''))
+  return {
+    total:          parseInt(total)    || 0,
+    domains:        parseInt(domains)  || 0,
+    ips:            parseInt(ips)      || 0,
+    subnets:        parseInt(subnets)  || 0,
+    followLinks:    parseInt(follows)  || 0,
+    nofollowLinks:  parseInt(noFollows)|| 0,
+    authorityScore: parseInt(ascore)   || 0,
+  }
+}
+
+export async function getReferringDomains(target: string, limit = 100): Promise<ReferringDomainRow[]> {
+  const params = new URLSearchParams({
+    type:           'backlinks_refdomains',
+    key:            API_KEY,
+    target,
+    target_type:    'root_domain',
+    display_limit:  String(limit),
+    display_sort:   'ascore_desc',
+    export_columns: 'domain,ascore,backlinks_num,follows_num,nofollows_num,first_seen,last_seen',
+    export_escape:  '1',
+  })
+
+  const res = await fetch(`${BASE_URL}/?${params}`)
+  if (!res.ok) return []
+  const text = await res.text()
+  if (!text || text.startsWith('ERROR')) return []
+
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return []
+
+  return lines.slice(1).map(line => {
+    const [domain, ascore, backlinks, follows, noFollows, firstSeen, lastSeen] = line.split(';').map(s => s.replace(/"/g, '').trim())
+    return {
+      domain:         domain ?? '',
+      authorityScore: parseInt(ascore)    || 0,
+      backlinks:      parseInt(backlinks) || 0,
+      follows:        parseInt(follows)   || 0,
+      noFollows:      parseInt(noFollows) || 0,
+      firstSeen:      firstSeen ?? '',
+      lastSeen:       lastSeen  ?? '',
+    }
+  }).filter(r => r.domain)
+}
+
+export async function getBacklinks(target: string, limit = 100): Promise<BacklinkRow[]> {
+  const params = new URLSearchParams({
+    type:           'backlinks',
+    key:            API_KEY,
+    target,
+    target_type:    'root_domain',
+    display_limit:  String(limit),
+    display_sort:   'ascore_desc',
+    export_columns: 'source_url,source_title,target_url,anchor,type,dofollow,ascore,external_num,first_seen,last_seen',
+    export_escape:  '1',
+  })
+
+  const res = await fetch(`${BASE_URL}/?${params}`)
+  if (!res.ok) return []
+  const text = await res.text()
+  if (!text || text.startsWith('ERROR')) return []
+
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return []
+
+  return lines.slice(1).map(line => {
+    const [sourceUrl, , targetUrl, anchor, type, dofollow, ascore, extLinks, firstSeen, lastSeen] = line.split(';').map(s => s.replace(/"/g, '').trim())
+    return {
+      sourceUrl:      sourceUrl   ?? '',
+      sourceDomain:   (() => { try { return new URL(sourceUrl).hostname } catch { return sourceUrl ?? '' } })(),
+      targetUrl:      targetUrl   ?? '',
+      anchorText:     anchor      ?? '',
+      type:           type        ?? 'text',
+      dofollow:       dofollow === '1',
+      authorityScore: parseInt(ascore)   || 0,
+      externalLinks:  parseInt(extLinks) || 0,
+      firstSeen:      firstSeen ?? '',
+      lastSeen:       lastSeen  ?? '',
+    }
+  }).filter(r => r.sourceUrl)
+}
+
 // ─── Keyword clustering (group by topic) ─────────────────────────────────────
 export function clusterKeywords(keywords: KeywordRanking[]): Map<string, KeywordRanking[]> {
   const clusters = new Map<string, KeywordRanking[]>()

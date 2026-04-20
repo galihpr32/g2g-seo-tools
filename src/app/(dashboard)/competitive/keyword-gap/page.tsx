@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import { IntentBadge, type Intent } from '@/components/ui/IntentBadge'
 
 interface Competitor        { id: string; domain: string; name: string; active: boolean }
 interface TrackedProduct    { id: string; name: string; page_url: string; keywords: string[] }
@@ -287,13 +288,15 @@ function NewPageModal({ selected, competitorDomain, onClose, onSuccess }: {
 }
 
 // ── Gap Table ─────────────────────────────────────────────────────────────────
-function GapTable({ rows, tab, competitorDomain, selected, onToggle, onToggleAll }: {
+function GapTable({ rows, tab, competitorDomain, selected, onToggle, onToggleAll, intents, intentsLoading }: {
   rows: GapRow[]
   tab: Tab
   competitorDomain: string
   selected: Set<string>
   onToggle: (kw: string) => void
   onToggleAll: (kwList: string[], checked: boolean) => void
+  intents: Record<string, Intent>
+  intentsLoading: boolean
 }) {
   const [search, setSearch]         = useState('')
   const [sortKey, setSortKey]       = useState<SortKey>('searchVolume')
@@ -412,6 +415,7 @@ function GapTable({ rows, tab, competitorDomain, selected, onToggle, onToggleAll
                     </td>
                     <td className="py-2.5 px-4">
                       <div className="flex items-center gap-2">
+                        <IntentBadge intent={intents[r.keyword]} loading={intentsLoading && !intents[r.keyword]} />
                         <span className="text-white text-xs font-medium">{r.keyword}</span>
                         {isMissing && tab === 'gaps' && (
                           <span className="text-[10px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded-full">no page</span>
@@ -479,6 +483,8 @@ export default function KeywordGapPage() {
   const [error, setError]                     = useState<string | null>(null)
   const [activeTab, setActiveTab]             = useState<Tab>('gaps')
   const [successMsg, setSuccessMsg]           = useState<string | null>(null)
+  const [intents, setIntents]                 = useState<Record<string, Intent>>({})
+  const [intentsLoading, setIntentsLoading]   = useState(false)
 
   // Selection state (keyword string as key)
   const [selected, setSelected]               = useState<Set<string>>(new Set())
@@ -523,6 +529,24 @@ export default function KeywordGapPage() {
       if (!res.ok) throw new Error(data.error)
       setResult(data)
       setActiveTab('gaps')
+      // Non-blocking intent fetch
+      const allKeywords = [
+        ...data.gaps.map((r: GapRow) => r.keyword),
+        ...data.behind.map((r: GapRow) => r.keyword),
+        ...data.winning.map((r: GapRow) => r.keyword),
+      ]
+      if (allKeywords.length > 0) {
+        setIntentsLoading(true)
+        fetch('/api/keywords/intent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keywords: allKeywords }),
+        })
+          .then(r => r.json())
+          .then(d => { if (d.intents) setIntents(d.intents) })
+          .catch(() => {})
+          .finally(() => setIntentsLoading(false))
+      }
     } catch (e) {
       setError(String(e))
     } finally {
@@ -715,6 +739,8 @@ export default function KeywordGapPage() {
             selected={selected}
             onToggle={toggleKw}
             onToggleAll={toggleAll}
+            intents={intents}
+            intentsLoading={intentsLoading}
           />
         </>
       )}

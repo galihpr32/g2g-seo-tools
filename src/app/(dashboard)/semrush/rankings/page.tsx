@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { IntentBadge, IntentFilter, type Intent } from '@/components/ui/IntentBadge'
 
 interface Keyword {
   keyword: string
@@ -115,6 +116,8 @@ export default function KeywordRankingsPage() {
   const [error, setError]         = useState<string | null>(null)
   const [filter, setFilter]       = useState<string>('all')
   const [search, setSearch]       = useState('')
+  const [intents, setIntents]     = useState<Record<string, Intent>>({})
+  const [intentsLoading, setIntentsLoading] = useState(false)
 
   const loadAll = useCallback(async () => {
     setLoading(true)
@@ -126,9 +129,24 @@ export default function KeywordRankingsPage() {
       ])
       if (kwRes.ok) {
         const d = await kwRes.json()
-        setKeywords(d.keywords ?? [])
+        const kws: Keyword[] = d.keywords ?? []
+        setKeywords(kws)
         setOverview(d.overview ?? null)
         if (d.error) setError(d.error)
+
+        // Fetch intents non-blocking after keywords load
+        if (kws.length > 0) {
+          setIntentsLoading(true)
+          fetch('/api/keywords/intent', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keywords: kws.map(k => k.keyword) }),
+          })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d?.intents) setIntents(d.intents) })
+            .catch(() => {})
+            .finally(() => setIntentsLoading(false))
+        }
       }
       if (tagRes.ok) {
         const d = await tagRes.json()
@@ -171,15 +189,18 @@ export default function KeywordRankingsPage() {
   const declined = keywords.filter(k => k.positionDiff > 0).length
   const top10    = keywords.filter(k => k.position <= 10).length
 
+  const intentFilters: Intent[] = ['I', 'N', 'C', 'T']
+
   const filtered = keywords.filter(kw => {
     const matchSearch = !search || kw.keyword.toLowerCase().includes(search.toLowerCase())
     const matchFilter =
-      filter === 'all'      ? true :
-      filter === 'top3'     ? kw.position <= 3 :
-      filter === 'top10'    ? kw.position <= 10 :
-      filter === 'improved' ? kw.positionDiff < 0 :
-      filter === 'declined' ? kw.positionDiff > 0 :
-      /* category filter */  tags[kw.keyword] === filter
+      filter === 'all'                    ? true :
+      filter === 'top3'                   ? kw.position <= 3 :
+      filter === 'top10'                  ? kw.position <= 10 :
+      filter === 'improved'               ? kw.positionDiff < 0 :
+      filter === 'declined'               ? kw.positionDiff > 0 :
+      intentFilters.includes(filter as Intent) ? intents[kw.keyword] === filter :
+      /* category filter */                tags[kw.keyword] === filter
     return matchSearch && matchFilter
   })
 
@@ -258,6 +279,20 @@ export default function KeywordRankingsPage() {
               {f.label}
             </button>
           ))}
+          {/* Intent filters */}
+          {intentFilters.map(intent => {
+            const count = keywords.filter(k => intents[k.keyword] === intent).length
+            if (count === 0) return null
+            return (
+              <IntentFilter
+                key={intent}
+                intent={intent}
+                active={filter === intent}
+                count={count}
+                onClick={() => setFilter(filter === intent ? 'all' : intent)}
+              />
+            )
+          })}
           {/* Category filters */}
           {categories.map((cat, idx) => {
             const count = keywords.filter(k => tags[k.keyword] === cat).length
@@ -288,6 +323,7 @@ export default function KeywordRankingsPage() {
             <thead>
               <tr className="border-b border-gray-800">
                 <th className="text-left text-gray-500 font-medium px-4 py-3">Keyword</th>
+                <th className="text-center text-gray-500 font-medium px-2 py-3 w-10" title="Search Intent">Int.</th>
                 {categories.length > 0 && (
                   <th className="text-left text-gray-500 font-medium px-3 py-3 w-28">Category</th>
                 )}
@@ -309,6 +345,12 @@ export default function KeywordRankingsPage() {
                   <tr key={i} className="hover:bg-gray-800/40 transition">
                     <td className="px-4 py-2.5 text-white font-medium max-w-xs">
                       <span className="block truncate" title={kw.keyword}>{kw.keyword}</span>
+                    </td>
+                    <td className="px-2 py-2.5 text-center">
+                      <IntentBadge
+                        intent={intents[kw.keyword]}
+                        loading={intentsLoading && !intents[kw.keyword]}
+                      />
                     </td>
                     {categories.length > 0 && (
                       <td className="px-3 py-2.5">
