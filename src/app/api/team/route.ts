@@ -58,14 +58,21 @@ export async function POST(request: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
 
-  const { data: authUsers } = await serviceSupabase.auth.admin.listUsers()
+  // Use listUsers with high limit to ensure we find the user
+  const { data: authUsers } = await serviceSupabase.auth.admin.listUsers({ perPage: 1000 })
   const existingUser = authUsers?.users?.find(
     u => u.email?.toLowerCase() === email.toLowerCase()
   )
 
-  // Only treat as an existing confirmed user if they've actually verified their email.
-  // An unconfirmed user (e.g. from a previous broken invite) still needs a new invite email.
+  // Only treat as confirmed if they've actually verified their email.
+  // Unconfirmed = previous broken invite created a stub record — we must delete it first
+  // before inviteUserByEmail will work (Supabase returns "User already registered" otherwise).
   const isConfirmed = !!existingUser?.email_confirmed_at
+
+  // Delete stale unconfirmed stub so we can send a fresh invite
+  if (existingUser && !isConfirmed) {
+    await serviceSupabase.auth.admin.deleteUser(existingUser.id)
+  }
 
   const { data: member, error } = await supabase
     .from('workspace_members')
@@ -81,12 +88,19 @@ export async function POST(request: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  // Send invitation email for any user who hasn't confirmed their account yet
+  // Send Supabase invite email for anyone not yet confirmed
   if (!isConfirmed) {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.NEXTAUTH_URL ?? ''
-    await serviceSupabase.auth.admin.inviteUserByEmail(email.toLowerCase(), {
-      redirectTo: `${appUrl}/dashboard`,
-    })
+    const { error: inviteError } = await serviceSupabase.auth.admin.inviteUserByEmail(
+      email.toLowerCase(),
+      { redirectTo: `${appUrl}/dashboard` }
+    )
+    if (inviteError) {
+      console.error('[team invite] inviteUserByEmail error:', inviteError.message)
+      // Still return success — workspace_members row was created.
+      // Owner can re-invite manually if email failed.
+      return NextResponse.json({ member, inviteWarning: inviteError.message })
+    }
   }
 
   return NextResponse.json({ member })
