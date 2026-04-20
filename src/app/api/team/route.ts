@@ -70,12 +70,21 @@ export async function POST(request: Request) {
       member_email:   email.toLowerCase(),
       member_user_id: existingUser?.id ?? null,
       role:           role === 'manager' ? 'manager' : 'member',
-      status:         'pending',
+      status:         existingUser ? 'active' : 'pending',
     })
     .select()
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Send invitation email via Supabase if user doesn't exist yet
+  if (!existingUser) {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.NEXTAUTH_URL ?? ''
+    await serviceSupabase.auth.admin.inviteUserByEmail(email.toLowerCase(), {
+      redirectTo: `${appUrl}/dashboard`,
+    })
+  }
+
   return NextResponse.json({ member })
 }
 
