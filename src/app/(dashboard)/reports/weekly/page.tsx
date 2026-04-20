@@ -12,9 +12,9 @@ interface GscData {
   weekImpressions: number
   prevWeekImpressions: number
   impressionsPct: number | null
-  weekCtr: number
-  prevWeekCtr: number
-  ctrPct: number | null
+  weekCtr?: number          // added in v2 — optional for old reports
+  prevWeekCtr?: number
+  ctrPct?: number | null
   avgPosition: number
   totalUniquePages: number
   topGainers: { page: string; delta: number; clicks: number }[]
@@ -27,13 +27,13 @@ interface Ga4Data {
   sessionsPct: number | null
   engagedSessions: number
   bounceRate: number
-  totalConversions: number
-  prevConversions: number
-  conversionsPct: number | null
-  totalRevenue: number
-  prevRevenue: number
-  revenuePct: number | null
-  topPages: { pagePath: string; sessions: number; conversions: number; revenue: number }[]
+  totalConversions?: number  // added in v2 — optional for old reports
+  prevConversions?: number
+  conversionsPct?: number | null
+  totalRevenue?: number
+  prevRevenue?: number
+  revenuePct?: number | null
+  topPages: { pagePath: string; sessions: number; conversions?: number; revenue?: number }[]
 }
 
 interface SemrushData {
@@ -420,8 +420,9 @@ export default function WeeklyReportPage() {
                   value={fmt(d.gsc.weekImpressions)} pct={d.gsc.impressionsPct}
                   sub={`avg pos ${d.gsc.avgPosition}`} />
                 <StatCard icon="🎯" label="CTR"
-                  value={`${d.gsc.weekCtr}%`} pct={d.gsc.ctrPct}
-                  sub={`prev ${d.gsc.prevWeekCtr}%`} />
+                  value={d.gsc.weekCtr != null ? `${d.gsc.weekCtr}%` : '—'}
+                  pct={d.gsc.ctrPct ?? null}
+                  sub={d.gsc.prevWeekCtr != null ? `prev ${d.gsc.prevWeekCtr}%` : undefined} />
                 {/* Row 2: Revenue */}
                 {d.ga4 ? (
                   <>
@@ -429,11 +430,13 @@ export default function WeeklyReportPage() {
                       value={fmt(d.ga4.weekSessions)} pct={d.ga4.sessionsPct}
                       sub={`prev ${fmt(d.ga4.prevWeekSessions)}`} />
                     <StatCard icon="💰" label="Revenue"
-                      value={fmtUsd(d.ga4.totalRevenue)} pct={d.ga4.revenuePct}
-                      sub={`prev ${fmtUsd(d.ga4.prevRevenue)}`} />
+                      value={d.ga4.totalRevenue != null ? fmtUsd(d.ga4.totalRevenue) : '—'}
+                      pct={d.ga4.revenuePct ?? null}
+                      sub={d.ga4.prevRevenue != null ? `prev ${fmtUsd(d.ga4.prevRevenue)}` : undefined} />
                     <StatCard icon="🛒" label="Conversions"
-                      value={fmt(d.ga4.totalConversions)} pct={d.ga4.conversionsPct}
-                      sub={`prev ${fmt(d.ga4.prevConversions)}`} />
+                      value={d.ga4.totalConversions != null ? fmt(d.ga4.totalConversions) : '—'}
+                      pct={d.ga4.conversionsPct ?? null}
+                      sub={d.ga4.prevConversions != null ? `prev ${fmt(d.ga4.prevConversions)}` : undefined} />
                   </>
                 ) : (
                   <StatCard icon="📈" label="Organic Sessions" value="—" sub="GA4 not connected" />
@@ -577,13 +580,13 @@ export default function WeeklyReportPage() {
                               </td>
                               <td className="py-2 text-right text-gray-300 font-medium">{fmt(p.sessions)}</td>
                               <td className="py-2 text-right">
-                                <span className={p.conversions > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
-                                  {fmt(p.conversions)}
+                                <span className={(p.conversions ?? 0) > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
+                                  {(p.conversions ?? 0) > 0 ? fmt(p.conversions!) : '—'}
                                 </span>
                               </td>
                               <td className="py-2 text-right">
-                                <span className={p.revenue > 0 ? 'text-amber-400 font-medium' : 'text-gray-600'}>
-                                  {p.revenue > 0 ? fmtUsd(p.revenue) : '—'}
+                                <span className={(p.revenue ?? 0) > 0 ? 'text-amber-400 font-medium' : 'text-gray-600'}>
+                                  {(p.revenue ?? 0) > 0 ? fmtUsd(p.revenue!) : '—'}
                                 </span>
                               </td>
                             </tr>
