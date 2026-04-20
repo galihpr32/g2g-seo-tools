@@ -2,6 +2,7 @@
 
 import { usePathname } from 'next/navigation'
 import Sidebar from './Sidebar'
+import AIAssistant from './AIAssistant'
 
 const KNOWN_SITES = ['g2g', 'offgamers']
 
@@ -18,6 +19,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
       <main className="flex-1 overflow-auto">
         {children}
       </main>
+      <AIAssistant />
     </div>
   )
 }

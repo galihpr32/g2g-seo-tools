@@ -51,7 +51,6 @@ const navItems = [
     defaultOpen: false,
     items: [
       { label: 'Keyword Rankings',    href: '/semrush/rankings',    icon: '🎯' },
-      { label: 'Keyword Clustering',  href: '/semrush/clustering',  icon: '🗂️' },
       { label: 'Site Audit',          href: '/semrush/site-audit',  icon: '🔧' },
       { label: 'Competitor Tracking', href: '/semrush/competitors', icon: '👁️' },
     ],
