@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getDomainKeywords } from '@/lib/semrush/client'
+import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
@@ -280,15 +280,22 @@ export async function POST(req: Request) {
       .slice(0, 8),
   }
 
-  // ── SEMrush keywords ─────────────────────────────────────────────────────────
+  // ── SEMrush keywords + domain authority ─────────────────────────────────────
   let semrushData: {
     totalKeywords: number; top3: number; top10: number
     topMoversUp: { keyword: string; position: number; positionDiff: number; volume: number }[]
     topMoversDown: { keyword: string; position: number; positionDiff: number; volume: number }[]
   } = { totalKeywords: 0, top3: 0, top10: 0, topMoversUp: [], topMoversDown: [] }
 
+  let domainAuthority: {
+    organicKeywords: number; organicTraffic: number; organicCost: number; rank: number
+  } | null = null
+
   try {
-    const keywords = await getDomainKeywords('g2g.com', 'us', 500)
+    const [keywords, overview] = await Promise.all([
+      getDomainKeywords('g2g.com', 'us', 500),
+      getDomainOverview('g2g.com', 'us').catch(() => null),
+    ])
     const up   = keywords.filter(k => k.positionDiff > 0).sort((a, b) => b.positionDiff - a.positionDiff).slice(0, 8)
     const down = keywords.filter(k => k.positionDiff < 0).sort((a, b) => a.positionDiff - b.positionDiff).slice(0, 8)
     semrushData = {
@@ -297,6 +304,14 @@ export async function POST(req: Request) {
       top10: keywords.filter(k => k.position <= 10).length,
       topMoversUp:   up.map(k => ({ keyword: k.keyword, position: k.position, positionDiff: k.positionDiff, volume: k.searchVolume })),
       topMoversDown: down.map(k => ({ keyword: k.keyword, position: k.position, positionDiff: k.positionDiff, volume: k.searchVolume })),
+    }
+    if (overview) {
+      domainAuthority = {
+        organicKeywords: overview.organicKeywords,
+        organicTraffic:  overview.organicTraffic,
+        organicCost:     overview.organicCost,
+        rank:            overview.rank,
+      }
     }
   } catch (e) {
     console.warn('[weekly-report] SEMrush fetch failed:', e)
@@ -376,8 +391,9 @@ export async function POST(req: Request) {
   // ── Competitive: SoV from serp_snapshots ────────────────────────────────────
   const competitorList = (competitors.data ?? []).map(c => ({ domain: c.domain, name: c.name }))
 
-  let sovTable: { domain: string; sov: number; keywords: number }[] = []
+  let sovTable: { domain: string; sov: number; keywords: number; estimated?: boolean }[] = []
   let sovKeywordCount = 0
+  let sovEstimated = false
 
   try {
     // Get most recent serp snapshots (last 30 days, latest per keyword)
@@ -434,14 +450,39 @@ export async function POST(req: Request) {
     console.warn('[weekly-report] SoV computation failed:', e)
   }
 
+  // ── SoV fallback: estimate from SEMrush organic traffic if no SERP snapshots ─
+  if (sovTable.length === 0 && competitorList.length > 0) {
+    try {
+      const domainsToCheck = ['g2g.com', ...competitorList.slice(0, 4).map(c => normalizeDomain(c.domain))]
+      const overviews = await Promise.all(domainsToCheck.map(d => getDomainOverview(d, 'us').catch(() => null)))
+      const trafficMap = new Map<string, number>()
+      overviews.forEach((ov, i) => { if (ov && ov.organicTraffic > 0) trafficMap.set(domainsToCheck[i], ov.organicTraffic) })
+      const totalTraffic = Array.from(trafficMap.values()).reduce((a, b) => a + b, 0)
+      if (totalTraffic > 0) {
+        sovTable = Array.from(trafficMap.entries())
+          .map(([domain, traffic]) => ({
+            domain,
+            sov: Math.round((traffic / totalTraffic) * 1000) / 10,
+            keywords: 0,
+            estimated: true,
+          }))
+          .sort((a, b) => b.sov - a.sov)
+        sovEstimated = true
+      }
+    } catch (e) {
+      console.warn('[weekly-report] SEMrush SoV estimation failed:', e)
+    }
+  }
+
   const competitiveData = {
     trackedCompetitors: competitorList,
     sovTable,
     sovKeywordCount,
+    sovEstimated,
   }
 
-  // ── Assemble report_data ─────────────────────────────────────────────────────
-  const reportData = {
+  // ── Assemble report_data (AI sections added after generation below) ──────────
+  const reportData: Record<string, unknown> = {
     weekStart,
     weekEnd,
     gsc: gscData,
@@ -449,34 +490,53 @@ export async function POST(req: Request) {
     semrush: semrushData,
     actionItems: actionItemsData,
     competitive: competitiveData,
+    domainAuthority,
     generatedAt: new Date().toISOString(),
   }
 
-  // ── Generate AI narrative + action plan ─────────────────────────────────────
-  const narrativePrompt = buildNarrativePrompt(reportData)
-  let aiNarrative = ''
-  let aiActionPlan = ''
+  // ── Generate AI narrative + issues + action plans ────────────────────────────
+  const narrativePrompt = buildNarrativePrompt({
+    weekStart, weekEnd,
+    gsc: gscData,
+    ga4: ga4Data,
+    semrush: semrushData,
+    actionItems: actionItemsData,
+    competitive: competitiveData,
+    domainAuthority,
+  })
+  let aiNarrative        = ''
+  let aiIssues           = ''
+  let aiManagementPlan   = ''
+  let aiTeamPlan         = ''
+  let aiActionPlan       = '' // kept for backward compat (= team plan)
 
   try {
     const msg = await anthropic.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 2000,
-      messages: [{
-        role: 'user',
-        content: narrativePrompt,
-      }],
+      max_tokens: 2500,
+      messages: [{ role: 'user', content: narrativePrompt }],
     })
     const raw = msg.content[0]?.type === 'text' ? msg.content[0].text : ''
 
-    // Split on a separator we ask Claude to use
-    const [narrativePart, actionPart] = raw.split(/\n---ACTION_PLAN---\n/)
-    aiNarrative   = narrativePart?.trim() ?? raw
-    aiActionPlan  = actionPart?.trim() ?? ''
+    // Parse 4 sections separated by markers
+    const [part1, rest1]   = raw.split(/\n---ISSUES---\n/)
+    const [part2, rest2]   = (rest1 ?? '').split(/\n---MANAGEMENT_PLAN---\n/)
+    const [part3, part4]   = (rest2 ?? '').split(/\n---TEAM_PLAN---\n/)
+
+    aiNarrative       = part1?.trim() ?? raw
+    aiIssues          = part2?.trim() ?? ''
+    aiManagementPlan  = part3?.trim() ?? ''
+    aiTeamPlan        = part4?.trim() ?? ''
+    aiActionPlan      = aiTeamPlan  // backward compat
   } catch (e) {
     console.warn('[weekly-report] AI generation failed:', e)
     aiNarrative  = '_AI narrative could not be generated. Check Anthropic API key._'
-    aiActionPlan = ''
   }
+
+  // Stash new AI sections into report_data so old reports degrade gracefully
+  reportData.aiIssues         = aiIssues
+  reportData.aiManagementPlan = aiManagementPlan
+  reportData.aiTeamPlan       = aiTeamPlan
 
   // ── Save report ──────────────────────────────────────────────────────────────
   const { data: saved, error: saveErr } = await supabase
@@ -534,6 +594,7 @@ function buildNarrativePrompt(d: {
   semrush: { totalKeywords: number; top3: number; top10: number; topMoversUp: { keyword: string; position: number; positionDiff: number; volume: number }[]; topMoversDown: { keyword: string; position: number; positionDiff: number; volume: number }[] }
   actionItems: { total: number; pending: number; inProgress: number; done: number; assignedThisWeek: number; completedThisWeek: number }
   competitive: { trackedCompetitors: { domain: string; name?: string }[] }
+  domainAuthority?: { organicKeywords: number; organicTraffic: number; organicCost: number } | null
 }): string {
   const fmtUrl = (url: string) => url.replace('https://www.g2g.com', '').replace('https://g2g.com', '') || '/'
   const fmtUsd = (n: number) => n > 0 ? `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : '$0'
@@ -543,16 +604,21 @@ function buildNarrativePrompt(d: {
   const kwDown   = d.semrush.topMoversDown.slice(0, 5).map(k => `  • "${k.keyword}" pos ${k.position} (↓${Math.abs(k.positionDiff)})`).join('\n') || '  None'
   const competitors = d.competitive.trackedCompetitors.map(c => c.domain).join(', ') || 'none tracked'
   const pctStr = (v: number | null) => v != null ? `${v > 0 ? '+' : ''}${v}%` : 'n/a'
+  const daSection = d.domainAuthority
+    ? `Domain Authority (SEMrush estimate):
+- Organic keywords: ${d.domainAuthority.organicKeywords.toLocaleString()}
+- Est. organic traffic: ${d.domainAuthority.organicTraffic.toLocaleString()}/mo
+- Est. traffic value: ${fmtUsd(d.domainAuthority.organicCost)}/mo`
+    : ''
 
   return `You are an expert SEO strategist analyzing weekly performance data for G2G.com — a gaming marketplace (gift cards, game items, top-up) primarily targeting the US market.
 
-Analyze the following weekly SEO data (${d.weekStart} to ${d.weekEnd}) and write:
-1. A clear, insightful narrative (3–4 paragraphs) that:
-   - Explains what happened this week (use actual numbers including revenue when available)
-   - Gives context for WHY metrics moved (seasonal, competitive, technical, content quality)
-   - Highlights key risks and opportunities
-   - Uses confident, direct language — no fluff
-2. A weekly action plan with 5 prioritized, concrete tasks
+Analyze the following weekly SEO data (${d.weekStart} to ${d.weekEnd}) and write exactly 4 sections in this order:
+
+1. NARRATIVE (3–4 paragraphs): explain what happened, WHY metrics moved, key risks and opportunities. Use actual numbers. Be direct.
+2. ISSUES & SHORTCOMINGS (3–5 bullet points): specific problems, risks, or gaps — things that are broken or underperforming. Each bullet should be a concrete, actionable insight, not vague.
+3. MANAGEMENT BRIEF (3 items): strategic priorities for leadership — budget decisions, resource allocation, competitive risks, revenue impact. Think CEO/CMO audience.
+4. INTERNAL TEAM PLAN (5 items): tactical tasks for the SEO/content team — what exactly to do, in what order, why.
 
 DATA:
 GSC Performance:
@@ -579,17 +645,31 @@ ${kwUp}
 Keywords falling:
 ${kwDown}
 
+${daSection}
+
 Action Items:
 - Open: ${d.actionItems.pending + d.actionItems.inProgress} | Completed: ${d.actionItems.done}
 - Assigned this week: ${d.actionItems.assignedThisWeek} | Completed this week: ${d.actionItems.completedThisWeek}
 
 Tracked competitors: ${competitors}
 
-FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
-[Write the 3-4 paragraph narrative here]
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS (use these exact marker lines):
 
----ACTION_PLAN---
-1. **[Task title]** — [1-2 sentence explanation of what to do and why it matters]
+[3–4 paragraph narrative here]
+
+---ISSUES---
+• [Issue 1]
+• [Issue 2]
+• [Issue 3]
+(add up to 5 bullets total)
+
+---MANAGEMENT_PLAN---
+1. **[Strategic priority title]** — [1-2 sentence explanation for leadership]
+2. **[Strategic priority title]** — [explanation]
+3. **[Strategic priority title]** — [explanation]
+
+---TEAM_PLAN---
+1. **[Task title]** — [tactical explanation for SEO/content team]
 2. **[Task title]** — [explanation]
 3. **[Task title]** — [explanation]
 4. **[Task title]** — [explanation]

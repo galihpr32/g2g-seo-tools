@@ -58,6 +58,14 @@ interface SovRow {
   domain: string
   sov: number
   keywords: number
+  estimated?: boolean
+}
+
+interface DomainAuthority {
+  organicKeywords: number
+  organicTraffic: number
+  organicCost: number
+  rank: number
 }
 
 interface ReportData {
@@ -71,7 +79,13 @@ interface ReportData {
     trackedCompetitors?: { domain: string; name?: string }[]
     sovTable?: SovRow[]
     sovKeywordCount?: number
+    sovEstimated?: boolean
   }
+  domainAuthority?: DomainAuthority | null
+  // AI sections stored in report_data (v2+)
+  aiIssues?: string
+  aiManagementPlan?: string
+  aiTeamPlan?: string
 }
 
 interface WeeklyReport {
@@ -159,6 +173,23 @@ function StatCard({ icon, label, value, pct, sub }: { icon: string; label: strin
       </div>
       {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
     </div>
+  )
+}
+
+// ── Issues list renderer ──────────────────────────────────────────────────────
+function IssuesList({ raw }: { raw: string }) {
+  if (!raw) return null
+  const bullets = raw.split('\n').map(l => l.trim()).filter(l => l.startsWith('•') || l.startsWith('-') || l.startsWith('*'))
+  if (!bullets.length) return <p className="text-sm text-gray-400">{raw}</p>
+  return (
+    <ul className="space-y-2">
+      {bullets.map((line, i) => (
+        <li key={i} className="flex gap-2 text-sm text-amber-200/80">
+          <span className="text-amber-400 flex-shrink-0 mt-0.5">⚠</span>
+          <span>{line.replace(/^[•\-*]\s*/, '')}</span>
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -443,6 +474,27 @@ export default function WeeklyReportPage() {
                 )}
               </div>
 
+              {/* ── Domain Authority (SEMrush) ── */}
+              {d.domainAuthority && (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <h3 className="text-sm font-semibold text-white mb-4">🔰 Domain Strength (SEMrush)</h3>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Organic Keywords</p>
+                      <p className="text-xl font-bold text-white">{fmt(d.domainAuthority.organicKeywords)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Est. Monthly Traffic</p>
+                      <p className="text-xl font-bold text-white">{fmt(d.domainAuthority.organicTraffic)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Est. Traffic Value</p>
+                      <p className="text-xl font-bold text-white">{fmtUsd(d.domainAuthority.organicCost)}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* ── AI Narrative ── */}
               {report.ai_narrative && (
                 <div className="bg-gradient-to-br from-gray-900 to-gray-900/80 border border-gray-700 rounded-xl p-6">
@@ -456,6 +508,17 @@ export default function WeeklyReportPage() {
                       <p key={i} className="text-sm text-gray-300 leading-relaxed">{para}</p>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* ── Issues & Shortcomings ── */}
+              {d.aiIssues && (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-base">⚠️</span>
+                    <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-wider">Issues & Shortcomings</h3>
+                  </div>
+                  <IssuesList raw={d.aiIssues} />
                 </div>
               )}
 
@@ -642,9 +705,16 @@ export default function WeeklyReportPage() {
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-sm font-semibold text-white">👁️ Share of Voice</h3>
-                  {(d.competitive.sovKeywordCount ?? 0) > 0 && (
-                    <span className="text-xs text-gray-500">{d.competitive.sovKeywordCount} tracked keywords</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {(d.competitive.sovKeywordCount ?? 0) > 0 && (
+                      <span className="text-xs text-gray-500">{d.competitive.sovKeywordCount} tracked kws</span>
+                    )}
+                    {d.competitive.sovEstimated && (
+                      <span className="text-[10px] text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">
+                        estimated via SEMrush
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {(d.competitive.sovTable ?? []).length > 0 ? (
@@ -669,12 +739,20 @@ export default function WeeklyReportPage() {
                           <span className={`text-xs font-semibold w-12 text-right flex-shrink-0 ${isG2G ? 'text-red-400' : 'text-gray-400'}`}>
                             {row.sov}%
                           </span>
-                          <span className="text-[10px] text-gray-600 w-16 text-right flex-shrink-0">
-                            {row.keywords} kws
-                          </span>
+                          {!d.competitive.sovEstimated && (
+                            <span className="text-[10px] text-gray-600 w-16 text-right flex-shrink-0">
+                              {row.keywords} kws
+                            </span>
+                          )}
                         </div>
                       )
                     })}
+                    {d.competitive.sovEstimated && (
+                      <p className="text-[10px] text-gray-600 mt-2">
+                        Estimated from SEMrush organic traffic data. For SERP-based SoV,{' '}
+                        <a href="/competitive/serp-tracker" className="text-red-400 hover:text-red-300">run SERP Tracker</a>.
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div>
@@ -689,9 +767,9 @@ export default function WeeklyReportPage() {
                           ))}
                         </div>
                         <p className="text-xs text-gray-500">
-                          No SERP snapshot data yet. Run{' '}
+                          No competitor data available. Run{' '}
                           <a href="/competitive/serp-tracker" className="text-red-400 hover:text-red-300">SERP Tracker</a>{' '}
-                          to start tracking Share of Voice for your keywords.
+                          to start tracking Share of Voice.
                         </p>
                       </div>
                     ) : (
@@ -704,17 +782,38 @@ export default function WeeklyReportPage() {
                 )}
               </div>
 
-              {/* ── AI Action Plan ── */}
-              {report.ai_action_plan && (
-                <div className="bg-gradient-to-br from-red-950/30 to-gray-900 border border-red-800/30 rounded-xl p-6">
-                  <div className="flex items-center gap-2 mb-5">
-                    <span className="text-base">🎯</span>
-                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Weekly Action Plan</h3>
-                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">AI-recommended</span>
+              {/* ── Management Brief + Team Plan ── */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+                {/* Management Brief — only shown for new reports with split plans */}
+                {d.aiManagementPlan && (
+                  <div className="bg-gradient-to-br from-blue-950/30 to-gray-900 border border-blue-800/30 rounded-xl p-6">
+                    <div className="flex items-center gap-2 mb-5">
+                      <span className="text-base">📋</span>
+                      <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Management Brief</h3>
+                      <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">Strategic</span>
+                    </div>
+                    <ActionPlan raw={d.aiManagementPlan} />
                   </div>
-                  <ActionPlan raw={report.ai_action_plan} />
-                </div>
-              )}
+                )}
+
+                {/* Internal Team Plan — new reports use aiTeamPlan, old reports fall back to ai_action_plan */}
+                {(d.aiTeamPlan || report.ai_action_plan) && (
+                  <div className={`bg-gradient-to-br from-red-950/30 to-gray-900 border border-red-800/30 rounded-xl p-6 ${!d.aiManagementPlan ? 'md:col-span-2' : ''}`}>
+                    <div className="flex items-center gap-2 mb-5">
+                      <span className="text-base">⚡</span>
+                      <h3 className="text-sm font-semibold text-white uppercase tracking-wider">
+                        {d.aiManagementPlan ? 'Internal Team Plan' : 'Weekly Action Plan'}
+                      </h3>
+                      <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">
+                        {d.aiManagementPlan ? 'Tactical' : 'AI-recommended'}
+                      </span>
+                    </div>
+                    <ActionPlan raw={d.aiTeamPlan ?? report.ai_action_plan} />
+                  </div>
+                )}
+
+              </div>
 
             </div>
           )}

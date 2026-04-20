@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getGA4OrganicTraffic, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
+import TopPagesTableClient from './TopPagesTableClient'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,10 +54,16 @@ export default async function OrganicTrafficPage() {
     (a.date ?? '').localeCompare(b.date ?? '')
   )
 
-  // Filter top pages to organic only
-  const organicPages = topPagesRows
+  // Filter top pages to organic only — pass ALL rows to client for interactive filtering
+  const organicPageRows = topPagesRows
     .filter(r => (r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic'))
-    .slice(0, 20)
+    .map(r => ({
+      pagePath:        r.pagePath ?? '',
+      sessions:        parseInt(r.sessions ?? '0'),
+      engagedSessions: parseInt(r.engagedSessions ?? '0'),
+      bounceRate:      parseFloat(r.bounceRate ?? '0'),
+      conversions:     parseInt(r.conversions ?? '0'),
+    }))
 
   const notConfigured = !propertyId || !conn?.access_token
 
@@ -160,46 +167,18 @@ export default async function OrganicTrafficPage() {
         </table>
       </div>
 
-      {/* Top organic landing pages */}
+      {/* Top organic landing pages — interactive filter/sort */}
       <h2 className="text-white font-semibold mb-3">
         Top Organic Landing Pages
         <span className="text-gray-500 font-normal text-sm ml-2">(last 7 days)</span>
       </h2>
-      <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-800">
-              <th className="text-left text-gray-500 font-medium px-5 py-3">Page</th>
-              <th className="text-right text-gray-500 font-medium px-5 py-3">Sessions</th>
-              <th className="text-right text-gray-500 font-medium px-5 py-3">Engaged</th>
-              <th className="text-right text-gray-500 font-medium px-5 py-3">Bounce</th>
-              <th className="text-right text-gray-500 font-medium px-5 py-3">Conversions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-800">
-            {organicPages.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-gray-500">
-                  {dataSource === 'live' ? 'No organic landing page data found' : 'Configure GA4 to see data'}
-                </td>
-              </tr>
-            ) : organicPages.map((p, i) => {
-              const bounce = parseFloat(p.bounceRate ?? '0')
-              return (
-                <tr key={i} className="hover:bg-gray-800/50 transition">
-                  <td className="px-5 py-3 text-blue-400 max-w-xs truncate" title={p.pagePath}>{p.pagePath}</td>
-                  <td className="px-5 py-3 text-right text-white">{parseInt(p.sessions ?? '0').toLocaleString()}</td>
-                  <td className="px-5 py-3 text-right text-gray-300">{parseInt(p.engagedSessions ?? '0').toLocaleString()}</td>
-                  <td className={`px-5 py-3 text-right ${bounce > 0.6 ? 'text-red-400' : 'text-gray-300'}`}>
-                    {(bounce * 100).toFixed(1)}%
-                  </td>
-                  <td className="px-5 py-3 text-right text-gray-300">{parseInt(p.conversions ?? '0').toLocaleString()}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      {organicPageRows.length === 0 ? (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-8 text-center text-gray-500 text-sm">
+          {dataSource === 'live' ? 'No organic landing page data found' : 'Configure GA4 to see data'}
+        </div>
+      ) : (
+        <TopPagesTableClient rows={organicPageRows} />
+      )}
     </div>
   )
 }
