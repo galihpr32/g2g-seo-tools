@@ -24,3 +24,21 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ── Site theme: OffGamers → swap red → blue ─────────────────────────────────
+   Tailwind v4 generates utilities as `color: var(--color-red-*)` etc.
+   Overriding the CSS variables here changes every red utility in the app
+   without touching a single component class. ─────────────────────────────── */
+[data-site="offgamers"] {
+  --color-red-50:  var(--color-blue-50);
+  --color-red-100: var(--color-blue-100);
+  --color-red-200: var(--color-blue-200);
+  --color-red-300: var(--color-blue-300);
+  --color-red-400: var(--color-blue-400);
+  --color-red-500: var(--color-blue-500);
+  --color-red-600: var(--color-blue-600);
+  --color-red-700: var(--color-blue-700);
+  --color-red-800: var(--color-blue-800);
+  --color-red-900: var(--color-blue-900);
+  --color-red-950: var(--color-blue-950);
+}

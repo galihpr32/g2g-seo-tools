@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic'
 
-import Sidebar from '@/components/dashboard/Sidebar'
+import DashboardShell from '@/components/dashboard/DashboardShell'
 import { createClient } from '@/lib/supabase/server'
 import { getWorkspaceRole } from '@/lib/workspace'
 import { redirect } from 'next/navigation'
@@ -40,12 +40,5 @@ export default async function DashboardLayout({ children }: { children: React.Re
     )
   }
 
-  return (
-    <div className="flex min-h-screen bg-gray-950">
-      <Sidebar />
-      <main className="flex-1 overflow-auto">
-        {children}
-      </main>
-    </div>
-  )
+  return <DashboardShell>{children}</DashboardShell>
 }
