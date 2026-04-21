@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import Link from 'next/link'
 
@@ -146,9 +147,11 @@ export default async function DashboardPage() {
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
 
-  // Fetch via API route (reuses same logic, keeps page clean)
-  // For server components, call directly without HTTP round-trip
-  const { data: conn } = await supabase
+  // Use service client for all data queries so workspace members can read the
+  // owner's data regardless of Row Level Security policies.
+  const db = createServiceClient()
+
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', ownerId)
@@ -162,23 +165,23 @@ export default async function DashboardPage() {
   // Parallel fetches
   const [itemsRes, briefsRes, campsRes, dropsRes] = await Promise.all([
     siteUrl
-      ? supabase.from('seo_action_items')
+      ? db.from('seo_action_items')
           .select('id, status, action_type, assigned_to, created_at')
           .eq('site_url', siteUrl)
       : Promise.resolve({ data: [], error: null }),
 
     siteUrl
-      ? supabase.from('seo_content_briefs')
+      ? db.from('seo_content_briefs')
           .select('id, status, created_at')
           .eq('site_url', siteUrl)
       : Promise.resolve({ data: [], error: null }),
 
-    supabase.from('campaigns')
+    db.from('campaigns')
       .select('id, campaign_pages(id)')
       .eq('owner_user_id', ownerId),
 
     siteUrl
-      ? supabase.from('gsc_ranking_drops')
+      ? db.from('gsc_ranking_drops')
           .select('snapshot_date, clicks_now, impressions_now')
           .eq('site_url', siteUrl)
           .gte('snapshot_date', thirtyDaysAgo)

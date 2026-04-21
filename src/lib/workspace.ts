@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { createServiceClient } from '@/lib/supabase/service'
 
 /**
  * Resolve the "effective owner" user ID for data queries.
@@ -8,16 +9,25 @@ import type { SupabaseClient } from '@supabase/supabase-js'
  * - If the calling user is an ACTIVE member of someone else's workspace:
  *   returns the owner's user ID so all data queries use the owner's connections.
  *
+ * IMPORTANT: Uses the service role client internally to query workspace_members
+ * so that Row Level Security cannot block the lookup. The `supabase` param
+ * (user's auth client) is only used to resolve the calling user's email for
+ * the invite-flow fallback.
+ *
  * Usage in every server page/component:
- *   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
- *   // then query: .eq('user_id', effectiveOwnerId)
+ *   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+ *   const db = createServiceClient()       // use for data queries
+ *   db.from('...').eq('user_id', ownerId)  // reads owner's data regardless of RLS
  */
 export async function getEffectiveOwnerId(
   supabase: SupabaseClient,
   userId: string
 ): Promise<string> {
+  // Use service role to bypass RLS on workspace_members
+  const db = createServiceClient()
+
   // Fast path: look up by member_user_id (already linked)
-  const { data } = await supabase
+  const { data } = await db
     .from('workspace_members')
     .select('owner_user_id')
     .eq('member_user_id', userId)
@@ -31,7 +41,7 @@ export async function getEffectiveOwnerId(
   // We look up by email and auto-link so data sharing works immediately.
   const { data: { user } } = await supabase.auth.getUser()
   if (user?.email) {
-    const { data: byEmail } = await supabase
+    const { data: byEmail } = await db
       .from('workspace_members')
       .select('id, owner_user_id, status')
       .eq('member_email', user.email.toLowerCase())
@@ -41,7 +51,7 @@ export async function getEffectiveOwnerId(
 
     if (byEmail) {
       // Auto-link: stamp the real user ID and activate so next requests use the fast path
-      await supabase
+      await db
         .from('workspace_members')
         .update({
           member_user_id: userId,
@@ -69,8 +79,10 @@ export async function getWorkspaceRole(
   supabase: SupabaseClient,
   userId: string
 ): Promise<'owner' | 'manager' | 'member' | 'pending' | null> {
+  const db = createServiceClient()
+
   // Check if this user IS an owner (they have workspace_members rows they created)
-  const { count: ownedCount } = await supabase
+  const { count: ownedCount } = await db
     .from('workspace_members')
     .select('*', { count: 'exact', head: true })
     .eq('owner_user_id', userId)
@@ -78,13 +90,28 @@ export async function getWorkspaceRole(
   if ((ownedCount ?? 0) > 0) return 'owner'
 
   // Otherwise check if they're a member
-  const { data } = await supabase
+  const { data } = await db
     .from('workspace_members')
     .select('role, status')
     .eq('member_user_id', userId)
     .maybeSingle()
 
-  if (!data) return null
+  if (!data) {
+    // Last resort: check by email (in case member_user_id is still null)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user?.email) {
+      const { data: byEmail } = await db
+        .from('workspace_members')
+        .select('role, status')
+        .eq('member_email', user.email.toLowerCase())
+        .in('status', ['active', 'pending'])
+        .maybeSingle()
+      if (byEmail?.status === 'active') return byEmail.role as 'manager' | 'member'
+      if (byEmail?.status === 'pending') return 'pending'
+    }
+    return null
+  }
+
   if (data.status === 'pending')  return 'pending'
   if (data.status === 'active')   return data.role as 'manager' | 'member'
   return null
