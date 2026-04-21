@@ -57,22 +57,28 @@ export default function ApprovalQueueWidget({ userId: _ }: ApprovalQueueWidgetPr
   const [processing, setProcessing]     = useState<Set<string>>(new Set())
   const [bulkProcessing, setBulkProcessing] = useState(false)
 
-  const fetchActions = async () => {
+  const fetchActions = async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       const res = await fetch('/api/agents/actions?status=pending&limit=200')
       const data = await res.json() as { actions?: AgentAction[] }
-      setActions(data.actions ?? [])
+      const incoming = data.actions ?? []
+      // Silent refresh: only update if count changed to avoid disrupting the list
+      setActions(prev => {
+        if (silent && prev.length === incoming.length) return prev
+        return incoming
+      })
     } catch (e) {
       console.error('Failed to fetch actions:', e)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => {
     fetchActions()
-    const t = setInterval(fetchActions, 30000)
+    // Poll every 2 minutes silently — only resets list if count changes
+    const t = setInterval(() => fetchActions(true), 120000)
     return () => clearInterval(t)
   }, [])
 
@@ -266,7 +272,7 @@ export default function ApprovalQueueWidget({ userId: _ }: ApprovalQueueWidgetPr
           ))}
 
           <button
-            onClick={fetchActions}
+            onClick={() => fetchActions()}
             className="px-2 py-1 rounded text-xs text-gray-500 hover:text-white transition"
             title="Refresh"
           >

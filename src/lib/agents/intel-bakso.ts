@@ -44,6 +44,24 @@ export async function runIntelBakso(
     // 2. Keyword gap analysis (max 3 competitors)
     const topCompetitors = competitors.slice(0, 3)
 
+    // Build branded keyword blocklist from all competitor domains + G2G own brand
+    // e.g. "eldorado.gg" → blocks "eldorado", "eldorado.gg", "eldorado gg"
+    const brandedTerms = new Set<string>(['g2g', 'g2g.com'])
+    for (const c of competitors) {
+      const domain = c.domain.toLowerCase()
+      brandedTerms.add(domain)                          // e.g. "eldorado.gg"
+      brandedTerms.add(domain.split('.')[0])            // e.g. "eldorado"
+      brandedTerms.add(domain.replace(/\./g, ' '))      // e.g. "eldorado gg"
+    }
+
+    const isBrandedKeyword = (keyword: string): boolean => {
+      const kw = keyword.toLowerCase()
+      for (const term of brandedTerms) {
+        if (kw.includes(term)) return true
+      }
+      return false
+    }
+
     try {
       // Get our keywords
       const ourKeywords = await getDomainKeywords('g2g.com', 'us', 100)
@@ -56,7 +74,10 @@ export async function runIntelBakso(
         const gaps = compKeywords.filter(ck => {
           const ourRanking = ourRankings.get(ck.keyword.toLowerCase())
           // Gap: they rank top 10, we rank >20 or don't rank
-          return ck.position <= 10 && (!ourRanking || ourRanking.position > 20)
+          // Also skip branded keywords (competitor brand names, our brand, etc.)
+          return ck.position <= 10
+            && (!ourRanking || ourRanking.position > 20)
+            && !isBrandedKeyword(ck.keyword)
         })
 
         // Queue top gaps (by search volume)
