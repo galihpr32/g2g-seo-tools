@@ -103,6 +103,7 @@ export default function Sidebar() {
   const router   = useRouter()
   const supabase = createClient()
   const [notifCount, setNotifCount]   = useState(0)
+  const [isMember,   setIsMember]     = useState(false)
   // collapsed: Set of group names that are currently closed
   const [collapsed, setCollapsed]     = useState<Set<string>>(new Set())
   const [hydrated,  setHydrated]      = useState(false)
@@ -155,6 +156,14 @@ export default function Sidebar() {
     })
   }
 
+  // Fetch workspace role (to hide Settings from members)
+  useEffect(() => {
+    fetch('/api/workspace/role')
+      .then(r => r.json())
+      .then(d => setIsMember(d.isMember === true))
+      .catch(() => {/* silent */})
+  }, [])
+
   // Notifications count
   useEffect(() => {
     async function fetchCount() {
@@ -204,8 +213,13 @@ export default function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-3 py-3">
         {navItems.map(group => {
+          // Members don't see Settings
+          const visibleItems = isMember
+            ? group.items.filter(i => i.href !== '/settings')
+            : group.items
+          if (visibleItems.length === 0) return null
           const isCollapsed = hydrated && collapsed.has(group.group)
-          const hasActiveItem = group.items.some(item => {
+          const hasActiveItem = visibleItems.some(item => {
             const resolvedHref = activeSite && siteAwarePaths.includes(item.href)
               ? `/${activeSite}${item.href}`
               : item.href
@@ -237,7 +251,7 @@ export default function Sidebar() {
               {/* Group items */}
               {!isCollapsed && (
                 <ul className="mt-0.5 mb-2 space-y-0.5">
-                  {group.items.map(item => {
+                  {visibleItems.map(item => {
                     const resolvedHref = activeSite && siteAwarePaths.includes(item.href)
                       ? `/${activeSite}${item.href}`
                       : item.href

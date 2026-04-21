@@ -1117,9 +1117,210 @@ function EditTermRow({
   )
 }
 
+// ─── Prompt Templates Tab ─────────────────────────────────────────────────────
+
+interface PromptTemplate {
+  id:                    string | null
+  category_key:          string
+  category_name:         string
+  icon:                  string
+  url_patterns:          string[]
+  h1_template:           string
+  meta_title_template:   string
+  meta_description_guide: string
+  keyword_rules:         string
+  writing_rules:         string
+  faq_focus:             string
+  sections:              { subheading: string; instructions: string }[]
+  is_active:             boolean
+  is_customized:         boolean
+}
+
+function PromptCard({ prompt, onSaved }: { prompt: PromptTemplate; onSaved: () => void }) {
+  const [open,    setOpen]    = useState(false)
+  const [form,    setForm]    = useState<PromptTemplate>(prompt)
+  const [saving,  setSaving]  = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [saved,   setSaved]   = useState(false)
+
+  useEffect(() => { setForm(prompt) }, [prompt.category_key]) // eslint-disable-line
+
+  function updateSection(i: number, key: 'subheading' | 'instructions', val: string) {
+    setForm(f => {
+      const sections = [...f.sections]
+      sections[i] = { ...sections[i], [key]: val }
+      return { ...f, sections }
+    })
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    await fetch('/api/knowledge-base/prompts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(form),
+    })
+    setSaved(true)
+    setSaving(false)
+    onSaved()
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  async function handleReset() {
+    if (!confirm('Reset to default? Your customizations will be lost.')) return
+    setResetting(true)
+    await fetch(`/api/knowledge-base/prompts?category_key=${form.category_key}`, { method: 'DELETE' })
+    setResetting(false)
+    onSaved()
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      {/* Card header */}
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800/50 transition"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">{prompt.icon}</span>
+          <div className="text-left">
+            <div className="flex items-center gap-2">
+              <p className="text-white font-medium text-sm">{prompt.category_name}</p>
+              {prompt.is_customized && (
+                <span className="text-xs px-1.5 py-0.5 bg-yellow-900 text-yellow-300 rounded">Customized</span>
+              )}
+            </div>
+            <p className="text-gray-500 text-xs mt-0.5">
+              {prompt.sections.length} sections · URL patterns: {prompt.url_patterns.join(', ')}
+            </p>
+          </div>
+        </div>
+        <svg className={`w-4 h-4 text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 border-t border-gray-800 pt-4 space-y-4">
+          {/* Meta fields */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">H1 Template</label>
+              <input value={form.h1_template} onChange={e => setForm(f => ({ ...f, h1_template: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Meta Title Template</label>
+              <input value={form.meta_title_template} onChange={e => setForm(f => ({ ...f, meta_title_template: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Meta Description Guide</label>
+            <input value={form.meta_description_guide} onChange={e => setForm(f => ({ ...f, meta_description_guide: e.target.value }))}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Keyword Rules</label>
+              <textarea value={form.keyword_rules} onChange={e => setForm(f => ({ ...f, keyword_rules: e.target.value }))}
+                rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">FAQ Focus</label>
+              <textarea value={form.faq_focus} onChange={e => setForm(f => ({ ...f, faq_focus: e.target.value }))}
+                rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Writing Rules</label>
+            <textarea value={form.writing_rules} onChange={e => setForm(f => ({ ...f, writing_rules: e.target.value }))}
+              rows={4} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+          </div>
+
+          {/* Sections */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-2">Content Sections ({form.sections.length})</label>
+            <div className="space-y-3">
+              {form.sections.map((sec, i) => (
+                <div key={i} className="bg-gray-800 rounded-lg p-3 space-y-2">
+                  <input
+                    value={sec.subheading}
+                    onChange={e => updateSection(i, 'subheading', e.target.value)}
+                    placeholder="H2 subheading template"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-red-500"
+                  />
+                  <textarea
+                    value={sec.instructions}
+                    onChange={e => updateSection(i, 'instructions', e.target.value)}
+                    rows={3}
+                    placeholder="Section writing instructions"
+                    className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-red-500 resize-none"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-between pt-2">
+            {prompt.is_customized ? (
+              <button onClick={handleReset} disabled={resetting}
+                className="text-xs text-gray-500 hover:text-red-400 transition disabled:opacity-50">
+                {resetting ? 'Resetting…' : '↩ Reset to default'}
+              </button>
+            ) : <div />}
+            <button onClick={handleSave} disabled={saving}
+              className="px-4 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm rounded-lg transition">
+              {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PromptsTab() {
+  const [prompts, setPrompts] = useState<PromptTemplate[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const fetchPrompts = useCallback(async () => {
+    const res = await fetch('/api/knowledge-base/prompts')
+    const d = await res.json()
+    setPrompts(d.prompts ?? [])
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetchPrompts() }, [fetchPrompts])
+
+  const customized = prompts.filter(p => p.is_customized).length
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-white font-semibold">Prompt Templates</h2>
+        <p className="text-gray-400 text-sm mt-0.5">
+          Master Prompt List — writing instructions per product category, used by auto product generation and content studio.
+          {customized > 0 && <span className="ml-2 text-yellow-400">{customized} customized</span>}
+        </p>
+      </div>
+      {loading ? (
+        <div className="text-center py-12 text-gray-500">Loading prompts…</div>
+      ) : (
+        <div className="space-y-2">
+          {prompts.map(p => (
+            <PromptCard key={p.category_key} prompt={p} onSaved={fetchPrompts} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-type Tab = 'brand' | 'categories' | 'usp' | 'platforms' | 'dmca'
+type Tab = 'brand' | 'categories' | 'usp' | 'platforms' | 'dmca' | 'prompts'
 
 export default function KnowledgeBaseClient() {
   const [activeTab, setActiveTab] = useState<Tab>('brand')
@@ -1136,11 +1337,12 @@ export default function KnowledgeBaseClient() {
   useEffect(() => { fetchItems() }, [fetchItems])
 
   const tabs: { key: Tab; label: string; icon: string; count?: number }[] = [
-    { key: 'brand',      label: 'Brand',      icon: '🏷️' },
-    { key: 'categories', label: 'Categories', icon: '🗂️', count: items.filter(i => i.category === 'category').length },
-    { key: 'usp',        label: 'USPs',       icon: '⭐', count: items.filter(i => i.category === 'usp').length },
-    { key: 'platforms',  label: 'Platforms',  icon: '📡', count: items.filter(i => i.category === 'platform').length },
-    { key: 'dmca',       label: 'DMCA Terms', icon: '🚫' },
+    { key: 'brand',      label: 'Brand',            icon: '🏷️' },
+    { key: 'categories', label: 'Categories',       icon: '🗂️', count: items.filter(i => i.category === 'category').length },
+    { key: 'usp',        label: 'USPs',             icon: '⭐', count: items.filter(i => i.category === 'usp').length },
+    { key: 'platforms',  label: 'Platforms',        icon: '📡', count: items.filter(i => i.category === 'platform').length },
+    { key: 'prompts',    label: 'Prompt Templates', icon: '📝' },
+    { key: 'dmca',       label: 'DMCA Terms',       icon: '🚫' },
   ]
 
   return (
@@ -1182,6 +1384,7 @@ export default function KnowledgeBaseClient() {
           {activeTab === 'categories' && <CategoriesTab items={items} onRefresh={fetchItems} />}
           {activeTab === 'usp'        && <UspTab        items={items} onRefresh={fetchItems} />}
           {activeTab === 'platforms'  && <PlatformsTab  items={items} onRefresh={fetchItems} />}
+          {activeTab === 'prompts'    && <PromptsTab />}
           {activeTab === 'dmca'       && <DmcaTab />}
         </>
       )}

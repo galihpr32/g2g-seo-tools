@@ -16,14 +16,45 @@ export async function getEffectiveOwnerId(
   supabase: SupabaseClient,
   userId: string
 ): Promise<string> {
+  // Fast path: look up by member_user_id (already linked)
   const { data } = await supabase
     .from('workspace_members')
     .select('owner_user_id')
     .eq('member_user_id', userId)
     .eq('status', 'active')
-    .maybeSingle()   // null if not a member — no error thrown
+    .maybeSingle()
 
-  return data?.owner_user_id ?? userId
+  if (data?.owner_user_id) return data.owner_user_id
+
+  // Fallback: invited user who accepted the email invite but was never linked.
+  // When Supabase creates the user on invite acceptance, member_user_id is still null.
+  // We look up by email and auto-link so data sharing works immediately.
+  const { data: { user } } = await supabase.auth.getUser()
+  if (user?.email) {
+    const { data: byEmail } = await supabase
+      .from('workspace_members')
+      .select('id, owner_user_id, status')
+      .eq('member_email', user.email.toLowerCase())
+      .in('status', ['active', 'pending'])
+      .is('member_user_id', null)
+      .maybeSingle()
+
+    if (byEmail) {
+      // Auto-link: stamp the real user ID and activate so next requests use the fast path
+      await supabase
+        .from('workspace_members')
+        .update({
+          member_user_id: userId,
+          status:         'active',
+          approved_at:    byEmail.status === 'pending' ? new Date().toISOString() : undefined,
+        })
+        .eq('id', byEmail.id)
+
+      return byEmail.owner_user_id
+    }
+  }
+
+  return userId
 }
 
 /**
