@@ -35,7 +35,7 @@ const AGENT_ROLES: Record<string, string> = {
   'mas-gacor': 'Trend Spotter — finds trending games & suggests content',
   'intel-bakso': 'Competitive Intel — keyword gaps, SOV, competitor pages',
   'anak-intern': 'Content Drafter — turns approved trends & gaps into brief drafts',
-  'kang-cilok': 'Off-page Agent — coming soon',
+  'kang-cilok': 'Outreach Agent — finds prospects from keyword gaps, drafts pitches',
 }
 
 const AGENT_EMOJI: Record<string, string> = {
@@ -159,7 +159,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
       {allAgents.map(key => {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
-        const isImplemented = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern'].includes(key)
+        const isImplemented = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok'].includes(key)
         const isRunning = running.has(key)
         const settingsOpen = expandedSettings === key
 

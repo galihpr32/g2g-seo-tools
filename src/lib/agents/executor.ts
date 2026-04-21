@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { runAnakIntern } from '@/lib/agents/anak-intern'
+import { generateAgentBrief } from '@/lib/agents/brief-generator'
 
 export interface AgentAction {
   id: string
@@ -78,6 +79,37 @@ export async function executeAction(
         })
 
       if (error) throw error
+    } else if (action.action_type === 'draft_outreach') {
+      // Kang Cilok: add domain to outreach tracker
+      const data = action.data as {
+        domain:          string
+        keyword:         string
+        search_volume?:  number
+        serp_position?:  number
+        target_url?:     string
+        topic?:          string
+        draft_email?:    string
+      }
+
+      // Only insert if domain is set (skip "manual research needed" suggestions without domain)
+      if (data.domain) {
+        const { error: outreachErr } = await db
+          .from('outreach_prospects')
+          .insert({
+            owner_user_id:    action.owner_user_id,
+            domain:           data.domain,
+            source_keyword:   data.keyword,
+            target_url:       data.target_url ?? null,
+            topic:            data.topic ?? null,
+            notes:            data.draft_email ?? null,
+            status:           'prospecting',
+            organic_keywords: null,
+            organic_traffic:  null,
+            authority_score:  null,
+          })
+
+        if (outreachErr) throw outreachErr
+      }
     } else if (action.action_type === 'draft_brief') {
       // Anak Intern: create a brief stub in seo_content_briefs
       const data = action.data as {
@@ -94,7 +126,7 @@ export async function executeAction(
         throw new Error('Missing page_url or keyword in draft_brief data')
       }
 
-      const { error: briefErr } = await db
+      const { data: newBrief, error: briefErr } = await db
         .from('seo_content_briefs')
         .insert({
           owner_user_id:    action.owner_user_id,
@@ -110,8 +142,22 @@ export async function executeAction(
             `Queued by Anak Intern (agent_action: ${action.id})`,
           ].filter(Boolean).join('\n'),
         })
+        .select('id')
+        .single()
 
-      if (briefErr) throw briefErr
+      if (briefErr || !newBrief) throw briefErr ?? new Error('Brief insert failed')
+
+      // Fire-and-forget: auto-generate brief outline using Claude
+      generateAgentBrief({
+        briefId:       newBrief.id,
+        ownerId:       action.owner_user_id,
+        keyword:       data.keyword,
+        pageUrl:       data.page_url,
+        briefType:     data.brief_type ?? 'on_page',
+        searchVolume:  data.search_volume,
+        competitorUrl: data.competitor_url ?? null,
+        notes:         data.context ?? null,
+      }).catch(err => console.error('[executor] brief generation failed:', err))
     } else if (action.action_type === 'run_agent') {
       // Handoff: trigger another agent and create a linked run
       const data = action.data as {
@@ -125,7 +171,7 @@ export async function executeAction(
         throw new Error('Missing handoff_to in action data')
       }
 
-      const implementedAgents = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern']
+      const implementedAgents = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok']
 
       // Create a new agent_runs row linked to this action
       const { data: newRun, error: runErr } = await db

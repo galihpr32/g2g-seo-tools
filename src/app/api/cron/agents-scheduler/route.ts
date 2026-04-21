@@ -4,6 +4,7 @@ import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt
 import { runMasGacor } from '@/lib/agents/mas-gacor'
 import { runIntelBakso } from '@/lib/agents/intel-bakso'
 import { runAnakIntern } from '@/lib/agents/anak-intern'
+import { runKangCilok } from '@/lib/agents/kang-cilok'
 
 export const maxDuration = 300
 
@@ -117,6 +118,8 @@ export async function GET(request: Request) {
         result = await runIntelBakso(ownerId, siteSlug, runId)
       } else if (key === 'anak-intern') {
         result = await runAnakIntern(ownerId, siteSlug, runId)
+      } else if (key === 'kang-cilok') {
+        result = await runKangCilok(ownerId, siteSlug, runId)
       } else {
         results[`${ownerId}/${key}`] = { status: 'skipped', reason: 'not implemented' }
         continue

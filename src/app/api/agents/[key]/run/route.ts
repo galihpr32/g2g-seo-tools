@@ -6,6 +6,7 @@ import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt
 import { runMasGacor } from '@/lib/agents/mas-gacor'
 import { runIntelBakso } from '@/lib/agents/intel-bakso'
 import { runAnakIntern } from '@/lib/agents/anak-intern'
+import { runKangCilok } from '@/lib/agents/kang-cilok'
 
 export async function POST(
   request: Request,
@@ -74,6 +75,8 @@ export async function POST(
       result = await runIntelBakso(effectiveOwnerId, siteSlug, runId)
     } else if (key === 'anak-intern') {
       result = await runAnakIntern(effectiveOwnerId, siteSlug, runId)
+    } else if (key === 'kang-cilok') {
+      result = await runKangCilok(effectiveOwnerId, siteSlug, runId)
     } else {
       return NextResponse.json(
         { error: `Agent not yet implemented: ${key}` },

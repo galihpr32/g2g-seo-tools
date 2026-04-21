@@ -917,17 +917,19 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${
-            brief.status === 'draft' ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20'
-            : brief.status === 'reviewed' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20'
-            : brief.status === 'published' ? 'text-green-400 bg-green-500/10 border-green-500/20'
+            brief.status === 'draft'            ? 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20'
+            : brief.status === 'generating'     ? 'text-orange-400 bg-orange-500/10 border-orange-500/20 animate-pulse'
+            : brief.status === 'agent_generated'? 'text-purple-400 bg-purple-500/10 border-purple-500/20'
+            : brief.status === 'reviewed'       ? 'text-blue-400 bg-blue-500/10 border-blue-500/20'
+            : brief.status === 'published'      ? 'text-green-400 bg-green-500/10 border-green-500/20'
             : 'text-gray-400 bg-gray-500/10 border-gray-500/20'}`}>
-            {brief.status}
+            {brief.status === 'agent_generated' ? '🤖 AI Draft Ready' : brief.status}
           </span>
           <span className="text-gray-500 text-xs">Generated {new Date(brief.created_at).toLocaleString('id-ID')}</span>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Workflow: draft → reviewed → published */}
-          {brief.status === 'draft' && hasDraftContent && (
+          {(brief.status === 'draft' || brief.status === 'agent_generated') && hasDraftContent && (
             <button onClick={markReviewed} disabled={markingReviewed}
               className="text-xs px-3 py-1.5 rounded-lg border border-blue-600 bg-blue-600/10 text-blue-400 hover:bg-blue-700 hover:text-white transition disabled:opacity-50">
               {markingReviewed ? '…' : '★ Mark Reviewed'}
