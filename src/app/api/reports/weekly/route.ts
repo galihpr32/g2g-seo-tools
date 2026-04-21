@@ -311,7 +311,7 @@ export async function POST(req: Request) {
     }
 
     // ── GA4 (site-specific property ID) ─────────────────────────────────────
-    // Use ga4_property_id from site_configs if set, else fall back to env var (legacy G2G)
+    // Priority: site_configs.ga4_property_id → GA4_PROPERTY_ID env var (any site)
     let ga4Data: {
       weekSessions: number; prevWeekSessions: number; sessionsPct: number | null
       engagedSessions: number; bounceRate: number
@@ -319,11 +319,16 @@ export async function POST(req: Request) {
       totalRevenue: number; prevRevenue: number; revenuePct: number | null
       topPages: { pagePath: string; sessions: number; purchases: number; revenue: number }[]
     } | null = null
+    let ga4Error: string | null = null
 
-    const ga4PropertyId = siteConfig.ga4_property_id ?? (siteSlug === 'g2g' ? process.env.GA4_PROPERTY_ID : null)
+    const ga4PropertyId = siteConfig.ga4_property_id ?? process.env.GA4_PROPERTY_ID ?? null
 
     try {
-      if (conn?.access_token && ga4PropertyId) {
+      if (!conn?.access_token) {
+        ga4Error = 'Google not connected — reconnect in Settings.'
+      } else if (!ga4PropertyId) {
+        ga4Error = 'GA4 property ID not set — add GA4_PROPERTY_ID to Vercel env or set it in site_configs.'
+      } else if (conn?.access_token && ga4PropertyId) {
         const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
         const [thisWeekRaw, prevWeekRaw, topPagesRaw] = await Promise.all([
           getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd,
@@ -377,7 +382,9 @@ export async function POST(req: Request) {
           topPages:         organicPages,
         }
       }
-    } catch (e) {
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      ga4Error = `GA4 fetch error: ${msg}`
       console.warn('[weekly-report] GA4 fetch failed:', e)
     }
 
@@ -475,6 +482,7 @@ export async function POST(req: Request) {
       weekEnd,
       gsc: gscData,
       ga4: ga4Data,
+      ga4Error,
       semrush: semrushData,
       actionItems: actionItemsData,
       competitive: competitiveData,

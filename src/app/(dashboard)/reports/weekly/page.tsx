@@ -73,6 +73,7 @@ interface ReportData {
   weekEnd: string
   gsc: GscData
   ga4: Ga4Data | null
+  ga4Error?: string | null
   semrush: SemrushData
   actionItems: ActionItemsData
   competitive: {
@@ -480,7 +481,7 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                       sub={d.ga4.prevPurchases != null ? `prev ${fmt(d.ga4.prevPurchases)}` : undefined} />
                   </>
                 ) : (
-                  <StatCard icon="📈" label="Organic Sessions" value="—" sub="GA4 not connected" />
+                  <StatCard icon="📈" label="Organic Sessions" value="—" sub={d.ga4Error ?? 'GA4 not connected'} />
                 )}
               </div>
 
