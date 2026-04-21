@@ -48,7 +48,15 @@ export default async function CommandCenterPage() {
 
       {/* Agent Status Panel */}
       <div className="mb-8">
-        <h2 className="text-lg font-semibold text-white mb-4">Agent Status</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-white">Agent Status</h2>
+          <a
+            href="/command-center/logs"
+            className="text-sm text-blue-400 hover:text-blue-300 transition flex items-center gap-1"
+          >
+            📋 View Activity Log →
+          </a>
+        </div>
         <AgentStatusPanel userId={effectiveOwnerId} />
       </div>
     </div>
