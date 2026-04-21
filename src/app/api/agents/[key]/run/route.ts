@@ -7,6 +7,7 @@ import { runMasGacor } from '@/lib/agents/mas-gacor'
 import { runIntelBakso } from '@/lib/agents/intel-bakso'
 import { runAnakIntern } from '@/lib/agents/anak-intern'
 import { runKangCilok } from '@/lib/agents/kang-cilok'
+import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export async function POST(
   request: Request,
@@ -82,6 +83,30 @@ export async function POST(
         { error: `Agent not yet implemented: ${key}` },
         { status: 400 }
       )
+    }
+
+    // Fire-and-forget Slack notification (only if actions were queued)
+    if (result.actionsQueued > 0) {
+      const { data: pendingActions } = await db
+        .from('agent_actions')
+        .select('id, title, description, priority, action_type')
+        .eq('owner_user_id', effectiveOwnerId)
+        .eq('agent_key', key)
+        .eq('run_id', runId)
+        .eq('status', 'pending')
+        .order('priority', { ascending: false })
+        .limit(5)
+
+      const actions: PendingAction[] = (pendingActions ?? []).map(a => ({
+        id:          a.id,
+        title:       a.title,
+        description: a.description,
+        priority:    a.priority,
+        actionType:  a.action_type,
+      }))
+
+      notifyAgentRun(buildAgentNotification(key, runId, result, actions))
+        .catch(err => console.error('[slack] notify failed:', err))
     }
 
     return NextResponse.json({

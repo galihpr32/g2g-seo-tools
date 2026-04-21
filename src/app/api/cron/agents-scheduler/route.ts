@@ -5,6 +5,7 @@ import { runMasGacor } from '@/lib/agents/mas-gacor'
 import { runIntelBakso } from '@/lib/agents/intel-bakso'
 import { runAnakIntern } from '@/lib/agents/anak-intern'
 import { runKangCilok } from '@/lib/agents/kang-cilok'
+import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export const maxDuration = 300
 
@@ -134,6 +135,30 @@ export async function GET(request: Request) {
         .eq('agent_key', key)
 
       results[`${ownerId}/${key}`] = { status: 'ok', ...result }
+
+      // Slack notification if actions were queued
+      if (result.actionsQueued > 0) {
+        const { data: pendingActions } = await db
+          .from('agent_actions')
+          .select('id, title, description, priority, action_type')
+          .eq('owner_user_id', ownerId)
+          .eq('agent_key', key)
+          .eq('run_id', runId)
+          .eq('status', 'pending')
+          .order('priority', { ascending: false })
+          .limit(5)
+
+        const actions: PendingAction[] = (pendingActions ?? []).map((a: { id: string; title: string; description: string | null; priority: string; action_type: string }) => ({
+          id:          a.id,
+          title:       a.title,
+          description: a.description,
+          priority:    a.priority,
+          actionType:  a.action_type,
+        }))
+
+        notifyAgentRun(buildAgentNotification(key, runId, result, actions))
+          .catch((e: unknown) => console.error('[slack] notify failed:', e))
+      }
     } catch (err) {
       results[`${ownerId}/${key}`] = { status: 'error', error: String(err) }
     }
