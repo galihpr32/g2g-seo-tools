@@ -12,6 +12,7 @@ const navItems = [
     defaultOpen: true,
     items: [
       { label: 'Dashboard',           href: '/dashboard',       icon: '▦' },
+      { label: 'Command Center',      href: '/command-center',  icon: '🧠' },
       { label: 'Campaigns',           href: '/campaigns',       icon: '🗂️' },
       { label: 'Team Performance',    href: '/team-performance', icon: '👥' },
       { label: 'Notifications',       href: '/notifications',   icon: '🔔' },
