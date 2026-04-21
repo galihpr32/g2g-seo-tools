@@ -59,6 +59,7 @@ interface PlatformData {
 interface UspData {
   description?: string
   applicable_category_ids?: string[]
+  usage_type?: 'on_page' | 'off_page' | 'both'
 }
 
 // ─── Shared field components ──────────────────────────────────────────────────
@@ -731,6 +732,29 @@ function UspItemForm({
             rows={1}
             placeholder="e.g. Fastest Delivery, Buyer Protection, Lowest Price Guarantee"
           />
+          {/* Usage type */}
+          <div>
+            <label className="block text-xs font-medium text-gray-400 mb-2">Usage</label>
+            <div className="flex gap-2">
+              {(['on_page', 'off_page', 'both'] as const).map(t => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setData(d => ({ ...d, usage_type: t }))}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+                    (data.usage_type ?? 'on_page') === t
+                      ? t === 'on_page' ? 'bg-blue-800/50 border-blue-500 text-blue-300'
+                        : t === 'off_page' ? 'bg-purple-800/50 border-purple-500 text-purple-300'
+                        : 'bg-gray-700 border-gray-400 text-gray-200'
+                      : 'bg-gray-800 border-gray-700 text-gray-500 hover:border-gray-500'
+                  }`}
+                >
+                  {t === 'on_page' ? '📄 On-page' : t === 'off_page' ? '🔗 Off-page' : '✦ Both'}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <TextField
             label="Description"
             value={data.description ?? ''}
@@ -796,8 +820,18 @@ function UspItemForm({
 function UspTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void }) {
   const uspItems      = items.filter(i => i.category === 'usp')
   const categoryItems = items.filter(i => i.category === 'category')
-  const [newName, setNewName] = useState('')
-  const [adding, setAdding]   = useState(false)
+  const [newName, setNewName]   = useState('')
+  const [newUsage, setNewUsage] = useState<'on_page' | 'off_page' | 'both'>('on_page')
+  const [adding, setAdding]     = useState(false)
+
+  const onPageItems  = uspItems.filter(i => {
+    const t = (i.data as UspData).usage_type ?? 'on_page'
+    return t === 'on_page' || t === 'both'
+  })
+  const offPageItems = uspItems.filter(i => {
+    const t = (i.data as UspData).usage_type ?? 'on_page'
+    return t === 'off_page' || t === 'both'
+  })
 
   async function handleAdd() {
     if (!newName.trim()) return
@@ -805,7 +839,7 @@ function UspTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void }
     await fetch('/api/knowledge-base', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category: 'usp', name: newName.trim(), data: { applicable_category_ids: [] } }),
+      body: JSON.stringify({ category: 'usp', name: newName.trim(), data: { applicable_category_ids: [], usage_type: newUsage } }),
     })
     setNewName('')
     setAdding(false)
@@ -827,29 +861,59 @@ function UspTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void }
     onRefresh()
   }
 
+  function UspSection({ title, badge, badgeColor, sectionItems, empty }: {
+    title: string; badge: string; badgeColor: string; sectionItems: KBItem[]; empty: string
+  }) {
+    return (
+      <div>
+        <div className="flex items-center gap-2 mb-3">
+          <h3 className="text-white font-medium text-sm">{title}</h3>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badgeColor}`}>{badge}</span>
+          <span className="text-gray-600 text-xs">{sectionItems.length} USPs</span>
+        </div>
+        {sectionItems.length === 0 ? (
+          <p className="text-gray-600 text-xs italic px-1 mb-2">{empty}</p>
+        ) : (
+          <div className="space-y-2 mb-2">
+            {sectionItems.map(item => (
+              <UspItemForm key={item.id} item={item} categoryItems={categoryItems} onSave={handleSave} onDelete={handleDelete} />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-5">
       <div>
         <h2 className="text-white font-semibold">Unique Selling Points (USPs)</h2>
         <p className="text-gray-400 text-sm mt-0.5">
-          Global USPs that writers should emphasize. Tick which categories each USP applies to — this gets injected into brief generation.
+          USPs injected into AI content generation. Use <code className="bg-gray-800 px-1 rounded text-yellow-400 text-xs">&#123;usps&#125;</code> in Prompt Templates to auto-insert on-page USPs.
         </p>
       </div>
 
+      {/* Add new */}
       <div className="flex gap-2">
         <input
           type="text"
           value={newName}
           onChange={e => setNewName(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleAdd()}
-          placeholder="New USP name (e.g. Fastest Delivery, Buyer Protection)…"
+          placeholder="New USP name (e.g. GamerProtect, Fastest Delivery)…"
           className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
         />
-        <button
-          onClick={handleAdd}
-          disabled={adding || !newName.trim()}
-          className="px-4 py-2 text-sm bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg transition"
+        <select
+          value={newUsage}
+          onChange={e => setNewUsage(e.target.value as 'on_page' | 'off_page' | 'both')}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
         >
+          <option value="on_page">📄 On-page</option>
+          <option value="off_page">🔗 Off-page</option>
+          <option value="both">✦ Both</option>
+        </select>
+        <button onClick={handleAdd} disabled={adding || !newName.trim()}
+          className="px-4 py-2 text-sm bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg transition">
           {adding ? 'Adding…' : '+ Add'}
         </button>
       </div>
@@ -857,16 +921,22 @@ function UspTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void }
       {uspItems.length === 0 ? (
         <p className="text-gray-500 text-sm text-center py-8">No USPs yet. Add one above.</p>
       ) : (
-        <div className="space-y-2">
-          {uspItems.map(item => (
-            <UspItemForm
-              key={item.id}
-              item={item}
-              categoryItems={categoryItems}
-              onSave={handleSave}
-              onDelete={handleDelete}
-            />
-          ))}
+        <div className="space-y-6">
+          <UspSection
+            title="On-page USPs"
+            badge="📄 On-page"
+            badgeColor="bg-blue-900/50 text-blue-300"
+            sectionItems={onPageItems}
+            empty="No on-page USPs yet. Add one above with type 'On-page'."
+          />
+          <div className="border-t border-gray-800" />
+          <UspSection
+            title="Off-page USPs"
+            badge="🔗 Off-page"
+            badgeColor="bg-purple-900/50 text-purple-300"
+            sectionItems={offPageItems}
+            empty="No off-page USPs yet. Add one above with type 'Off-page'."
+          />
         </div>
       )}
     </div>
@@ -1305,6 +1375,24 @@ function PromptsTab() {
           {customized > 0 && <span className="ml-2 text-yellow-400">{customized} customized</span>}
         </p>
       </div>
+
+      {/* Available placeholders */}
+      <div className="bg-gray-900 border border-yellow-800/40 rounded-xl p-4">
+        <p className="text-xs font-semibold uppercase tracking-wider text-yellow-500 mb-2">Available Placeholders</p>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { ph: '{mainKeyword}',  desc: 'Primary SEO keyword being targeted' },
+            { ph: '{gameName}',     desc: 'Game or product name extracted from URL' },
+            { ph: '{productName}',  desc: 'Alias for gameName' },
+            { ph: '{usps}',         desc: 'On-page USPs from Knowledge Base (auto-injected)' },
+          ].map(({ ph, desc }) => (
+            <span key={ph} className="inline-flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs" title={desc}>
+              <code className="text-yellow-400">{ph}</code>
+              <span className="text-gray-500">— {desc}</span>
+            </span>
+          ))}
+        </div>
+      </div>
       {loading ? (
         <div className="text-center py-12 text-gray-500">Loading prompts…</div>
       ) : (
@@ -1336,13 +1424,13 @@ export default function KnowledgeBaseClient() {
 
   useEffect(() => { fetchItems() }, [fetchItems])
 
-  const tabs: { key: Tab; label: string; icon: string; count?: number }[] = [
-    { key: 'brand',      label: 'Brand',            icon: '🏷️' },
-    { key: 'categories', label: 'Categories',       icon: '🗂️', count: items.filter(i => i.category === 'category').length },
-    { key: 'usp',        label: 'USPs',             icon: '⭐', count: items.filter(i => i.category === 'usp').length },
-    { key: 'platforms',  label: 'Platforms',        icon: '📡', count: items.filter(i => i.category === 'platform').length },
-    { key: 'prompts',    label: 'Prompt Templates', icon: '📝' },
-    { key: 'dmca',       label: 'DMCA Terms',       icon: '🚫' },
+  const tabs: { key: Tab; label: string; icon: string; badge?: string; badgeColor?: string; count?: number }[] = [
+    { key: 'brand',      label: 'Brand',            icon: '🏷️',  badge: 'Both' },
+    { key: 'categories', label: 'Categories',       icon: '🗂️',  badge: 'On-page', badgeColor: 'blue', count: items.filter(i => i.category === 'category').length },
+    { key: 'usp',        label: 'USPs',             icon: '⭐',  badge: 'Both',                         count: items.filter(i => i.category === 'usp').length },
+    { key: 'platforms',  label: 'Platforms',        icon: '📡',  badge: 'Off-page', badgeColor: 'purple', count: items.filter(i => i.category === 'platform').length },
+    { key: 'prompts',    label: 'Prompt Templates', icon: '📝',  badge: 'On-page', badgeColor: 'blue' },
+    { key: 'dmca',       label: 'DMCA Terms',       icon: '🚫',  badge: 'On-page', badgeColor: 'blue' },
   ]
 
   return (
@@ -1367,6 +1455,17 @@ export default function KnowledgeBaseClient() {
           >
             <span>{tab.icon}</span>
             <span>{tab.label}</span>
+            {tab.badge && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                activeTab === tab.key
+                  ? 'bg-red-600/70 text-red-100'
+                  : tab.badgeColor === 'blue'   ? 'bg-blue-900/60 text-blue-400'
+                  : tab.badgeColor === 'purple' ? 'bg-purple-900/60 text-purple-400'
+                  : 'bg-gray-700 text-gray-400'
+              }`}>
+                {tab.badge}
+              </span>
+            )}
             {tab.count !== undefined && tab.count > 0 && (
               <span className={`text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab.key ? 'bg-red-600' : 'bg-gray-700'}`}>
                 {tab.count}

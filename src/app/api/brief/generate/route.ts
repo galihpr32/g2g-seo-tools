@@ -125,6 +125,8 @@ interface KBContext {
   categoryAngle: string
   categoryNotes: string
   dmcaTerms: Array<{ original: string; replacement: string }>
+  uspsOnPage: string[]    // on-page USPs for {usps} placeholder
+  uspsOffPage: string[]   // off-page USPs for outreach prompts
 }
 
 // ─── Load knowledge base context ──────────────────────────────────────────────
@@ -137,7 +139,7 @@ async function loadKBContext(
   const empty: KBContext = {
     brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
     categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
-    dmcaTerms: [],
+    dmcaTerms: [], uspsOnPage: [], uspsOffPage: [],
   }
 
   try {
@@ -187,6 +189,14 @@ async function loadKBContext(
       categoryNotes:        (catData.notes         as string) ?? '',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       dmcaTerms: ((dmcaTerms ?? []) as any[]).map((t: any) => ({ original: t.original_term, replacement: t.replacement_term })),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      uspsOnPage: (kbItems as any[])
+        .filter((i: any) => i.category === 'usp' && ['on_page', 'both'].includes((i.data as Record<string,unknown>).usage_type as string ?? 'on_page'))
+        .map((i: any) => `- ${i.name}${i.data?.description ? ': ' + i.data.description : ''}`),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      uspsOffPage: (kbItems as any[])
+        .filter((i: any) => i.category === 'usp' && ['off_page', 'both'].includes((i.data as Record<string,unknown>).usage_type as string ?? 'on_page'))
+        .map((i: any) => `- ${i.name}${i.data?.description ? ': ' + i.data.description : ''}`),
     }
   } catch {
     return empty
@@ -278,7 +288,7 @@ async function runBriefPipeline(
       ? await loadKBContext(supabase as any, ownerId, item.page)
       : { brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
           categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
-          dmcaTerms: [] }
+          dmcaTerms: [], uspsOnPage: [], uspsOffPage: [] }
 
     // Detect language from the target page URL
     const lang = detectPageLanguage(item.page)
@@ -504,7 +514,7 @@ function buildOnPagePrompt(p: {
   customInstructions?: string
 }) {
   const gameName = deriveTopicFromUrl(p.page)
-  const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword)
+  const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword, p.kb.uspsOnPage)
   const categoryTemplate = detectCategory(p.page)
   const hasCategoryTemplate = !!categoryTemplate
 

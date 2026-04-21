@@ -284,16 +284,22 @@ export function detectCategory(url: string): CategoryTemplate | null {
 }
 
 // ─── Build category-specific on-page prompt instructions ─────────────────────
-export function buildCategoryInstructions(url: string, gameName: string, mainKeyword: string): string {
+// uspsOnPage: optional list of on-page USP name+description strings from KB
+export function buildCategoryInstructions(url: string, gameName: string, mainKeyword: string, uspsOnPage?: string[]): string {
   const template = detectCategory(url)
   if (!template) {
     return `Write a comprehensive, SEO-optimized product page following G2G.com standards. Focus on buyer intent, trust signals (GamerProtect, escrow, 200+ payment methods), and natural keyword integration. Use <br><br> between paragraphs.`
   }
 
+  const uspBlock = uspsOnPage?.length
+    ? uspsOnPage.join('\n')
+    : ''
+
   const fillTemplate = (s: string) =>
     s.replace(/{mainKeyword}/g, mainKeyword)
      .replace(/{gameName}/g, gameName || mainKeyword)
      .replace(/{productName}/g, gameName || mainKeyword)
+     .replace(/{usps}/g, uspBlock)
 
   const sectionGuide = template.sections
     .map((s, i) => `SECTION ${i + 1} — ${fillTemplate(s.subheading)}\n${s.instructions}`)
@@ -311,8 +317,8 @@ ${sectionGuide}
 ${template.keywordRules}
 
 === WRITING RULES ===
-${template.writingRules}
-
+${fillTemplate(template.writingRules)}
+${uspBlock ? `\n=== ON-PAGE USPs (always emphasise these) ===\n${uspBlock}` : ''}
 === FAQ FOCUS ===
 ${template.faqFocus}
 
