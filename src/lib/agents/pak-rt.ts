@@ -10,14 +10,28 @@ import { createServiceClient } from '@/lib/supabase/service'
  * 4. Filter out pages already in progress or with existing briefs
  * 5. Queue agent_actions for remaining pages
  */
+export interface PakRTConfig {
+  maxDropsPerDay: number      // max URLs to queue per run (default: 10)
+  minClicksDrop: number       // minimum absolute click drop to consider (default: 5)
+  minPctDrop: number          // minimum % drop to consider (default: 20)
+}
+
+export const PAK_RT_DEFAULTS: PakRTConfig = {
+  maxDropsPerDay: 10,
+  minClicksDrop: 5,
+  minPctDrop: 20,
+}
+
 export async function runPakRT(
   ownerId: string,
   siteSlug: string,
-  runId: string
+  runId: string,
+  config: Partial<PakRTConfig> = {}
 ): Promise<{
   summary: string
   actionsQueued: number
 }> {
+  const { maxDropsPerDay, minClicksDrop, minPctDrop } = { ...PAK_RT_DEFAULTS, ...config }
   const db = createServiceClient()
 
   try {
@@ -92,8 +106,8 @@ export async function runPakRT(
         ? (clicksDrop / metrics.clicks_prev) * 100
         : 0
 
-      // Find drops where clicks_drop > 5 AND pct > 20%
-      if (clicksDrop > 5 && clicksDropPct > 20) {
+      // Find drops where clicks_drop > minClicksDrop AND pct > minPctDrop
+      if (clicksDrop > minClicksDrop && clicksDropPct > minPctDrop) {
         significantDrops.push({
           page: key,
           clicks_prev: metrics.clicks_prev,
@@ -129,7 +143,10 @@ export async function runPakRT(
       existingPages = new Set([...existingPages, ...briefPages])
     }
 
-    const newDrops = significantDrops.filter(d => !existingPages.has(d.page))
+    const newDrops = significantDrops
+      .filter(d => !existingPages.has(d.page))
+      .sort((a, b) => b.clicks_drop - a.clicks_drop)  // worst drops first
+      .slice(0, maxDropsPerDay)                        // cap per config
 
     // 5. Queue agent_actions
     let actionsQueued = 0
@@ -161,7 +178,10 @@ export async function runPakRT(
       if (!insertErr) actionsQueued++
     }
 
-    const summary = `Found ${significantDrops.length} drops. Filtered ${existingPages.size} already in progress. Queued ${actionsQueued} new actions.`
+    const cappedNote = significantDrops.length - existingPages.size > maxDropsPerDay
+      ? ` (capped at ${maxDropsPerDay}/day)`
+      : ''
+    const summary = `Found ${significantDrops.length} drops. Filtered ${existingPages.size} already in progress. Queued ${actionsQueued} new actions${cappedNote}.`
 
     // Update run record
     await db

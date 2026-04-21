@@ -2,18 +2,18 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { runPakRT } from '@/lib/agents/pak-rt'
+import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt'
 import { runMasGacor } from '@/lib/agents/mas-gacor'
 
 export async function POST(
   request: Request,
-  { params }: { params: { key: string } }
+  { params }: { params: Promise<{ key: string }> }
 ) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const key = params.key
+  const { key } = await params
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
@@ -21,6 +21,16 @@ export async function POST(
   const siteSlug = body.site ?? 'g2g'
 
   try {
+    // Fetch agent config from DB (if exists)
+    const { data: agentRow } = await db
+      .from('agents')
+      .select('config')
+      .eq('owner_user_id', effectiveOwnerId)
+      .eq('agent_key', key)
+      .maybeSingle()
+
+    const savedConfig = (agentRow?.config ?? {}) as Record<string, unknown>
+
     // Create run record
     const { data: runRecord, error: runErr } = await db
       .from('agent_runs')
@@ -44,7 +54,18 @@ export async function POST(
     let result: { summary: string; actionsQueued: number }
 
     if (key === 'pak-rt') {
-      result = await runPakRT(effectiveOwnerId, siteSlug, runId)
+      const config: Partial<PakRTConfig> = {
+        maxDropsPerDay: typeof savedConfig.maxDropsPerDay === 'number'
+          ? savedConfig.maxDropsPerDay
+          : PAK_RT_DEFAULTS.maxDropsPerDay,
+        minClicksDrop: typeof savedConfig.minClicksDrop === 'number'
+          ? savedConfig.minClicksDrop
+          : PAK_RT_DEFAULTS.minClicksDrop,
+        minPctDrop: typeof savedConfig.minPctDrop === 'number'
+          ? savedConfig.minPctDrop
+          : PAK_RT_DEFAULTS.minPctDrop,
+      }
+      result = await runPakRT(effectiveOwnerId, siteSlug, runId, config)
     } else if (key === 'mas-gacor') {
       result = await runMasGacor(effectiveOwnerId, siteSlug, runId)
     } else {
