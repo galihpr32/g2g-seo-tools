@@ -41,9 +41,10 @@ const navItems = [
     group: 'Content',
     defaultOpen: false,
     items: [
-      { label: 'Game Trends',     href: '/content/trends',  icon: '🎮' },
-      { label: 'Content Studio',  href: '/content/studio',  icon: '✍️' },
-      { label: 'Knowledge Base',  href: '/knowledge-base',  icon: '🧠' },
+      { label: 'Game Trends',      href: '/content/trends',   icon: '🎮' },
+      { label: 'Content Studio',  href: '/content/studio',   icon: '✍️' },
+      { label: 'Product Content', href: '/content/products', icon: '📦' },
+      { label: 'Knowledge Base',  href: '/knowledge-base',   icon: '🧠' },
     ],
   },
   {
@@ -64,6 +65,13 @@ const navItems = [
       { label: 'Page Opportunities',  href: '/competitive/opportunities', icon: '🆕' },
       { label: 'SERP & Share of Voice', href: '/competitive/serp-tracker', icon: '📊' },
       { label: 'Page Analyzer',       href: '/competitive/page-analyzer', icon: '🔎' },
+    ],
+  },
+  {
+    group: 'Outreach',
+    defaultOpen: false,
+    items: [
+      { label: 'Guestpost Outreach', href: '/outreach', icon: '🤝' },
     ],
   },
   {

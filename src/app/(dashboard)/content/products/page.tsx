@@ -1,0 +1,582 @@
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+type Status = 'pending' | 'generating' | 'generated' | 'uploading' | 'uploaded' | 'failed'
+
+interface ProductItem {
+  id:                    string
+  relation_id:           string
+  product_name:          string
+  category:              string
+  url:                   string
+  sheet_row:             number
+  meta_title:            string | null
+  meta_description:      string | null
+  meta_keywords:         string | null
+  marketing_title:       string | null
+  marketing_description: string | null
+  status:                Status
+  cms_seo_status:        string | null
+  cms_mkt_status:        string | null
+  cms_seo_error:         string | null
+  cms_mkt_error:         string | null
+  generated_at:          string | null
+  uploaded_at:           string | null
+  updated_at:            string
+}
+
+interface QueueStats {
+  total:      number
+  pending:    number
+  generating: number
+  generated:  number
+  uploading:  number
+  uploaded:   number
+  failed:     number
+}
+
+// ── Status helpers ────────────────────────────────────────────────────────────
+const STATUS_COLORS: Record<Status, string> = {
+  pending:    'bg-gray-700 text-gray-300',
+  generating: 'bg-blue-900 text-blue-300',
+  generated:  'bg-yellow-900 text-yellow-300',
+  uploading:  'bg-purple-900 text-purple-300',
+  uploaded:   'bg-green-900 text-green-300',
+  failed:     'bg-red-900 text-red-300',
+}
+
+const STATUS_ICONS: Record<Status, string> = {
+  pending:    '⏳',
+  generating: '🤖',
+  generated:  '✅',
+  uploading:  '📤',
+  uploaded:   '🚀',
+  failed:     '❌',
+}
+
+function StatusBadge({ status }: { status: Status }) {
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[status]}`}>
+      {STATUS_ICONS[status]} {status}
+    </span>
+  )
+}
+
+// ── Preview modal ─────────────────────────────────────────────────────────────
+function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold">{item.product_name}</h2>
+            <p className="text-gray-400 text-xs mt-0.5">Relation ID: {item.relation_id}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">✕</button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* SEO fields */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">SEO Fields</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Meta Title <span className={`ml-1 ${(item.meta_title?.length ?? 0) > 60 ? 'text-red-400' : 'text-gray-500'}`}>({item.meta_title?.length ?? 0}/60)</span></label>
+                <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.meta_title || <span className="text-gray-500 italic">—</span>}</p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Meta Description <span className={`ml-1 ${(item.meta_description?.length ?? 0) > 110 ? 'text-red-400' : 'text-gray-500'}`}>({item.meta_description?.length ?? 0}/110)</span></label>
+                <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.meta_description || <span className="text-gray-500 italic">—</span>}</p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Meta Keywords</label>
+                <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.meta_keywords || <span className="text-gray-500 italic">—</span>}</p>
+              </div>
+            </div>
+          </section>
+
+          {/* Marketing fields */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Marketing Fields</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Marketing Title (H1)</label>
+                <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.marketing_title || <span className="text-gray-500 italic">—</span>}</p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Marketing Description (HTML)</label>
+                <div
+                  className="text-sm text-gray-300 bg-gray-800 rounded-lg px-3 py-2 max-h-80 overflow-y-auto prose prose-invert prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: item.marketing_description ?? '<span class="text-gray-500 italic">—</span>' }}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* CMS status */}
+          {(item.cms_seo_status || item.cms_mkt_status) && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">CMS Upload Status</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <p className="text-xs text-gray-400 mb-1">SEO endpoint</p>
+                  <p className={`text-sm font-medium ${item.cms_seo_status === 'ok' ? 'text-green-400' : 'text-red-400'}`}>
+                    {item.cms_seo_status === 'ok' ? '✓ Success' : `✗ ${item.cms_seo_error ?? 'Error'}`}
+                  </p>
+                </div>
+                <div className="bg-gray-800 rounded-lg p-3">
+                  <p className="text-xs text-gray-400 mb-1">Marketing endpoint</p>
+                  <p className={`text-sm font-medium ${item.cms_mkt_status === 'ok' ? 'text-green-400' : 'text-red-400'}`}>
+                    {item.cms_mkt_status === 'ok' ? '✓ Success' : `✗ ${item.cms_mkt_error ?? 'Error'}`}
+                  </p>
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-800 flex justify-end">
+          <button onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Sheet config modal ────────────────────────────────────────────────────────
+function SheetConfigModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [sheetUrl, setSheetUrl] = useState('')
+  const [sheetName, setSheetName] = useState('Sheet1')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSave() {
+    if (!sheetUrl.trim()) { setError('Sheet URL is required'); return }
+    setSaving(true)
+    setError('')
+    try {
+      const res = await fetch('/api/products/sheet-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheet_url: sheetUrl.trim(), sheet_name: sheetName.trim() || 'Sheet1' }),
+      })
+      if (!res.ok) {
+        const d = await res.json()
+        setError(d.error ?? 'Failed to save')
+        return
+      }
+      onSaved()
+      onClose()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-lg">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <h2 className="text-white font-semibold">Configure Google Sheet</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-sm text-gray-400">
+            Share your Google Sheet with the service account, then paste the URL below.
+            Expected columns: <code className="text-yellow-400 bg-gray-800 px-1 rounded">Product Name | Category | URL | Relation ID</code>
+          </p>
+          <div>
+            <label className="block text-sm text-gray-300 mb-1.5">Google Sheet URL</label>
+            <input
+              type="url"
+              value={sheetUrl}
+              onChange={e => setSheetUrl(e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/..."
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-300 mb-1.5">Sheet Tab Name</label>
+            <input
+              type="text"
+              value={sheetName}
+              onChange={e => setSheetName(e.target.value)}
+              placeholder="Sheet1"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
+            />
+          </div>
+          {error && <p className="text-sm text-red-400">{error}</p>}
+        </div>
+        <div className="px-5 py-4 border-t border-gray-800 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition">Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm rounded-lg transition"
+          >
+            {saving ? 'Saving…' : 'Save Configuration'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+export default function ProductContentPage() {
+  const [items, setItems]             = useState<ProductItem[]>([])
+  const [stats, setStats]             = useState<QueueStats | null>(null)
+  const [loading, setLoading]         = useState(true)
+  const [syncing, setSyncing]         = useState(false)
+  const [uploading, setUploading]     = useState(false)
+  const [selected, setSelected]       = useState<Set<string>>(new Set())
+  const [filterStatus, setFilterStatus] = useState<Status | 'all'>('all')
+  const [search, setSearch]           = useState('')
+  const [preview, setPreview]         = useState<ProductItem | null>(null)
+  const [showSheetConfig, setShowSheetConfig] = useState(false)
+  const [syncResult, setSyncResult]   = useState<{ synced: number; failed: number } | null>(null)
+  const [lastSynced, setLastSynced]   = useState<string | null>(null)
+  const [page, setPage]               = useState(1)
+  const PAGE_SIZE = 50
+
+  const fetchItems = useCallback(async () => {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
+      if (filterStatus !== 'all') params.set('status', filterStatus)
+      if (search.trim()) params.set('q', search.trim())
+
+      const res = await fetch(`/api/products/queue?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        setItems(data.items ?? [])
+        setStats(data.stats ?? null)
+        setLastSynced(data.lastSynced ?? null)
+      }
+    } catch { /* silent */ }
+    setLoading(false)
+  }, [page, filterStatus, search])
+
+  useEffect(() => { fetchItems() }, [fetchItems])
+
+  async function handleSync() {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch('/api/products/auto-content/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const data = await res.json()
+      setSyncResult({ synced: data.synced ?? 0, failed: data.failed ?? 0 })
+      await fetchItems()
+    } catch { /* silent */ }
+    setSyncing(false)
+  }
+
+  async function handleUpload(uploadAll = false) {
+    setUploading(true)
+    try {
+      const body = uploadAll
+        ? { upload_all: true }
+        : { relation_ids: Array.from(selected) }
+
+      const res = await fetch('/api/products/auto-content/upload', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      })
+      if (res.ok) {
+        setSelected(new Set())
+        await fetchItems()
+      }
+    } catch { /* silent */ }
+    setUploading(false)
+  }
+
+  function toggleSelect(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAllGenerated() {
+    const ids = items.filter(i => i.status === 'generated').map(i => i.relation_id)
+    setSelected(new Set(ids))
+  }
+
+  const filteredItems = items  // already filtered server-side via API
+
+  return (
+    <div className="min-h-screen bg-gray-950 p-6">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Product Content</h1>
+          <p className="text-gray-400 text-sm mt-1">
+            Auto-generate and publish product descriptions from Google Sheets to the CMS.
+            {lastSynced && (
+              <span className="ml-2 text-gray-500">Last synced: {new Date(lastSynced).toLocaleString()}</span>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSheetConfig(true)}
+            className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-2"
+          >
+            ⚙️ Sheet Config
+          </button>
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center gap-2"
+          >
+            {syncing ? (
+              <><span className="animate-spin">⟳</span> Syncing…</>
+            ) : (
+              <>🔄 Sync from Sheet</>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Sync result toast */}
+      {syncResult && (
+        <div className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-center justify-between ${syncResult.failed > 0 ? 'bg-yellow-900/50 text-yellow-300 border border-yellow-700' : 'bg-green-900/50 text-green-300 border border-green-700'}`}>
+          <span>
+            Sync complete — <strong>{syncResult.synced}</strong> generated
+            {syncResult.failed > 0 && <>, <strong>{syncResult.failed}</strong> failed</>}
+          </span>
+          <button onClick={() => setSyncResult(null)} className="text-current opacity-60 hover:opacity-100">✕</button>
+        </div>
+      )}
+
+      {/* Stats bar */}
+      {stats && (
+        <div className="grid grid-cols-7 gap-3 mb-6">
+          {(Object.entries(stats) as [string, number][]).map(([key, val]) => (
+            <button
+              key={key}
+              onClick={() => { setFilterStatus(key === 'total' ? 'all' : key as Status); setPage(1) }}
+              className={`bg-gray-900 border rounded-xl p-3 text-center transition hover:border-gray-600 ${
+                (key === 'total' ? filterStatus === 'all' : filterStatus === key)
+                  ? 'border-red-500'
+                  : 'border-gray-800'
+              }`}
+            >
+              <p className="text-xl font-bold text-white">{val}</p>
+              <p className="text-xs text-gray-500 capitalize mt-0.5">{key}</p>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Actions + filters */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <input
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setPage(1) }}
+          placeholder="Search products…"
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500 w-56"
+        />
+
+        {/* Bulk actions */}
+        {selected.size > 0 && (
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-sm text-gray-400">{selected.size} selected</span>
+            <button
+              onClick={() => handleUpload(false)}
+              disabled={uploading}
+              className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm rounded-lg transition"
+            >
+              {uploading ? 'Uploading…' : `📤 Upload Selected`}
+            </button>
+            <button onClick={() => setSelected(new Set())} className="text-gray-400 hover:text-white text-sm">Clear</button>
+          </div>
+        )}
+
+        {selected.size === 0 && (stats?.generated ?? 0) > 0 && (
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={selectAllGenerated}
+              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition"
+            >
+              Select All Generated ({stats?.generated})
+            </button>
+            <button
+              onClick={() => handleUpload(true)}
+              disabled={uploading}
+              className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm rounded-lg transition"
+            >
+              {uploading ? 'Uploading…' : '📤 Upload All Generated'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Table */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        {loading ? (
+          <div className="flex items-center justify-center h-40 text-gray-500">Loading…</div>
+        ) : filteredItems.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-48 text-gray-500 gap-3">
+            <p className="text-4xl">📦</p>
+            <p className="text-sm">No products found. Sync from your Google Sheet to get started.</p>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800">
+                <th className="w-8 px-3 py-3"></th>
+                <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Product</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Category</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">CMS</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Generated</th>
+                <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredItems.map((item, i) => (
+                <tr
+                  key={item.id}
+                  className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition ${i % 2 === 0 ? '' : 'bg-gray-900/50'}`}
+                >
+                  {/* Checkbox */}
+                  <td className="px-3 py-2.5">
+                    {(item.status === 'generated' || item.status === 'failed') && (
+                      <input
+                        type="checkbox"
+                        checked={selected.has(item.relation_id)}
+                        onChange={() => toggleSelect(item.relation_id)}
+                        className="w-4 h-4 accent-red-600 cursor-pointer"
+                      />
+                    )}
+                  </td>
+
+                  {/* Product name */}
+                  <td className="px-3 py-2.5">
+                    <p className="text-white font-medium leading-tight line-clamp-1">{item.product_name}</p>
+                    <p className="text-gray-500 text-xs mt-0.5">{item.relation_id}</p>
+                  </td>
+
+                  {/* Category */}
+                  <td className="px-3 py-2.5">
+                    <span className="text-gray-400 text-xs">{item.category || '—'}</span>
+                  </td>
+
+                  {/* Status */}
+                  <td className="px-3 py-2.5">
+                    <StatusBadge status={item.status} />
+                  </td>
+
+                  {/* CMS status */}
+                  <td className="px-3 py-2.5">
+                    {item.cms_seo_status || item.cms_mkt_status ? (
+                      <div className="flex items-center gap-1">
+                        <span className={`text-xs ${item.cms_seo_status === 'ok' ? 'text-green-400' : 'text-red-400'}`} title="SEO endpoint">
+                          SEO {item.cms_seo_status === 'ok' ? '✓' : '✗'}
+                        </span>
+                        <span className="text-gray-600">·</span>
+                        <span className={`text-xs ${item.cms_mkt_status === 'ok' ? 'text-green-400' : 'text-red-400'}`} title="Marketing endpoint">
+                          Mkt {item.cms_mkt_status === 'ok' ? '✓' : '✗'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-gray-600 text-xs">—</span>
+                    )}
+                  </td>
+
+                  {/* Generated at */}
+                  <td className="px-3 py-2.5">
+                    <span className="text-gray-500 text-xs">
+                      {item.generated_at
+                        ? new Date(item.generated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                        : '—'}
+                    </span>
+                  </td>
+
+                  {/* Actions */}
+                  <td className="px-3 py-2.5 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      {item.status === 'generated' && (
+                        <>
+                          <button
+                            onClick={() => setPreview(item)}
+                            className="px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 rounded transition"
+                          >
+                            Preview
+                          </button>
+                          <button
+                            onClick={() => { setSelected(new Set([item.relation_id])); handleUpload(false) }}
+                            disabled={uploading}
+                            className="px-2 py-1 text-xs text-green-400 hover:text-green-300 hover:bg-green-900/30 rounded transition disabled:opacity-50"
+                          >
+                            Upload
+                          </button>
+                        </>
+                      )}
+                      {item.status === 'uploaded' && (
+                        <button
+                          onClick={() => setPreview(item)}
+                          className="px-2 py-1 text-xs text-gray-400 hover:text-gray-300 hover:bg-gray-700 rounded transition"
+                        >
+                          View
+                        </button>
+                      )}
+                      {item.status === 'failed' && (
+                        <button
+                          onClick={() => setPreview(item)}
+                          className="px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded transition"
+                        >
+                          Details
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Pagination */}
+      {(items.length === PAGE_SIZE || page > 1) && (
+        <div className="flex items-center justify-center gap-3 mt-4">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-sm rounded-lg transition"
+          >
+            ← Prev
+          </button>
+          <span className="text-gray-400 text-sm">Page {page}</span>
+          <button
+            onClick={() => setPage(p => p + 1)}
+            disabled={items.length < PAGE_SIZE}
+            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-sm rounded-lg transition"
+          >
+            Next →
+          </button>
+        </div>
+      )}
+
+      {/* Modals */}
+      {preview && <PreviewModal item={preview} onClose={() => setPreview(null)} />}
+      {showSheetConfig && (
+        <SheetConfigModal
+          onClose={() => setShowSheetConfig(false)}
+          onSaved={() => fetchItems()}
+        />
+      )}
+    </div>
+  )
+}

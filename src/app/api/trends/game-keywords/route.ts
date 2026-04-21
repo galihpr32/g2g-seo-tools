@@ -24,7 +24,7 @@ export async function GET(req: Request) {
     ])
 
     // Log usage
-    await logApiUsage(supabase, user.id, 'dataforseo', 'game_keywords', 2)
+    logApiUsage(supabase, user.id, { api: 'dataforseo', endpoint: 'game_keywords', triggeredBy: 'other', callCount: 2 })
 
     // Group keywords by intent pattern
     const buyKeywords   = suggestions.filter(k => /buy|purchase|get|cheap|price/.test(k.keyword))

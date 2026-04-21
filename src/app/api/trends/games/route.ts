@@ -42,7 +42,7 @@ export async function GET(req: Request) {
     g.name.toLowerCase(),
     `${g.name.toLowerCase()} buy`,
   ])
-  const volumeMap = await getKeywordDifficulty(allKeywords, 2840, 'en').catch(() => ({}))
+  const volumeMap: Record<string, number> = await getKeywordDifficulty(allKeywords, 2840, 'en').catch(() => ({}))
 
   // 3. DataForSEO Google Trends for top 5 games (batched, max 5 per request)
   const top5Names = steamGames.slice(0, 5).map(g => g.name)

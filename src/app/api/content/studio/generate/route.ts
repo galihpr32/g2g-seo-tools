@@ -133,7 +133,7 @@ The content field should be complete, publish-ready markdown. Use proper heading
       messages: [{ role: 'user', content: prompt }],
     })
 
-    await logApiUsage(supabase, ownerId, 'anthropic', 'content_studio_generate', 1)
+    logApiUsage(supabase, ownerId, { api: 'claude', endpoint: 'content_studio_generate', triggeredBy: 'brief_generate', callCount: 1 })
 
     const raw = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
     const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()

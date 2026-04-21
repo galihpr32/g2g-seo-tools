@@ -440,3 +440,89 @@ export function clusterKeywords(keywords: KeywordRanking[]): Map<string, Keyword
       .slice(0, 20) // top 20 clusters
   )
 }
+
+// ── Outreach Discovery ─────────────────────────────────────────────────────────
+
+export interface OutreachCandidate {
+  domain:          string
+  organicTraffic:  number
+  organicKeywords: number
+  authorityScore:  number
+  rankingUrl:      string   // the specific URL ranking for the keyword
+  position:        number
+}
+
+// phrase_organic: given a keyword, returns the top-ranking URLs/domains
+export async function getKeywordOrganicResults(
+  keyword:  string,
+  database  = 'us',
+  limit     = 30,
+): Promise<OutreachCandidate[]> {
+  const params = new URLSearchParams({
+    type:            'phrase_organic',
+    key:             API_KEY,
+    phrase:          keyword,
+    database,
+    display_limit:   String(limit),
+    export_columns:  'Dn,Ur,Po,Nq,Tr',
+    export_escape:   '1',
+  })
+
+  const res = await fetch(`${BASE_URL}/?${params}`)
+  if (!res.ok) throw new Error(`SEMrush API error: ${res.status}`)
+
+  const text = await res.text()
+  if (text.startsWith('ERROR')) throw new Error(`SEMrush: ${text}`)
+
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return []
+
+  return lines.slice(1).map(line => {
+    const [domain, url, position, , traffic] = line.split(';').map(s => s.replace(/"/g, ''))
+    return {
+      domain:          domain ?? '',
+      rankingUrl:      url ?? '',
+      position:        parseInt(position) || 0,
+      organicTraffic:  parseInt(traffic) || 0,
+      organicKeywords: 0,   // enriched separately
+      authorityScore:  0,   // enriched separately
+    }
+  }).filter(r => r.domain)
+}
+
+// domain_rank: get authority score + organic traffic for a domain
+export async function getDomainAuthority(
+  domain:   string,
+  database  = 'us',
+): Promise<{ authorityScore: number; organicTraffic: number; organicKeywords: number } | null> {
+  const params = new URLSearchParams({
+    type:            'domain_ranks',
+    key:             API_KEY,
+    domain,
+    database,
+    export_columns:  'Dn,Rk,Or,Ot',
+    export_escape:   '1',
+  })
+
+  const res = await fetch(`${BASE_URL}/?${params}`)
+  if (!res.ok) return null
+
+  const text = await res.text()
+  if (text.startsWith('ERROR')) return null
+
+  const lines = text.trim().split('\n')
+  if (lines.length < 2) return null
+
+  const [, rank, organicKeywords, organicTraffic] = lines[1].split(';').map(s => s.replace(/"/g, ''))
+
+  // SEMrush rank is global rank (lower = better), not authority score
+  // Convert to a 0-100 authority proxy: 100 - log10(rank) * 20
+  const rankNum = parseInt(rank) || 999_999_999
+  const authorityScore = Math.max(0, Math.min(100, Math.round(100 - Math.log10(rankNum) * 11.1)))
+
+  return {
+    authorityScore,
+    organicTraffic:  parseInt(organicTraffic) || 0,
+    organicKeywords: parseInt(organicKeywords) || 0,
+  }
+}
