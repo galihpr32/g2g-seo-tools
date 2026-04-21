@@ -28,7 +28,7 @@ export async function GET(req: Request) {
   if (tab === 'runs') {
     let query = db
       .from('agent_runs')
-      .select('id, agent_key, site_slug, status, summary, findings_count, actions_queued, error_message, started_at, finished_at')
+      .select('id, agent_key, site_slug, status, summary, findings_count, actions_queued, error_message, triggered_by_action_id, started_at, finished_at')
       .eq('owner_user_id', ownerId)
       .order('started_at', { ascending: false })
       .range(offset, offset + limit - 1)

@@ -13,6 +13,7 @@ interface AgentRun {
   findings_count: number
   actions_queued: number
   error_message: string | null
+  triggered_by_action_id: string | null
   started_at: string
   finished_at: string | null
   durationMs: number | null
@@ -250,6 +251,11 @@ export default function AgentLogsPage() {
                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${STATUS_STYLES[run.status] ?? 'bg-gray-800 text-gray-400'}`}>
                           {STATUS_ICONS[run.status]} {run.status}
                         </span>
+                        {run.triggered_by_action_id && (
+                          <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded">
+                            ↩ handoff triggered
+                          </span>
+                        )}
                         <span className="text-gray-300 text-sm truncate">
                           {run.summary ?? (run.status === 'running' ? 'In progress...' : '—')}
                         </span>

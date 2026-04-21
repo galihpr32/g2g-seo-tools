@@ -75,6 +75,11 @@ export async function PATCH(request: Request) {
       if (!result.ok) {
         return NextResponse.json({ error: result.error }, { status: 500 })
       }
+
+      // If handoff occurred, include the new run ID in response
+      if (result.handoffRunId) {
+        return NextResponse.json({ ok: true, handoffRunId: result.handoffRunId })
+      }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error'
       return NextResponse.json({ error: errorMessage }, { status: 500 })

@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt'
 import { runMasGacor } from '@/lib/agents/mas-gacor'
+import { runIntelBakso } from '@/lib/agents/intel-bakso'
 
 export async function POST(
   request: Request,
@@ -68,6 +69,8 @@ export async function POST(
       result = await runPakRT(effectiveOwnerId, siteSlug, runId, config)
     } else if (key === 'mas-gacor') {
       result = await runMasGacor(effectiveOwnerId, siteSlug, runId)
+    } else if (key === 'intel-bakso') {
+      result = await runIntelBakso(effectiveOwnerId, siteSlug, runId)
     } else {
       return NextResponse.json(
         { error: `Agent not yet implemented: ${key}` },

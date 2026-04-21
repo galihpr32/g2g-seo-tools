@@ -4,6 +4,7 @@ export interface AgentAction {
   id: string
   owner_user_id: string
   agent_key: string
+  run_id: string | null
   action_type: string
   title: string
   description: string | null
@@ -14,12 +15,13 @@ export interface AgentAction {
 
 /**
  * Execute an approved agent action.
- * Inserts the action into the appropriate table (e.g., seo_action_items).
+ * Returns { ok: true, handoffRunId?: string } on success.
+ * handoffRunId is set when action_type === 'run_agent'.
  */
 export async function executeAction(
   action: AgentAction,
   approverId: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; handoffRunId?: string; error?: string }> {
   const db = createServiceClient()
 
   try {
@@ -75,6 +77,51 @@ export async function executeAction(
         })
 
       if (error) throw error
+    } else if (action.action_type === 'run_agent') {
+      // Handoff: trigger another agent and create a linked run
+      const data = action.data as {
+        handoff_to: string
+        context?: string
+        payload?: Record<string, unknown>
+      }
+
+      const targetKey = data.handoff_to
+      if (!targetKey) {
+        throw new Error('Missing handoff_to in action data')
+      }
+
+      // Create a new agent_runs row linked to this action
+      const { data: newRun, error: runErr } = await db
+        .from('agent_runs')
+        .insert({
+          owner_user_id: action.owner_user_id,
+          agent_key: targetKey,
+          site_slug: action.site_slug,
+          status: 'pending_implementation',
+          triggered_by_action_id: action.id,
+          started_at: new Date().toISOString(),
+        })
+        .select('id')
+        .single()
+
+      if (runErr || !newRun?.id) {
+        throw new Error(`Failed to create linked run for ${targetKey}`)
+      }
+
+      // If agent is not yet implemented, mark run as completed with pending message
+      const implementedAgents = ['pak-rt', 'mas-gacor', 'intel-bakso']
+      if (!implementedAgents.includes(targetKey)) {
+        await db
+          .from('agent_runs')
+          .update({
+            status: 'pending_implementation',
+            summary: `Agent ${targetKey} is not yet implemented`,
+            finished_at: new Date().toISOString(),
+          })
+          .eq('id', newRun.id)
+      }
+
+      return { ok: true, handoffRunId: newRun.id }
     } else {
       throw new Error(`Unknown action_type: ${action.action_type}`)
     }

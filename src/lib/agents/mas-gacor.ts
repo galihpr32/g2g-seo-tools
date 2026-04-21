@@ -33,6 +33,20 @@ export async function runMasGacor(
       }
     }
 
+    // Helper to check for existing GSC pages containing a game name
+    async function checkExistingPage(gameName: string, siteUrl: string) {
+      const gameSlug = gameName.toLowerCase().replace(/\s+/g, '-')
+      const { data: rankings } = await db
+        .from('gsc_ranking_snapshots')
+        .select('page')
+        .eq('site_url', siteUrl)
+        .filter('page', 'ilike', `%${gameSlug}%`)
+        .limit(1)
+        .single()
+
+      return rankings?.page ?? null
+    }
+
     // 2. Get site config
     const { data: siteConfig, error: siteErr } = await db
       .from('site_configs')
@@ -76,25 +90,33 @@ export async function runMasGacor(
         continue
       }
 
-      // Calculate trend basis
+      // Check for existing page in GSC rankings
+      const existingPageUrl = await checkExistingPage(game.name, siteUrl)
+
+      // Calculate trend basis string for UI display
       const basisParts: string[] = []
-      if (game.search_volume && game.search_volume > 100) {
-        basisParts.push(`Search volume: ${game.search_volume.toLocaleString()}`)
+      if (game.players_2weeks && game.players_2weeks > 0) {
+        basisParts.push(`Steam: ${(game.players_2weeks / 1000).toFixed(0)}K concurrent`)
       }
-      if (game.players_2weeks && game.players_2weeks > 10000) {
-        basisParts.push(`Steam players (2w): ${game.players_2weeks.toLocaleString()}`)
-      }
-      if (game.buy_search_volume && game.buy_search_volume > 50) {
-        basisParts.push(`"${game.name} buy" searches: ${game.buy_search_volume}`)
+      if (game.search_volume && game.search_volume > 0) {
+        basisParts.push(`Search vol: ${game.search_volume.toLocaleString()}`)
       }
 
-      const trendBasis = basisParts.length > 0 ? basisParts.join(' | ') : 'Steam trending'
+      const trendBasis = basisParts.length > 0 ? basisParts.join(' · ') : 'Steam trending'
 
       // Determine priority based on trend score
       const totalScore = (game.search_volume || 0) + (game.players_2weeks || 0) / 100
       let priority: 'high' | 'medium' | 'low' = 'low'
       if (totalScore > 10000) priority = 'high'
       else if (totalScore > 5000) priority = 'medium'
+
+      // Determine suggested action
+      let suggestedAction: 'create_page' | 'update_page' | 'brief_exists'
+      if (existingPageUrl) {
+        suggestedAction = 'update_page'
+      } else {
+        suggestedAction = 'create_page'
+      }
 
       const { error: insertErr } = await db
         .from('agent_actions')
@@ -104,8 +126,8 @@ export async function runMasGacor(
           run_id: runId,
           site_slug: siteSlug,
           action_type: 'suggest_trend_brief',
-          title: `"${game.name}" is trending — create/update category page`,
-          description: `Game is trending with ${trendBasis}. Consider creating or updating the category page to capture demand.`,
+          title: `"${game.name}" is trending — ${suggestedAction === 'create_page' ? 'create' : 'update'} category page`,
+          description: `Game is trending with ${trendBasis}. Consider ${suggestedAction === 'create_page' ? 'creating' : 'updating'} the category page to capture demand.`,
           priority,
           data: {
             game_name: game.name,
@@ -115,8 +137,9 @@ export async function runMasGacor(
             players_2weeks: game.players_2weeks || 0,
             buy_search_volume: game.buy_search_volume || 0,
             keywords: [],
-            basis: game.search_volume ? 'search_volume' : 'steam_trending',
-            existing_page_url: null,
+            trend_basis: trendBasis,
+            existing_page_url: existingPageUrl,
+            suggested_action: suggestedAction,
           },
         })
 
