@@ -33,8 +33,8 @@ const AGENT_NAMES: Record<string, string> = {
 const AGENT_ROLES: Record<string, string> = {
   'pak-rt': 'Watchdog — detects ranking drops & triages',
   'mas-gacor': 'Trend Spotter — finds trending games & suggests content',
-  'intel-bakso': 'Competitive Intel — coming soon',
-  'anak-intern': 'On-page Agent — coming soon',
+  'intel-bakso': 'Competitive Intel — keyword gaps, SOV, competitor pages',
+  'anak-intern': 'Content Drafter — turns approved trends & gaps into brief drafts',
   'kang-cilok': 'Off-page Agent — coming soon',
 }
 
@@ -159,7 +159,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
       {allAgents.map(key => {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
-        const isImplemented = ['pak-rt', 'mas-gacor'].includes(key)
+        const isImplemented = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern'].includes(key)
         const isRunning = running.has(key)
         const settingsOpen = expandedSettings === key
 

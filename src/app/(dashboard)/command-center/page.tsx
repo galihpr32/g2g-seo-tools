@@ -50,12 +50,20 @@ export default async function CommandCenterPage() {
       <div className="mb-8">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-white">Agent Status</h2>
-          <a
-            href="/command-center/logs"
-            className="text-sm text-blue-400 hover:text-blue-300 transition flex items-center gap-1"
-          >
-            📋 View Activity Log →
-          </a>
+          <div className="flex items-center gap-4">
+            <a
+              href="/command-center/settings"
+              className="text-sm text-gray-400 hover:text-white transition"
+            >
+              ⚙️ Schedules
+            </a>
+            <a
+              href="/command-center/logs"
+              className="text-sm text-blue-400 hover:text-blue-300 transition"
+            >
+              📋 Activity Log →
+            </a>
+          </div>
         </div>
         <AgentStatusPanel userId={effectiveOwnerId} />
       </div>

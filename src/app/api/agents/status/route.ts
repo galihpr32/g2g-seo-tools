@@ -41,13 +41,24 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    agents: (agents || []).map(a => ({
-      key: a.agent_key,
-      isActive: a.is_active,
-      lastRunAt: a.last_run_at,
-      lastRunStatus: a.last_run_status,
-      lastRunSummary: a.last_run_summary,
-    })),
+    agents: (agents || []).map(a => {
+      const cfg = (a.config ?? {}) as Record<string, unknown>
+      return {
+        key: a.agent_key,
+        isActive: a.is_active,
+        lastRunAt: a.last_run_at,
+        lastRunStatus: a.last_run_status,
+        lastRunSummary: a.last_run_summary,
+        schedule: {
+          enabled:   (cfg.schedule_enabled   as boolean)          ?? false,
+          frequency: (cfg.schedule_frequency as 'daily'|'weekly') ?? 'daily',
+          day:       (cfg.schedule_day       as number)           ?? 1,
+          hour:      (cfg.schedule_hour      as number)           ?? 9,
+          timezone:  (cfg.schedule_timezone  as string)           ?? 'Asia/Jakarta',
+        },
+        nextRunAt: (a as Record<string, unknown>).schedule_next_run_at ?? null,
+      }
+    }),
     pendingActions: totalPending,
     actionsByAgent,
   })
