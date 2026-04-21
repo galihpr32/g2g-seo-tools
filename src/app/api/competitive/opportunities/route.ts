@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 10
@@ -11,7 +12,8 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const { data, error } = await supabase
+  const db = createServiceClient()
+  const { data, error } = await db
     .from('page_opportunities')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -28,6 +30,7 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
   const { cluster_name, game_category, keywords, avg_volume, total_volume, competitor_domain, notes } = body
 
@@ -35,7 +38,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'cluster_name is required' }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('page_opportunities')
     .insert({
       owner_user_id:     ownerId,
@@ -58,6 +61,7 @@ export async function POST(req: Request) {
 // PATCH /api/competitive/opportunities?id=xxx — update status or notes
 export async function PATCH(req: Request) {
   const supabase = await createClient()
+  const db = createServiceClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
@@ -73,7 +77,7 @@ export async function PATCH(req: Request) {
   if (body.cluster_name  !== undefined) updates.cluster_name  = body.cluster_name.trim()
   if (body.game_category !== undefined) updates.game_category = body.game_category?.trim() ?? null
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('page_opportunities')
     .update(updates)
     .eq('id', id)
@@ -92,11 +96,12 @@ export async function DELETE(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
-  const { error } = await supabase
+  const { error } = await db
     .from('page_opportunities')
     .delete()
     .eq('id', id)

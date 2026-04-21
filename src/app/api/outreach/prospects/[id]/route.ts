@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // PATCH /api/outreach/prospects/[id] — update fields
@@ -8,6 +9,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
 
   const body = await req.json().catch(() => ({}))
@@ -21,7 +23,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (key in body) updates[key] = body[key]
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('outreach_prospects')
     .update(updates)
     .eq('id', id)
@@ -39,9 +41,10 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
 
-  const { error } = await supabase
+  const { error } = await db
     .from('outreach_prospects')
     .delete()
     .eq('id', id)

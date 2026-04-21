@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // GET /api/outreach/prospects?status=contacted&q=search&page=1
@@ -8,6 +9,7 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const url    = new URL(req.url)
   const status = url.searchParams.get('status') ?? ''
@@ -15,7 +17,7 @@ export async function GET(req: Request) {
   const page   = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'))
   const limit  = 50
 
-  let query = supabase
+  let query = db
     .from('outreach_prospects')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -28,7 +30,7 @@ export async function GET(req: Request) {
   const { data: items } = await query
 
   // Status counts
-  const { data: rawCounts } = await supabase
+  const { data: rawCounts } = await db
     .from('outreach_prospects')
     .select('status')
     .eq('owner_user_id', ownerId)
@@ -49,6 +51,7 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
     domain:           string
@@ -70,7 +73,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'domain is required' }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('outreach_prospects')
     .upsert({
       owner_user_id:    ownerId,

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // POST /api/outreach/prospects/[id]/check
@@ -9,10 +10,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
 
   // Fetch the prospect
-  const { data: prospect, error: fetchError } = await supabase
+  const { data: prospect, error: fetchError } = await db
     .from('outreach_prospects')
     .select('id, published_url, status')
     .eq('id', id)
@@ -51,7 +53,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
 
   // Update DB
-  await supabase
+  await db
     .from('outreach_prospects')
     .update({
       backlink_live:   backlinkLive,

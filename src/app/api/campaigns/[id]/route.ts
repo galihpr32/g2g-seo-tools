@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 type Params = { params: Promise<{ id: string }> }
@@ -11,6 +12,7 @@ export async function PATCH(request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
 
   const body = await request.json() as {
@@ -34,7 +36,7 @@ export async function PATCH(request: Request, { params }: Params) {
   if (body.status           !== undefined) updates.status             = body.status
   if (body.campaign_notes   !== undefined) updates.campaign_notes     = body.campaign_notes
 
-  const { error } = await supabase
+  const { error } = await db
     .from('campaigns')
     .update(updates)
     .eq('id', id)
@@ -51,9 +53,10 @@ export async function DELETE(_request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
 
-  const { error } = await supabase
+  const { error } = await db
     .from('campaigns')
     .delete()
     .eq('id', id)

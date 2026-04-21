@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 10
@@ -11,7 +12,8 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const { data, error } = await supabase
+  const db = createServiceClient()
+  const { data, error } = await db
     .from('tracked_products')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -28,6 +30,7 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
 
   const { name, page_url, keywords, market, notes } = body
@@ -35,7 +38,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'name and page_url are required' }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('tracked_products')
     .insert({
       owner_user_id: ownerId,

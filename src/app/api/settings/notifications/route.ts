@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 10
@@ -11,8 +12,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data } = await supabase
+  const { data } = await db
     .from('notification_settings')
     .select('*')
     .eq('user_id', ownerId)
@@ -33,9 +35,10 @@ export async function PUT(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
 
-  const { error } = await supabase
+  const { error } = await db
     .from('notification_settings')
     .upsert({
       user_id:            ownerId,

@@ -1,5 +1,6 @@
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
@@ -24,7 +25,8 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
-  const { data: conn } = await supabase
+  const db = createServiceClient()
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', effectiveOwnerId)
@@ -42,7 +44,7 @@ export async function POST(request: Request) {
   if (!action_item_id) return NextResponse.json({ error: 'Missing action_item_id' }, { status: 400 })
 
   // Load the action item
-  const { data: item } = await supabase
+  const { data: item } = await db
     .from('seo_action_items')
     .select('*')
     .eq('id', action_item_id)

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // POST /api/actions
@@ -11,7 +12,8 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
-  const { data: conn } = await supabase
+  const db = createServiceClient()
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', effectiveOwnerId)
@@ -41,7 +43,7 @@ export async function POST(request: Request) {
     }
 
     const today = new Date().toISOString().slice(0, 10)
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('seo_action_items')
       .insert({
         site_url: conn.site_url,
@@ -83,7 +85,7 @@ export async function POST(request: Request) {
     status: 'pending',
   }))
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('seo_action_items')
     .insert(inserts)
     .select()
@@ -98,6 +100,7 @@ export async function PATCH(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  const db = createServiceClient()
   const body = await request.json()
   const { id, status, notes, assigned_to } = body as {
     id: string
@@ -115,7 +118,7 @@ export async function PATCH(request: Request) {
     // Auto-assign to current user when moving to in_progress (only if not already assigned)
     if (status === 'in_progress') {
       // Check if already assigned
-      const { data: existing } = await supabase
+      const { data: existing } = await db
         .from('seo_action_items')
         .select('assigned_to')
         .eq('id', id)
@@ -132,7 +135,7 @@ export async function PATCH(request: Request) {
   if (assigned_to !== undefined) updates.assigned_to = assigned_to
 
   // RLS ensures user can only update their own items
-  const { error } = await supabase
+  const { error } = await db
     .from('seo_action_items')
     .update(updates)
     .eq('id', id)

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { CATEGORY_TEMPLATES } from '@/lib/g2g-category-prompts'
 
@@ -14,8 +15,9 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data: dbPrompts } = await supabase
+  const { data: dbPrompts } = await db
     .from('category_prompts')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -54,6 +56,7 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
     category_key:           string
@@ -72,7 +75,7 @@ export async function POST(req: Request) {
 
   if (!body.category_key) return NextResponse.json({ error: 'category_key required' }, { status: 400 })
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('category_prompts')
     .upsert({
       owner_user_id:         ownerId,
@@ -103,11 +106,12 @@ export async function DELETE(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const key = new URL(req.url).searchParams.get('category_key')
   if (!key) return NextResponse.json({ error: 'category_key required' }, { status: 400 })
 
-  await supabase
+  await db
     .from('category_prompts')
     .delete()
     .eq('owner_user_id', ownerId)

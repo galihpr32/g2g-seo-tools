@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // ── GET /api/knowledge-base ───────────────────────────────────────────────────
@@ -9,8 +10,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('knowledge_base_items')
     .select('id, category, name, data, created_at, updated_at')
     .eq('owner_user_id', ownerId)
@@ -28,13 +30,14 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await request.json() as { category: string; name: string; data: Record<string, unknown> }
 
   if (!body.category || !body.name?.trim()) {
     return NextResponse.json({ error: 'category and name are required' }, { status: 400 })
   }
 
-  const { data: item, error } = await supabase
+  const { data: item, error } = await db
     .from('knowledge_base_items')
     .upsert({
       owner_user_id: ownerId,

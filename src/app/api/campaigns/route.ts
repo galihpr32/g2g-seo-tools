@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // ── GET /api/campaigns — list all campaigns with page counts ─────────────────
@@ -9,8 +10,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data: campaigns, error } = await supabase
+  const { data: campaigns, error } = await db
     .from('campaigns')
     .select(`
       id, name, description, color, position, goals, gsc_site_url,
@@ -32,6 +34,7 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await request.json() as {
     name: string
@@ -47,12 +50,12 @@ export async function POST(request: Request) {
   }
 
   // Put new campaign at the end
-  const { count } = await supabase
+  const { count } = await db
     .from('campaigns')
     .select('*', { count: 'exact', head: true })
     .eq('owner_user_id', ownerId)
 
-  const { data: campaign, error } = await supabase
+  const { data: campaign, error } = await db
     .from('campaigns')
     .insert({
       owner_user_id:      ownerId,
@@ -79,6 +82,7 @@ export async function PATCH(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { order } = await request.json() as { order: string[] }
 
   if (!Array.isArray(order)) {
@@ -86,7 +90,7 @@ export async function PATCH(request: Request) {
   }
 
   const updates = order.map((id, i) =>
-    supabase
+    db
       .from('campaigns')
       .update({ position: i })
       .eq('id', id)

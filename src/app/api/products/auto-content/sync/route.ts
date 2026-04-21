@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { readProductSheet } from '@/lib/google/sheets'
 import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
@@ -19,6 +20,7 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
     spreadsheet_id?:      string
@@ -28,7 +30,7 @@ export async function POST(req: Request) {
   }
 
   // ── Load sheet config ──────────────────────────────────────────────────────
-  const { data: sheetConfig } = await supabase
+  const { data: sheetConfig } = await db
     .from('product_sheet_config')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -57,7 +59,7 @@ export async function POST(req: Request) {
   // ── Find which products need content generated ─────────────────────────────
   const allRelationIds = sheetRows.map(r => r.relationId)
 
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('product_content_queue')
     .select('relation_id, status')
     .eq('owner_user_id', ownerId)
@@ -77,7 +79,7 @@ export async function POST(req: Request) {
   }
 
   // ── Upsert rows as 'generating' ────────────────────────────────────────────
-  await supabase
+  await db
     .from('product_content_queue')
     .upsert(
       toProcess.map(row => ({
@@ -147,7 +149,7 @@ No markdown fences. Only valid JSON.`
       const parsed  = JSON.parse(jsonStr)
 
       // Save to DB
-      await supabase
+      await db
         .from('product_content_queue')
         .update({
           meta_title:            parsed.meta_title            ?? '',
@@ -165,7 +167,7 @@ No markdown fences. Only valid JSON.`
       results.push({ relationId: row.relationId, ok: true })
     } catch (e) {
       console.error(`[auto-content] failed for ${row.relationId}:`, e)
-      await supabase
+      await db
         .from('product_content_queue')
         .update({ status: 'failed', updated_at: new Date().toISOString() })
         .eq('owner_user_id', ownerId)
@@ -175,7 +177,7 @@ No markdown fences. Only valid JSON.`
   }
 
   // Update last_synced_at
-  await supabase
+  await db
     .from('product_sheet_config')
     .upsert({
       owner_user_id: ownerId,

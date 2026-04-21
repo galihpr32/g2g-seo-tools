@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 type Params = { params: Promise<{ id: string; pageId: string }> }
@@ -11,9 +12,10 @@ export async function GET(_request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { pageId } = await params
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('campaign_page_comments')
     .select('id, author_email, content, created_at')
     .eq('campaign_page_id', pageId)
@@ -32,6 +34,7 @@ export async function POST(request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id: campaignId, pageId } = await params
 
   const { content } = await request.json() as { content: string }
@@ -40,7 +43,7 @@ export async function POST(request: Request, { params }: Params) {
   }
 
   // Verify page belongs to this campaign + owner
-  const { data: page } = await supabase
+  const { data: page } = await db
     .from('campaign_pages')
     .select('id')
     .eq('id', pageId)
@@ -50,7 +53,7 @@ export async function POST(request: Request, { params }: Params) {
 
   if (!page) return NextResponse.json({ error: 'Page not found' }, { status: 404 })
 
-  const { data: comment, error } = await supabase
+  const { data: comment, error } = await db
     .from('campaign_page_comments')
     .insert({
       campaign_page_id: pageId,

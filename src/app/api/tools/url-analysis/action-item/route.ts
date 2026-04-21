@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export async function POST(request: Request) {
@@ -22,9 +23,10 @@ export async function POST(request: Request) {
     }
 
     const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
+    const db = createServiceClient()
 
     // Get the site_url from gsc_connections
-    const { data: gscConn } = await supabase
+    const { data: gscConn } = await db
       .from('gsc_connections')
       .select('site_url')
       .eq('user_id', effectiveOwnerId)
@@ -38,7 +40,7 @@ export async function POST(request: Request) {
     }
 
     // Create action item
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('seo_action_items')
       .insert({
         user_id: effectiveOwnerId,

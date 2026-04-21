@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 
@@ -15,13 +16,14 @@ export async function GET(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const url = new URL(request.url)
   const actionItemId = url.searchParams.get('action_item_id')
   if (!actionItemId) return NextResponse.json({ error: 'Missing action_item_id' }, { status: 400 })
 
   // Load the action item
-  const { data: item } = await supabase
+  const { data: item } = await db
     .from('seo_action_items')
     .select('page')
     .eq('id', actionItemId)
@@ -29,7 +31,7 @@ export async function GET(request: Request) {
   if (!item) return NextResponse.json({ error: 'Action item not found' }, { status: 404 })
 
   // Load GSC connection
-  const { data: conn } = await supabase
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', ownerId)
@@ -37,7 +39,7 @@ export async function GET(request: Request) {
 
   // Load GSC queries for this page
   const { data: gscQueries } = conn?.site_url
-    ? await supabase
+    ? await db
         .from('gsc_ranking_drop_queries')
         .select('query, clicks, impressions, ctr, position')
         .eq('site_url', conn.site_url)

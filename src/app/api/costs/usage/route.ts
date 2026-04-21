@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 15
@@ -11,6 +12,7 @@ export async function GET(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const { searchParams } = new URL(request.url)
   const months = Math.min(parseInt(searchParams.get('months') ?? '3', 10), 12)
@@ -18,7 +20,7 @@ export async function GET(request: Request) {
   const since = new Date()
   since.setMonth(since.getMonth() - months)
 
-  const { data: logs, error } = await supabase
+  const { data: logs, error } = await db
     .from('api_usage_logs')
     .select('api_name, endpoint, call_count, triggered_by, created_at')
     .eq('owner_user_id', ownerId)

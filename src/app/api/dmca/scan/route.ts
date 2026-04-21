@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 60
@@ -14,9 +15,10 @@ export async function POST() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   // 1. Load all active DMCA terms for this owner
-  const { data: terms, error: termsErr } = await supabase
+  const { data: terms, error: termsErr } = await db
     .from('dmca_terms')
     .select('id, original_term')
     .eq('owner_user_id', ownerId)
@@ -28,7 +30,7 @@ export async function POST() {
   }
 
   // 2. Load all published briefs with content
-  const { data: briefs, error: briefsErr } = await supabase
+  const { data: briefs, error: briefsErr } = await db
     .from('seo_content_briefs')
     .select('id, content_draft')
     .eq('owner_user_id', ownerId)
@@ -53,7 +55,7 @@ export async function POST() {
 
       if (found) {
         // Upsert a hit (ignore if already exists)
-        const { error: upsertErr } = await supabase
+        const { error: upsertErr } = await db
           .from('dmca_hits')
           .upsert({
             owner_user_id: ownerId,
@@ -68,7 +70,7 @@ export async function POST() {
         if (!upsertErr) hitsCreated++
       } else {
         // Term no longer present — mark existing hit as resolved if not already
-        const { data: existing } = await supabase
+        const { data: existing } = await db
           .from('dmca_hits')
           .select('id, resolved')
           .eq('brief_id', brief.id)
@@ -77,7 +79,7 @@ export async function POST() {
           .maybeSingle()
 
         if (existing) {
-          await supabase
+          await db
             .from('dmca_hits')
             .update({ resolved: true, resolved_at: new Date().toISOString() })
             .eq('id', existing.id)
@@ -102,8 +104,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('dmca_hits')
     .select(`
       id,

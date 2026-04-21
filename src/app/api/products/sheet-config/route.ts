@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { extractSpreadsheetId } from '@/lib/google/sheets'
 
@@ -9,8 +10,9 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data } = await supabase
+  const { data } = await db
     .from('product_sheet_config')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -25,6 +27,7 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
     sheet_url?:  string
@@ -40,7 +43,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid Google Sheets URL. Make sure it contains /spreadsheets/d/{id}' }, { status: 400 })
   }
 
-  const { error } = await supabase
+  const { error } = await db
     .from('product_sheet_config')
     .upsert({
       owner_user_id:  ownerId,

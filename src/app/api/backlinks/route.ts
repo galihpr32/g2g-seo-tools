@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 30
@@ -10,8 +11,9 @@ export async function GET() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('paid_backlinks')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -27,6 +29,7 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await request.json()
   const {
@@ -39,7 +42,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Missing required fields: site_name, external_url, anchor_text, target_page' }, { status: 400 })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('paid_backlinks')
     .insert({
       owner_user_id: ownerId,

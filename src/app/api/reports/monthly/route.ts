@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
 import { getRefreshedClient } from '@/lib/gsc/auth'
@@ -44,11 +45,12 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
 
   if (id) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('monthly_reports')
       .select('*')
       .eq('id', id)
@@ -58,7 +60,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ report: data })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('monthly_reports')
     .select('id, month_start, month_end, created_at, ai_narrative')
     .eq('owner_user_id', ownerId)
@@ -78,6 +80,7 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
 
   // Default to last complete month
@@ -93,18 +96,18 @@ export async function POST(req: Request) {
   const { start: prevStart, end: prevEnd }   = getMonthRange(prevYear, prevMonth)
 
   // Delete and regenerate if already exists
-  const { data: existing } = await supabase
+  const { data: existing } = await db
     .from('monthly_reports')
     .select('id')
     .eq('owner_user_id', ownerId)
     .eq('month_start', monthStart)
     .maybeSingle()
   if (existing) {
-    await supabase.from('monthly_reports').delete().eq('id', existing.id)
+    await db.from('monthly_reports').delete().eq('id', existing.id)
   }
 
   // GSC connection
-  const { data: conn } = await supabase
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url, access_token, refresh_token, expires_at')
     .eq('user_id', ownerId)
@@ -121,7 +124,7 @@ export async function POST(req: Request) {
     backlinksRes,
   ] = await Promise.all([
     siteUrl
-      ? supabase
+      ? db
           .from('gsc_ranking_snapshots')
           .select('page, clicks, impressions, ctr, position, snapshot_date')
           .eq('site_url', siteUrl)
@@ -130,7 +133,7 @@ export async function POST(req: Request) {
       : Promise.resolve({ data: [] }),
 
     siteUrl
-      ? supabase
+      ? db
           .from('gsc_ranking_snapshots')
           .select('page, clicks, impressions, ctr, position, snapshot_date')
           .eq('site_url', siteUrl)
@@ -139,7 +142,7 @@ export async function POST(req: Request) {
       : Promise.resolve({ data: [] }),
 
     siteUrl
-      ? supabase
+      ? db
           .from('seo_action_items')
           .select('id, status, assigned_to, created_at, completed_at, action_type')
           .eq('site_url', siteUrl)
@@ -147,7 +150,7 @@ export async function POST(req: Request) {
           .lte('created_at', monthEnd + 'T23:59:59')
       : Promise.resolve({ data: [] }),
 
-    supabase
+    db
       .from('competitors')
       .select('domain, name, active')
       .eq('owner_user_id', ownerId)
@@ -155,7 +158,7 @@ export async function POST(req: Request) {
       .limit(5),
 
     // Paid backlinks — all active, plus those acquired this month
-    supabase
+    db
       .from('paid_backlinks')
       .select('id, site_name, external_url, anchor_text, target_page, target_keyword, link_status, live_date, cost_amount, cost_currency, position_current, position_at_creation')
       .eq('owner_user_id', ownerId),
@@ -420,7 +423,7 @@ export async function POST(req: Request) {
   let sovTable: { domain: string; sov: number; keywords: number }[] = []
 
   try {
-    const { data: snapshots } = await supabase
+    const { data: snapshots } = await db
       .from('serp_snapshots')
       .select('keyword, search_volume, results, snapshot_date')
       .eq('owner_user_id', ownerId)
@@ -503,7 +506,7 @@ export async function POST(req: Request) {
   }
 
   // ── Save ─────────────────────────────────────────────────────────────────────
-  const { data: saved, error: saveErr } = await supabase
+  const { data: saved, error: saveErr } = await db
     .from('monthly_reports')
     .insert({
       owner_user_id:  ownerId,
@@ -527,10 +530,11 @@ export async function DELETE(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const id = new URL(req.url).searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
-  const { error } = await supabase
+  const { error } = await db
     .from('monthly_reports')
     .delete()
     .eq('id', id)

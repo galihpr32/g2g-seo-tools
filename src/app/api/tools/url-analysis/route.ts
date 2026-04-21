@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { getDomainOverview } from '@/lib/semrush/client'
@@ -79,11 +80,12 @@ export async function POST(request: Request) {
 
     // Get effective owner ID for workspace queries
     const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
+    const db = createServiceClient()
 
     // Check for existing action item
     let existingActionItemId: string | null = null
     if (isOwnPage) {
-      const { data: actionItem } = await supabase
+      const { data: actionItem } = await db
         .from('seo_action_items')
         .select('id')
         .eq('user_id', effectiveOwnerId)

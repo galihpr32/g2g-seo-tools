@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 10
@@ -11,7 +12,8 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const { data, error } = await supabase
+  const db = createServiceClient()
+  const { data, error } = await db
     .from('competitors')
     .select('*')
     .eq('owner_user_id', ownerId)
@@ -28,6 +30,7 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
   const { domain, name, notes } = body
 
@@ -41,7 +44,7 @@ export async function POST(req: Request) {
     .replace(/\/.*$/, '')
     .toLowerCase()
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('competitors')
     .insert({ owner_user_id: ownerId, domain: cleanDomain, name: name.trim(), notes: notes?.trim() ?? null })
     .select()
@@ -57,6 +60,7 @@ export async function POST(req: Request) {
 // PATCH /api/competitors?id=xxx
 export async function PATCH(req: Request) {
   const supabase = await createClient()
+  const db = createServiceClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

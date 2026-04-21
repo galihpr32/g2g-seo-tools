@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getGA4Report, parseGA4Rows } from '@/lib/ga4/client'
@@ -20,11 +21,12 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { searchParams } = new URL(req.url)
   const days = parseInt(searchParams.get('days') ?? '30')
 
   // Load backlinks
-  const { data: backlinks, error: blErr } = await supabase
+  const { data: backlinks, error: blErr } = await db
     .from('paid_backlinks')
     .select('id, site_name, external_url, utm_source, utm_medium, utm_campaign, target_page, live_date')
     .eq('owner_user_id', ownerId)
@@ -34,7 +36,7 @@ export async function GET(req: Request) {
   if (!backlinks?.length) return NextResponse.json({ byBacklink: [], summary: { totalSessions: 0, totalConversions: 0 } })
 
   // Get Google OAuth connection
-  const { data: conn } = await supabase
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('access_token, refresh_token, expires_at')
     .eq('user_id', ownerId)

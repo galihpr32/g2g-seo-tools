@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // ── GET /api/actions/export?from=YYYY-MM-DD&to=YYYY-MM-DD ────────────────────
@@ -10,9 +11,10 @@ export async function GET(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   // Get GSC site_url(s) for this owner
-  const { data: conn } = await supabase
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', ownerId)
@@ -26,7 +28,7 @@ export async function GET(request: Request) {
   const to   = searchParams.get('to')
 
   // Fetch all action items (no limit)
-  let query = supabase
+  let query = db
     .from('seo_action_items')
     .select('id, page, action_type, status, notes, snapshot_date, clicks_drop, position_change, assigned_to, created_at, completed_at')
     .order('snapshot_date', { ascending: false })
@@ -45,7 +47,7 @@ export async function GET(request: Request) {
 
   // Fetch brief statuses for all action item ids
   const ids = items.map(i => i.id)
-  const { data: briefs } = await supabase
+  const { data: briefs } = await db
     .from('seo_content_briefs')
     .select('action_item_id, status, brief_type')
     .in('action_item_id', ids)

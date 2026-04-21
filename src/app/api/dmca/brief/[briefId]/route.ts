@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 type Params = { params: Promise<{ briefId: string }> }
@@ -12,9 +13,10 @@ export async function GET(_req: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { briefId } = await params
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('dmca_hits')
     .select(`
       id,
@@ -39,9 +41,10 @@ export async function DELETE(_req: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { briefId } = await params
 
-  const { error } = await supabase
+  const { error } = await db
     .from('dmca_hits')
     .update({ resolved: true, resolved_at: new Date().toISOString() })
     .eq('brief_id', briefId)

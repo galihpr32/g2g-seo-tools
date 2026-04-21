@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 type Params = { params: Promise<{ id: string }> }
@@ -11,6 +12,7 @@ export async function PATCH(request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
   const body = await request.json() as {
     original_term?: string
@@ -25,7 +27,7 @@ export async function PATCH(request: Request, { params }: Params) {
   if (body.notes            !== undefined) updates.notes            = body.notes
   if (body.active           !== undefined) updates.active           = body.active
 
-  const { error } = await supabase
+  const { error } = await db
     .from('dmca_terms')
     .update(updates)
     .eq('id', id)
@@ -42,9 +44,10 @@ export async function DELETE(_req: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id } = await params
 
-  const { error } = await supabase
+  const { error } = await db
     .from('dmca_terms')
     .delete()
     .eq('id', id)

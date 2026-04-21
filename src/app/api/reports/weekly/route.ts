@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getSiteConfig } from '@/lib/sites'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
@@ -47,12 +48,13 @@ export async function GET(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { searchParams } = new URL(req.url)
   const id   = searchParams.get('id')
   const site = searchParams.get('site') ?? 'g2g'
 
   if (id) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from('weekly_reports')
       .select('*')
       .eq('id', id)
@@ -62,7 +64,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ report: data })
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('weekly_reports')
     .select('id, week_start, week_end, created_at, ai_narrative, site_slug')
     .eq('owner_user_id', ownerId)
@@ -83,6 +85,7 @@ export async function POST(req: Request) {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
     const body = await req.json().catch(() => ({}))
 
     // ── Resolve site config ──────────────────────────────────────────────────
@@ -98,7 +101,7 @@ export async function POST(req: Request) {
     const weekEnd   = (body.week_end   as string) ?? defaultRange.end
 
     // Check for existing report for this site + week, delete and regenerate
-    const { data: existing } = await supabase
+    const { data: existing } = await db
       .from('weekly_reports')
       .select('id')
       .eq('owner_user_id', ownerId)
@@ -106,11 +109,11 @@ export async function POST(req: Request) {
       .eq('week_start', weekStart)
       .maybeSingle()
     if (existing) {
-      await supabase.from('weekly_reports').delete().eq('id', existing.id)
+      await db.from('weekly_reports').delete().eq('id', existing.id)
     }
 
     // Get owner's GSC connection (tokens are shared for all sites)
-    const { data: conn } = await supabase
+    const { data: conn } = await db
       .from('gsc_connections')
       .select('site_url, access_token, refresh_token, expires_at')
       .eq('user_id', ownerId)
@@ -134,32 +137,32 @@ export async function POST(req: Request) {
       actionItemsThisWeek,
       competitors,
     ] = await Promise.all([
-      supabase
+      db
         .from('gsc_ranking_snapshots')
         .select('page, clicks, impressions, ctr, position, snapshot_date')
         .eq('site_url', siteUrl)
         .gte('snapshot_date', weekStart)
         .lte('snapshot_date', weekEnd),
 
-      supabase
+      db
         .from('gsc_ranking_snapshots')
         .select('page, clicks, impressions, ctr, position, snapshot_date')
         .eq('site_url', siteUrl)
         .gte('snapshot_date', prevWeekStart)
         .lte('snapshot_date', prevWeekEnd),
 
-      supabase
+      db
         .from('seo_action_items')
         .select('id, status, assigned_to, created_at, completed_at, action_type')
         .eq('site_url', siteUrl),
 
-      supabase
+      db
         .from('seo_action_items')
         .select('id, status, assigned_to, action_type, created_at, completed_at')
         .eq('site_url', siteUrl)
         .or(`created_at.gte.${weekStart},completed_at.gte.${weekStart}`),
 
-      supabase
+      db
         .from('competitors')
         .select('domain, name, active')
         .eq('owner_user_id', ownerId)
@@ -396,7 +399,7 @@ export async function POST(req: Request) {
     let sovEstimated = false
 
     try {
-      const { data: snapshots } = await supabase
+      const { data: snapshots } = await db
         .from('serp_snapshots')
         .select('keyword, search_volume, results, snapshot_date')
         .eq('owner_user_id', ownerId)
@@ -539,7 +542,7 @@ export async function POST(req: Request) {
     }
 
     // ── Save report ──────────────────────────────────────────────────────────
-    const { data: saved, error: saveErr } = await supabase
+    const { data: saved, error: saveErr } = await db
       .from('weekly_reports')
       .insert({
         owner_user_id:  ownerId,
@@ -569,10 +572,11 @@ export async function DELETE(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const id = new URL(req.url).searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
 
-  const { error } = await supabase
+  const { error } = await db
     .from('weekly_reports')
     .delete()
     .eq('id', id)

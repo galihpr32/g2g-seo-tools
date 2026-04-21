@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 15
@@ -12,8 +13,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ count: 0 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data: conn } = await supabase
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', ownerId)
@@ -26,20 +28,20 @@ export async function GET() {
 
   const [staleRes, unassignedRes, etaRes, dmcaRes] = await Promise.all([
     siteUrl
-      ? supabase.from('seo_action_items')
+      ? db.from('seo_action_items')
           .select('id', { count: 'exact', head: true })
           .eq('site_url', siteUrl).eq('status', 'in_progress')
           .lt('created_at', staleThreshold)
       : Promise.resolve({ count: 0 }),
 
     siteUrl
-      ? supabase.from('seo_action_items')
+      ? db.from('seo_action_items')
           .select('id', { count: 'exact', head: true })
           .eq('site_url', siteUrl).eq('status', 'in_progress')
           .is('assigned_to', null)
       : Promise.resolve({ count: 0 }),
 
-    supabase.from('campaign_pages')
+    db.from('campaign_pages')
       .select('id', { count: 'exact', head: true })
       .eq('campaigns.owner_user_id', ownerId)
       .neq('status', 'done')
@@ -47,7 +49,7 @@ export async function GET() {
       .lte('eta', etaThreshold),
 
     // Count distinct briefs with unresolved DMCA hits
-    supabase.from('dmca_hits')
+    db.from('dmca_hits')
       .select('brief_id', { count: 'exact', head: false })
       .eq('owner_user_id', ownerId)
       .eq('resolved', false),

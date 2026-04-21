@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 import Anthropic from '@anthropic-ai/sdk'
@@ -18,6 +19,7 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await req.json() as {
     draft_id?:            string
@@ -98,7 +100,7 @@ The content field should be complete, publish-ready markdown. Use proper heading
   // ── Create / update draft record ───────────────────────────────────────────
   let savedDraftId = draft_id
   if (!savedDraftId) {
-    const { data: draft, error: insertErr } = await supabase
+    const { data: draft, error: insertErr } = await db
       .from('content_studio_drafts')
       .insert({
         owner_user_id: ownerId,
@@ -119,7 +121,7 @@ The content field should be complete, publish-ready markdown. Use proper heading
     if (insertErr) console.warn('[studio/generate] draft insert failed:', insertErr.message)
     else savedDraftId = draft?.id
   } else {
-    await supabase
+    await db
       .from('content_studio_drafts')
       .update({ status: 'generating', updated_at: new Date().toISOString() })
       .eq('id', savedDraftId)
@@ -150,7 +152,7 @@ The content field should be complete, publish-ready markdown. Use proper heading
 
     // ── Update draft ─────────────────────────────────────────────────────────
     if (savedDraftId) {
-      await supabase
+      await db
         .from('content_studio_drafts')
         .update({
           title:           title ?? topic,
@@ -172,7 +174,7 @@ The content field should be complete, publish-ready markdown. Use proper heading
     })
   } catch (e) {
     if (savedDraftId) {
-      await supabase
+      await db
         .from('content_studio_drafts')
         .update({ status: 'draft', updated_at: new Date().toISOString() })
         .eq('id', savedDraftId)

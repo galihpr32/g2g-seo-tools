@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 type Params = { params: Promise<{ id: string }> }
@@ -12,10 +13,11 @@ export async function POST(request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id: campaign_id } = await params
 
   // Verify campaign belongs to owner
-  const { data: campaign } = await supabase
+  const { data: campaign } = await db
     .from('campaigns')
     .select('id')
     .eq('id', campaign_id)
@@ -35,12 +37,12 @@ export async function POST(request: Request, { params }: Params) {
   if (!url.startsWith('http')) url = 'https://' + url
 
   // Position at end
-  const { count } = await supabase
+  const { count } = await db
     .from('campaign_pages')
     .select('*', { count: 'exact', head: true })
     .eq('campaign_id', campaign_id)
 
-  const { data: page, error } = await supabase
+  const { data: page, error } = await db
     .from('campaign_pages')
     .insert({
       campaign_id,
@@ -69,11 +71,12 @@ export async function DELETE(request: Request, { params }: Params) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const { id: campaign_id } = await params
 
   const { page_id } = await request.json() as { page_id: string }
 
-  const { error } = await supabase
+  const { error } = await db
     .from('campaign_pages')
     .delete()
     .eq('id', page_id)

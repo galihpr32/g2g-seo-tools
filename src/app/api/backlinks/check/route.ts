@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { smartScrape } from '@/lib/firecrawl/client'
 
@@ -14,11 +15,12 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const { id } = await request.json() as { id: string }
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
 
-  const { data: bl } = await supabase
+  const { data: bl } = await db
     .from('paid_backlinks')
     .select('external_url, anchor_text, target_page')
     .eq('id', id)
@@ -34,7 +36,7 @@ export async function POST(request: Request) {
   const status = found ? 'active' : 'broken'
   const now = new Date().toISOString()
 
-  await supabase
+  await db
     .from('paid_backlinks')
     .update({ link_status: status, last_checked_at: now, check_method: method })
     .eq('id', id)

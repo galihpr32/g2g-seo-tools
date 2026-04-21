@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 // ── GET /api/dmca ─────────────────────────────────────────────────────────────
@@ -9,8 +10,9 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from('dmca_terms')
     .select('id, original_term, replacement_term, notes, active, created_at')
     .eq('owner_user_id', ownerId)
@@ -28,6 +30,7 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await request.json() as {
     original_term: string
     replacement_term: string
@@ -41,7 +44,7 @@ export async function POST(request: Request) {
     )
   }
 
-  const { data: term, error } = await supabase
+  const { data: term, error } = await db
     .from('dmca_terms')
     .upsert({
       owner_user_id:    ownerId,

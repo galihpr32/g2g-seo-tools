@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 30
@@ -10,9 +11,10 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   // Get GSC site_url for this owner
-  const { data: conn } = await supabase
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', ownerId)
@@ -32,7 +34,7 @@ export async function GET() {
   ] = await Promise.all([
     // All action items (status, type, assignee, created_at)
     siteUrl
-      ? supabase
+      ? db
           .from('seo_action_items')
           .select('id, status, action_type, assigned_to, created_at, snapshot_date')
           .eq('site_url', siteUrl)

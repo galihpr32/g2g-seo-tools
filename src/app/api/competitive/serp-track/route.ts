@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getSerpData } from '@/lib/dataforseo/client'
 import { getCountryPreset } from '@/lib/country-config'
@@ -35,6 +36,7 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
   const { keywords, country_code = 'us', search_volumes = {} } = body
 
@@ -88,7 +90,7 @@ export async function POST(req: Request) {
       }
 
       // Upsert snapshot to DB
-      await supabase.from('serp_snapshots').upsert({
+      await db.from('serp_snapshots').upsert({
         owner_user_id: ownerId,
         keyword,
         location_code:  preset.dfsLocationCode,

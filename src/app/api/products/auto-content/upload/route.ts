@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { batchUploadContent } from '@/lib/cms/client'
 
@@ -13,6 +14,7 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
     relation_ids?: string[]
@@ -20,7 +22,7 @@ export async function POST(req: Request) {
   }
 
   // ── Fetch items to upload ──────────────────────────────────────────────────
-  let query = supabase
+  let query = db
     .from('product_content_queue')
     .select('relation_id, meta_title, meta_description, meta_keywords, marketing_title, marketing_description')
     .eq('owner_user_id', ownerId)
@@ -36,7 +38,7 @@ export async function POST(req: Request) {
   if (!items?.length) return NextResponse.json({ uploaded: 0, message: 'No generated items found to upload' })
 
   // ── Mark as uploading ──────────────────────────────────────────────────────
-  await supabase
+  await db
     .from('product_content_queue')
     .update({ status: 'uploading', updated_at: new Date().toISOString() })
     .eq('owner_user_id', ownerId)
@@ -64,7 +66,7 @@ export async function POST(req: Request) {
     const mktOk = r.marketing.ok
     const allOk = seoOk && mktOk
 
-    await supabase
+    await db
       .from('product_content_queue')
       .update({
         status:         allOk ? 'uploaded' : 'failed',
