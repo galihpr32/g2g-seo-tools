@@ -110,19 +110,6 @@ CREATE POLICY "workspace_member_read_ranking_drops"
     )
   );
 
--- gsc_daily_stats (if exists)
-DROP POLICY IF EXISTS "workspace_member_read_gsc_daily_stats" ON gsc_daily_stats;
-CREATE POLICY "workspace_member_read_gsc_daily_stats"
-  ON gsc_daily_stats FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM gsc_connections gc
-      WHERE  gc.site_url = gsc_daily_stats.site_url
-        AND  can_access_owner_data(gc.user_id)
-    )
-  );
-
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Tables keyed by user_id
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -131,14 +118,7 @@ CREATE POLICY "workspace_member_read_gsc_daily_stats"
 DROP POLICY IF EXISTS "workspace_member_read_kb" ON knowledge_base_items;
 CREATE POLICY "workspace_member_read_kb"
   ON knowledge_base_items FOR SELECT
-  USING (can_access_owner_data(user_id));
-
--- notifications
-DROP POLICY IF EXISTS "workspace_member_read_notifications" ON notifications;
-CREATE POLICY "workspace_member_read_notifications"
-  ON notifications FOR SELECT
-  USING (can_access_owner_data(user_id));
-
+  USING (can_access_owner_data(owner_user_id));
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Tables keyed by owner_user_id

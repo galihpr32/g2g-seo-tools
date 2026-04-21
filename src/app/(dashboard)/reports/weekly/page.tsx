@@ -27,13 +27,13 @@ interface Ga4Data {
   sessionsPct: number | null
   engagedSessions: number
   bounceRate: number
-  totalConversions?: number  // added in v2 — optional for old reports
-  prevConversions?: number
-  conversionsPct?: number | null
+  totalPurchases?: number
+  prevPurchases?: number
+  purchasesPct?: number | null
   totalRevenue?: number
   prevRevenue?: number
   revenuePct?: number | null
-  topPages: { pagePath: string; sessions: number; conversions?: number; revenue?: number }[]
+  topPages: { pagePath: string; sessions: number; purchases?: number; revenue?: number }[]
 }
 
 interface SemrushData {
@@ -474,10 +474,10 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                       value={d.ga4.totalRevenue != null ? fmtUsd(d.ga4.totalRevenue) : '—'}
                       pct={d.ga4.revenuePct ?? null}
                       sub={d.ga4.prevRevenue != null ? `prev ${fmtUsd(d.ga4.prevRevenue)}` : undefined} />
-                    <StatCard icon="🛒" label="Conversions"
-                      value={d.ga4.totalConversions != null ? fmt(d.ga4.totalConversions) : '—'}
-                      pct={d.ga4.conversionsPct ?? null}
-                      sub={d.ga4.prevConversions != null ? `prev ${fmt(d.ga4.prevConversions)}` : undefined} />
+                    <StatCard icon="🛒" label="Purchases"
+                      value={d.ga4.totalPurchases != null ? fmt(d.ga4.totalPurchases) : '—'}
+                      pct={d.ga4.purchasesPct ?? null}
+                      sub={d.ga4.prevPurchases != null ? `prev ${fmt(d.ga4.prevPurchases)}` : undefined} />
                   </>
                 ) : (
                   <StatCard icon="📈" label="Organic Sessions" value="—" sub="GA4 not connected" />
@@ -632,7 +632,7 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                         <tr className="border-b border-gray-800">
                           <th className="text-left pb-2 text-gray-500 font-semibold uppercase tracking-wider">Page</th>
                           <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-20">Sessions</th>
-                          <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Conversions</th>
+                          <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Purchases</th>
                           <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Revenue</th>
                         </tr>
                       </thead>
@@ -653,8 +653,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                               </td>
                               <td className="py-2 text-right text-gray-300 font-medium">{fmt(p.sessions)}</td>
                               <td className="py-2 text-right">
-                                <span className={(p.conversions ?? 0) > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
-                                  {(p.conversions ?? 0) > 0 ? fmt(p.conversions!) : '—'}
+                                <span className={(p.purchases ?? 0) > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
+                                  {(p.purchases ?? 0) > 0 ? fmt(p.purchases!) : '—'}
                                 </span>
                               </td>
                               <td className="py-2 text-right">

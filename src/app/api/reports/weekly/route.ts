@@ -315,9 +315,9 @@ export async function POST(req: Request) {
     let ga4Data: {
       weekSessions: number; prevWeekSessions: number; sessionsPct: number | null
       engagedSessions: number; bounceRate: number
-      totalConversions: number; prevConversions: number; conversionsPct: number | null
+      totalPurchases: number; prevPurchases: number; purchasesPct: number | null
       totalRevenue: number; prevRevenue: number; revenuePct: number | null
-      topPages: { pagePath: string; sessions: number; conversions: number; revenue: number }[]
+      topPages: { pagePath: string; sessions: number; purchases: number; revenue: number }[]
     } | null = null
 
     const ga4PropertyId = siteConfig.ga4_property_id ?? (siteSlug === 'g2g' ? process.env.GA4_PROPERTY_ID : null)
@@ -327,11 +327,11 @@ export async function POST(req: Request) {
         const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
         const [thisWeekRaw, prevWeekRaw, topPagesRaw] = await Promise.all([
           getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd,
-            ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'conversions', 'purchaseRevenue'], 7),
+            ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'transactions', 'purchaseRevenue'], 7),
           getGA4Report(ga4Auth, ga4PropertyId, prevWeekStart, prevWeekEnd,
-            ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'conversions', 'purchaseRevenue'], 7),
+            ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'transactions', 'purchaseRevenue'], 7),
           getGA4Report(ga4Auth, ga4PropertyId, weekStart, weekEnd,
-            ['pagePath', 'sessionDefaultChannelGroup'], ['sessions', 'conversions', 'purchaseRevenue'], 30),
+            ['pagePath', 'sessionDefaultChannelGroup'], ['sessions', 'transactions', 'purchaseRevenue'], 30),
         ])
         const thisRows = parseGA4Rows(thisWeekRaw)
         const prevRows = parseGA4Rows(prevWeekRaw)
@@ -340,8 +340,8 @@ export async function POST(req: Request) {
         const weekSessions     = sumMetric(thisRows, 'sessions')
         const prevSessions     = sumMetric(prevRows, 'sessions')
         const weekEngaged      = sumMetric(thisRows, 'engagedSessions')
-        const totalConversions = sumMetric(thisRows, 'conversions')
-        const prevConversions  = sumMetric(prevRows, 'conversions')
+        const totalPurchases = sumMetric(thisRows, 'transactions')
+        const prevPurchases  = sumMetric(prevRows, 'transactions')
         const totalRevenue     = thisRows.reduce((s, r) => s + parseFloat(r.purchaseRevenue ?? '0'), 0)
         const prevRevenue      = prevRows.reduce((s, r) => s + parseFloat(r.purchaseRevenue ?? '0'), 0)
         const bounceArr        = thisRows.map(r => parseFloat(r.bounceRate ?? '0')).filter(n => !isNaN(n))
@@ -356,7 +356,7 @@ export async function POST(req: Request) {
           .map(r => ({
             pagePath:    r.pagePath ?? '',
             sessions:    parseInt(r.sessions ?? '0'),
-            conversions: parseInt(r.conversions ?? '0'),
+            purchases: parseInt(r.transactions ?? '0'),
             revenue:     parseFloat(r.purchaseRevenue ?? '0'),
           }))
           .sort((a, b) => b.sessions - a.sessions)
@@ -368,9 +368,9 @@ export async function POST(req: Request) {
           sessionsPct:      pctChange(weekSessions, prevSessions),
           engagedSessions:  weekEngaged,
           bounceRate:       +avgBounce.toFixed(2),
-          totalConversions,
-          prevConversions,
-          conversionsPct:   pctChange(totalConversions, prevConversions),
+          totalPurchases,
+          prevPurchases,
+          purchasesPct:   pctChange(totalPurchases, prevPurchases),
           totalRevenue:     +totalRevenue.toFixed(2),
           prevRevenue:      +prevRevenue.toFixed(2),
           revenuePct:       pctChange(Math.round(totalRevenue), Math.round(prevRevenue)),
@@ -588,7 +588,7 @@ function buildNarrativePrompt(d: {
   ga4: {
     weekSessions: number; prevWeekSessions: number; sessionsPct: number | null
     bounceRate: number
-    totalConversions: number; prevConversions: number; conversionsPct: number | null
+    totalPurchases: number; prevPurchases: number; purchasesPct: number | null
     totalRevenue: number; prevRevenue: number; revenuePct: number | null
   } | null
   semrush: { totalKeywords: number; top3: number; top10: number; topMoversUp: { keyword: string; position: number; positionDiff: number; volume: number }[]; topMoversDown: { keyword: string; position: number; positionDiff: number; volume: number }[] }
@@ -634,7 +634,7 @@ ${droppers}
 
 ${d.ga4 ? `GA4 Performance:
 - Organic sessions: ${d.ga4.weekSessions.toLocaleString()} (prev: ${d.ga4.prevWeekSessions.toLocaleString()}, ${pctStr(d.ga4.sessionsPct)})
-- Conversions: ${d.ga4.totalConversions.toLocaleString()} (prev: ${d.ga4.prevConversions.toLocaleString()}, ${pctStr(d.ga4.conversionsPct)})
+- Purchases: ${d.ga4.totalPurchases.toLocaleString()} (prev: ${d.ga4.prevPurchases.toLocaleString()}, ${pctStr(d.ga4.purchasesPct)})
 - Revenue: ${fmtUsd(d.ga4.totalRevenue)} (prev: ${fmtUsd(d.ga4.prevRevenue)}, ${pctStr(d.ga4.revenuePct)})
 - Bounce rate: ${(d.ga4.bounceRate * 100).toFixed(1)}%` : 'GA4: Not connected for this site'}
 
