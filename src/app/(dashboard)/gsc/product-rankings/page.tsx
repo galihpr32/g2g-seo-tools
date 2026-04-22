@@ -1,8 +1,220 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+
+// ── CSV Import helpers ─────────────────────────────────────────────────────────
+
+const URL_REMAPS: Record<string, string> = {
+  'wow-classic-era-gold': 'wow-classic-era-vanilla-gold',
+}
+
+function normalizeProductUrl(raw: string): string | null {
+  if (!raw || raw === '-') return null
+  try {
+    const u = new URL(raw)
+    if (u.pathname === '/' || u.pathname.startsWith('/sg')) return null
+    const parts = u.pathname.split('/').filter(Boolean)
+    const catIdx = parts.indexOf('categories')
+    if (catIdx === -1) return null
+    const slug = parts[catIdx + 1]
+    if (!slug) return null
+    const remapped = URL_REMAPS[slug] ?? slug
+    return `https://www.g2g.com/categories/${remapped}`
+  } catch {
+    return null
+  }
+}
+
+function slugToName(url: string): string {
+  try {
+    const parts = new URL(url).pathname.split('/').filter(Boolean)
+    const catIdx = parts.indexOf('categories')
+    const slug = catIdx >= 0 ? (parts[catIdx + 1] ?? '') : ''
+    return slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  } catch {
+    return url
+  }
+}
+
+interface ParsedProduct {
+  name: string
+  page_url: string
+  keywords: string[]
+}
+
+function parseSemrushCsv(text: string): ParsedProduct[] {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const headerIdx = lines.findIndex(l => l.startsWith('Keyword,'))
+  if (headerIdx === -1) return []
+  const headers = lines[headerIdx].split(',')
+  const urlIdx = headers.findIndex(h => h.includes('_landing'))
+  if (urlIdx === -1) return []
+
+  const grouped = new Map<string, string[]>()
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const cols = lines[i].split(',')
+    const keyword = cols[0]?.trim()
+    const rawUrl  = cols[urlIdx]?.trim()
+    if (!keyword || !rawUrl) continue
+    const url = normalizeProductUrl(rawUrl)
+    if (!url) continue
+    const kws = grouped.get(url) ?? []
+    kws.push(keyword)
+    grouped.set(url, kws)
+  }
+
+  return Array.from(grouped.entries()).map(([url, kws]) => ({
+    name: slugToName(url),
+    page_url: url,
+    keywords: kws,
+  }))
+}
+
+// ── Import Modal ───────────────────────────────────────────────────────────────
+
+function ImportModal({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [parsed,    setParsed]    = useState<ParsedProduct[] | null>(null)
+  const [editNames, setEditNames] = useState<Record<string, string>>({})
+  const [importing, setImporting] = useState(false)
+  const [result,    setResult]    = useState<{ inserted: number; skipped: number } | null>(null)
+  const [error,     setError]     = useState<string | null>(null)
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const text = ev.target?.result as string
+      const products = parseSemrushCsv(text)
+      if (products.length === 0) {
+        setError("Could not parse CSV — make sure it's a SEMrush Position Tracking export.")
+        return
+      }
+      setParsed(products)
+      const names: Record<string, string> = {}
+      products.forEach(p => { names[p.page_url] = p.name })
+      setEditNames(names)
+      setError(null)
+    }
+    reader.readAsText(file)
+  }
+
+  async function handleImport() {
+    if (!parsed) return
+    setImporting(true); setError(null)
+    try {
+      const products = parsed.map(p => ({ ...p, name: editNames[p.page_url] ?? p.name }))
+      const res = await fetch('/api/products/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ products }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'Import failed')
+      setResult({ inserted: data.inserted, skipped: data.skipped })
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+          <h2 className="text-white font-semibold">📥 Import from SEMrush CSV</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+          {!parsed && !result && (
+            <div>
+              <p className="text-gray-400 text-sm mb-3">
+                Upload your <span className="text-white font-medium">SEMrush Position Tracking Rankings Overview</span> CSV.
+                Keywords will be automatically grouped by landing URL.
+              </p>
+              <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
+              <button
+                onClick={() => fileRef.current?.click()}
+                className="border border-dashed border-gray-600 rounded-xl p-8 w-full text-center hover:border-red-500 hover:bg-red-500/5 transition"
+              >
+                <p className="text-2xl mb-1">📄</p>
+                <p className="text-white text-sm font-medium">Click to select CSV file</p>
+                <p className="text-gray-600 text-xs mt-0.5">SEMrush position_tracking_rankings_overview export</p>
+              </button>
+              {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+            </div>
+          )}
+
+          {parsed && !result && (
+            <div>
+              <p className="text-gray-400 text-sm mb-3">
+                Found <span className="text-white font-semibold">{parsed.length} products</span>. Edit product names before importing.
+              </p>
+              <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+                {parsed.map(p => (
+                  <div key={p.page_url} className="bg-gray-800 rounded-lg px-3 py-2.5 flex items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                      <input
+                        value={editNames[p.page_url] ?? p.name}
+                        onChange={e => setEditNames(prev => ({ ...prev, [p.page_url]: e.target.value }))}
+                        className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white w-full focus:outline-none focus:border-red-500 mb-1.5"
+                      />
+                      <p className="text-xs text-blue-400 truncate">{p.page_url}</p>
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {p.keywords.slice(0, 6).map(kw => (
+                          <span key={kw} className="text-xs bg-gray-700 text-gray-300 px-1.5 py-0.5 rounded-full">{kw}</span>
+                        ))}
+                        {p.keywords.length > 6 && (
+                          <span className="text-xs text-gray-500">+{p.keywords.length - 6} more</span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-xs text-gray-600 whitespace-nowrap mt-1">{p.keywords.length} kw</span>
+                  </div>
+                ))}
+              </div>
+              {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+            </div>
+          )}
+
+          {result && (
+            <div className="text-center py-6">
+              <p className="text-3xl mb-3">✅</p>
+              <p className="text-white font-semibold text-lg">{result.inserted} products imported!</p>
+              {result.skipped > 0 && (
+                <p className="text-gray-400 text-sm mt-1">{result.skipped} skipped (already existed).</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-end gap-3">
+          {result ? (
+            <button onClick={() => { onImported(); onClose() }}
+              className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-5 py-2 rounded-lg transition">
+              Done
+            </button>
+          ) : parsed ? (
+            <>
+              <button onClick={() => setParsed(null)} className="text-sm text-gray-500 hover:text-gray-300 transition">← Back</button>
+              <button onClick={handleImport} disabled={importing}
+                className="bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2 rounded-lg transition">
+                {importing ? 'Importing…' : `Import ${parsed.length} products`}
+              </button>
+            </>
+          ) : (
+            <button onClick={onClose} className="text-sm text-gray-500 hover:text-gray-300 transition">Cancel</button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 interface TrackedProduct {
   id: string
@@ -188,6 +400,7 @@ export default function ProductRankingsPage() {
   const [loading, setLoading]   = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingProduct, setEditingProduct] = useState<TrackedProduct | null>(null)
+  const [showImport, setShowImport] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -229,6 +442,13 @@ export default function ProductRankingsPage() {
 
   return (
     <div className="p-8 max-w-4xl">
+      {showImport && (
+        <ImportModal
+          onClose={() => setShowImport(false)}
+          onImported={load}
+        />
+      )}
+
       {/* Header */}
       <div className="mb-6 flex items-start justify-between">
         <div>
@@ -238,12 +458,20 @@ export default function ProductRankingsPage() {
             {products.length > 0 && ` ${activeProducts.length} active · ${products.length} total`}
           </p>
         </div>
-        <button
-          onClick={() => { setEditingProduct(null); setShowForm(true) }}
-          className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-xl transition flex items-center gap-2"
-        >
-          + Add product
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowImport(true)}
+            className="bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white text-sm font-medium px-4 py-2 rounded-xl transition flex items-center gap-2 border border-gray-700"
+          >
+            📥 Import CSV
+          </button>
+          <button
+            onClick={() => { setEditingProduct(null); setShowForm(true) }}
+            className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-xl transition flex items-center gap-2"
+          >
+            + Add product
+          </button>
+        </div>
       </div>
 
       {/* Add / Edit form */}

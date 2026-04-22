@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type PositionHistory = { date: string; position: number | null }[]
@@ -342,6 +342,8 @@ type BacklinkAnalytics = {
   conversions: number | null
 }
 
+type SortKey = 'live_date' | 'site_name' | 'cost' | 'sessions' | 'rank'
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function BacklinksPage() {
   const [backlinks, setBacklinks] = useState<Backlink[]>([])
@@ -356,6 +358,14 @@ export default function BacklinksPage() {
   const [analyticsNote, setAnalyticsNote] = useState<string | null>(null)
   const [analyticsDays, setAnalyticsDays] = useState(30)
   const [analyticsTotals, setAnalyticsTotals] = useState<{ sessions: number | null; conversions: number | null } | null>(null)
+
+  // ── Filter + sort state ───────────────────────────────────────────────────
+  const [search,       setSearch]       = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'broken' | 'pending'>('all')
+  const [dateFrom,     setDateFrom]     = useState('')
+  const [dateTo,       setDateTo]       = useState('')
+  const [sortKey,      setSortKey]      = useState<SortKey>('live_date')
+  const [sortDir,      setSortDir]      = useState<'asc' | 'desc'>('desc')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -448,6 +458,58 @@ export default function BacklinksPage() {
 
   const activeCount = backlinks.filter(b => b.link_status === 'active').length
   const brokenCount = backlinks.filter(b => b.link_status === 'broken').length
+
+  // ── Filtered + sorted list ────────────────────────────────────────────────
+  const visibleBacklinks = useMemo(() => {
+    let list = backlinks
+
+    // Search: site_name, anchor_text, external_url, target_page
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      list = list.filter(b =>
+        b.site_name.toLowerCase().includes(q) ||
+        b.anchor_text.toLowerCase().includes(q) ||
+        b.external_url.toLowerCase().includes(q) ||
+        b.target_page.toLowerCase().includes(q) ||
+        (b.utm_campaign ?? '').toLowerCase().includes(q)
+      )
+    }
+
+    // Status filter
+    if (statusFilter !== 'all') list = list.filter(b => b.link_status === statusFilter)
+
+    // Date range (live_date)
+    if (dateFrom) list = list.filter(b => b.live_date && b.live_date >= dateFrom)
+    if (dateTo)   list = list.filter(b => b.live_date && b.live_date <= dateTo)
+
+    // Sort
+    return [...list].sort((a, b) => {
+      let diff = 0
+      if (sortKey === 'live_date') {
+        diff = (a.live_date ?? '').localeCompare(b.live_date ?? '')
+      } else if (sortKey === 'site_name') {
+        diff = a.site_name.localeCompare(b.site_name)
+      } else if (sortKey === 'cost') {
+        diff = (a.cost_amount ?? 0) - (b.cost_amount ?? 0)
+      } else if (sortKey === 'sessions') {
+        const sa = analyticsMap.get(a.id)?.sessions ?? -1
+        const sb = analyticsMap.get(b.id)?.sessions ?? -1
+        diff = sa - sb
+      } else if (sortKey === 'rank') {
+        const ra = a.position_current ?? 999
+        const rb = b.position_current ?? 999
+        diff = ra - rb
+      }
+      return sortDir === 'asc' ? diff : -diff
+    })
+  }, [backlinks, search, statusFilter, dateFrom, dateTo, sortKey, sortDir, analyticsMap])
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortKey(key); setSortDir('desc') }
+  }
+
+  const hasFilters = search || statusFilter !== 'all' || dateFrom || dateTo
 
   return (
     <div className="p-8 min-h-screen">
@@ -580,6 +642,95 @@ export default function BacklinksPage() {
             </div>
           )}
 
+          {/* ── Filter + Sort bar ─────────────────────────────────────────── */}
+          {backlinks.length > 0 && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 space-y-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                {/* Search */}
+                <div className="relative flex-1 min-w-[200px]">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-xs">🔍</span>
+                  <input
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    placeholder="Search site, anchor, URL…"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-7 pr-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-red-500"
+                  />
+                  {search && (
+                    <button onClick={() => setSearch('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white text-xs">✕</button>
+                  )}
+                </div>
+
+                {/* Status filter */}
+                <select
+                  value={statusFilter}
+                  onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-500"
+                >
+                  <option value="all">All statuses</option>
+                  <option value="active">🟢 Active</option>
+                  <option value="broken">🔴 Broken</option>
+                  <option value="pending">🟡 Pending</option>
+                </select>
+
+                {/* Date range */}
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={e => setDateFrom(e.target.value)}
+                    title="Live date from"
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500 w-32"
+                  />
+                  <span className="text-gray-600 text-xs">→</span>
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={e => setDateTo(e.target.value)}
+                    title="Live date to"
+                    className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500 w-32"
+                  />
+                </div>
+
+                {/* Clear filters */}
+                {hasFilters && (
+                  <button
+                    onClick={() => { setSearch(''); setStatusFilter('all'); setDateFrom(''); setDateTo('') }}
+                    className="text-xs text-gray-500 hover:text-white transition"
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+
+              {/* Sort row */}
+              <div className="flex items-center gap-2 border-t border-gray-800 pt-2.5">
+                <span className="text-xs text-gray-600">Sort:</span>
+                {([
+                  { key: 'live_date', label: 'Date' },
+                  { key: 'site_name', label: 'Site' },
+                  { key: 'cost',      label: 'Cost' },
+                  { key: 'sessions',  label: 'Sessions' },
+                  { key: 'rank',      label: 'Rank' },
+                ] as { key: SortKey; label: string }[]).map(s => (
+                  <button
+                    key={s.key}
+                    onClick={() => toggleSort(s.key)}
+                    className={`px-2.5 py-1 rounded text-xs transition ${sortKey === s.key ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-white'}`}
+                  >
+                    {s.label}
+                    {sortKey === s.key && (sortDir === 'desc' ? ' ↓' : ' ↑')}
+                  </button>
+                ))}
+                <span className="ml-auto text-xs text-gray-600">
+                  {visibleBacklinks.length === backlinks.length
+                    ? `${backlinks.length} backlinks`
+                    : `${visibleBacklinks.length} of ${backlinks.length}`}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Backlink list */}
           {loading ? (
             <div className="text-gray-500 text-sm text-center py-12">Loading backlinks…</div>
@@ -593,9 +744,15 @@ export default function BacklinksPage() {
                 + Add First Backlink
               </button>
             </div>
+          ) : visibleBacklinks.length === 0 && hasFilters ? (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
+              <p className="text-gray-500 text-sm">No backlinks match the current filters.</p>
+              <button onClick={() => { setSearch(''); setStatusFilter('all'); setDateFrom(''); setDateTo('') }}
+                className="text-xs text-red-400 hover:text-red-300 mt-2 transition">Clear filters</button>
+            </div>
           ) : (
             <div className="space-y-3">
-              {backlinks.map(bl => (
+              {visibleBacklinks.map(bl => (
             <div key={bl.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
               {editingId === bl.id ? (
                 <div className="p-6">
