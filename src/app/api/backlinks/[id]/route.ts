@@ -17,7 +17,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     'site_name', 'external_url', 'anchor_text', 'target_page', 'target_keyword',
     'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
     'link_status', 'cost_amount', 'cost_currency', 'live_date', 'notes',
-    'last_checked_at', 'check_method', 'position_current', 'position_history',
+    'target_country', 'last_checked_at', 'check_method', 'position_current', 'position_history',
   ]
   const updates: Record<string, unknown> = {}
   for (const field of allowedFields) {

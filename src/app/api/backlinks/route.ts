@@ -35,7 +35,7 @@ export async function POST(request: Request) {
   const {
     site_name, external_url, anchor_text, target_page, target_keyword,
     utm_source, utm_medium, utm_campaign, utm_term, utm_content,
-    cost_amount, cost_currency, live_date, notes,
+    cost_amount, cost_currency, live_date, notes, target_country,
   } = body
 
   if (!site_name || !external_url || !anchor_text || !target_page) {
@@ -57,6 +57,7 @@ export async function POST(request: Request) {
       cost_currency: cost_currency || 'USD',
       live_date: live_date || null,
       notes: notes || null,
+      target_country: target_country || 'global',
       link_status: 'active',
     })
     .select()

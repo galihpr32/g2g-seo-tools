@@ -2,6 +2,28 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
 
+// ── Country config ─────────────────────────────────────────────────────────────
+const COUNTRIES: { code: string; flag: string; label: string; currency: string }[] = [
+  { code: 'global', flag: '🌐', label: 'Global',        currency: 'USD' },
+  { code: 'us',     flag: '🇺🇸', label: 'United States', currency: 'USD' },
+  { code: 'id',     flag: '🇮🇩', label: 'Indonesia',     currency: 'IDR' },
+  { code: 'sg',     flag: '🇸🇬', label: 'Singapore',     currency: 'SGD' },
+  { code: 'my',     flag: '🇲🇾', label: 'Malaysia',      currency: 'MYR' },
+  { code: 'ph',     flag: '🇵🇭', label: 'Philippines',   currency: 'PHP' },
+  { code: 'th',     flag: '🇹🇭', label: 'Thailand',      currency: 'THB' },
+  { code: 'vn',     flag: '🇻🇳', label: 'Vietnam',       currency: 'VND' },
+  { code: 'au',     flag: '🇦🇺', label: 'Australia',     currency: 'AUD' },
+  { code: 'gb',     flag: '🇬🇧', label: 'United Kingdom',currency: 'GBP' },
+  { code: 'eu',     flag: '🇪🇺', label: 'Europe',        currency: 'EUR' },
+  { code: 'br',     flag: '🇧🇷', label: 'Brazil',        currency: 'BRL' },
+  { code: 'jp',     flag: '🇯🇵', label: 'Japan',         currency: 'JPY' },
+  { code: 'kr',     flag: '🇰🇷', label: 'South Korea',   currency: 'KRW' },
+]
+
+function countryMeta(code: string) {
+  return COUNTRIES.find(c => c.code === code) ?? COUNTRIES[0]
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 type PositionHistory = { date: string; position: number | null }[]
 
@@ -27,6 +49,7 @@ type Backlink = {
   cost_currency: string
   live_date: string | null
   notes: string | null
+  target_country: string
   created_at: string
 }
 
@@ -40,6 +63,7 @@ type FormData = {
   cost_currency: string
   live_date: string
   notes: string
+  target_country: string
   utm_source: string
   utm_medium: string
   utm_campaign: string
@@ -50,7 +74,8 @@ type FormData = {
 const EMPTY_FORM: FormData = {
   site_name: '', external_url: '', anchor_text: '', target_page: '',
   target_keyword: '', cost_amount: '', cost_currency: 'USD', live_date: '',
-  notes: '', utm_source: '', utm_medium: 'referral', utm_campaign: '', utm_term: '', utm_content: '',
+  notes: '', target_country: 'global',
+  utm_source: '', utm_medium: 'referral', utm_campaign: '', utm_term: '', utm_content: '',
 }
 
 // ── UTM URL builder ───────────────────────────────────────────────────────────
@@ -173,6 +198,7 @@ function BacklinkForm({
     cost_currency: initial.cost_currency ?? 'USD',
     live_date: initial.live_date ?? '',
     notes: initial.notes ?? '',
+    target_country: initial.target_country ?? 'global',
     utm_source: initial.utm_source ?? '',
     utm_medium: initial.utm_medium ?? 'referral',
     utm_campaign: initial.utm_campaign ?? '',
@@ -194,12 +220,27 @@ function BacklinkForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         <div>
           <label className="block text-gray-400 text-xs font-medium mb-1">Site name *</label>
           <input value={form.site_name} onChange={e => setForm(f => ({ ...f, site_name: e.target.value }))}
             placeholder="e.g. IGN, PCGamer Blog"
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-red-500" />
+        </div>
+        <div>
+          <label className="block text-gray-400 text-xs font-medium mb-1">Target country</label>
+          <select
+            value={form.target_country}
+            onChange={e => {
+              const country = countryMeta(e.target.value)
+              setForm(f => ({ ...f, target_country: e.target.value, cost_currency: country.currency }))
+            }}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
+          >
+            {COUNTRIES.map(c => (
+              <option key={c.code} value={c.code}>{c.flag} {c.label}</option>
+            ))}
+          </select>
         </div>
         <div>
           <label className="block text-gray-400 text-xs font-medium mb-1">Live date</label>
@@ -360,12 +401,13 @@ export default function BacklinksPage() {
   const [analyticsTotals, setAnalyticsTotals] = useState<{ sessions: number | null; conversions: number | null } | null>(null)
 
   // ── Filter + sort state ───────────────────────────────────────────────────
-  const [search,       setSearch]       = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'broken' | 'pending'>('all')
-  const [dateFrom,     setDateFrom]     = useState('')
-  const [dateTo,       setDateTo]       = useState('')
-  const [sortKey,      setSortKey]      = useState<SortKey>('live_date')
-  const [sortDir,      setSortDir]      = useState<'asc' | 'desc'>('desc')
+  const [search,        setSearch]        = useState('')
+  const [statusFilter,  setStatusFilter]  = useState<'all' | 'active' | 'broken' | 'pending'>('all')
+  const [countryFilter, setCountryFilter] = useState('all')
+  const [dateFrom,      setDateFrom]      = useState('')
+  const [dateTo,        setDateTo]        = useState('')
+  const [sortKey,       setSortKey]       = useState<SortKey>('live_date')
+  const [sortDir,       setSortDir]       = useState<'asc' | 'desc'>('desc')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -478,6 +520,9 @@ export default function BacklinksPage() {
     // Status filter
     if (statusFilter !== 'all') list = list.filter(b => b.link_status === statusFilter)
 
+    // Country filter
+    if (countryFilter !== 'all') list = list.filter(b => (b.target_country ?? 'global') === countryFilter)
+
     // Date range (live_date)
     if (dateFrom) list = list.filter(b => b.live_date && b.live_date >= dateFrom)
     if (dateTo)   list = list.filter(b => b.live_date && b.live_date <= dateTo)
@@ -502,14 +547,14 @@ export default function BacklinksPage() {
       }
       return sortDir === 'asc' ? diff : -diff
     })
-  }, [backlinks, search, statusFilter, dateFrom, dateTo, sortKey, sortDir, analyticsMap])
+  }, [backlinks, search, statusFilter, countryFilter, dateFrom, dateTo, sortKey, sortDir, analyticsMap])
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortKey(key); setSortDir('desc') }
   }
 
-  const hasFilters = search || statusFilter !== 'all' || dateFrom || dateTo
+  const hasFilters = search || statusFilter !== 'all' || countryFilter !== 'all' || dateFrom || dateTo
 
   return (
     <div className="p-8 min-h-screen">
@@ -673,6 +718,18 @@ export default function BacklinksPage() {
                   <option value="pending">🟡 Pending</option>
                 </select>
 
+                {/* Country filter */}
+                <select
+                  value={countryFilter}
+                  onChange={e => setCountryFilter(e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-500"
+                >
+                  <option value="all">All countries</option>
+                  {COUNTRIES.map(c => (
+                    <option key={c.code} value={c.code}>{c.flag} {c.label}</option>
+                  ))}
+                </select>
+
                 {/* Date range */}
                 <div className="flex items-center gap-1.5">
                   <input
@@ -695,7 +752,7 @@ export default function BacklinksPage() {
                 {/* Clear filters */}
                 {hasFilters && (
                   <button
-                    onClick={() => { setSearch(''); setStatusFilter('all'); setDateFrom(''); setDateTo('') }}
+                    onClick={() => { setSearch(''); setStatusFilter('all'); setCountryFilter('all'); setDateFrom(''); setDateTo('') }}
                     className="text-xs text-gray-500 hover:text-white transition"
                   >
                     Clear filters
@@ -747,7 +804,7 @@ export default function BacklinksPage() {
           ) : visibleBacklinks.length === 0 && hasFilters ? (
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
               <p className="text-gray-500 text-sm">No backlinks match the current filters.</p>
-              <button onClick={() => { setSearch(''); setStatusFilter('all'); setDateFrom(''); setDateTo('') }}
+              <button onClick={() => { setSearch(''); setStatusFilter('all'); setCountryFilter('all'); setDateFrom(''); setDateTo('') }}
                 className="text-xs text-red-400 hover:text-red-300 mt-2 transition">Clear filters</button>
             </div>
           ) : (
@@ -775,6 +832,11 @@ export default function BacklinksPage() {
                           bl.link_status === 'broken'  ? 'text-red-400 bg-red-500/10 border-red-500/20' :
                           'text-yellow-400 bg-yellow-500/10 border-yellow-500/20'
                         }`}>{bl.link_status}</span>
+                        {(() => { const c = countryMeta(bl.target_country ?? 'global'); return c.code !== 'global' ? (
+                          <span className="text-xs px-2 py-0.5 rounded-full border text-gray-300 bg-gray-800 border-gray-700">
+                            {c.flag} {c.label}
+                          </span>
+                        ) : null })()}
                         {bl.cost_amount && (
                           <span className="text-xs text-gray-500">{bl.cost_currency} {bl.cost_amount.toFixed(0)}</span>
                         )}
