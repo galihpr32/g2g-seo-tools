@@ -1,6 +1,6 @@
 import { getDomainKeywords, clusterKeywords } from '@/lib/semrush/client'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 3600
 
 const TARGET_DOMAIN = 'g2g.com'
 const DB = 'id'

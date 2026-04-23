@@ -2,7 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import Link from 'next/link'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 30
 
 const STALE_DAYS    = 7
 const ETA_WARN_DAYS = 3   // warn if ETA is within this many days

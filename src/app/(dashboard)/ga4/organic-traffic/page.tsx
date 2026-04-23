@@ -4,7 +4,7 @@ import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getGA4OrganicTraffic, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
 import TopPagesTableClient from './TopPagesTableClient'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 1800
 
 export default async function OrganicTrafficPage() {
   const supabase = await createClient()

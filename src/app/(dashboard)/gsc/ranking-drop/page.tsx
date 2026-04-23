@@ -5,7 +5,7 @@ import { getSearchAnalytics, getDateRange, detectRankingDrops } from '@/lib/gsc/
 import { RankingDropTable } from './RankingDropTable'
 import type { PageDropWithQueries } from './RankingDropTable'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 1800
 
 // ── URL pre-filter — only fetch query data for relevant pages ─────────────────
 // Change these to adjust which pages are tracked (applies to UI defaults + alerts)

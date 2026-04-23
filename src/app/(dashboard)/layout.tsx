@@ -1,5 +1,4 @@
-export const dynamic = 'force-dynamic'
-
+// Auth uses cookies → implicitly dynamic, no need to force it explicitly
 import DashboardShell from '@/components/dashboard/DashboardShell'
 import { createClient } from '@/lib/supabase/server'
 import { getWorkspaceRole } from '@/lib/workspace'

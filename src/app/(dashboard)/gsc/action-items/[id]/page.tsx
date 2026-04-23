@@ -3,7 +3,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 import { notFound } from 'next/navigation'
 import { BriefViewer } from './BriefViewer'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 60
 
 export default async function ActionItemBriefPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params

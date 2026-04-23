@@ -3,7 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { ActionItemsTable, type ActionItem, type BriefSummary } from './ActionItemsTable'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 60
 
 export default async function ActionItemsPage({
   searchParams,

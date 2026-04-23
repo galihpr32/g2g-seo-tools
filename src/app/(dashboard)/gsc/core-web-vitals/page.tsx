@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 3600
 
 function CWVBar({ good, ni, poor, label }: { good: number; ni: number; poor: number; label: string }) {
   const total = good + ni + poor || 1

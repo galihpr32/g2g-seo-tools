@@ -3,7 +3,7 @@ import { SERP_COUNTRIES } from '@/lib/country-config'
 import { CountryPicker } from './CountryPicker'
 import { Suspense } from 'react'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 3600
 
 const TARGET_DOMAIN = 'g2g.com'
 

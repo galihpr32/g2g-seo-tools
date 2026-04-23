@@ -4,7 +4,7 @@ import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getGA4ContentPerformance, parseGA4Rows } from '@/lib/ga4/client'
 import ContentPagesClient from './ContentPagesClient'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 1800
 
 export default async function ContentPerformancePage() {
   const supabase = await createClient()

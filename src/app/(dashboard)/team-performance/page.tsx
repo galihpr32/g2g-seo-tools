@@ -3,7 +3,7 @@ import { getEffectiveOwnerId, canSeeTeamPerformance } from '@/lib/workspace'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 300
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type RawItem = {

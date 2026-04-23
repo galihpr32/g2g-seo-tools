@@ -1,4 +1,4 @@
-export const dynamic = 'force-dynamic'
+export const revalidate = 3600
 
 export default function SiteAuditPage() {
   const hasKey = !!process.env.SEMRUSH_API_KEY
