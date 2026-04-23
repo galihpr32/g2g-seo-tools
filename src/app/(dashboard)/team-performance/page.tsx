@@ -216,6 +216,24 @@ export default async function TeamPerformancePage() {
     })
   }
 
+  // Add zero-stat entries for workspace members who have no action items assigned
+  const statsEmails = new Set(stats.map(s => s.email))
+  for (const m of members) {
+    if (!m.member_email || statsEmails.has(m.member_email)) continue
+    stats.push({
+      email:               m.member_email,
+      total:               0,
+      pending:             0,
+      in_progress:         0,
+      done:                0,
+      stale:               0,
+      completion_rate:     0,
+      briefs_published:    0,
+      avg_completion_days: null,
+      weekly_velocity:     Array(8).fill(0),
+    })
+  }
+
   // Sort: by total desc
   stats.sort((a, b) => b.total - a.total)
 

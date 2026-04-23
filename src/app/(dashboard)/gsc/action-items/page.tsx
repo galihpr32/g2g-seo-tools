@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { ActionItemsTable, type ActionItem, type BriefSummary } from './ActionItemsTable'
 
@@ -74,6 +75,20 @@ export default async function ActionItemsPage({
     }
   }
 
+  // ── Fetch workspace members for assignee dropdown ─────────────────────────
+  const workspaceMembers: { email: string; role: string }[] = []
+  if (effectiveOwnerId) {
+    const db = createServiceClient()
+    const { data: members } = await db
+      .from('workspace_members')
+      .select('member_email, role')
+      .eq('owner_user_id', effectiveOwnerId)
+      .eq('status', 'active')
+    for (const m of members ?? []) {
+      if (m.member_email) workspaceMembers.push({ email: m.member_email, role: m.role })
+    }
+  }
+
   const pendingCount    = items.filter(i => i.status === 'pending').length
   const inProgressCount = items.filter(i => i.status === 'in_progress').length
   const briefCount      = Object.keys(briefSummaries).length
@@ -122,6 +137,7 @@ export default async function ActionItemsPage({
           items={items}
           briefSummaries={briefSummaries}
           currentUserEmail={user?.email ?? ''}
+          workspaceMembers={workspaceMembers}
           pagination={{
             page,
             limit,

@@ -58,10 +58,18 @@ function initials(email: string) {
   return parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || (email[0]?.toUpperCase() ?? '?')
 }
 
+function avatarColor(email: string) {
+  const colors = ['bg-indigo-600','bg-purple-600','bg-pink-600','bg-rose-600','bg-orange-600','bg-teal-600','bg-cyan-600','bg-blue-600']
+  let hash = 0
+  for (const ch of email) hash = (hash * 31 + ch.charCodeAt(0)) % colors.length
+  return colors[hash]
+}
+
 // ─── Assignee Popover ─────────────────────────────────────────────────────────
-function AssigneePopover({ item, currentUserEmail, onAssigned, onClose }: {
+function AssigneePopover({ item, currentUserEmail, workspaceMembers, onAssigned, onClose }: {
   item: ActionItem
   currentUserEmail: string
+  workspaceMembers: { email: string; role: string }[]
   onAssigned: (email: string) => void
   onClose: () => void
 }) {
@@ -98,13 +106,17 @@ function AssigneePopover({ item, currentUserEmail, onAssigned, onClose }: {
     }
   }
 
+  // All members to show — current user first, then others (excluding duplicates)
+  const otherMembers = workspaceMembers.filter(m => m.email !== currentUserEmail)
+
   return (
     <div
       ref={ref}
-      className="absolute right-0 top-full mt-1 z-30 bg-gray-800 border border-gray-600 rounded-xl shadow-2xl p-3 w-60"
+      className="absolute right-0 top-full mt-1 z-30 bg-gray-800 border border-gray-600 rounded-xl shadow-2xl p-3 w-64"
     >
       <p className="text-xs text-gray-400 mb-2 font-medium">Assign to</p>
 
+      {/* Current user */}
       {currentUserEmail && (
         <button
           onClick={() => assign(currentUserEmail)}
@@ -114,10 +126,30 @@ function AssigneePopover({ item, currentUserEmail, onAssigned, onClose }: {
           <span className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0">
             {initials(currentUserEmail)}
           </span>
-          Assign to me
+          <span className="truncate">{currentUserEmail.split('@')[0]}</span>
+          <span className="ml-auto text-gray-500 text-[10px] flex-shrink-0">me</span>
         </button>
       )}
 
+      {/* Workspace members */}
+      {otherMembers.map(m => (
+        <button
+          key={m.email}
+          onClick={() => assign(m.email)}
+          disabled={saving}
+          className="w-full text-left text-xs px-3 py-2 rounded-lg hover:bg-gray-700 text-gray-200 transition mb-1 flex items-center gap-2 disabled:opacity-50"
+        >
+          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white flex-shrink-0 ${avatarColor(m.email)}`}>
+            {initials(m.email)}
+          </span>
+          <span className="truncate">{m.email.split('@')[0]}</span>
+          {m.role === 'manager' && (
+            <span className="ml-auto text-purple-400 text-[10px] flex-shrink-0">mgr</span>
+          )}
+        </button>
+      ))}
+
+      {/* Manual email fallback */}
       <div className="mt-2 border-t border-gray-700 pt-2">
         <input
           type="email"
@@ -334,11 +366,13 @@ export function ActionItemsTable({
   items: initialItems,
   briefSummaries: initialBriefSummaries,
   currentUserEmail,
+  workspaceMembers = [],
   pagination,
 }: {
   items: ActionItem[]
   briefSummaries: Record<string, BriefSummary>
   currentUserEmail: string
+  workspaceMembers?: { email: string; role: string }[]
   pagination: Pagination
 }) {
   const router   = useRouter()
@@ -930,6 +964,7 @@ export function ActionItemsTable({
                           <AssigneePopover
                             item={item}
                             currentUserEmail={currentUserEmail}
+                            workspaceMembers={workspaceMembers}
                             onAssigned={email => {
                               setItems(prev => prev.map(i =>
                                 i.id === item.id ? { ...i, assigned_to: email } : i
