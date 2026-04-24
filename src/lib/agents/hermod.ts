@@ -33,7 +33,7 @@ export async function runHermod(
       .limit(10)
 
     if (!gapActions?.length) {
-      const summary = 'No recent Intel Bakso keyword gaps to work with. Run Intel Bakso first.'
+      const summary = 'No recent Loki keyword gaps to work with. Run Loki first.'
       await _finishRun(db, runId, ownerId, 'success', summary, 0, 0)
       return { summary, actionsQueued: 0 }
     }
@@ -84,19 +84,27 @@ export async function runHermod(
       if (!keyword || processedKeywords.has(keyword)) continue
       processedKeywords.add(keyword)
 
-      // 4a. Find sites ranking for this keyword from SERP snapshots
-      const { data: serpRows } = await db
+      // 4a. Find sites ranking for this keyword from SERP snapshots.
+      // serp_snapshots stores results as jsonb array: [{domain, position, url, title}]
+      // We fetch the most recent snapshot for this keyword and flatten in JS.
+      const { data: serpSnaps } = await db
         .from('serp_snapshots')
-        .select('domain, position')
+        .select('results')
+        .eq('owner_user_id', ownerId)
         .ilike('keyword', keyword)
-        .lte('position', 15)
-        .order('position', { ascending: true })
-        .limit(10)
+        .order('snapshot_date', { ascending: false })
+        .limit(1)
 
-      // 4b. Candidates: SERP snapshot sites + the competitor Intel Bakso found
+      type SerpResult = { domain: string; position: number }
+      const serpRows: SerpResult[] = ((serpSnaps?.[0]?.results ?? []) as SerpResult[])
+        .filter(r => r.domain && r.position <= 15)
+        .sort((a, b) => a.position - b.position)
+        .slice(0, 10)
+
+      // 4b. Candidates: SERP snapshot sites + the competitor Loki found
       const candidateDomains: { domain: string; position: number; source: string }[] = []
 
-      for (const row of serpRows ?? []) {
+      for (const row of serpRows) {
         if (row.domain && !skipDomains.has(row.domain)) {
           candidateDomains.push({ domain: row.domain, position: row.position, source: 'serp' })
         }

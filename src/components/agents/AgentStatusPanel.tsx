@@ -46,6 +46,24 @@ const AGENT_EMOJI: Record<string, string> = {
   'hermod': '🤝',
 }
 
+// Button label when idle (start state)
+const AGENT_START_LABEL: Record<string, string> = {
+  'heimdall': 'Start Patrolling',
+  'odin':     'Seek Trends',
+  'loki':     'Gather Intel',
+  'bragi':    'Start Writing',
+  'hermod':   'Find Prospect',
+}
+
+// Button label while the agent is actively running
+const AGENT_RUNNING_LABEL: Record<string, string> = {
+  'heimdall': 'Patrolling...',
+  'odin':     'Trend Surfing...',
+  'loki':     'Spying...',
+  'bragi':    'Writing...',
+  'hermod':   'Reaching Out...',
+}
+
 interface AgentStatusPanelProps {
   userId: string
 }
@@ -171,7 +189,9 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
   const statusIcon = (s: string | null) =>
     s === 'success' ? '✅' : s === 'error' ? '❌' : s === 'running' ? '⏳' : '—'
 
-  if (loading) {
+  // Only show full loading screen on the very first fetch (status === null).
+  // Subsequent auto-refreshes keep the existing cards visible — no blipping.
+  if (loading && !status) {
     return (
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center">
         <p className="text-gray-400 text-sm">Loading agents...</p>
@@ -235,9 +255,11 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
                   <button
                     onClick={() => handleRunAgent(key)}
                     disabled={isRunning}
-                    className="px-4 py-2 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-50"
+                    className="px-4 py-2 rounded text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-50 whitespace-nowrap"
                   >
-                    {isRunning ? 'Running...' : 'Run Now'}
+                    {isRunning
+                      ? (AGENT_RUNNING_LABEL[key] ?? 'Running...')
+                      : (AGENT_START_LABEL[key]   ?? 'Run Now')}
                   </button>
                 )}
               </div>
@@ -246,7 +268,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
             {/* Settings panel — Pak RT */}
             {settingsOpen && key === 'heimdall' && (
               <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
-                <p className="text-xs text-gray-400 mb-3 font-medium uppercase tracking-wider">Pak RT Settings</p>
+                <p className="text-xs text-gray-400 mb-3 font-medium uppercase tracking-wider">Heimdall Settings</p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   {/* Max drops per day */}
                   <div>
