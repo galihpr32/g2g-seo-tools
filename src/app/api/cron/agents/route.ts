@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
-import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt'
-import { runMasGacor } from '@/lib/agents/mas-gacor'
-import { runIntelBakso } from '@/lib/agents/intel-bakso'
-import { runAnakIntern } from '@/lib/agents/anak-intern'
+import { runHeimdall, HEIMDALL_DEFAULTS, type HeimdallConfig } from '@/lib/agents/heimdall'
+import { runOdin } from '@/lib/agents/odin'
+import { runLoki } from '@/lib/agents/loki'
+import { runBragi } from '@/lib/agents/bragi'
 
 export const maxDuration = 300
 
@@ -13,10 +13,10 @@ export const maxDuration = 300
 // The `agent` query param picks which agent to run.
 //
 // vercel.json crons:
-//   0 1 * * *     /api/cron/agents?agent=pak-rt      (pak-rt — daily 01:00 UTC)
-//   0 2 * * *     /api/cron/agents?agent=mas-gacor   (mas-gacor — daily 02:00 UTC)
-//   0 3 * * 1     /api/cron/agents?agent=intel-bakso  (intel-bakso — weekly Mon 03:00 UTC)
-//   0 4 * * 1     /api/cron/agents?agent=anak-intern  (anak-intern — weekly Mon 04:00 UTC)
+//   0 1 * * *     /api/cron/agents?agent=heimdall  (heimdall — daily 01:00 UTC)
+//   0 2 * * *     /api/cron/agents?agent=odin       (odin — daily 02:00 UTC)
+//   0 3 * * 1     /api/cron/agents?agent=loki       (loki — weekly Mon 03:00 UTC)
+//   0 4 * * 1     /api/cron/agents?agent=bragi      (bragi — weekly Mon 04:00 UTC)
 
 function verifyAuth(request: Request) {
   const authHeader = request.headers.get('authorization')
@@ -29,7 +29,7 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url)
-  const agentKey = searchParams.get('agent') ?? 'pak-rt'
+  const agentKey = searchParams.get('agent') ?? 'heimdall'
   const siteSlug = searchParams.get('site') ?? 'g2g'
 
   const db = createSupabase(
@@ -92,19 +92,19 @@ export async function GET(request: Request) {
       const savedConfig = ownerConfigMap.get(ownerId) ?? {}
       let result: { summary: string; actionsQueued: number }
 
-      if (agentKey === 'pak-rt') {
-        const config: Partial<PakRTConfig> = {
-          maxDropsPerDay: typeof savedConfig.maxDropsPerDay === 'number' ? savedConfig.maxDropsPerDay : PAK_RT_DEFAULTS.maxDropsPerDay,
-          minClicksDrop:  typeof savedConfig.minClicksDrop  === 'number' ? savedConfig.minClicksDrop  : PAK_RT_DEFAULTS.minClicksDrop,
-          minPctDrop:     typeof savedConfig.minPctDrop     === 'number' ? savedConfig.minPctDrop     : PAK_RT_DEFAULTS.minPctDrop,
+      if (agentKey === 'heimdall') {
+        const config: Partial<HeimdallConfig> = {
+          maxDropsPerDay: typeof savedConfig.maxDropsPerDay === 'number' ? savedConfig.maxDropsPerDay : HEIMDALL_DEFAULTS.maxDropsPerDay,
+          minClicksDrop:  typeof savedConfig.minClicksDrop  === 'number' ? savedConfig.minClicksDrop  : HEIMDALL_DEFAULTS.minClicksDrop,
+          minPctDrop:     typeof savedConfig.minPctDrop     === 'number' ? savedConfig.minPctDrop     : HEIMDALL_DEFAULTS.minPctDrop,
         }
-        result = await runPakRT(ownerId, siteSlug, runId, config)
-      } else if (agentKey === 'mas-gacor') {
-        result = await runMasGacor(ownerId, siteSlug, runId)
-      } else if (agentKey === 'intel-bakso') {
-        result = await runIntelBakso(ownerId, siteSlug, runId)
-      } else if (agentKey === 'anak-intern') {
-        result = await runAnakIntern(ownerId, siteSlug, runId)
+        result = await runHeimdall(ownerId, siteSlug, runId, config)
+      } else if (agentKey === 'odin') {
+        result = await runOdin(ownerId, siteSlug, runId)
+      } else if (agentKey === 'loki') {
+        result = await runLoki(ownerId, siteSlug, runId)
+      } else if (agentKey === 'bragi') {
+        result = await runBragi(ownerId, siteSlug, runId)
       } else {
         results[ownerId] = { status: 'skipped', reason: `Agent ${agentKey} not in cron` }
         continue

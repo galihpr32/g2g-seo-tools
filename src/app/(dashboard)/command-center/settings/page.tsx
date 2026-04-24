@@ -22,14 +22,14 @@ interface AgentRow {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const IMPLEMENTED = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok']
+const IMPLEMENTED = ['heimdall', 'odin', 'loki', 'bragi', 'hermod']
 
 const AGENT_META: Record<string, { label: string; emoji: string; role: string; defaultFreq: 'daily'|'weekly'; defaultDay: number; defaultHour: number }> = {
-  'pak-rt':      { label: 'Pak RT',       emoji: '🔍', role: 'Watchdog — ranking drops',             defaultFreq: 'daily',  defaultDay: 1, defaultHour: 9 },
-  'mas-gacor':   { label: 'Mas Gacor',    emoji: '📈', role: 'Trend Spotter — game trends',          defaultFreq: 'daily',  defaultDay: 1, defaultHour: 10 },
-  'intel-bakso': { label: 'Intel Bakso',  emoji: '🕵️', role: 'Competitive Intel — keyword gaps',     defaultFreq: 'weekly', defaultDay: 1, defaultHour: 11 },
-  'anak-intern': { label: 'Anak Intern',  emoji: '✍️', role: 'Content Drafter — brief drafts',       defaultFreq: 'weekly', defaultDay: 1, defaultHour: 12 },
-  'kang-cilok':  { label: 'Kang Cilok',   emoji: '🤝', role: 'Outreach Agent — finds link prospects', defaultFreq: 'weekly', defaultDay: 2, defaultHour: 13 },
+  'heimdall':      { label: 'Heimdall',       emoji: '🔍', role: 'Watchdog — ranking drops',             defaultFreq: 'daily',  defaultDay: 1, defaultHour: 9 },
+  'odin':         { label: 'Odin',    emoji: '📈', role: 'Trend Spotter — game trends',          defaultFreq: 'daily',  defaultDay: 1, defaultHour: 10 },
+  'loki':         { label: 'Loki',  emoji: '🕵️', role: 'Competitive Intel — keyword gaps',     defaultFreq: 'weekly', defaultDay: 1, defaultHour: 11 },
+  'bragi':        { label: 'Bragi',  emoji: '✍️', role: 'Content Drafter — brief drafts',       defaultFreq: 'weekly', defaultDay: 1, defaultHour: 12 },
+  'hermod':       { label: 'Hermod',   emoji: '🤝', role: 'Outreach Agent — finds link prospects', defaultFreq: 'weekly', defaultDay: 2, defaultHour: 13 },
 }
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']

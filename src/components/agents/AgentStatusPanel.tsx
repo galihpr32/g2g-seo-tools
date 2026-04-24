@@ -23,27 +23,27 @@ interface PakRTConfig {
 }
 
 const AGENT_NAMES: Record<string, string> = {
-  'pak-rt': 'Pak RT',
-  'mas-gacor': 'Mas Gacor',
-  'intel-bakso': 'Intel Bakso',
-  'anak-intern': 'Anak Intern',
-  'kang-cilok': 'Kang Cilok',
+  'heimdall': 'Heimdall',
+  'odin': 'Odin',
+  'loki': 'Loki',
+  'bragi': 'Bragi',
+  'hermod': 'Hermod',
 }
 
 const AGENT_ROLES: Record<string, string> = {
-  'pak-rt': 'Watchdog — detects ranking drops & triages',
-  'mas-gacor': 'Trend Spotter — finds trending games & suggests content',
-  'intel-bakso': 'Competitive Intel — keyword gaps, SOV, competitor pages',
-  'anak-intern': 'Content Drafter — turns approved trends & gaps into brief drafts',
-  'kang-cilok': 'Outreach Agent — finds prospects from keyword gaps, drafts pitches',
+  'heimdall': 'Watchdog — detects ranking drops & triages',
+  'odin': 'Trend Spotter — finds trending games & suggests content',
+  'loki': 'Competitive Intel — keyword gaps, SOV, competitor pages',
+  'bragi': 'Content Drafter — turns approved trends & gaps into brief drafts',
+  'hermod': 'Outreach Agent — finds prospects from keyword gaps, drafts pitches',
 }
 
 const AGENT_EMOJI: Record<string, string> = {
-  'pak-rt': '🔍',
-  'mas-gacor': '📈',
-  'intel-bakso': '🕵️',
-  'anak-intern': '✍️',
-  'kang-cilok': '🤝',
+  'heimdall': '👁️',
+  'odin': '🔮',
+  'loki': '🕵️',
+  'bragi': '✍️',
+  'hermod': '🤝',
 }
 
 interface AgentStatusPanelProps {
@@ -80,7 +80,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
 
   const fetchPakRTConfig = async () => {
     try {
-      const res = await fetch('/api/agents/pak-rt/config')
+      const res = await fetch('/api/agents/heimdall/config')
       if (!res.ok) return
       const data = await res.json() as { config: Partial<PakRTConfig> }
       if (data.config && Object.keys(data.config).length > 0) {
@@ -142,7 +142,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
   const handleSavePakRTConfig = async () => {
     setSavingConfig(true)
     try {
-      await fetch('/api/agents/pak-rt/config', {
+      await fetch('/api/agents/heimdall/config', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ config: pakRTConfig }),
@@ -156,7 +156,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
-  const allAgents = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok']
+  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod']
   const agentMap = new Map((status?.agents || []).map(a => [a.key, a]))
 
   const formatTimeAgo = (iso: string | null) => {
@@ -184,7 +184,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
       {allAgents.map(key => {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
-        const isImplemented = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok'].includes(key)
+        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod'].includes(key)
         const isRunning = running.has(key)
         const settingsOpen = expandedSettings === key
 
@@ -222,7 +222,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
 
               <div className="flex items-center gap-2 flex-shrink-0 ml-4">
                 {/* Settings gear — only for implemented agents */}
-                {isImplemented && key === 'pak-rt' && (
+                {isImplemented && key === 'heimdall' && (
                   <button
                     onClick={() => setExpandedSettings(settingsOpen ? null : key)}
                     className={`p-2 rounded text-sm transition ${settingsOpen ? 'text-white bg-gray-700' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
@@ -244,7 +244,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
             </div>
 
             {/* Settings panel — Pak RT */}
-            {settingsOpen && key === 'pak-rt' && (
+            {settingsOpen && key === 'heimdall' && (
               <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
                 <p className="text-xs text-gray-400 mb-3 font-medium uppercase tracking-wider">Pak RT Settings</p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">

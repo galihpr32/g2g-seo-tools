@@ -1,18 +1,22 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { getDomainKeywords } from '@/lib/semrush/client'
+import { createServiceClient } from '@/lib/supabase/service'
+import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getDomainRankedKeywords } from '@/lib/dataforseo/client'
 
 export const maxDuration = 30
 
 /**
  * POST /api/competitive/keyword-gap
- * Body: { competitor_domain: string, database: string, limit?: number }
+ * Body: { competitor_domain: string, location_code?: number, language_code?: string, limit?: number }
  *
- * Fetches organic keywords for both G2G and the competitor from SEMrush,
- * then returns three buckets:
+ * Fetches organic keywords for both G2G and the competitor via DataForSEO,
+ * applies keyword exclusion filters (brand names, etc.), then returns three buckets:
  *   - gaps:    competitor ranks top 30, G2G doesn't rank at all
  *   - behind:  both rank, but competitor is significantly ahead (diff >= 10)
  *   - winning: G2G ranks and competitor doesn't (or G2G is ahead)
+ *
+ * Also returns excluded_count so the UI can show how many were filtered.
  */
 export async function POST(req: Request) {
   const supabase = await createClient()
@@ -20,7 +24,12 @@ export async function POST(req: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json().catch(() => ({}))
-  const { competitor_domain, database = 'us', limit = 500 } = body
+  const {
+    competitor_domain,
+    location_code = 2840,  // default: United States
+    language_code = 'en',
+    limit = 500,
+  } = body
 
   if (!competitor_domain?.trim()) {
     return NextResponse.json({ error: 'competitor_domain is required' }, { status: 400 })
@@ -28,15 +37,37 @@ export async function POST(req: Request) {
 
   const G2G_DOMAIN = 'g2g.com'
 
+  // Load keyword exclusions for this user
+  const db = createServiceClient()
+  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+
+  const { data: exclusionRows } = await db
+    .from('keyword_exclusions')
+    .select('pattern, match_type')
+    .eq('owner_user_id', ownerId)
+
+  const exclusions = exclusionRows ?? []
+
+  function isExcluded(keyword: string): boolean {
+    const kw = keyword.toLowerCase()
+    for (const { pattern, match_type } of exclusions) {
+      const p = pattern.toLowerCase()
+      if (match_type === 'exact'       && kw === p)          return true
+      if (match_type === 'starts_with' && kw.startsWith(p))  return true
+      if (match_type === 'contains'    && kw.includes(p))    return true
+    }
+    return false
+  }
+
   try {
-    // Fetch both domains in parallel — SEMrush domain_organic
+    // Fetch both domains in parallel via DataForSEO
     const [g2gKws, competitorKws] = await Promise.all([
-      getDomainKeywords(G2G_DOMAIN, database, limit),
-      getDomainKeywords(competitor_domain.trim(), database, limit),
+      getDomainRankedKeywords(G2G_DOMAIN, location_code, language_code, limit),
+      getDomainRankedKeywords(competitor_domain.trim(), location_code, language_code, limit),
     ])
 
-    // Build lookup maps: keyword → {position, url, searchVolume, cpc}
-    const g2gMap = new Map(g2gKws.map(k => [k.keyword.toLowerCase(), k]))
+    // Build lookup maps: keyword → {position, url, volume}
+    const g2gMap  = new Map(g2gKws.map(k => [k.keyword.toLowerCase(), k]))
     const compMap = new Map(competitorKws.map(k => [k.keyword.toLowerCase(), k]))
 
     type GapRow = {
@@ -53,59 +84,67 @@ export async function POST(req: Request) {
     const gaps: GapRow[]    = []
     const behind: GapRow[]  = []
     const winning: GapRow[] = []
+    let excluded_count = 0
 
     // Iterate competitor keywords
     for (const [kw, compData] of compMap) {
-      if (compData.position > 30) continue  // only care about top 30 comp positions
+      if ((compData.position ?? 999) > 30) continue
+
+      if (isExcluded(kw)) { excluded_count++; continue }
 
       const g2gData = g2gMap.get(kw)
       const row: GapRow = {
         keyword:             kw,
-        searchVolume:        compData.searchVolume,
-        cpc:                 compData.cpc,
+        searchVolume:        compData.volume ?? 0,
+        cpc:                 0,
         g2g_position:        g2gData?.position ?? null,
-        competitor_position: compData.position,
-        position_diff:       g2gData ? (g2gData.position - compData.position) : null,
+        competitor_position: compData.position ?? null,
+        position_diff:       g2gData && compData.position
+          ? (g2gData.position - compData.position) : null,
         g2g_url:             g2gData?.url ?? null,
-        competitor_url:      compData.url,
+        competitor_url:      compData.url ?? null,
       }
 
       if (!g2gData) {
-        gaps.push(row)      // G2G doesn't rank at all
-      } else if (g2gData.position - compData.position >= 10) {
-        behind.push(row)    // G2G is 10+ positions behind
-      } else if (g2gData.position < compData.position) {
-        winning.push(row)   // G2G is winning this keyword
+        gaps.push(row)
+      } else if (g2gData.position - (compData.position ?? 0) >= 10) {
+        behind.push(row)
+      } else if (g2gData.position < (compData.position ?? 999)) {
+        winning.push(row)
       }
     }
 
-    // Also find keywords G2G ranks for that competitor doesn't (within top 30)
+    // Keywords G2G ranks for that competitor doesn't (within top 30)
     for (const [kw, g2gData] of g2gMap) {
-      if (g2gData.position > 30) continue
-      if (!compMap.has(kw)) {
-        winning.push({
-          keyword:             kw,
-          searchVolume:        g2gData.searchVolume,
-          cpc:                 g2gData.cpc,
-          g2g_position:        g2gData.position,
-          competitor_position: null,
-          position_diff:       null,
-          g2g_url:             g2gData.url,
-          competitor_url:      null,
-        })
-      }
+      if ((g2gData.position ?? 999) > 30) continue
+      if (compMap.has(kw)) continue
+      if (isExcluded(kw)) { excluded_count++; continue }
+
+      winning.push({
+        keyword:             kw,
+        searchVolume:        g2gData.volume ?? 0,
+        cpc:                 0,
+        g2g_position:        g2gData.position ?? null,
+        competitor_position: null,
+        position_diff:       null,
+        g2g_url:             g2gData.url ?? null,
+        competitor_url:      null,
+      })
     }
 
-    // Sort each bucket by search volume desc
+    // Sort each bucket
     const byVolume = (a: GapRow, b: GapRow) => b.searchVolume - a.searchVolume
     gaps.sort(byVolume)
-    behind.sort((a, b) => (b.position_diff ?? 0) - (a.position_diff ?? 0))  // biggest gap first
+    behind.sort((a, b) => (b.position_diff ?? 0) - (a.position_diff ?? 0))
     winning.sort(byVolume)
 
     return NextResponse.json({
       competitor_domain: competitor_domain.trim(),
       g2g_domain: G2G_DOMAIN,
-      database,
+      location_code,
+      language_code,
+      excluded_count,
+      exclusions_active: exclusions.length,
       summary: {
         g2g_total: g2gKws.length,
         competitor_total: competitorKws.length,

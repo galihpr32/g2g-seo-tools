@@ -17,19 +17,19 @@ interface AgentAction {
 
 const AGENTS = [
   { key: 'all',        label: 'All',        emoji: '📋' },
-  { key: 'pak-rt',     label: 'Pak RT',     emoji: '🔍' },
-  { key: 'mas-gacor',  label: 'Mas Gacor',  emoji: '📈' },
-  { key: 'intel-bakso',label: 'Intel Bakso',emoji: '🕵️' },
-  { key: 'anak-intern',label: 'Anak Intern',emoji: '✍️' },
-  { key: 'kang-cilok', label: 'Kang Cilok', emoji: '🤝' },
+  { key: 'heimdall',     label: 'Heimdall',     emoji: '🔍' },
+  { key: 'odin',  label: 'Odin',  emoji: '📈' },
+  { key: 'loki',label: 'Loki',emoji: '🕵️' },
+  { key: 'bragi',label: 'Bragi',emoji: '✍️' },
+  { key: 'hermod', label: 'Hermod', emoji: '🤝' },
 ]
 
 const AGENT_BADGE: Record<string, string> = {
-  'pak-rt':      'bg-blue-900/60 text-blue-300 border border-blue-700/40',
-  'mas-gacor':   'bg-green-900/60 text-green-300 border border-green-700/40',
-  'intel-bakso': 'bg-purple-900/60 text-purple-300 border border-purple-700/40',
-  'anak-intern': 'bg-yellow-900/60 text-yellow-300 border border-yellow-700/40',
-  'kang-cilok':  'bg-orange-900/60 text-orange-300 border border-orange-700/40',
+  'heimdall':      'bg-blue-900/60 text-blue-300 border border-blue-700/40',
+  'odin':   'bg-green-900/60 text-green-300 border border-green-700/40',
+  'loki': 'bg-purple-900/60 text-purple-300 border border-purple-700/40',
+  'bragi': 'bg-yellow-900/60 text-yellow-300 border border-yellow-700/40',
+  'hermod':  'bg-orange-900/60 text-orange-300 border border-orange-700/40',
 }
 
 const PRIORITY_CONFIG: Record<string, { label: string; dot: string; text: string }> = {

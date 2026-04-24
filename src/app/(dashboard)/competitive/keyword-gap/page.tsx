@@ -470,6 +470,8 @@ function GapTable({ rows, tab, competitorDomain, selected, onToggle, onToggleAll
   )
 }
 
+interface Exclusion { id: string; pattern: string; match_type: string; source: string; source_domain: string | null }
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function KeywordGapPage() {
   const [competitors, setCompetitors]         = useState<Competitor[]>([])
@@ -477,6 +479,12 @@ export default function KeywordGapPage() {
   const [selectedCompetitor, setCompetitor]   = useState('')
   const [database, setDatabase]               = useState('us')
   const [limit, setLimit]                     = useState('500')
+  // Keyword exclusions
+  const [exclusions, setExclusions]           = useState<Exclusion[]>([])
+  const [showExclusions, setShowExclusions]   = useState(false)
+  const [newPattern, setNewPattern]           = useState('')
+  const [savingExcl, setSavingExcl]           = useState(false)
+  const [exclMsg, setExclMsg]                 = useState<string | null>(null)
   const [loading, setLoading]                 = useState(false)
   const [loadingMeta, setLoadingMeta]         = useState(true)
   const [result, setResult]                   = useState<GapResult | null>(null)
@@ -496,9 +504,10 @@ export default function KeywordGapPage() {
   useEffect(() => {
     async function fetchMeta() {
       try {
-        const [compRes, prodRes] = await Promise.all([
+        const [compRes, prodRes, exclRes] = await Promise.all([
           fetch('/api/competitors'),
           fetch('/api/products'),
+          fetch('/api/keyword-exclusions'),
         ])
         if (compRes.ok) {
           const { competitors } = await compRes.json()
@@ -510,20 +519,77 @@ export default function KeywordGapPage() {
           const { products } = await prodRes.json()
           setTrackedProducts(products.filter((p: TrackedProduct & { active: boolean }) => p.active))
         }
+        if (exclRes.ok) {
+          const { exclusions } = await exclRes.json()
+          setExclusions(exclusions ?? [])
+        }
       } catch { /* silent */ }
       finally { setLoadingMeta(false) }
     }
     fetchMeta()
   }, [])
 
+  async function addExclusion() {
+    if (!newPattern.trim()) return
+    setSavingExcl(true)
+    try {
+      const res = await fetch('/api/keyword-exclusions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pattern: newPattern.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      setExclusions(prev => [...prev, data.exclusion])
+      setNewPattern('')
+      setExclMsg(`✓ "${newPattern.trim()}" added`)
+      setTimeout(() => setExclMsg(null), 2500)
+    } catch (e) { setExclMsg(`⚠ ${String(e)}`) }
+    finally { setSavingExcl(false) }
+  }
+
+  async function autoGenerateFromCompetitors() {
+    setSavingExcl(true)
+    try {
+      const res = await fetch('/api/keyword-exclusions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_from_competitors: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error)
+      // Refresh exclusions list
+      const fresh = await fetch('/api/keyword-exclusions')
+      if (fresh.ok) { const d = await fresh.json(); setExclusions(d.exclusions ?? []) }
+      setExclMsg(`✓ Added ${data.added} brand patterns from ${competitors.length} competitors`)
+      setTimeout(() => setExclMsg(null), 4000)
+    } catch (e) { setExclMsg(`⚠ ${String(e)}`) }
+    finally { setSavingExcl(false) }
+  }
+
+  async function removeExclusion(id: string) {
+    await fetch('/api/keyword-exclusions', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    setExclusions(prev => prev.filter(e => e.id !== id))
+  }
+
   async function runAnalysis() {
     if (!selectedCompetitor) return
     setLoading(true); setError(null); setResult(null); setSelected(new Set())
+    const country = SERP_COUNTRIES.find(c => c.semrushDb === database) ?? SERP_COUNTRIES.find(c => c.code === 'us')!
     try {
       const res = await fetch('/api/competitive/keyword-gap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ competitor_domain: selectedCompetitor, database, limit: parseInt(limit) }),
+        body: JSON.stringify({
+          competitor_domain: selectedCompetitor,
+          location_code: country.dfsLocationCode,
+          language_code: country.dfsLanguageCode,
+          limit: parseInt(limit),
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
@@ -677,23 +743,100 @@ export default function KeywordGapPage() {
             {loading ? '⏳ Analyzing…' : '🔍 Run analysis'}
           </button>
         </div>
-        <p className="text-xs text-gray-600 mt-3">
-          Uses SEMrush <code className="text-gray-500">domain_organic</code> API — fetches top organic keywords for G2G and the competitor, then computes the gap. ~2 SEMrush API units per run.
-        </p>
+        <div className="mt-3 flex items-center justify-between">
+          <p className="text-xs text-gray-600">
+            Uses DataForSEO to fetch top organic keywords for G2G and the competitor, then computes the gap.
+          </p>
+          <button
+            onClick={() => setShowExclusions(e => !e)}
+            className="text-xs text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-1 rounded-lg transition flex items-center gap-1.5 flex-shrink-0"
+          >
+            🚫 Exclusions
+            {exclusions.length > 0 && (
+              <span className="bg-orange-600/70 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{exclusions.length}</span>
+            )}
+            <span>{showExclusions ? '▲' : '▼'}</span>
+          </button>
+        </div>
       </div>
+
+      {/* ── Keyword Exclusion Panel ─────────────────────────────────────────── */}
+      {showExclusions && (
+        <div className="bg-gray-900 border border-orange-500/20 rounded-xl p-5 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-white font-semibold text-sm">🚫 Keyword Exclusion Rules</h3>
+              <p className="text-gray-500 text-xs mt-0.5">
+                Keywords matching these patterns are hidden from all gap analysis results.
+              </p>
+            </div>
+            {competitors.length > 0 && (
+              <button
+                onClick={autoGenerateFromCompetitors}
+                disabled={savingExcl}
+                className="text-xs bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/30 text-orange-300 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+              >
+                ⚡ Auto-generate from {competitors.length} competitor{competitors.length > 1 ? 's' : ''}
+              </button>
+            )}
+          </div>
+
+          {exclMsg && (
+            <p className={`text-xs mb-3 ${exclMsg.startsWith('⚠') ? 'text-red-400' : 'text-green-400'}`}>{exclMsg}</p>
+          )}
+
+          {/* Manual add */}
+          <div className="flex gap-2 mb-4">
+            <input
+              value={newPattern}
+              onChange={e => setNewPattern(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addExclusion()}
+              placeholder="e.g. playerauctions, player auction, eldorado…"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-orange-500"
+            />
+            <button
+              onClick={addExclusion}
+              disabled={savingExcl || !newPattern.trim()}
+              className="bg-orange-600/80 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition"
+            >
+              + Add
+            </button>
+          </div>
+
+          {/* Exclusion list */}
+          {exclusions.length === 0 ? (
+            <p className="text-gray-600 text-xs text-center py-3">No exclusion rules yet. Add manually or auto-generate from competitors.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+              {exclusions.map(ex => (
+                <div key={ex.id} className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-full px-2.5 py-1 text-xs">
+                  <span className="text-gray-300">{ex.pattern}</span>
+                  {ex.source === 'auto' && ex.source_domain && (
+                    <span className="text-gray-600">· {ex.source_domain}</span>
+                  )}
+                  <button
+                    onClick={() => removeExclusion(ex.id)}
+                    className="text-gray-600 hover:text-red-400 transition ml-0.5"
+                  >✕</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-red-400 text-sm">⚠️ {error}</div>
       )}
 
       {loading && (
-        <div className="flex justify-center py-16"><LottieLoader size={90} text="Fetching keywords from SEMrush…" /></div>
+        <div className="flex justify-center py-16"><LottieLoader size={90} text="Fetching keyword rankings…" /></div>
       )}
 
       {result && !loading && (
         <>
           {/* Summary cards */}
-          <div className="grid grid-cols-5 gap-3 mb-6">
+          <div className="grid grid-cols-6 gap-3 mb-6">
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
               <p className="text-2xl font-bold text-white">{result.summary.g2g_total.toLocaleString()}</p>
               <p className="text-xs text-gray-500 mt-1">G2G keywords</p>
@@ -714,6 +857,12 @@ export default function KeywordGapPage() {
               <p className="text-2xl font-bold text-green-400">{result.summary.winning}</p>
               <p className="text-xs text-gray-500 mt-1">G2G winning</p>
             </div>
+            {(result as GapResult & { excluded_count?: number }).excluded_count! > 0 && (
+              <div className="bg-orange-500/5 border border-orange-500/20 rounded-xl p-4 text-center">
+                <p className="text-2xl font-bold text-orange-300">{(result as GapResult & { excluded_count?: number }).excluded_count}</p>
+                <p className="text-xs text-gray-500 mt-1">🚫 Excluded</p>
+              </div>
+            )}
           </div>
 
           {/* Tabs */}

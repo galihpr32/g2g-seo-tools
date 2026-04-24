@@ -17,7 +17,7 @@ export async function GET(req: Request) {
   const days = Math.min(parseInt(searchParams.get('days') ?? '30'), 90)
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 
-  const AGENTS = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok']
+  const AGENTS = ['heimdall', 'odin', 'loki', 'bragi', 'hermod']
 
   // ── Agent runs in period ──────────────────────────────────────────────────
   const { data: runs } = await db

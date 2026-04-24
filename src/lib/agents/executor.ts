@@ -1,5 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
-import { runAnakIntern } from '@/lib/agents/anak-intern'
+import { runBragi } from '@/lib/agents/bragi'
 import { generateAgentBrief } from '@/lib/agents/brief-generator'
 
 export interface AgentAction {
@@ -171,7 +171,7 @@ export async function executeAction(
         throw new Error('Missing handoff_to in action data')
       }
 
-      const implementedAgents = ['pak-rt', 'mas-gacor', 'intel-bakso', 'anak-intern', 'kang-cilok']
+      const implementedAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod']
 
       // Create a new agent_runs row linked to this action
       const { data: newRun, error: runErr } = await db
@@ -192,10 +192,10 @@ export async function executeAction(
       }
 
       // Actually run the agent if implemented
-      if (targetKey === 'anak-intern') {
+      if (targetKey === 'bragi') {
         const payload = data.payload ?? {}
-        runAnakIntern(action.owner_user_id, action.site_slug, newRun.id, payload)
-          .catch(err => console.error('[executor] anak-intern handoff failed:', err))
+        runBragi(action.owner_user_id, action.site_slug, newRun.id, payload)
+          .catch(err => console.error('[executor] bragi handoff failed:', err))
       } else if (!implementedAgents.includes(targetKey)) {
         await db
           .from('agent_runs')

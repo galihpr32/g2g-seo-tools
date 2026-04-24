@@ -6,7 +6,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 // GET /api/agents/logs
 // Query params:
 //   ?tab=runs|actions      (default: runs)
-//   ?agent=pak-rt          (filter by agent, optional)
+//   ?agent=heimdall          (filter by agent, optional)
 //   ?status=success|error  (filter by status, optional)
 //   ?limit=50              (default: 50)
 //   ?offset=0              (default: 0)

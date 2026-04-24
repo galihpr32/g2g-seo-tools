@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
-import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt'
-import { runMasGacor } from '@/lib/agents/mas-gacor'
-import { runIntelBakso } from '@/lib/agents/intel-bakso'
-import { runAnakIntern } from '@/lib/agents/anak-intern'
-import { runKangCilok } from '@/lib/agents/kang-cilok'
+import { runHeimdall, HEIMDALL_DEFAULTS, type HeimdallConfig } from '@/lib/agents/heimdall'
+import { runOdin } from '@/lib/agents/odin'
+import { runLoki } from '@/lib/agents/loki'
+import { runBragi } from '@/lib/agents/bragi'
+import { runHermod } from '@/lib/agents/hermod'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export const maxDuration = 300
@@ -106,21 +106,21 @@ export async function GET(request: Request) {
       const runId = runRecord.id
       let result: { summary: string; actionsQueued: number }
 
-      if (key === 'pak-rt') {
-        const agentConfig: Partial<PakRTConfig> = {
-          maxDropsPerDay: typeof config.maxDropsPerDay === 'number' ? config.maxDropsPerDay : PAK_RT_DEFAULTS.maxDropsPerDay,
-          minClicksDrop:  typeof config.minClicksDrop  === 'number' ? config.minClicksDrop  : PAK_RT_DEFAULTS.minClicksDrop,
-          minPctDrop:     typeof config.minPctDrop     === 'number' ? config.minPctDrop     : PAK_RT_DEFAULTS.minPctDrop,
+      if (key === 'heimdall') {
+        const agentConfig: Partial<HeimdallConfig> = {
+          maxDropsPerDay: typeof config.maxDropsPerDay === 'number' ? config.maxDropsPerDay : HEIMDALL_DEFAULTS.maxDropsPerDay,
+          minClicksDrop:  typeof config.minClicksDrop  === 'number' ? config.minClicksDrop  : HEIMDALL_DEFAULTS.minClicksDrop,
+          minPctDrop:     typeof config.minPctDrop     === 'number' ? config.minPctDrop     : HEIMDALL_DEFAULTS.minPctDrop,
         }
-        result = await runPakRT(ownerId, siteSlug, runId, agentConfig)
-      } else if (key === 'mas-gacor') {
-        result = await runMasGacor(ownerId, siteSlug, runId)
-      } else if (key === 'intel-bakso') {
-        result = await runIntelBakso(ownerId, siteSlug, runId)
-      } else if (key === 'anak-intern') {
-        result = await runAnakIntern(ownerId, siteSlug, runId)
-      } else if (key === 'kang-cilok') {
-        result = await runKangCilok(ownerId, siteSlug, runId)
+        result = await runHeimdall(ownerId, siteSlug, runId, agentConfig)
+      } else if (key === 'odin') {
+        result = await runOdin(ownerId, siteSlug, runId)
+      } else if (key === 'loki') {
+        result = await runLoki(ownerId, siteSlug, runId)
+      } else if (key === 'bragi') {
+        result = await runBragi(ownerId, siteSlug, runId)
+      } else if (key === 'hermod') {
+        result = await runHermod(ownerId, siteSlug, runId)
       } else {
         results[`${ownerId}/${key}`] = { status: 'skipped', reason: 'not implemented' }
         continue

@@ -33,11 +33,11 @@ export interface PendingAction {
 // ── Agent meta ────────────────────────────────────────────────────────────────
 
 const AGENT_META: Record<string, { label: string; emoji: string }> = {
-  'pak-rt':      { label: 'Pak RT',      emoji: '🔍' },
-  'mas-gacor':   { label: 'Mas Gacor',   emoji: '📈' },
-  'intel-bakso': { label: 'Intel Bakso', emoji: '🕵️' },
-  'anak-intern': { label: 'Anak Intern', emoji: '✍️' },
-  'kang-cilok':  { label: 'Kang Cilok',  emoji: '🤝' },
+  'heimdall':      { label: 'Heimdall',      emoji: '🔍' },
+  'odin':         { label: 'Odin',   emoji: '📈' },
+  'loki':         { label: 'Loki', emoji: '🕵️' },
+  'bragi':        { label: 'Bragi', emoji: '✍️' },
+  'hermod':       { label: 'Hermod',  emoji: '🤝' },
 }
 
 // ── Main notify function ──────────────────────────────────────────────────────

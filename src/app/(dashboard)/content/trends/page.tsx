@@ -526,7 +526,7 @@ export default function GameTrendsPage() {
     try {
       // Trigger Anak Intern run (it will scan recently approved actions)
       // We surface a quick toast/notification pattern
-      await fetch('/api/agents/anak-intern/run', {
+      await fetch('/api/agents/bragi/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ site: 'g2g' }),

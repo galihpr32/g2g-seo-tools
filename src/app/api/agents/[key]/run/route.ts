@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { runPakRT, PAK_RT_DEFAULTS, type PakRTConfig } from '@/lib/agents/pak-rt'
-import { runMasGacor } from '@/lib/agents/mas-gacor'
-import { runIntelBakso } from '@/lib/agents/intel-bakso'
-import { runAnakIntern } from '@/lib/agents/anak-intern'
-import { runKangCilok } from '@/lib/agents/kang-cilok'
+import { runHeimdall, HEIMDALL_DEFAULTS, type HeimdallConfig } from '@/lib/agents/heimdall'
+import { runOdin } from '@/lib/agents/odin'
+import { runLoki } from '@/lib/agents/loki'
+import { runBragi } from '@/lib/agents/bragi'
+import { runHermod } from '@/lib/agents/hermod'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export async function POST(
@@ -57,27 +57,27 @@ export async function POST(
     // Dispatch agent based on key
     let result: { summary: string; actionsQueued: number }
 
-    if (key === 'pak-rt') {
-      const config: Partial<PakRTConfig> = {
+    if (key === 'heimdall') {
+      const config: Partial<HeimdallConfig> = {
         maxDropsPerDay: typeof savedConfig.maxDropsPerDay === 'number'
           ? savedConfig.maxDropsPerDay
-          : PAK_RT_DEFAULTS.maxDropsPerDay,
+          : HEIMDALL_DEFAULTS.maxDropsPerDay,
         minClicksDrop: typeof savedConfig.minClicksDrop === 'number'
           ? savedConfig.minClicksDrop
-          : PAK_RT_DEFAULTS.minClicksDrop,
+          : HEIMDALL_DEFAULTS.minClicksDrop,
         minPctDrop: typeof savedConfig.minPctDrop === 'number'
           ? savedConfig.minPctDrop
-          : PAK_RT_DEFAULTS.minPctDrop,
+          : HEIMDALL_DEFAULTS.minPctDrop,
       }
-      result = await runPakRT(effectiveOwnerId, siteSlug, runId, config)
-    } else if (key === 'mas-gacor') {
-      result = await runMasGacor(effectiveOwnerId, siteSlug, runId)
-    } else if (key === 'intel-bakso') {
-      result = await runIntelBakso(effectiveOwnerId, siteSlug, runId)
-    } else if (key === 'anak-intern') {
-      result = await runAnakIntern(effectiveOwnerId, siteSlug, runId)
-    } else if (key === 'kang-cilok') {
-      result = await runKangCilok(effectiveOwnerId, siteSlug, runId)
+      result = await runHeimdall(effectiveOwnerId, siteSlug, runId, config)
+    } else if (key === 'odin') {
+      result = await runOdin(effectiveOwnerId, siteSlug, runId)
+    } else if (key === 'loki') {
+      result = await runLoki(effectiveOwnerId, siteSlug, runId)
+    } else if (key === 'bragi') {
+      result = await runBragi(effectiveOwnerId, siteSlug, runId)
+    } else if (key === 'hermod') {
+      result = await runHermod(effectiveOwnerId, siteSlug, runId)
     } else {
       return NextResponse.json(
         { error: `Agent not yet implemented: ${key}` },

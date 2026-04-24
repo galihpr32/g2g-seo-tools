@@ -32,11 +32,11 @@ interface PerformanceData {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const AGENT_META: Record<string, { label: string; emoji: string; color: string }> = {
-  'pak-rt':      { label: 'Pak RT',      emoji: '🔍', color: '#3b82f6' },
-  'mas-gacor':   { label: 'Mas Gacor',   emoji: '📈', color: '#22c55e' },
-  'intel-bakso': { label: 'Intel Bakso', emoji: '🕵️', color: '#a855f7' },
-  'anak-intern': { label: 'Anak Intern', emoji: '✍️', color: '#f59e0b' },
-  'kang-cilok':  { label: 'Kang Cilok',  emoji: '🤝', color: '#ef4444' },
+  'heimdall':      { label: 'Heimdall',      emoji: '🔍', color: '#3b82f6' },
+  'odin':   { label: 'Odin',   emoji: '📈', color: '#22c55e' },
+  'loki': { label: 'Loki', emoji: '🕵️', color: '#a855f7' },
+  'bragi': { label: 'Bragi', emoji: '✍️', color: '#f59e0b' },
+  'hermod':  { label: 'Hermod',  emoji: '🤝', color: '#ef4444' },
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
