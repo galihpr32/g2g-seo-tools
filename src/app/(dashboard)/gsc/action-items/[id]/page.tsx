@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { notFound } from 'next/navigation'
 import { BriefViewer } from './BriefViewer'
@@ -11,13 +12,20 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
-  const { data: conn } = effectiveOwnerId
-    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
-    : { data: null }
+  if (!user) notFound()
 
-  // Load the action item
-  const { data: item } = await supabase
+  const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
+  // Use service client to bypass RLS so workspace members can view owner's items
+  const db = createServiceClient()
+
+  const { data: conn } = await db
+    .from('gsc_connections')
+    .select('site_url')
+    .eq('user_id', effectiveOwnerId)
+    .single()
+
+  // Load the action item — service client so members can see owner's items
+  const { data: item } = await db
     .from('seo_action_items')
     .select('*')
     .eq('id', id)
@@ -27,7 +35,7 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
 
   // Load GSC queries for this page (pre-populate keyword selector — avoids client-side URL mismatch)
   const { data: gscPageQueries } = conn?.site_url
-    ? await supabase
+    ? await db
         .from('gsc_ranking_drop_queries')
         .select('query, clicks, impressions, ctr, position')
         .eq('site_url', conn.site_url)
@@ -37,7 +45,7 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
     : { data: null }
 
   // Check if a brief already exists for this action item
-  const { data: existingBrief } = await supabase
+  const { data: existingBrief } = await db
     .from('seo_content_briefs')
     .select('id, status, brief_type, created_at')
     .eq('action_item_id', item.id)

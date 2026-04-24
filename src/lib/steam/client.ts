@@ -3,7 +3,7 @@
 // Docs: https://steamspy.com/about
 
 const STEAMSPY_BASE = 'https://steamspy.com/api.php'
-const STEAM_STORE   = 'https://store.steampowered.com'
+const STEAM_CDN     = 'https://cdn.akamai.steamstatic.com/steam'
 
 export interface SteamGame {
   appid:           number
@@ -44,7 +44,7 @@ export async function getTopGamesByPlayers(limit = 50): Promise<SteamGame[]> {
         positive:       parseInt(g.positive ?? 0) || 0,
         negative:       parseInt(g.negative ?? 0) || 0,
         price:          parseInt(g.price ?? 0) || 0,
-        imageUrl:       `${STEAM_STORE}/apps/${g.appid}/header.jpg`,
+        imageUrl:       `${STEAM_CDN}/apps/${g.appid}/header.jpg`,
       }))
       .filter(g => g.name)
   } catch (e) {
@@ -76,7 +76,7 @@ export async function getNewReleasesTrending(limit = 30): Promise<SteamGame[]> {
         positive:       parseInt(g.positive ?? 0) || 0,
         negative:       parseInt(g.negative ?? 0) || 0,
         price:          parseInt(g.price ?? 0) || 0,
-        imageUrl:       `${STEAM_STORE}/apps/${g.appid}/header.jpg`,
+        imageUrl:       `${STEAM_CDN}/apps/${g.appid}/header.jpg`,
       }))
       .filter(g => g.name)
   } catch (e) {

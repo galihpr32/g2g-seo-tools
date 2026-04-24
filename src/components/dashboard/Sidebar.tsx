@@ -214,10 +214,8 @@ export default function Sidebar() {
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-3 py-3">
         {navItems.map(group => {
-          // Members don't see Settings
-          const visibleItems = isMember
-            ? group.items.filter(i => i.href !== '/settings')
-            : group.items
+          // All users can see Settings (members can at least manage their own profile)
+          const visibleItems = group.items
           if (visibleItems.length === 0) return null
           const isCollapsed = hydrated && collapsed.has(group.group)
           const hasActiveItem = visibleItems.some(item => {

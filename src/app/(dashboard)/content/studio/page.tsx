@@ -135,6 +135,24 @@ function ContentStudioInner() {
   const [drafts,         setDrafts]      = useState<Draft[]>([])
   const [showDrafts,     setShowDrafts]  = useState(false)
 
+  // Draft viewer modal
+  const [viewingDraft,   setViewingDraft] = useState<{
+    id: string; title?: string; content?: string; meta_title?: string; meta_description?: string
+    topic?: string; content_type?: string; tone?: string; language?: string
+    target_keywords?: string[]; created_at?: string
+  } | null>(null)
+  const [loadingDraftId, setLoadingDraftId] = useState<string | null>(null)
+
+  async function openDraft(id: string) {
+    setLoadingDraftId(id)
+    try {
+      const res  = await fetch(`/api/content/studio?id=${id}`)
+      const data = await res.json()
+      if (data.draft) setViewingDraft(data.draft)
+    } catch { /* silent */ }
+    finally { setLoadingDraftId(null) }
+  }
+
   // ── Fetch keyword suggestions when entering step 2 ────────────────────────
   useEffect(() => {
     if (step !== 1 || !topic.trim()) return
@@ -256,15 +274,15 @@ function ContentStudioInner() {
           ) : (
             <div className="space-y-2">
               {drafts.map(d => (
-                <div key={d.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
-                  <div>
-                    <p className="text-white text-xs font-medium">{d.title}</p>
+                <div key={d.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 hover:bg-gray-750 transition">
+                  <div className="flex-1 min-w-0 mr-3">
+                    <p className="text-white text-xs font-medium truncate">{d.title}</p>
                     <p className="text-gray-500 text-[10px]">
                       {d.content_type} · {d.tone} · {d.language.toUpperCase()} ·{' '}
                       {new Date(d.updated_at).toLocaleDateString()}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-shrink-0">
                     <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
                       d.status === 'done' ? 'bg-green-500/20 text-green-400' :
                       d.status === 'generating' ? 'bg-yellow-500/20 text-yellow-400' :
@@ -272,6 +290,13 @@ function ContentStudioInner() {
                     }`}>
                       {d.status}
                     </span>
+                    <button
+                      onClick={() => openDraft(d.id)}
+                      disabled={loadingDraftId === d.id}
+                      className="text-xs px-2 py-1 rounded border border-gray-600 text-gray-300 hover:border-gray-400 hover:text-white transition disabled:opacity-50"
+                    >
+                      {loadingDraftId === d.id ? '…' : '👁 View'}
+                    </button>
                     <button onClick={() => deleteDraft(d.id)}
                       className="text-gray-600 hover:text-red-400 text-xs transition">🗑️</button>
                   </div>
@@ -715,6 +740,87 @@ function ContentStudioInner() {
               </button>
             )
           )}
+        </div>
+      )}
+
+      {/* ── Draft Viewer Modal ──────────────────────────────────────────────── */}
+      {viewingDraft && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 overflow-y-auto py-10 px-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-3xl shadow-2xl">
+            {/* Modal header */}
+            <div className="flex items-start justify-between p-5 border-b border-gray-800">
+              <div className="flex-1 min-w-0">
+                <h2 className="text-white font-bold text-lg truncate">{viewingDraft.title ?? 'Untitled Draft'}</h2>
+                <p className="text-gray-500 text-xs mt-0.5">
+                  {viewingDraft.content_type} · {viewingDraft.tone} · {viewingDraft.language?.toUpperCase()}
+                  {viewingDraft.created_at && ` · ${new Date(viewingDraft.created_at).toLocaleDateString()}`}
+                </p>
+                {viewingDraft.target_keywords && viewingDraft.target_keywords.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {viewingDraft.target_keywords.map(kw => (
+                      <span key={kw} className="text-[10px] bg-red-500/10 text-red-400 border border-red-500/20 px-1.5 py-0.5 rounded-full">{kw}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setViewingDraft(null)}
+                className="ml-4 text-gray-500 hover:text-white text-xl leading-none flex-shrink-0 transition"
+              >✕</button>
+            </div>
+
+            {/* Meta info */}
+            {(viewingDraft.meta_title || viewingDraft.meta_description) && (
+              <div className="px-5 py-3 bg-gray-800/50 border-b border-gray-800 space-y-2">
+                {viewingDraft.meta_title && (
+                  <div>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Meta Title</p>
+                    <p className="text-sm text-gray-300">{viewingDraft.meta_title}</p>
+                  </div>
+                )}
+                {viewingDraft.meta_description && (
+                  <div>
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Meta Description</p>
+                    <p className="text-sm text-gray-300">{viewingDraft.meta_description}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Content */}
+            <div className="p-5">
+              {viewingDraft.content ? (
+                <div
+                  className="prose prose-invert prose-sm max-w-none text-gray-300 text-sm leading-relaxed whitespace-pre-wrap"
+                  style={{ fontFamily: 'inherit' }}
+                >
+                  {viewingDraft.content}
+                </div>
+              ) : (
+                <p className="text-gray-500 text-sm text-center py-8">No content generated yet for this draft.</p>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-3 border-t border-gray-800 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  if (viewingDraft.content) {
+                    navigator.clipboard.writeText(viewingDraft.content)
+                  }
+                }}
+                className="text-xs px-4 py-2 rounded-lg border border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white transition"
+              >
+                📋 Copy Content
+              </button>
+              <button
+                onClick={() => setViewingDraft(null)}
+                className="text-xs px-4 py-2 rounded-lg bg-red-700 hover:bg-red-600 text-white font-semibold transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -300,6 +300,10 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
       })
       setSelectedId(r.id)
       setShowPicker(false)
+      // Reset date inputs back to current week so old range doesn't persist
+      const freshWeek = getDefaultWeek()
+      setCustomStart(freshWeek.start)
+      setCustomEnd(freshWeek.end)
     } catch (err: unknown) {
       setError(String(err))
     } finally {

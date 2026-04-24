@@ -326,9 +326,13 @@ export async function getBacklinkOverview(target: string): Promise<BacklinkOverv
   })
 
   const res = await fetch(`${BASE_URL}/?${params}`)
-  if (!res.ok) return null
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('SEMrush backlinks access denied (403). Your API key plan may not include Backlinks Analytics.')
+    throw new Error(`SEMrush backlinks_overview error: ${res.status}`)
+  }
   const text = await res.text()
-  if (!text || text.startsWith('ERROR')) return null
+  if (!text || text.startsWith('ERROR')) throw new Error(`SEMrush error: ${text || 'empty response'}`)
+
 
   const lines = text.trim().split('\n')
   if (lines.length < 2) return null
@@ -358,9 +362,12 @@ export async function getReferringDomains(target: string, limit = 100): Promise<
   })
 
   const res = await fetch(`${BASE_URL}/?${params}`)
-  if (!res.ok) return []
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('SEMrush backlinks access denied (403). Your API key plan may not include Backlinks Analytics.')
+    throw new Error(`SEMrush backlinks_refdomains error: ${res.status}`)
+  }
   const text = await res.text()
-  if (!text || text.startsWith('ERROR')) return []
+  if (!text || text.startsWith('ERROR')) throw new Error(`SEMrush error: ${text || 'empty response'}`)
 
   const lines = text.trim().split('\n')
   if (lines.length < 2) return []
@@ -392,9 +399,12 @@ export async function getBacklinks(target: string, limit = 100): Promise<Backlin
   })
 
   const res = await fetch(`${BASE_URL}/?${params}`)
-  if (!res.ok) return []
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('SEMrush backlinks access denied (403). Your API key plan may not include Backlinks Analytics.')
+    throw new Error(`SEMrush backlinks error: ${res.status}`)
+  }
   const text = await res.text()
-  if (!text || text.startsWith('ERROR')) return []
+  if (!text || text.startsWith('ERROR')) throw new Error(`SEMrush error: ${text || 'empty response'}`)
 
   const lines = text.trim().split('\n')
   if (lines.length < 2) return []

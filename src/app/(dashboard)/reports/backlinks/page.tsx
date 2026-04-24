@@ -165,7 +165,20 @@ export default function BacklinkAuditPage() {
       </div>
 
       {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-red-400 text-sm">⚠️ {error}</div>
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm">
+          <p className="text-red-400 font-medium mb-1">⚠️ {error}</p>
+          {(error.includes('403') || error.toLowerCase().includes('access denied') || error.toLowerCase().includes('plan')) && (
+            <p className="text-gray-400 mt-1">
+              The Backlinks Analytics API requires a SEMrush subscription that includes Backlinks data.
+              Verify that <code className="text-gray-300">SEMRUSH_API_KEY</code> is set correctly in your environment and that your plan includes Backlinks API access.
+            </p>
+          )}
+          {error.toLowerCase().includes('not configured') && (
+            <p className="text-gray-400 mt-1">
+              Set the <code className="text-gray-300">SEMRUSH_API_KEY</code> environment variable to enable backlink audits.
+            </p>
+          )}
+        </div>
       )}
 
       {loading && (

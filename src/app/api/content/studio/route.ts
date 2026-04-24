@@ -3,14 +3,31 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
-// GET /api/content/studio — list drafts
-export async function GET() {
+// GET /api/content/studio        — list drafts (no ?id)
+// GET /api/content/studio?id=xxx — fetch one draft with full content
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get('id')
+
+  // Single draft — full content
+  if (id) {
+    const { data, error } = await db
+      .from('content_studio_drafts')
+      .select('*')
+      .eq('id', id)
+      .eq('owner_user_id', ownerId)
+      .single()
+    if (error || !data) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    return NextResponse.json({ draft: data })
+  }
+
+  // Draft list — metadata only
   const { data, error } = await db
     .from('content_studio_drafts')
     .select('id, title, topic, game_name, content_type, tone, language, status, target_keywords, created_at, updated_at')

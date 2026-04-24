@@ -106,12 +106,37 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ site: 'g2g' }),
       })
-      if (res.ok) setTimeout(fetchStatus, 2000)
+      if (res.ok) {
+        // Poll every 3s until the agent is no longer running (up to 2 minutes)
+        let polls = 0
+        const poll = async () => {
+          polls++
+          await fetchStatus()
+          // Read fresh status from the API directly to avoid stale closure
+          try {
+            const statusRes = await fetch('/api/agents/status')
+            if (statusRes.ok) {
+              const data: StatusResponse = await statusRes.json()
+              const agent = data.agents?.find(a => a.key === key)
+              const stillRunning = agent?.lastRunStatus === 'running'
+              if (stillRunning && polls < 40) {
+                setTimeout(poll, 3000)
+                return
+              }
+            }
+          } catch { /* silent */ }
+          // Agent done or timed out — clear running state
+          setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
+          fetchStatus()
+        }
+        setTimeout(poll, 2000)
+        return // don't fall through to finally-clear
+      }
     } catch (err) {
       console.error('Failed to run agent:', err)
-    } finally {
-      setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
     }
+    // Only clear here on error / non-ok response
+    setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
   }
 
   const handleSavePakRTConfig = async () => {

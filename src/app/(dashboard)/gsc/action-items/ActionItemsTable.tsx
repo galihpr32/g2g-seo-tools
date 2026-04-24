@@ -921,6 +921,12 @@ export function ActionItemsTable({
                       <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${st.color}`}>
                         {st.label}
                       </span>
+                      {/* Manual badge — items without ranking drop data were manually added */}
+                      {item.clicks_drop === null && item.position_change === null && (
+                        <span className="text-xs text-teal-400 bg-teal-500/10 border border-teal-500/20 px-2 py-0.5 rounded-full">
+                          ✋ Manual
+                        </span>
+                      )}
                       {item.clicks_drop !== null && item.clicks_drop > 0 && (
                         <span className="text-xs text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full">
                           -{Math.round(item.clicks_drop * 100)}% clicks

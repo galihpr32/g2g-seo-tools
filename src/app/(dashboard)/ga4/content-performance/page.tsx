@@ -1,132 +1,141 @@
-import { createClient } from '@/lib/supabase/server'
-import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getRefreshedClient } from '@/lib/gsc/auth'
-import { getGA4ContentPerformance, parseGA4Rows } from '@/lib/ga4/client'
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
 import ContentPagesClient from './ContentPagesClient'
 
-export const revalidate = 1800
+// ── Date presets ──────────────────────────────────────────────────────────────
+const PRESETS = [
+  { label: '7 days',  days: 7  },
+  { label: '30 days', days: 30 },
+  { label: '60 days', days: 60 },
+  { label: '90 days', days: 90 },
+]
 
-export default async function ContentPerformancePage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
+function todayStr() { return new Date().toISOString().split('T')[0] }
+function daysAgoStr(n: number) {
+  const d = new Date()
+  d.setDate(d.getDate() - n)
+  return d.toISOString().split('T')[0]
+}
 
-  const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
-  const { data: conn } = effectiveOwnerId
-    ? await supabase.from('gsc_connections').select('*').eq('user_id', effectiveOwnerId).single()
-    : { data: null }
+interface PageData { path: string; sessions: number; engaged: number; bounce: number; views: number; avgDuration: number }
+interface PrevEntry { path: string; sessions: number }
 
-  const propertyId = process.env.GA4_PROPERTY_ID
-  const today = new Date().toISOString().split('T')[0]
+export default function ContentPerformancePage() {
+  const [startDate,     setStartDate]     = useState(daysAgoStr(30))
+  const [endDate,       setEndDate]       = useState(daysAgoStr(1))
+  const [currentPages,  setCurrentPages]  = useState<PageData[]>([])
+  const [prevEntries,   setPrevEntries]   = useState<PrevEntry[]>([])
+  const [loading,       setLoading]       = useState(true)
+  const [error,         setError]         = useState<string | null>(null)
 
-  type PageData = {
-    path: string
-    sessions: number
-    engaged: number
-    bounce: number
-    views: number
-    avgDuration: number
-  }
-
-  let currentPages: PageData[] = []
-  let prevEntries: { path: string; sessions: number }[] = []
-  let fetchError: string | null = null
-  let dataSource: 'live' | 'none' = 'none'
-
-  const notConfigured = !propertyId || !conn?.access_token
-
-  if (conn?.access_token && propertyId) {
+  const fetchData = useCallback(async (start: string, end: string) => {
+    setLoading(true)
+    setError(null)
     try {
-      const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
-      const data = await getGA4ContentPerformance(auth, propertyId)
-
-      const thisRows = parseGA4Rows(data.thisMonth)
-      const prevRows = parseGA4Rows(data.lastMonth)
-
-      currentPages = thisRows.map(r => ({
-        path: r.pagePath ?? '',
-        sessions: parseInt(r.sessions ?? '0'),
-        engaged: parseInt(r.engagedSessions ?? '0'),
-        bounce: parseFloat(r.bounceRate ?? '0'),
-        views: parseInt(r.screenPageViews ?? '0'),
-        avgDuration: parseFloat(r.averageSessionDuration ?? '0'),
-      })).filter(p => p.path)
-
-      prevEntries = prevRows.map(r => ({
-        path: r.pagePath ?? '',
-        sessions: parseInt(r.sessions ?? '0'),
-      })).filter(e => e.path)
-
-      dataSource = 'live'
+      const res  = await fetch(`/api/ga4/content-performance?start=${start}&end=${end}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error)
+      setCurrentPages(json.currentPages ?? [])
+      setPrevEntries(json.prevEntries ?? [])
     } catch (e) {
-      fetchError = String(e)
+      setError(String(e))
+    } finally {
+      setLoading(false)
     }
+  }, [])
+
+  useEffect(() => { fetchData(startDate, endDate) }, []) // eslint-disable-line
+
+  function applyPreset(days: number) {
+    const start = daysAgoStr(days)
+    const end   = daysAgoStr(1)
+    setStartDate(start)
+    setEndDate(end)
+    fetchData(start, end)
   }
 
-  const decayingCount = currentPages.filter(p => {
-    const prev = prevEntries.find(e => e.path === p.path)
-    if (!prev || prev.sessions === 0) return false
-    return (prev.sessions - p.sessions) / prev.sessions >= 0.2
-  }).length
-
-  const growingCount = currentPages.filter(p => {
-    const prev = prevEntries.find(e => e.path === p.path)
-    if (!prev || prev.sessions === 0) return false
-    return (p.sessions - prev.sessions) / prev.sessions >= 0.1
-  }).length
+  function applyCustom() { fetchData(startDate, endDate) }
 
   return (
     <div className="p-8">
-      <div className="mb-6 flex items-center justify-between">
+      {/* Header + date filter */}
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-white">📄 Content Performance Audit</h1>
-          <p className="text-gray-400 text-sm mt-1">30-day analysis — decaying pages flagged for refresh or consolidation</p>
+          <h1 className="text-2xl font-bold text-white">📄 Content Performance</h1>
+          <p className="text-gray-400 text-sm mt-1">Page-level engagement, sessions, and MoM trends from GA4</p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500 bg-gray-800 px-3 py-1.5 rounded-full">{today}</span>
-          {dataSource === 'live' && (
-            <span className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2.5 py-1 rounded-full">🔄 live</span>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex rounded-lg overflow-hidden border border-gray-700">
+            {PRESETS.map(p => {
+              const start    = daysAgoStr(p.days)
+              const isActive = startDate === start && endDate === daysAgoStr(1)
+              return (
+                <button
+                  key={p.days}
+                  onClick={() => applyPreset(p.days)}
+                  className={`text-xs px-3 py-1.5 transition ${
+                    isActive ? 'bg-red-700 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              )
+            })}
+          </div>
+          <input
+            type="date"
+            value={startDate}
+            max={endDate}
+            onChange={e => setStartDate(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500"
+          />
+          <span className="text-gray-600 text-xs">→</span>
+          <input
+            type="date"
+            value={endDate}
+            min={startDate}
+            max={todayStr()}
+            onChange={e => setEndDate(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-red-500"
+          />
+          <button
+            onClick={applyCustom}
+            disabled={loading}
+            className="text-xs px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-white transition disabled:opacity-50"
+          >
+            {loading ? '⏳' : 'Apply'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm text-red-400">
+          ⚠️ {error}
+          {error.includes('not configured') && (
+            <p className="text-gray-400 text-xs mt-1">
+              Ensure GA4_PROPERTY_ID is set and Google is connected in Settings.
+            </p>
           )}
         </div>
-      </div>
+      )}
 
-      {notConfigured && (
-        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6 mb-6">
-          <p className="text-yellow-400 font-medium">GA4 not fully configured</p>
-          <p className="text-gray-400 text-sm mt-1">
-            {!propertyId ? 'Add GA4_PROPERTY_ID to Vercel env.' : 'Reconnect Google in Settings to grant Analytics access.'}
-          </p>
+      {loading && currentPages.length === 0 && (
+        <div className="text-center py-20 text-gray-500">Loading GA4 data…</div>
+      )}
+
+      {!loading && !error && currentPages.length === 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-500 text-sm">
+          No content performance data found for this date range.
         </div>
       )}
 
-      {fetchError && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm text-red-400">
-          ⚠️ {fetchError}
-        </div>
-      )}
-
-      {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
-        <div className={`${decayingCount > 0 ? 'bg-red-500/10 border-red-500/20' : 'bg-gray-900 border-gray-800'} border rounded-xl p-5`}>
-          <p className={`text-3xl font-bold ${decayingCount > 0 ? 'text-red-400' : 'text-white'}`}>{decayingCount}</p>
-          <p className="text-gray-400 text-sm mt-1">Decaying pages (&gt;20% drop)</p>
-        </div>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-          <p className="text-3xl font-bold text-white">{currentPages.length}</p>
-          <p className="text-gray-400 text-sm mt-1">Total pages tracked</p>
-        </div>
-        <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-5">
-          <p className="text-3xl font-bold text-green-400">{growingCount}</p>
-          <p className="text-gray-400 text-sm mt-1">Pages growing MoM</p>
-        </div>
-      </div>
-
-      {/* Interactive content sections (decaying, growing, all pages with filter/sort) */}
-      {currentPages.length === 0 && dataSource !== 'live' ? (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-8 text-center text-gray-500 text-sm">
-          Configure GA4 to see content performance data
-        </div>
-      ) : (
-        <ContentPagesClient currentPages={currentPages} prevEntries={prevEntries} />
+      {currentPages.length > 0 && (
+        <ContentPagesClient
+          currentPages={currentPages}
+          prevEntries={prevEntries}
+        />
       )}
     </div>
   )

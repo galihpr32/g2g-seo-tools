@@ -80,6 +80,15 @@ function nextActionLabel(game: GameTrend): { label: string; color: string } | nu
   return null
 }
 
+// ── Steam CDN image helper (fixes old cached URLs from store.steampowered.com) ─
+function steamImg(game: GameTrend) {
+  // Always derive from appid for reliability — cached rows may have wrong domain
+  if (game.steam_appid) {
+    return `https://cdn.akamai.steamstatic.com/steam/apps/${game.steam_appid}/header.jpg`
+  }
+  return game.image_url
+}
+
 // ── Game Card ─────────────────────────────────────────────────────────────────
 function GameCard({ game, selected, onToggle, onSelect, onCreateContent }: {
   game:            GameTrend
@@ -111,7 +120,7 @@ function GameCard({ game, selected, onToggle, onSelect, onCreateContent }: {
         <div className="relative h-28 bg-gray-800 overflow-hidden">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={game.image_url}
+            src={steamImg(game)}
             alt={game.name}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
@@ -208,7 +217,7 @@ function GameRow({ game, selected, onToggle, onSelect, onCreateContent }: {
       <td className="px-3 py-3 cursor-pointer" onClick={() => onSelect(game)}>
         <div className="flex items-center gap-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={game.image_url} alt={game.name}
+          <img src={steamImg(game)} alt={game.name}
             className="w-8 h-8 rounded object-cover bg-gray-800 flex-shrink-0"
             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
           <div className="min-w-0">
@@ -304,7 +313,7 @@ function DetailPanel({ game, onClose, onCreateContent }: {
         {/* Header */}
         <div className="p-5 border-b border-gray-800 flex items-start gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={game.image_url} alt={game.name}
+          <img src={steamImg(game)} alt={game.name}
             className="w-20 h-12 object-cover rounded-lg flex-shrink-0 bg-gray-800"
             onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
           <div className="flex-1 min-w-0">
