@@ -1,4 +1,4 @@
-import { getCompetitors, getDomainOverview } from '@/lib/semrush/client'
+import { getCompetitorDomainsDFS, getDomainOverviewDFS } from '@/lib/dataforseo/client'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { CountryPicker } from './CountryPicker'
 import { Suspense } from 'react'
@@ -14,20 +14,32 @@ export default async function CompetitorTrackingPage({
 }) {
   const { db: dbParam } = await searchParams
   // Validate the db param against known markets; default to 'us'
-  const db = SERP_COUNTRIES.find(c => c.semrushDb === dbParam)?.semrushDb ?? 'us'
-  const currentCountry = SERP_COUNTRIES.find(c => c.semrushDb === db) ?? SERP_COUNTRIES.find(c => c.code === 'us')!
+  const currentCountry =
+    SERP_COUNTRIES.find(c => c.semrushDb === dbParam) ??
+    SERP_COUNTRIES.find(c => c.code === 'us')!
 
-  const hasKey = !!process.env.SEMRUSH_API_KEY
+  const hasCredentials = !!(
+    process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD
+  )
 
-  let competitors: Awaited<ReturnType<typeof getCompetitors>> = []
-  let overview: Awaited<ReturnType<typeof getDomainOverview>> = null
+  let competitors: Awaited<ReturnType<typeof getCompetitorDomainsDFS>> = []
+  let overview: Awaited<ReturnType<typeof getDomainOverviewDFS>> = null
   let fetchError: string | null = null
 
-  if (hasKey) {
+  if (hasCredentials) {
     try {
       ;[competitors, overview] = await Promise.all([
-        getCompetitors(TARGET_DOMAIN, db, 15),
-        getDomainOverview(TARGET_DOMAIN, db),
+        getCompetitorDomainsDFS(
+          TARGET_DOMAIN,
+          currentCountry.dfsLocationCode,
+          currentCountry.dfsLanguageCode,
+          15
+        ),
+        getDomainOverviewDFS(
+          TARGET_DOMAIN,
+          currentCountry.dfsLocationCode,
+          currentCountry.dfsLanguageCode
+        ),
       ])
     } catch (e) {
       fetchError = String(e)
@@ -47,15 +59,16 @@ export default async function CompetitorTrackingPage({
           </p>
         </div>
         <Suspense fallback={null}>
-          <CountryPicker currentDb={db} />
+          <CountryPicker currentDb={currentCountry.semrushDb} />
         </Suspense>
       </div>
 
-      {!hasKey && (
+      {!hasCredentials && (
         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6">
-          <p className="text-yellow-400 font-medium">SEMrush API key not configured</p>
+          <p className="text-yellow-400 font-medium">DataForSEO credentials not configured</p>
           <p className="text-gray-400 text-sm mt-1">
-            Add <code className="text-gray-300 bg-gray-800 px-1 rounded">SEMRUSH_API_KEY</code> to Vercel environment variables.
+            Add <code className="text-gray-300 bg-gray-800 px-1 rounded">DATAFORSEO_LOGIN</code> and{' '}
+            <code className="text-gray-300 bg-gray-800 px-1 rounded">DATAFORSEO_PASSWORD</code> to your environment variables.
           </p>
         </div>
       )}
@@ -133,7 +146,7 @@ export default async function CompetitorTrackingPage({
         </div>
       )}
 
-      {hasKey && !fetchError && competitors.length === 0 && (
+      {hasCredentials && !fetchError && competitors.length === 0 && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center text-gray-500 text-sm">
           No competitor data available for {currentCountry.flag} {currentCountry.label}.
         </div>

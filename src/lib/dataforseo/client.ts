@@ -240,6 +240,69 @@ export async function getGoogleTrends(
   })
 }
 
+// ─── Competitor Domains (who competes with this domain organically?) ─────────
+export interface CompetitorDomainDFS {
+  domain: string
+  organicKeywords: number
+  organicTraffic: number
+  organicCost: number
+}
+
+export async function getCompetitorDomainsDFS(
+  domain: string,
+  locationCode = 2840,   // United States
+  languageCode = 'en',
+  limit = 15
+): Promise<CompetitorDomainDFS[]> {
+  const data = await dfsPost<any>('/dataforseo_labs/google/competitors_domain/live', [
+    {
+      target: domain,
+      location_code: locationCode,
+      language_code: languageCode,
+      limit,
+      filters: ['full_domain_metrics.organic.etv', '>', 0],
+      order_by: ['full_domain_metrics.organic.estimated_visits,desc'],
+    },
+  ])
+
+  const items: any[] = data?.tasks?.[0]?.result?.[0]?.items ?? []
+  return items.map(i => ({
+    domain: i.domain ?? '',
+    organicKeywords: i.full_domain_metrics?.organic?.count ?? 0,
+    organicTraffic: i.full_domain_metrics?.organic?.estimated_visits ?? 0,
+    organicCost: Math.round(i.full_domain_metrics?.organic?.etv ?? 0),
+  })).filter(i => i.domain)
+}
+
+// ─── Domain Metrics Overview ─────────────────────────────────────────────────
+export interface DomainOverviewDFS {
+  organicKeywords: number
+  organicTraffic: number
+  organicCost: number
+}
+
+export async function getDomainOverviewDFS(
+  domain: string,
+  locationCode = 2840,
+  languageCode = 'en'
+): Promise<DomainOverviewDFS | null> {
+  const data = await dfsPost<any>('/dataforseo_labs/google/domain_metrics/live', [
+    {
+      target: domain,
+      location_code: locationCode,
+      language_code: languageCode,
+    },
+  ])
+
+  const organic = data?.tasks?.[0]?.result?.[0]?.metrics?.organic
+  if (!organic) return null
+  return {
+    organicKeywords: organic.count ?? 0,
+    organicTraffic: organic.estimated_visits ?? 0,
+    organicCost: Math.round(organic.etv ?? 0),
+  }
+}
+
 // ─── SERP for multiple keywords (batch) ─────────────────────────────────────
 // Run SERP for top 3 GSC queries of the page to get comprehensive PAA + related
 export async function batchSerpData(

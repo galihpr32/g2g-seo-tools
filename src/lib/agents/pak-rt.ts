@@ -35,6 +35,22 @@ export async function runPakRT(
   const db = createServiceClient()
 
   try {
+    // 0. Trigger GSC sync to get fresh data before analyzing
+    try {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL
+      const cronSecret = process.env.CRON_SECRET
+      if (appUrl && cronSecret) {
+        console.log('[pak-rt] Triggering GSC sync before analysis…')
+        await fetch(`${appUrl}/api/cron/gsc-daily`, {
+          headers: { Authorization: `Bearer ${cronSecret}` },
+        })
+        console.log('[pak-rt] GSC sync completed.')
+      }
+    } catch (syncErr) {
+      // Non-fatal: if sync fails, continue with existing data
+      console.warn('[pak-rt] GSC sync failed (continuing with cached data):', syncErr)
+    }
+
     // 1. Get GSC connection
     const { data: conn, error: connErr } = await db
       .from('gsc_connections')

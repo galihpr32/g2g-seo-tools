@@ -227,10 +227,10 @@ export default function KeywordRankingsPage() {
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 mb-6 text-sm">
           <p className="text-red-400 font-medium">⚠️ {error}</p>
-          {(error.includes('403') || error.includes('not configured')) && (
+          {error.toLowerCase().includes('not configured') && (
             <p className="text-gray-400 mt-1 text-xs">
-              Verify that <code className="text-gray-300 bg-gray-800 px-1 rounded">SEMRUSH_API_KEY</code> is set correctly in your environment variables.
-              A 403 error means the API key is invalid, expired, or has exhausted its quota.
+              Set <code className="text-gray-300 bg-gray-800 px-1 rounded">DATAFORSEO_LOGIN</code> and{' '}
+              <code className="text-gray-300 bg-gray-800 px-1 rounded">DATAFORSEO_PASSWORD</code> in your environment variables.
             </p>
           )}
         </div>
@@ -402,7 +402,7 @@ export default function KeywordRankingsPage() {
         </div>
       ) : (
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-          <p className="text-gray-400">{keywords.length === 0 ? 'No keyword data — SEMrush API key not configured or no data.' : 'No keywords match the current filter.'}</p>
+          <p className="text-gray-400">{keywords.length === 0 ? 'No keyword data — DataForSEO credentials not configured or no ranking data found.' : 'No keywords match the current filter.'}</p>
         </div>
       )}
     </div>

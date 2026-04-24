@@ -1,19 +1,61 @@
-import { getDomainKeywords, clusterKeywords } from '@/lib/semrush/client'
+import { getDomainRankedKeywords } from '@/lib/dataforseo/client'
 
 export const revalidate = 3600
 
 const TARGET_DOMAIN = 'g2g.com'
-const DB = 'id'
+
+interface ClusterKeyword {
+  keyword: string
+  position: number
+  searchVolume: number
+  url: string
+}
+
+/** Group keywords by their first meaningful word (simple topic clustering) */
+function clusterKeywords(
+  keywords: ClusterKeyword[]
+): Map<string, ClusterKeyword[]> {
+  const stopWords = new Set([
+    'a', 'an', 'the', 'of', 'in', 'on', 'at', 'to', 'for', 'with',
+    'buy', 'sell', 'get', 'how', 'what', 'where', 'best', 'cheap',
+  ])
+  const clusters = new Map<string, ClusterKeyword[]>()
+
+  for (const kw of keywords) {
+    const words = kw.keyword.toLowerCase().split(/\s+/)
+    const topic = words.find(w => !stopWords.has(w) && w.length > 2) ?? words[0]
+    if (!clusters.has(topic)) clusters.set(topic, [])
+    clusters.get(topic)!.push(kw)
+  }
+
+  // Sort clusters by total volume desc
+  return new Map(
+    [...clusters.entries()]
+      .sort((a, b) => {
+        const volA = a[1].reduce((s, k) => s + (k.searchVolume ?? 0), 0)
+        const volB = b[1].reduce((s, k) => s + (k.searchVolume ?? 0), 0)
+        return volB - volA
+      })
+  )
+}
 
 export default async function KeywordClusteringPage() {
-  const hasKey = !!process.env.SEMRUSH_API_KEY
+  const hasCredentials = !!(
+    process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD
+  )
 
-  let clusters: Map<string, Awaited<ReturnType<typeof getDomainKeywords>>> = new Map()
+  let clusters: Map<string, ClusterKeyword[]> = new Map()
   let fetchError: string | null = null
 
-  if (hasKey) {
+  if (hasCredentials) {
     try {
-      const keywords = await getDomainKeywords(TARGET_DOMAIN, DB, 500)
+      const raw = await getDomainRankedKeywords(TARGET_DOMAIN, 2840, 'en', 500)
+      const keywords: ClusterKeyword[] = raw.map(k => ({
+        keyword: k.keyword ?? '',
+        position: k.position ?? 0,
+        searchVolume: k.volume ?? 0,
+        url: k.url ?? '',
+      })).filter(k => k.keyword)
       clusters = clusterKeywords(keywords)
     } catch (e) {
       fetchError = String(e)
@@ -27,11 +69,12 @@ export default async function KeywordClusteringPage() {
         <p className="text-gray-400 text-sm mt-1">Keywords grouped by topic — identify content gaps and opportunities</p>
       </div>
 
-      {!hasKey && (
+      {!hasCredentials && (
         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6">
-          <p className="text-yellow-400 font-medium">SEMrush API key not configured</p>
+          <p className="text-yellow-400 font-medium">DataForSEO credentials not configured</p>
           <p className="text-gray-400 text-sm mt-1">
-            Add <code className="text-gray-300 bg-gray-800 px-1 rounded">SEMRUSH_API_KEY</code> to Vercel environment variables.
+            Add <code className="text-gray-300 bg-gray-800 px-1 rounded">DATAFORSEO_LOGIN</code> and{' '}
+            <code className="text-gray-300 bg-gray-800 px-1 rounded">DATAFORSEO_PASSWORD</code> to your environment variables.
           </p>
         </div>
       )}

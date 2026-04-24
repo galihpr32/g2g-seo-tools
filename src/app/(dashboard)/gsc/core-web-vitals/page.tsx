@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const revalidate = 3600
@@ -37,14 +38,17 @@ export default async function CoreWebVitalsPage() {
   const { data: { user } } = await supabase.auth.getUser()
 
   const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
+  // Use service client so workspace members can read owner's snapshots (bypasses RLS)
+  const db = createServiceClient()
+
   const { data: conn } = effectiveOwnerId
-    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
+    ? await db.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
     : { data: null }
 
   const siteUrl = conn?.site_url
 
   const { data: snapshots } = siteUrl
-    ? await supabase
+    ? await db
         .from('gsc_cwv_snapshots')
         .select('*')
         .eq('site_url', siteUrl)
@@ -52,7 +56,7 @@ export default async function CoreWebVitalsPage() {
         .limit(10)
     : { data: [] }
 
-  const { data: alerts } = await supabase
+  const { data: alerts } = await db
     .from('alert_log')
     .select('*')
     .eq('alert_type', 'cwv')
