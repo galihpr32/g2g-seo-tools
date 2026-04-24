@@ -10,10 +10,10 @@ interface Message {
 }
 
 const QUICK_PROMPTS = [
-  { label: 'Explain this page',       prompt: 'Can you explain what this page is for and how to use it effectively?' },
-  { label: 'What should I prioritise?', prompt: 'Based on what\'s on this page, what should be my top SEO priority right now?' },
-  { label: 'How to improve rankings?', prompt: 'What are the most impactful ways to improve G2G\'s keyword rankings?' },
-  { label: 'Spot quick wins',          prompt: 'Looking at this data, what are the quickest wins I can act on this week?' },
+  { label: '🎯 Keyword gaps',     prompt: 'Find me the top 10 keywords that competitors rank well for but G2G doesn\'t. Prioritize by search volume.' },
+  { label: '📊 Top pages',        prompt: 'What are G2G\'s top performing pages right now and which ones should I focus on?' },
+  { label: '🏆 Competitor SoV',   prompt: 'How does G2G\'s Share of Voice compare to competitors? Who is winning right now?' },
+  { label: '✅ What\'s pending?',  prompt: 'What are the most urgent SEO action items and what have the agents found recently?' },
 ]
 
 // Very basic markdown renderer — bold, inline code, line breaks, bullet lists
@@ -147,8 +147,8 @@ export default function AIAssistant() {
             ? 'bg-gray-700 text-white rotate-45'
             : 'bg-red-600 hover:bg-red-500 text-white'
         }`}
-        title="Ask Claude"
-        aria-label="Open SEO Assistant"
+        title="Ask Mimir"
+        aria-label="Open Mimir The All Knowing"
       >
         {open ? (
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -175,8 +175,8 @@ export default function AIAssistant() {
                 </svg>
               </div>
               <div>
-                <p className="text-white text-sm font-semibold leading-tight">SEO Assistant</p>
-                <p className="text-gray-500 text-[10px]">Powered by Claude · knows this page</p>
+                <p className="text-white text-sm font-semibold leading-tight">Mimir The All Knowing</p>
+                <p className="text-gray-500 text-[10px]">Reads live data · answers from anywhere</p>
               </div>
             </div>
             {messages.length > 0 && (
@@ -191,7 +191,7 @@ export default function AIAssistant() {
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 min-h-0">
             {messages.length === 0 ? (
               <div className="py-2">
-                <p className="text-gray-400 text-xs mb-3">Ask me anything about SEO for G2G, or try a quick action:</p>
+                <p className="text-gray-400 text-xs mb-3">Ask anything — Mimir reads your live SEO data to answer:</p>
                 <div className="grid grid-cols-2 gap-2">
                   {QUICK_PROMPTS.map(q => (
                     <button
@@ -212,7 +212,7 @@ export default function AIAssistant() {
                       ? 'bg-gray-700 text-gray-300'
                       : 'bg-red-600 text-white'
                   }`}>
-                    {msg.role === 'user' ? 'U' : 'AI'}
+                    {msg.role === 'user' ? 'U' : 'M'}
                   </div>
                   <div className={`max-w-[85%] rounded-2xl px-3 py-2.5 ${
                     msg.role === 'user'
@@ -231,12 +231,15 @@ export default function AIAssistant() {
             {/* Loading indicator */}
             {loading && (
               <div className="flex gap-2.5">
-                <div className="w-6 h-6 rounded-full flex-shrink-0 bg-red-600 flex items-center justify-center text-[10px] font-bold text-white mt-0.5">AI</div>
+                <div className="w-6 h-6 rounded-full flex-shrink-0 bg-red-600 flex items-center justify-center text-[10px] font-bold text-white mt-0.5">M</div>
                 <div className="bg-gray-900 border border-gray-800 rounded-2xl px-3 py-2.5">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <div className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1">
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    <span className="text-[10px] text-gray-600">consulting the well…</span>
                   </div>
                 </div>
               </div>

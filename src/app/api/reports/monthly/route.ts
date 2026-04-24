@@ -268,13 +268,22 @@ export async function POST(req: Request) {
     return b.live_date >= monthStart && b.live_date <= monthEnd
   })
 
-  const totalCostThisMonth = newThisMonth.reduce((sum, b) => {
-    return sum + (b.cost_amount ? parseFloat(String(b.cost_amount)) : 0)
-  }, 0)
+  // Group costs by currency to avoid mixing IDR with USD
+  const costsByCurrency: Record<string, number> = {}
+  for (const b of newThisMonth) {
+    if (!b.cost_amount) continue
+    const cur = (b.cost_currency ?? 'USD').toUpperCase()
+    costsByCurrency[cur] = (costsByCurrency[cur] ?? 0) + parseFloat(String(b.cost_amount))
+  }
+  const totalCostThisMonth = costsByCurrency['USD'] ?? 0 // legacy field — USD only for backward compat
 
-  const totalCostAllTime = activeBacklinks.reduce((sum, b) => {
-    return sum + (b.cost_amount ? parseFloat(String(b.cost_amount)) : 0)
-  }, 0)
+  const allTimeCostsByCurrency: Record<string, number> = {}
+  for (const b of activeBacklinks) {
+    if (!b.cost_amount) continue
+    const cur = (b.cost_currency ?? 'USD').toUpperCase()
+    allTimeCostsByCurrency[cur] = (allTimeCostsByCurrency[cur] ?? 0) + parseFloat(String(b.cost_amount))
+  }
+  const totalCostAllTime = allTimeCostsByCurrency['USD'] ?? 0
 
   // Compute average position improvement for active links that have both positions
   const linksWithImprovement = activeBacklinks.filter(
@@ -287,24 +296,27 @@ export async function POST(req: Request) {
     : null
 
   const backlinksData = {
-    totalActive:         activeBacklinks.length,
-    newThisMonth:        newThisMonth.length,
-    pendingLinks:        allBacklinks.filter(b => b.link_status === 'pending').length,
-    brokenLinks:         allBacklinks.filter(b => b.link_status === 'broken').length,
-    totalCostThisMonth:  +totalCostThisMonth.toFixed(2),
-    totalCostAllTime:    +totalCostAllTime.toFixed(2),
+    totalActive:              activeBacklinks.length,
+    newThisMonth:             newThisMonth.length,
+    pendingLinks:             allBacklinks.filter(b => b.link_status === 'pending').length,
+    brokenLinks:              allBacklinks.filter(b => b.link_status === 'broken').length,
+    totalCostThisMonth:       +totalCostThisMonth.toFixed(2),   // USD only (legacy compat)
+    totalCostAllTime:         +totalCostAllTime.toFixed(2),      // USD only (legacy compat)
+    costsByCurrency:          Object.entries(costsByCurrency).map(([currency, total]) => ({ currency, total: +total.toFixed(2) })),
+    allTimeCostsByCurrency:   Object.entries(allTimeCostsByCurrency).map(([currency, total]) => ({ currency, total: +total.toFixed(2) })),
     avgPositionImprovement,
     recentLinks: newThisMonth
       .sort((a, b) => (b.live_date ?? '').localeCompare(a.live_date ?? ''))
       .slice(0, 8)
       .map(b => ({
-        siteName:      b.site_name,
-        externalUrl:   b.external_url,
-        anchorText:    b.anchor_text,
-        targetPage:    b.target_page,
-        targetKeyword: b.target_keyword ?? null,
-        liveDate:      b.live_date ?? null,
-        costAmount:    b.cost_amount ? parseFloat(String(b.cost_amount)) : null,
+        siteName:           b.site_name,
+        externalUrl:        b.external_url,
+        anchorText:         b.anchor_text,
+        targetPage:         b.target_page,
+        targetKeyword:      b.target_keyword ?? null,
+        liveDate:           b.live_date ?? null,
+        costAmount:         b.cost_amount ? parseFloat(String(b.cost_amount)) : null,
+        costCurrency:       (b.cost_currency ?? 'USD').toUpperCase(),
         positionCurrent:    b.position_current ?? null,
         positionAtCreation: b.position_at_creation ?? null,
       })),

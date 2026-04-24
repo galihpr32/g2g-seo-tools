@@ -303,6 +303,114 @@ export async function getDomainOverviewDFS(
   }
 }
 
+// ─── Bulk Keyword Difficulty ─────────────────────────────────────────────────
+// Returns a map of keyword → difficulty score (0–100)
+export async function getBulkKeywordDifficulty(
+  keywords: string[],
+  locationCode = 2840,
+  languageCode  = 'en'
+): Promise<Record<string, number>> {
+  if (!keywords.length) return {}
+  const data = await dfsPost<any>('/dataforseo_labs/google/bulk_keyword_difficulty/live', [{
+    keywords:      keywords.slice(0, 1000),
+    location_code: locationCode,
+    language_code: languageCode,
+  }])
+  const result: Record<string, number> = {}
+  for (const item of data?.tasks?.[0]?.result ?? []) {
+    if (item.keyword != null) result[item.keyword] = item.keyword_difficulty ?? 0
+  }
+  return result
+}
+
+// ─── On-Page Audit ───────────────────────────────────────────────────────────
+// Async crawl task: post → poll → summary
+
+export interface OnPageAuditSummary {
+  taskId: string
+  crawlProgress: 'in_progress' | 'finished'
+  pagesTotal: number
+  pagesCrawled: number
+  onpageScore: number
+  // Issue counts
+  noTitle: number
+  noDescription: number
+  noH1: number
+  duplicateTitle: number
+  duplicateDescription: number
+  brokenLinks: number
+  brokenResources: number
+  is4xx: number
+  is5xx: number
+  largePageSize: number
+  noImageAlt: number
+  redirectChain: number
+  isHttps: number
+  linksInternal: number
+  linksExternal: number
+}
+
+export async function startOnPageCrawl(target: string, maxCrawlPages = 100): Promise<string | null> {
+  const data = await dfsPost<any>('/on_page/task_post', [
+    {
+      target,
+      max_crawl_pages: maxCrawlPages,
+      crawl_sub_domain: false,
+      check_spell: false,
+      enable_content_parsing: false,
+      load_resources: false,
+      enable_javascript: false,
+    },
+  ])
+  return data?.tasks?.[0]?.id ?? null
+}
+
+export async function getOnPageSummary(taskId: string): Promise<OnPageAuditSummary | null> {
+  const data = await dfsPost<any>(`/on_page/summary`, [{ id: taskId }])
+  const result = data?.tasks?.[0]?.result?.[0]
+  if (!result) return null
+
+  const m = result.page_metrics ?? {}
+  const cs = result.crawl_status ?? {}
+
+  return {
+    taskId,
+    crawlProgress:       result.crawl_progress === 'finished' ? 'finished' : 'in_progress',
+    pagesTotal:          cs.max_crawl_pages ?? 0,
+    pagesCrawled:        cs.pages_crawled ?? 0,
+    onpageScore:         result.onpage_score ?? 0,
+    noTitle:             m.no_title ?? m.checks?.no_title ?? 0,
+    noDescription:       m.no_description ?? m.checks?.no_description ?? 0,
+    noH1:                m.no_h1_tag ?? m.checks?.no_h1_tag ?? 0,
+    duplicateTitle:      m.duplicate_title ?? m.checks?.duplicate_title ?? 0,
+    duplicateDescription: m.duplicate_description ?? m.checks?.duplicate_description ?? 0,
+    brokenLinks:         m.broken_links ?? m.checks?.broken_links ?? 0,
+    brokenResources:     m.broken_resources ?? m.checks?.broken_resources ?? 0,
+    is4xx:               m.is_4xx_code ?? m.checks?.is_4xx_code ?? 0,
+    is5xx:               m.is_5xx_code ?? m.checks?.is_5xx_code ?? 0,
+    largePageSize:       m.large_page_size ?? m.checks?.large_page_size ?? 0,
+    noImageAlt:          m.no_image_alt ?? m.checks?.no_image_alt ?? 0,
+    redirectChain:       m.redirect_chain ?? m.checks?.redirect_chain ?? 0,
+    isHttps:             m.checks?.is_https ?? 0,
+    linksInternal:       m.links_internal ?? 0,
+    linksExternal:       m.links_external ?? 0,
+  }
+}
+
+// Poll until finished (max ~45s)
+export async function pollOnPageTask(taskId: string, maxWaitMs = 45_000): Promise<OnPageAuditSummary | null> {
+  const interval = 5_000
+  const deadline = Date.now() + maxWaitMs
+  while (Date.now() < deadline) {
+    const summary = await getOnPageSummary(taskId)
+    if (!summary) return null
+    if (summary.crawlProgress === 'finished') return summary
+    await new Promise(r => setTimeout(r, interval))
+  }
+  // Return whatever we have (still in-progress)
+  return await getOnPageSummary(taskId)
+}
+
 // ─── SERP for multiple keywords (batch) ─────────────────────────────────────
 // Run SERP for top 3 GSC queries of the page to get comprehensive PAA + related
 export async function batchSerpData(

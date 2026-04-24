@@ -598,6 +598,7 @@ function GapTable({ rows, tab, competitorDomains, selected, onToggle, onToggleAl
                     : th('position_diff', 'Gap')
                 )}
                 <th className="py-3 px-3 text-right text-xs font-medium text-gray-500">G2G URL</th>
+                <th className="py-3 px-3 w-10"></th>
               </tr>
             </thead>
             <tbody>
@@ -653,6 +654,14 @@ function GapTable({ rows, tab, competitorDomains, selected, onToggle, onToggleAl
                           {(() => { try { return new URL(r.g2g_url).pathname } catch { return r.g2g_url } })()}
                         </a>
                       ) : <span className="text-gray-700 text-xs">—</span>}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <a
+                        href={`/content/keyword-map?add=${encodeURIComponent(r.keyword)}${r.searchVolume > 0 ? `&volume=${r.searchVolume}` : ''}`}
+                        onClick={e => e.stopPropagation()}
+                        className="text-gray-600 hover:text-blue-400 transition text-sm"
+                        title="Add to Keyword Map"
+                      >🗺️</a>
                     </td>
                   </tr>
                 )

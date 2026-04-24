@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
+import { getEffectiveOwnerId } from '@/lib/workspace'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -8,53 +10,524 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 interface Message { role: 'user' | 'assistant'; content: string }
 
-// Page context descriptions — injected based on current URL
+// ── Page context map ──────────────────────────────────────────────────────────
+
 const PAGE_CONTEXTS: Record<string, string> = {
-  '/dashboard':                    'the main SEO dashboard showing traffic, clicks, and impressions overview',
-  '/gsc/ranking-drop':             'GSC Clicks Drop Alert — monitors pages that lost traffic recently',
-  '/gsc/product-rankings':         'Top Product Tracker — tracks keyword rankings for specific G2G product pages',
-  '/gsc/action-items':             'Action Items — SEO tasks and content briefs assigned to the team',
-  '/gsc/index-coverage':           'Index Coverage — shows Google indexing status for G2G pages',
-  '/gsc/core-web-vitals':          'Core Web Vitals — page performance metrics (LCP, CLS, INP)',
-  '/ga4/organic-traffic':          'GA4 Organic Traffic — sessions, engagement, and organic conversions',
-  '/ga4/content-performance':      'Content Performance — which pages drive the most engaged traffic',
-  '/semrush/rankings':             'SEMrush Keyword Rankings — G2G organic keyword positions with intent badges',
-  '/semrush/site-audit':           'SEMrush Site Audit — technical SEO issues across the site',
-  '/semrush/competitors':          'SEMrush Competitor Tracking — how G2G compares to top competitors',
-  '/competitive/keyword-gap':      'Keyword Gap Finder — keywords competitors rank for that G2G does not',
-  '/competitive/opportunities':    'Page Opportunities — potential new pages based on keyword gaps',
-  '/competitive/serp-tracker':     'SERP & Share of Voice — G2G visibility across tracked keywords',
-  '/competitive/page-analyzer':    'Page Analyzer — deep analysis of any URL vs competitors',
-  '/content/trends':               'Game Trends — trending games by Steam players and search volume',
-  '/content/studio':               'Content Studio — AI-powered content creation wizard for G2G product pages',
-  '/knowledge-base':               'Knowledge Base — G2G brand guidelines, USPs, and writing rules',
-  '/reports/weekly':               'Weekly Pulse Report — weekly SEO performance summary for G2G',
-  '/reports/monthly':              'Monthly SEO Report — monthly performance, wins, and action plan',
-  '/reports/serp-features':        'SERP Features — which featured snippets, PAA, image packs G2G captures',
-  '/reports/backlinks':            'Backlink Audit — referring domains, anchor text, and toxic link signals',
-  '/backlinks':                    'Backlink Tracker — paid and organic backlinks being monitored',
-  '/tools/url-analysis':           'URL Analyzer — deep SEO analysis of any G2G page',
-  '/tools/api-costs':              'API Cost Tracker — usage and spend across SEMrush, DataForSEO, etc.',
-  '/campaigns':                    'SEO Campaigns — active campaign tracking with kanban board',
-  '/team-performance':             'Team Performance — output and activity metrics for the SEO team',
+  '/dashboard':                 'the main SEO dashboard showing traffic, clicks, and impressions overview',
+  '/gsc/ranking-drop':          'GSC Clicks Drop Alert — monitors pages that lost traffic recently',
+  '/gsc/product-rankings':      'Top Product Tracker — tracks keyword rankings for specific G2G product pages',
+  '/gsc/action-items':          'Action Items — SEO tasks and content briefs assigned to the team',
+  '/gsc/index-coverage':        'Index Coverage — shows Google indexing status for G2G pages',
+  '/gsc/core-web-vitals':       'Core Web Vitals — page performance metrics (LCP, CLS, INP)',
+  '/ga4/organic-traffic':       'GA4 Organic Traffic — sessions, engagement, and organic conversions',
+  '/ga4/content-performance':   'Content Performance — which pages drive the most engaged traffic',
+  '/semrush/rankings':          'SEMrush Keyword Rankings — G2G organic keyword positions with intent badges',
+  '/semrush/site-audit':        'Site Audit — technical SEO issues and DataForSEO on-page health check',
+  '/competitive/keyword-gap':   'Keyword Gap Finder — keywords competitors rank for that G2G does not',
+  '/competitive/opportunities': 'Page Opportunities — potential new pages based on keyword gaps',
+  '/competitive/serp-tracker':  'SERP & Share of Voice — G2G visibility across tracked keywords',
+  '/content/trends':            'Game Trends — trending games by Steam players and search volume',
+  '/content/studio':            'Content Studio — AI-powered content creation wizard for G2G product pages',
+  '/knowledge-base':            'Knowledge Base — G2G brand guidelines, USPs, and writing rules',
+  '/reports/weekly':            'Weekly Pulse Report — weekly SEO performance summary for G2G',
+  '/reports/monthly':           'Monthly SEO Report — monthly performance, wins, and action plan',
+  '/reports/backlinks':         'Backlink Audit — referring domains, anchor text, and toxic link signals',
+  '/backlinks':                 'Backlink Tracker — paid and organic backlinks being monitored',
+  '/link-building':             'Link Building — managing paid backlink placements and tracking ROI',
+  '/agents':                    'AI Agents — Norse-themed SEO agents: Heimdall, Odin, Loki, Bragi, Hermod',
+  '/campaigns':                 'SEO Campaigns — active campaign tracking with kanban board',
+  '/team-performance':          'Team Performance — output and activity metrics for the SEO team',
 }
 
 function getPageContext(pathname: string): string {
-  // Exact match first
   if (PAGE_CONTEXTS[pathname]) return PAGE_CONTEXTS[pathname]
-  // Prefix match
   for (const [key, desc] of Object.entries(PAGE_CONTEXTS)) {
     if (pathname.startsWith(key)) return desc
   }
   return 'the G2G SEO Tools dashboard'
 }
 
-// POST /api/ai/chat
-// Body: { messages: Message[], current_page: string, page_data?: string }
+// ── Tool definitions ──────────────────────────────────────────────────────────
+
+const TOOLS: Anthropic.Tool[] = [
+  {
+    name: 'query_keyword_gaps',
+    description: 'Find keywords that competitors rank for but G2G does not. Returns the most recent Loki agent findings from the keyword gap analysis. Use this when asked about keyword opportunities, gaps, competitor advantages, or "what keywords am I missing".',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        limit:      { type: 'number', description: 'Max gaps to return (default 10)' },
+        min_volume: { type: 'number', description: 'Minimum monthly search volume filter (default 0)' },
+        priority:   { type: 'string', enum: ['high', 'medium', 'low', 'all'], description: 'Filter by priority level' },
+      },
+    },
+  },
+  {
+    name: 'get_ranking_data',
+    description: 'Get G2G keyword rankings and top-performing pages from GSC snapshots. Use for questions about current ranking positions, pages gaining or losing traffic, CTR trends, or overall organic performance.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        days:  { type: 'number', description: 'Lookback period in days (default 30)' },
+        limit: { type: 'number', description: 'Number of top pages to return (default 15)' },
+      },
+    },
+  },
+  {
+    name: 'get_action_items',
+    description: 'Get current SEO action items and their status. Use for questions about what the team is working on, what is pending, completed tasks, or workload status.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        status: { type: 'string', enum: ['pending', 'in_progress', 'done', 'all'], description: 'Filter by status (default: all)' },
+        limit:  { type: 'number', description: 'Number of items to return (default 15)' },
+      },
+    },
+  },
+  {
+    name: 'get_competitor_sov',
+    description: 'Get Share of Voice (SoV) comparison between G2G and tracked competitors from SERP snapshot data. Use for questions about competitive position, who is winning which keywords, or how G2G visibility compares to rivals.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        days: { type: 'number', description: 'Lookback period in days (default 30)' },
+      },
+    },
+  },
+  {
+    name: 'get_backlinks',
+    description: 'Get paid backlink data — active links, recent acquisitions, broken links, costs, and position improvements. Use for questions about link building progress, ROI, or link portfolio health.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        status: { type: 'string', enum: ['active', 'pending', 'broken', 'all'], description: 'Filter by link status (default: all)' },
+        limit:  { type: 'number', description: 'Number of links (default 15)' },
+      },
+    },
+  },
+  {
+    name: 'get_agent_insights',
+    description: 'Get recent run summaries and findings from the Norse AI agents: Heimdall (monitoring), Odin (trends), Loki (competitive analysis), Bragi (content writing), Hermod (outreach). Use when asked what agents found, their last activity, or pending agent actions.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        agent: { type: 'string', enum: ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'all'], description: 'Which agent to query (default: all)' },
+        limit: { type: 'number', description: 'Number of recent runs (default 5)' },
+      },
+    },
+  },
+  {
+    name: 'get_content_opportunities',
+    description: 'Get page creation opportunities — keywords and topics where G2G could create new content to rank. Use for questions about content gaps, new page ideas, or what content to create next.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        limit:      { type: 'number', description: 'Number of opportunities (default 10)' },
+        min_volume: { type: 'number', description: 'Minimum search volume (default 100)' },
+      },
+    },
+  },
+]
+
+// ── Tool execution ────────────────────────────────────────────────────────────
+
+async function executeTool(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  ownerId: string
+): Promise<string> {
+  const db = createServiceClient()
+
+  try {
+    switch (toolName) {
+
+      case 'query_keyword_gaps': {
+        const limit     = Number(toolInput.limit      ?? 10)
+        const minVolume = Number(toolInput.min_volume ?? 0)
+        const priority  = String(toolInput.priority   ?? 'all')
+
+        const query = db
+          .from('agent_actions')
+          .select('title, description, data, created_at, priority, status')
+          .eq('owner_user_id', ownerId)
+          .eq('agent_key', 'loki')
+          .eq('action_type', 'add_action_item')
+          .in('status', ['pending', 'approved', 'executed'])
+          .order('created_at', { ascending: false })
+          .limit(50)
+
+        const { data } = await query
+        let gaps = (data ?? []).filter(a => {
+          const d = a.data as Record<string, unknown>
+          const vol = Number(d.search_volume ?? 0)
+          if (vol < minVolume) return false
+          if (priority !== 'all' && a.priority !== priority) return false
+          return true
+        })
+        .slice(0, limit)
+        .map(a => {
+          const d = a.data as Record<string, unknown>
+          return {
+            keyword:              String(d.keyword ?? ''),
+            competitor:           String(d.competitor_domain ?? ''),
+            competitor_position:  d.competitor_position,
+            our_position:         d.our_position ?? 'not ranking',
+            search_volume:        Number(d.search_volume ?? 0),
+            priority:             a.priority,
+          }
+        })
+
+        if (!gaps.length) return 'No keyword gaps found in DB. The Loki agent needs to run first to identify gaps. Recommend triggering Loki from the Agents page.'
+
+        return `Found ${gaps.length} keyword gap${gaps.length > 1 ? 's' : ''} (from Loki agent):\n\n` +
+          gaps.map((g, i) =>
+            `${i + 1}. **"${g.keyword}"** [${g.priority} priority]\n   • ${g.competitor} ranks #${g.competitor_position}, G2G: ${g.our_position}\n   • ${g.search_volume.toLocaleString()} searches/month`
+          ).join('\n\n')
+      }
+
+      case 'get_ranking_data': {
+        const days  = Number(toolInput.days  ?? 30)
+        const limit = Number(toolInput.limit ?? 15)
+        const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)
+
+        const { data: snaps } = await db
+          .from('gsc_ranking_snapshots')
+          .select('page, clicks, impressions, position, snapshot_date')
+          .gte('snapshot_date', since)
+          .order('clicks', { ascending: false })
+          .limit(200)
+
+        if (!snaps?.length) return `No GSC ranking data found for the last ${days} days. Connect Google Search Console to start tracking.`
+
+        // Aggregate by page
+        const pageMap = new Map<string, { clicks: number; impressions: number; positions: number[] }>()
+        for (const s of snaps) {
+          const p = pageMap.get(s.page) ?? { clicks: 0, impressions: 0, positions: [] }
+          p.clicks      += s.clicks ?? 0
+          p.impressions += s.impressions ?? 0
+          if (s.position) p.positions.push(s.position)
+          pageMap.set(s.page, p)
+        }
+
+        const pages = Array.from(pageMap.entries())
+          .map(([page, v]) => ({
+            page:     page.replace('https://www.g2g.com', '').replace('https://g2g.com', '') || '/',
+            clicks:   v.clicks,
+            impressions: v.impressions,
+            avgPos:   v.positions.length ? +(v.positions.reduce((a, b) => a + b, 0) / v.positions.length).toFixed(1) : 0,
+          }))
+          .sort((a, b) => b.clicks - a.clicks)
+          .slice(0, limit)
+
+        const totalClicks       = pages.reduce((s, p) => s + p.clicks, 0)
+        const totalImpressions  = pages.reduce((s, p) => s + p.impressions, 0)
+
+        return `GSC data for last ${days} days:\n` +
+          `Total clicks: ${totalClicks.toLocaleString()} | Impressions: ${totalImpressions.toLocaleString()}\n\n` +
+          `Top ${pages.length} pages by clicks:\n` +
+          pages.map((p, i) =>
+            `${i + 1}. ${p.page}\n   ${p.clicks.toLocaleString()} clicks · ${p.impressions.toLocaleString()} impr · avg pos ${p.avgPos}`
+          ).join('\n')
+      }
+
+      case 'get_action_items': {
+        const status = String(toolInput.status ?? 'all')
+        const limit  = Number(toolInput.limit  ?? 15)
+
+        const query = db
+          .from('seo_action_items')
+          .select('title, action_type, status, priority, assigned_to, created_at, completed_at')
+          .eq('owner_user_id', ownerId)
+          .order('created_at', { ascending: false })
+          .limit(limit)
+
+        if (status !== 'all') query.eq('status', status)
+
+        const { data } = await query
+        if (!data?.length) return `No action items found${status !== 'all' ? ` with status "${status}"` : ''}.`
+
+        const grouped = { pending: [] as typeof data, in_progress: [] as typeof data, done: [] as typeof data }
+        for (const item of data) {
+          if (item.status === 'pending')     grouped.pending.push(item)
+          else if (item.status === 'in_progress') grouped.in_progress.push(item)
+          else if (item.status === 'done')   grouped.done.push(item)
+        }
+
+        let result = `Action items (${data.length} total):\n`
+        if (grouped.pending.length)    result += `\n🟡 Pending (${grouped.pending.length}):\n` + grouped.pending.slice(0, 5).map(i => `• [${i.priority}] ${i.title}`).join('\n')
+        if (grouped.in_progress.length) result += `\n🔵 In Progress (${grouped.in_progress.length}):\n` + grouped.in_progress.slice(0, 5).map(i => `• [${i.priority}] ${i.title}`).join('\n')
+        if (grouped.done.length)       result += `\n✅ Done (${grouped.done.length} recent):\n` + grouped.done.slice(0, 3).map(i => `• ${i.title}`).join('\n')
+        return result
+      }
+
+      case 'get_competitor_sov': {
+        const days  = Number(toolInput.days ?? 30)
+        const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)
+
+        const { data: snaps } = await db
+          .from('serp_snapshots')
+          .select('keyword, results, snapshot_date')
+          .eq('owner_user_id', ownerId)
+          .gte('snapshot_date', since)
+          .order('snapshot_date', { ascending: false })
+
+        if (!snaps?.length) return `No SERP snapshot data for the last ${days} days. Run the SERP Tracker to start collecting Share of Voice data.`
+
+        type FlatRow = { domain: string; position: number }
+        const sov = new Map<string, number>()
+        const kwCnt = new Map<string, number>()
+        for (const snap of snaps) {
+          const results = (snap.results ?? []) as FlatRow[]
+          for (const r of results) {
+            if (!r.domain || r.position > 10) continue
+            const d = r.domain.replace(/^www\./, '')
+            sov.set(d, (sov.get(d) ?? 0) + 1)
+            kwCnt.set(d, (kwCnt.get(d) ?? 0) + 1)
+          }
+        }
+
+        const totalAppearances = Array.from(sov.values()).reduce((a, b) => a + b, 0)
+        const rows = Array.from(sov.entries())
+          .map(([domain, count]) => ({ domain, sov: +((count / totalAppearances) * 100).toFixed(1), keywords: kwCnt.get(domain) ?? 0 }))
+          .sort((a, b) => b.sov - a.sov)
+          .slice(0, 8)
+
+        const g2gRow = rows.find(r => r.domain === 'g2g.com')
+        return `Share of Voice — last ${days} days (${snaps.length} keyword snapshots):\n\n` +
+          rows.map((r, i) => {
+            const isG2G = r.domain === 'g2g.com'
+            return `${i + 1}. ${isG2G ? '**G2G**' : r.domain}: **${r.sov}%** SoV (${r.keywords} top-10 appearances)`
+          }).join('\n') +
+          (g2gRow ? `\n\nG2G is at position ${rows.findIndex(r => r.domain === 'g2g.com') + 1} out of ${rows.length} tracked domains.` : '\n\nG2G has no top-10 appearances in the tracked keywords — critical gap to address.')
+      }
+
+      case 'get_backlinks': {
+        const status = String(toolInput.status ?? 'all')
+        const limit  = Number(toolInput.limit  ?? 15)
+
+        const query = db
+          .from('paid_backlinks')
+          .select('site_name, external_url, anchor_text, target_page, link_status, live_date, cost_amount, cost_currency, position_current, position_at_creation, target_keyword')
+          .eq('owner_user_id', ownerId)
+          .order('live_date', { ascending: false })
+          .limit(limit)
+
+        if (status !== 'all') query.eq('link_status', status)
+
+        const { data } = await query
+        if (!data?.length) return `No backlinks found${status !== 'all' ? ` with status "${status}"` : ''}.`
+
+        const active  = data.filter(b => b.link_status === 'active').length
+        const broken  = data.filter(b => b.link_status === 'broken').length
+        const pending = data.filter(b => b.link_status === 'pending').length
+
+        const fmtCost = (amt: number | null, cur: string | null) => {
+          if (!amt) return 'free'
+          const c = (cur ?? 'USD').toUpperCase()
+          if (c === 'IDR') return `Rp ${amt.toLocaleString()}`
+          return `$${amt.toLocaleString()}`
+        }
+
+        return `Backlink portfolio summary: ${active} active · ${pending} pending · ${broken} broken\n\n` +
+          `Recent backlinks:\n` +
+          data.slice(0, 10).map(b => {
+            const posDiff = (b.position_at_creation != null && b.position_current != null)
+              ? b.position_at_creation - b.position_current : null
+            const posStr = b.position_current ? `pos #${b.position_current}${posDiff && posDiff > 0 ? ` (↑${posDiff})` : ''}` : 'no pos data'
+            return `• **${b.site_name}** [${b.link_status}] — "${b.anchor_text}" → ${b.target_page.replace('https://www.g2g.com', '') || '/'}\n  ${posStr} · cost: ${fmtCost(b.cost_amount, b.cost_currency)}`
+          }).join('\n')
+      }
+
+      case 'get_agent_insights': {
+        const agent = String(toolInput.agent ?? 'all')
+        const limit = Number(toolInput.limit ?? 5)
+
+        const query = db
+          .from('agent_runs')
+          .select('agent_key, status, summary, findings_count, actions_queued, created_at, finished_at')
+          .eq('owner_user_id', ownerId)
+          .order('created_at', { ascending: false })
+          .limit(agent === 'all' ? limit * 5 : limit)
+
+        if (agent !== 'all') query.eq('agent_key', agent)
+
+        const { data: runs } = await query
+
+        // Also get pending actions
+        const { data: pendingActions } = await db
+          .from('agent_actions')
+          .select('agent_key, action_type, title, priority, status')
+          .eq('owner_user_id', ownerId)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false })
+          .limit(10)
+
+        if (!runs?.length) return `No agent run history found${agent !== 'all' ? ` for ${agent}` : ''}.`
+
+        const AGENT_NAMES: Record<string, string> = {
+          heimdall: 'Heimdall (Monitoring)', odin: 'Odin (Trends)',
+          loki: 'Loki (Competitive)', bragi: 'Bragi (Content)', hermod: 'Hermod (Outreach)',
+        }
+
+        let result = `Recent agent activity:\n\n`
+        for (const run of runs.slice(0, limit)) {
+          const name = AGENT_NAMES[run.agent_key] ?? run.agent_key
+          const when = new Date(run.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          result += `**${name}** — ${when} [${run.status}]\n${run.summary ?? 'No summary'}\n`
+          if (run.findings_count) result += `Findings: ${run.findings_count} · Actions queued: ${run.actions_queued}\n`
+          result += '\n'
+        }
+
+        if (pendingActions?.length) {
+          result += `\nPending actions waiting for approval (${pendingActions.length}):\n`
+          result += pendingActions.slice(0, 5).map(a =>
+            `• [${a.agent_key}] [${a.priority}] ${a.title}`
+          ).join('\n')
+        }
+
+        return result
+      }
+
+      case 'get_content_opportunities': {
+        const limit     = Number(toolInput.limit      ?? 10)
+        const minVolume = Number(toolInput.min_volume ?? 100)
+
+        const { data } = await db
+          .from('agent_actions')
+          .select('title, description, data, priority, created_at')
+          .eq('owner_user_id', ownerId)
+          .eq('agent_key', 'odin')
+          .in('status', ['pending', 'approved'])
+          .order('created_at', { ascending: false })
+          .limit(50)
+
+        const opps = (data ?? [])
+          .filter(a => {
+            const d = a.data as Record<string, unknown>
+            return Number(d.search_volume ?? 0) >= minVolume
+          })
+          .slice(0, limit)
+          .map(a => {
+            const d = a.data as Record<string, unknown>
+            return {
+              title:        a.title,
+              keyword:      String(d.keyword ?? ''),
+              search_volume: Number(d.search_volume ?? 0),
+              priority:     a.priority,
+            }
+          })
+
+        if (!opps.length) {
+          // Fallback: check keyword gaps that suggest content creation
+          const { data: gaps } = await db
+            .from('agent_actions')
+            .select('title, data, priority')
+            .eq('owner_user_id', ownerId)
+            .eq('agent_key', 'loki')
+            .in('status', ['pending', 'approved'])
+            .order('created_at', { ascending: false })
+            .limit(limit)
+
+          if (!gaps?.length) return 'No content opportunities found. Run Odin (Trends) or Loki (Competitive) agents to discover opportunities.'
+
+          return `${gaps.length} content opportunities from keyword gap analysis:\n\n` +
+            gaps.map((g, i) => {
+              const d = g.data as Record<string, unknown>
+              return `${i + 1}. **"${d.keyword}"** [${g.priority}]\n   ${Number(d.search_volume ?? 0).toLocaleString()}/mo · competitor: ${d.competitor_domain} #${d.competitor_position}`
+            }).join('\n\n')
+        }
+
+        return `${opps.length} content opportunities (from Odin agent):\n\n` +
+          opps.map((o, i) =>
+            `${i + 1}. **"${o.keyword}"** [${o.priority}]\n   ${o.search_volume.toLocaleString()} searches/month`
+          ).join('\n\n')
+      }
+
+      default:
+        return `Unknown tool: ${toolName}`
+    }
+  } catch (err) {
+    console.error(`[mimir] Tool ${toolName} error:`, err)
+    return `Error running ${toolName}: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
+// ── System prompt — Mimir The All Knowing ────────────────────────────────────
+
+function buildSystemPrompt(pageDesc: string, pageData?: string): string {
+  return `You are **Mimir The All Knowing** — the wisest oracle in G2G's SEO intelligence suite.
+
+In Norse mythology, Mimir guards the Well of Wisdom beneath Yggdrasil. Odin sacrificed his eye to drink from it. You are that well: when someone asks you a question, you consult the data and return the truth.
+
+G2G (g2g.com) is a leading peer-to-peer gaming marketplace — in-game currency, items, gift cards, top-ups (Robux, V-Bucks, Free Fire diamonds, etc.), game accounts, boosting services, and GamePal companions. Primary market: US and SEA.
+
+The user is currently on: **${pageDesc}**${pageData ? `\n\nData already visible on this page:\n${pageData}` : ''}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR CAPABILITIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You have tools to query G2G's live SEO data:
+• query_keyword_gaps — what keywords are competitors winning that G2G isn't?
+• get_ranking_data — what are G2G's top pages and click trends?
+• get_action_items — what is the team working on / what's pending?
+• get_competitor_sov — how does G2G's visibility compare to rivals?
+• get_backlinks — what does the backlink portfolio look like?
+• get_agent_insights — what have the Norse agents (Heimdall, Odin, Loki, Bragi, Hermod) found?
+• get_content_opportunities — what new pages or content should G2G create?
+
+Use tools PROACTIVELY. If the user asks a question that could be answered better with data, call the tool first, then answer. You can call multiple tools if needed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SEO FRAMEWORKS (from claude-seo)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**E-E-A-T (Experience, Expertise, Authoritativeness, Trustworthiness)**
+When evaluating or recommending content for G2G:
+- Experience: does the page show real transaction data, seller reviews, live prices?
+- Expertise: does the page demonstrate depth about the game/item category?
+- Authoritativeness: does G2G cite its ISO/IEC 27001:2013 cert, GamerProtect, escrow, 200+ payment methods?
+- Trustworthiness: verified sellers, buyer protection, dispute resolution — these are G2G's trust signals
+
+**GEO/AEO (Generative Engine Optimization / Answer Engine Optimization)**
+G2G content should be optimized for AI search (Google AI Overviews, ChatGPT, Perplexity):
+- Use structured FAQ sections answering "how to buy X" / "what is the safest way to buy X"
+- Include clear definitions, step-by-step processes, and comparison tables
+- Mark up key facts with structured data (FAQ, HowTo, Product schema)
+- Target informational + commercial investigation queries, not just transactional
+
+**Technical SEO priorities for gaming marketplaces:**
+- Core Web Vitals: LCP especially critical for category/product pages with many offers
+- Crawl budget: G2G has massive URL space (seller pages, offer pages) — ensure canonical tags and noindex on low-value pages
+- Internal linking: category pages should link to sub-categories and top offers
+- Structured data: Product, AggregateOffer, Review schemas for game item pages
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+G2G WRITING RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When suggesting content: follow G2G brand rules — mention GamerProtect, escrow, verified sellers, 200+ payment methods, ISO/IEC 27001:2013. Never mention competitors by name. Avoid: "immerse yourself", "embark", "dive into", "game-changing", "revolutionize", "leverage", "delve".
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TONE & FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Be direct, confident, and data-driven. Lead with the answer, support with evidence.
+- Use **bold** for key terms and numbers
+- Use bullet points for lists of 3+
+- Use numbered lists for prioritized recommendations
+- Keep responses focused — don't pad or explain what you're about to do, just do it
+- If data is missing or agents haven't run yet, say so clearly and recommend the fix`
+}
+
+// ── POST /api/ai/chat ─────────────────────────────────────────────────────────
+
 export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const ownerId = await getEffectiveOwnerId(supabase, user.id)
 
   const { messages, current_page = '/', page_data } = await req.json() as {
     messages:     Message[]
@@ -64,37 +537,69 @@ export async function POST(req: Request) {
 
   if (!messages?.length) return NextResponse.json({ error: 'No messages' }, { status: 400 })
 
-  const pageDesc = getPageContext(current_page)
+  const pageDesc    = getPageContext(current_page)
+  const systemPrompt = buildSystemPrompt(pageDesc, page_data)
 
-  const systemPrompt = `You are an expert SEO strategist and assistant embedded in G2G's internal SEO tool suite.
-
-G2G (g2g.com) is a leading gaming marketplace — it sells in-game items, currencies, gift cards, top-ups (Robux, V-Bucks, Free Fire diamonds), game accounts, boosting services, and GamePal companions.
-
-The user is currently on: ${pageDesc}${page_data ? `\n\nRelevant data from this page:\n${page_data}` : ''}
-
-YOUR ROLE:
-- Answer SEO questions with expert, actionable advice tailored to G2G's context
-- Analyse data the user shares and provide specific recommendations
-- Help prioritise actions by impact and effort
-- Know G2G's competitive landscape: games marketplaces, gift card resellers, gaming companions
-- Reference the current page context when relevant — if the user asks "what should I do about this?" you understand what "this" refers to
-- Be concise but thorough — bullet points for lists, prose for explanations
-- When suggesting content, follow G2G writing rules: GamerProtect, escrow, verified sellers, 200+ payment methods, ISO/IEC 27001:2013, no competitor mentions, no forbidden words (immerse yourself, embark, dive into, etc.)
-
-TONE: Professional, direct, collaborative. Like a senior SEO consultant talking to the team.`
+  // Convert messages to Anthropic format
+  let apiMessages: Anthropic.MessageParam[] = messages.map(m => ({
+    role:    m.role,
+    content: m.content,
+  }))
 
   try {
-    const response = await anthropic.messages.create({
-      model:      'claude-sonnet-4-6',
-      max_tokens: 2048,
-      system:     systemPrompt,
-      messages:   messages.map(m => ({ role: m.role, content: m.content })),
-    })
+    // ── Agentic loop: call Claude → handle tool use → call again ─────────────
+    // eslint-disable-next-line no-constant-condition
+    for (let round = 0; round < 5; round++) {
+      const response = await anthropic.messages.create({
+        model:      'claude-sonnet-4-6',
+        max_tokens: 2048,
+        system:     systemPrompt,
+        tools:      TOOLS,
+        messages:   apiMessages,
+      })
 
-    const reply = response.content[0]?.type === 'text' ? response.content[0].text : ''
-    return NextResponse.json({ reply })
+      // No tool use — return the text response
+      if (response.stop_reason === 'end_turn' || !response.content.some(c => c.type === 'tool_use')) {
+        const textBlock = response.content.find(c => c.type === 'text')
+        const reply = textBlock?.type === 'text' ? textBlock.text : ''
+        return NextResponse.json({ reply })
+      }
+
+      // Has tool use — process tools and loop
+      const assistantContent = response.content
+
+      // Add assistant message with tool_use blocks
+      apiMessages = [
+        ...apiMessages,
+        { role: 'assistant' as const, content: assistantContent },
+      ]
+
+      // Execute all tools in this response
+      const toolResults: Anthropic.ToolResultBlockParam[] = []
+      for (const block of assistantContent) {
+        if (block.type !== 'tool_use') continue
+        const result = await executeTool(
+          block.name,
+          block.input as Record<string, unknown>,
+          ownerId
+        )
+        toolResults.push({
+          type:        'tool_result',
+          tool_use_id: block.id,
+          content:     result,
+        })
+      }
+
+      // Add tool results to conversation
+      apiMessages = [
+        ...apiMessages,
+        { role: 'user' as const, content: toolResults },
+      ]
+    }
+
+    return NextResponse.json({ reply: 'I was unable to complete this query after multiple attempts. Please try rephrasing.' })
   } catch (e) {
-    console.error('[ai/chat] error:', e)
+    console.error('[mimir] Error:', e)
     return NextResponse.json({ error: String(e) }, { status: 500 })
   }
 }

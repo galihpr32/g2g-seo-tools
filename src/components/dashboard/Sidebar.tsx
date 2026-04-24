@@ -52,6 +52,7 @@ const navItems = [
       { label: 'Product Content',   href: '/content/products',            icon: '📦' },
       { label: 'Knowledge Base',    href: '/knowledge-base',              icon: '🧠' },
       { label: 'Game Trends',       href: '/content/trends',              icon: '🎮' },
+      { label: 'Keyword Map',       href: '/content/keyword-map',         icon: '🗺️' },
       { label: 'Page Opportunities', href: '/competitive/opportunities',  icon: '🆕' },
     ],
   },

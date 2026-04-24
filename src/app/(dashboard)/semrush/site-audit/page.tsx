@@ -1,39 +1,331 @@
-export const revalidate = 3600
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+import { LottieLoader } from '@/components/ui/LottieLoader'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface OnPageSummary {
+  taskId: string
+  crawlProgress: 'in_progress' | 'finished'
+  pagesTotal: number
+  pagesCrawled: number
+  onpageScore: number
+  noTitle: number
+  noDescription: number
+  noH1: number
+  duplicateTitle: number
+  duplicateDescription: number
+  brokenLinks: number
+  brokenResources: number
+  is4xx: number
+  is5xx: number
+  largePageSize: number
+  noImageAlt: number
+  redirectChain: number
+  isHttps: number
+  linksInternal: number
+  linksExternal: number
+}
+
+interface AuditTask {
+  id: string
+  task_id: string
+  status: 'pending' | 'in_progress' | 'finished' | 'error'
+  summary: OnPageSummary | null
+  created_at: string
+  finished_at: string | null
+  error_message: string | null
+}
+
+// ── Issue groups ──────────────────────────────────────────────────────────────
+
+type Severity = 'error' | 'warning' | 'notice'
+
+interface Issue {
+  label: string
+  count: number
+  severity: Severity
+  description: string
+}
+
+function buildIssues(s: OnPageSummary): Issue[] {
+  const all: Issue[] = [
+    { label: 'Broken links',              count: s.brokenLinks,          severity: 'error',   description: 'Internal or external links returning 4xx/5xx responses.' },
+    { label: 'Broken resources',          count: s.brokenResources,      severity: 'error',   description: 'Images, scripts, or stylesheets that fail to load.' },
+    { label: '4xx pages',                 count: s.is4xx,                severity: 'error',   description: 'Pages returning client error responses (e.g. 404 Not Found).' },
+    { label: '5xx pages',                 count: s.is5xx,                severity: 'error',   description: 'Pages returning server error responses.' },
+    { label: 'Missing title tag',         count: s.noTitle,              severity: 'error',   description: 'Pages with no <title> element — critical for SEO.' },
+    { label: 'Missing H1',                count: s.noH1,                 severity: 'warning', description: 'Pages with no H1 heading.' },
+    { label: 'Missing meta description',  count: s.noDescription,        severity: 'warning', description: 'Pages with no meta description tag.' },
+    { label: 'Duplicate title tags',      count: s.duplicateTitle,       severity: 'warning', description: 'Multiple pages sharing the same title.' },
+    { label: 'Duplicate meta desc.',      count: s.duplicateDescription, severity: 'warning', description: 'Multiple pages sharing the same meta description.' },
+    { label: 'Missing image alt text',    count: s.noImageAlt,           severity: 'warning', description: 'Images without alt attributes (hurts accessibility + SEO).' },
+    { label: 'Redirect chains',           count: s.redirectChain,        severity: 'warning', description: 'Pages with 2+ consecutive redirects, wasting crawl budget.' },
+    { label: 'Large page size',           count: s.largePageSize,        severity: 'notice',  description: 'Pages exceeding recommended size limit (affects speed).' },
+  ]
+  return all.filter(i => i.count > 0)
+}
+
+const SEV_COLORS: Record<Severity, { dot: string; badge: string; text: string }> = {
+  error:   { dot: 'bg-red-500',    badge: 'bg-red-500/15 text-red-400 border-red-500/20',    text: 'text-red-400'    },
+  warning: { dot: 'bg-amber-400',  badge: 'bg-amber-400/15 text-amber-400 border-amber-400/20', text: 'text-amber-400' },
+  notice:  { dot: 'bg-blue-400',   badge: 'bg-blue-400/15 text-blue-400 border-blue-400/20',  text: 'text-blue-400'  },
+}
+
+// ── Score ring ────────────────────────────────────────────────────────────────
+
+function ScoreRing({ score }: { score: number }) {
+  const r = 44
+  const circ = 2 * Math.PI * r
+  const fill = (score / 100) * circ
+  const color = score >= 80 ? '#22c55e' : score >= 60 ? '#f59e0b' : '#ef4444'
+  return (
+    <svg width="108" height="108" viewBox="0 0 108 108">
+      <circle cx="54" cy="54" r={r} fill="none" stroke="#1f2937" strokeWidth="10" />
+      <circle cx="54" cy="54" r={r} fill="none" stroke={color} strokeWidth="10"
+        strokeDasharray={`${fill} ${circ}`}
+        strokeLinecap="round"
+        transform="rotate(-90 54 54)" />
+      <text x="54" y="54" textAnchor="middle" dominantBaseline="central"
+        fontSize="22" fontWeight="bold" fill={color}>{Math.round(score)}</text>
+      <text x="54" y="70" textAnchor="middle" fontSize="9" fill="#6b7280">/ 100</text>
+    </svg>
+  )
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SiteAuditPage() {
-  const hasKey = !!process.env.SEMRUSH_API_KEY
+  const hasKey = !!process.env.NEXT_PUBLIC_DATAFORSEO_ENABLED !== false // always attempt
+
+  const [task, setTask]         = useState<AuditTask | null | undefined>(undefined) // undefined = loading
+  const [running, setRunning]   = useState(false)
+  const [error, setError]       = useState<string | null>(null)
+  const [polling, setPolling]   = useState(false)
+
+  // Load latest task on mount
+  useEffect(() => {
+    fetch('/api/site-audit')
+      .then(r => r.json())
+      .then(({ task: t }) => setTask(t ?? null))
+      .catch(() => setTask(null))
+  }, [])
+
+  // Auto-poll while task is in-progress
+  const pollTask = useCallback(async (rowId: string) => {
+    setPolling(true)
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/site-audit?poll=${rowId}`)
+        const { task: t } = await res.json()
+        if (t?.status === 'finished' || t?.status === 'error') {
+          setTask(t)
+          setPolling(false)
+          clearInterval(interval)
+        }
+      } catch { /* silent */ }
+    }, 5_000)
+    // Stop after 5 min regardless
+    setTimeout(() => { clearInterval(interval); setPolling(false) }, 5 * 60 * 1_000)
+  }, [])
+
+  // Start an audit
+  async function runAudit() {
+    setRunning(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/site-audit', { method: 'POST' })
+      const { task: t, error: e } = await res.json()
+      if (e) { setError(e); return }
+      setTask(t)
+      if (t?.status === 'in_progress') {
+        await pollTask(t.id)
+      }
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const summary = task?.status === 'finished' ? task.summary : null
+  const issues  = summary ? buildIssues(summary) : []
+  const errors   = issues.filter(i => i.severity === 'error')
+  const warnings = issues.filter(i => i.severity === 'warning')
+  const notices  = issues.filter(i => i.severity === 'notice')
+  const isLoading = task === undefined || running
 
   return (
-    <div className="p-8">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-white">🔧 Site Audit Digest</h1>
-        <p className="text-gray-400 text-sm mt-1">Technical SEO issues summary from SEMrush Site Audit</p>
+    <div className="p-8 max-w-5xl">
+
+      {/* ── Header ── */}
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">🔧 Site Audit Digest</h1>
+          <p className="text-gray-400 text-sm mt-1">Technical SEO health check via DataForSEO on-page audit</p>
+        </div>
+        <button
+          onClick={runAudit}
+          disabled={running || polling}
+          className="flex-shrink-0 text-xs bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white px-4 py-2 rounded-lg transition font-medium flex items-center gap-1.5"
+        >
+          {running ? '⏳ Running…' : polling ? '🔄 Crawling…' : '▶ Run Audit'}
+        </button>
       </div>
 
-      {!hasKey ? (
-        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6">
-          <p className="text-yellow-400 font-medium">SEMrush API key not configured</p>
-          <p className="text-gray-400 text-sm mt-1">
-            Add <code className="text-gray-300 bg-gray-800 px-1 rounded">SEMRUSH_API_KEY</code> to Vercel environment variables.
-          </p>
-        </div>
-      ) : (
-        <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-8 text-center">
-          <p className="text-blue-400 text-lg font-semibold">🚧 Coming soon</p>
-          <p className="text-gray-400 text-sm mt-2">
-            Site Audit Digest requires a SEMrush Project ID to be configured.<br />
-            Once set up, this page will show errors, warnings, and crawl health over time.
-          </p>
-          <div className="mt-6 text-left max-w-md mx-auto bg-gray-900 border border-gray-800 rounded-lg p-4">
-            <p className="text-white text-sm font-medium mb-2">To enable:</p>
-            <ol className="text-gray-400 text-sm space-y-1 list-decimal list-inside">
-              <li>Create a Site Audit project in SEMrush for g2g.com</li>
-              <li>Get the Project ID from the URL</li>
-              <li>Add <code className="text-gray-300 bg-gray-800 px-1 rounded">SEMRUSH_PROJECT_ID</code> to Vercel env vars</li>
-            </ol>
-          </div>
+      {error && (
+        <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm">
+          {error}
         </div>
       )}
+
+      {/* ── SEMrush section (placeholder) ── */}
+      <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-6 mb-6">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-blue-400 font-semibold text-sm">🚧 SEMrush Site Audit</span>
+          <span className="text-[10px] text-gray-500 bg-gray-800 px-2 py-0.5 rounded-full">Coming soon</span>
+        </div>
+        <p className="text-gray-400 text-sm">
+          Requires a SEMrush Project ID to be configured. Once set up, this section will show SEMrush campaign errors, warnings, and crawl health over time.
+        </p>
+        <a
+          href="https://www.semrush.com/siteaudit/campaign/6047805/review/overview"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 mt-3 text-xs text-blue-400 hover:text-blue-300 transition"
+        >
+          📊 View in SEMrush →
+        </a>
+      </div>
+
+      {/* ── DataForSEO section ── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <div className="flex items-center gap-2 mb-6">
+          <span className="text-base">🤖</span>
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wider">DataForSEO On-Page Audit</h2>
+          {task?.finished_at && (
+            <span className="text-[10px] text-gray-500 ml-auto">
+              Last run: {new Date(task.finished_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            </span>
+          )}
+        </div>
+
+        {isLoading && (
+          <div className="flex flex-col items-center py-12">
+            <LottieLoader size={64} text={running ? 'Starting crawl… (~30–60s)' : polling ? 'Crawling g2g.com…' : 'Loading…'} />
+          </div>
+        )}
+
+        {!isLoading && !task && (
+          <div className="text-center py-12">
+            <p className="text-3xl mb-3">🔍</p>
+            <p className="text-white font-semibold mb-1">No audit yet</p>
+            <p className="text-gray-400 text-sm mb-4">Run an audit to check g2g.com for technical SEO issues.</p>
+            <button
+              onClick={runAudit}
+              className="text-xs bg-red-700 hover:bg-red-600 text-white px-4 py-2 rounded-lg font-medium transition"
+            >
+              ▶ Run First Audit
+            </button>
+          </div>
+        )}
+
+        {!isLoading && task?.status === 'in_progress' && (
+          <div className="flex flex-col items-center py-12">
+            <LottieLoader size={64} text="Crawling g2g.com — this usually takes 30–90 seconds" />
+          </div>
+        )}
+
+        {!isLoading && task?.status === 'error' && (
+          <div className="text-center py-8">
+            <p className="text-red-400 font-semibold">Audit failed</p>
+            <p className="text-gray-500 text-sm mt-1">{task.error_message ?? 'Unknown error'}</p>
+          </div>
+        )}
+
+        {!isLoading && summary && (
+          <div className="space-y-6">
+
+            {/* Score + overview */}
+            <div className="flex items-start gap-8">
+              <div className="flex flex-col items-center gap-1">
+                <ScoreRing score={summary.onpageScore} />
+                <p className="text-[10px] text-gray-500 text-center">On-Page Score</p>
+              </div>
+              <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-gray-800 rounded-lg p-3 text-center">
+                  <p className="text-xl font-bold text-white">{summary.pagesCrawled}</p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Pages crawled</p>
+                </div>
+                <div className={`rounded-lg p-3 text-center ${errors.length > 0 ? 'bg-red-500/10 border border-red-500/20' : 'bg-gray-800'}`}>
+                  <p className={`text-xl font-bold ${errors.length > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {errors.reduce((s, i) => s + i.count, 0)}
+                  </p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Errors</p>
+                </div>
+                <div className={`rounded-lg p-3 text-center ${warnings.length > 0 ? 'bg-amber-400/10 border border-amber-400/20' : 'bg-gray-800'}`}>
+                  <p className={`text-xl font-bold ${warnings.length > 0 ? 'text-amber-400' : 'text-green-400'}`}>
+                    {warnings.reduce((s, i) => s + i.count, 0)}
+                  </p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Warnings</p>
+                </div>
+                <div className="bg-gray-800 rounded-lg p-3 text-center">
+                  <p className="text-xl font-bold text-blue-400">
+                    {notices.reduce((s, i) => s + i.count, 0)}
+                  </p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">Notices</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Link stats */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-gray-800 rounded-lg p-3 flex items-center justify-between">
+                <span className="text-xs text-gray-400">Internal links</span>
+                <span className="text-sm font-semibold text-white">{summary.linksInternal.toLocaleString()}</span>
+              </div>
+              <div className="bg-gray-800 rounded-lg p-3 flex items-center justify-between">
+                <span className="text-xs text-gray-400">External links</span>
+                <span className="text-sm font-semibold text-white">{summary.linksExternal.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {/* Issues list */}
+            {issues.length > 0 ? (
+              <div>
+                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-3">Issues found</p>
+                <div className="space-y-2">
+                  {['error', 'warning', 'notice'].flatMap(sev =>
+                    issues.filter(i => i.severity === sev).map(issue => {
+                      const c = SEV_COLORS[issue.severity]
+                      return (
+                        <div key={issue.label} className="flex items-start gap-3 bg-gray-800 rounded-lg px-4 py-3">
+                          <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${c.dot}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-white">{issue.label}</span>
+                              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${c.badge}`}>
+                                {issue.count}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-500 mt-0.5">{issue.description}</p>
+                          </div>
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 text-center">
+                <p className="text-green-400 font-semibold text-sm">✅ No issues found</p>
+                <p className="text-gray-400 text-xs mt-1">g2g.com looks healthy across all {summary.pagesCrawled} crawled pages.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

@@ -63,6 +63,7 @@ interface BacklinkItem {
   targetKeyword: string | null
   liveDate: string | null
   costAmount: number | null
+  costCurrency: string | null
   positionCurrent: number | null
   positionAtCreation: number | null
 }
@@ -72,8 +73,10 @@ interface BacklinksData {
   newThisMonth: number
   pendingLinks: number
   brokenLinks: number
-  totalCostThisMonth: number
-  totalCostAllTime: number
+  totalCostThisMonth: number      // USD only (legacy)
+  totalCostAllTime: number         // USD only (legacy)
+  costsByCurrency?: { currency: string; total: number }[]
+  allTimeCostsByCurrency?: { currency: string; total: number }[]
   avgPositionImprovement: number | null
   recentLinks: BacklinkItem[]
 }
@@ -124,6 +127,27 @@ function fmtUsd(n: number) {
   return `$${Math.round(n).toLocaleString()}`
 }
 
+// Currency-aware cost formatter — handles IDR, USD, and others
+function fmtCost(amount: number, currency?: string | null): string {
+  const c = (currency ?? 'USD').toUpperCase()
+  if (c === 'IDR') {
+    if (amount >= 1_000_000_000) return `Rp ${(amount / 1_000_000_000).toFixed(1)}B`
+    if (amount >= 1_000_000)     return `Rp ${(amount / 1_000_000).toFixed(1)}M`
+    if (amount >= 1_000)         return `Rp ${(amount / 1_000).toFixed(0)}K`
+    return `Rp ${Math.round(amount).toLocaleString()}`
+  }
+  return fmtUsd(amount)
+}
+
+// Format a costsByCurrency array into a short display string e.g. "$5K · Rp 2M"
+function fmtCostByCurrency(costs?: { currency: string; total: number }[]): string {
+  if (!costs?.length) return '—'
+  return costs
+    .filter(c => c.total > 0)
+    .map(c => fmtCost(c.total, c.currency))
+    .join(' · ') || '—'
+}
+
 function pctBadge(pct: number | null | undefined) {
   if (pct == null) return null
   const up = pct >= 0
@@ -161,6 +185,92 @@ function StatCard({ icon, label, value, pct, sub }: { icon: string; label: strin
         {pct != null && pctBadge(pct)}
       </div>
       {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
+    </div>
+  )
+}
+
+function QuickSummary({ d }: { d: ReportData; report?: MonthlyReport }) {
+  const points: { icon: string; label: string; value: string; delta?: string; deltaUp?: boolean }[] = []
+
+  // GSC
+  points.push({
+    icon: '🖱️',
+    label: 'Clicks',
+    value: d.gsc.monthClicks.toLocaleString(),
+    delta: d.gsc.clicksPct != null ? `${d.gsc.clicksPct > 0 ? '+' : ''}${d.gsc.clicksPct}% vs prev month` : undefined,
+    deltaUp: (d.gsc.clicksPct ?? 0) >= 0,
+  })
+  points.push({
+    icon: '👁️',
+    label: 'Impressions',
+    value: d.gsc.monthImpressions.toLocaleString(),
+    delta: d.gsc.impressionsPct != null ? `${d.gsc.impressionsPct > 0 ? '+' : ''}${d.gsc.impressionsPct}%` : undefined,
+    deltaUp: (d.gsc.impressionsPct ?? 0) >= 0,
+  })
+  points.push({ icon: '📍', label: 'Avg. Position', value: String(d.gsc.avgPosition) })
+  points.push({
+    icon: '🎯',
+    label: 'Keyword Coverage',
+    value: `${d.semrush.top3} in Top 3 · ${d.semrush.top10} in Top 10 · ${d.semrush.top20} in Top 20`,
+  })
+  if (d.ga4) {
+    points.push({
+      icon: '📈',
+      label: 'Organic Sessions',
+      value: d.ga4.monthSessions.toLocaleString(),
+      delta: d.ga4.sessionsPct != null ? `${d.ga4.sessionsPct > 0 ? '+' : ''}${d.ga4.sessionsPct}%` : undefined,
+      deltaUp: (d.ga4.sessionsPct ?? 0) >= 0,
+    })
+    if (d.ga4.totalRevenue > 0) {
+      points.push({
+        icon: '💰',
+        label: 'Revenue',
+        value: fmtUsd(d.ga4.totalRevenue),
+        delta: d.ga4.revenuePct != null ? `${d.ga4.revenuePct > 0 ? '+' : ''}${d.ga4.revenuePct}%` : undefined,
+        deltaUp: (d.ga4.revenuePct ?? 0) >= 0,
+      })
+    }
+  }
+  if (d.backlinks) {
+    const costStr = fmtCostByCurrency(d.backlinks.costsByCurrency)
+    points.push({
+      icon: '🔗',
+      label: 'Paid Backlinks',
+      value: `${d.backlinks.newThisMonth} new · ${d.backlinks.totalActive} active`,
+      delta: costStr !== '—' ? `cost: ${costStr}` : undefined,
+    })
+  }
+  points.push({
+    icon: '✅',
+    label: 'Action Items',
+    value: `${d.actionItems.done} done · ${d.actionItems.pending + d.actionItems.inProgress} open`,
+  })
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-base">📋</span>
+        <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Quick Summary</h3>
+        <span className="text-[10px] text-gray-600">{d.monthLabel}</span>
+      </div>
+      <ul className="divide-y divide-gray-800">
+        {points.map((p, i) => (
+          <li key={i} className="flex items-center justify-between py-2 gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm flex-shrink-0">{p.icon}</span>
+              <span className="text-xs text-gray-400 flex-shrink-0">{p.label}</span>
+            </div>
+            <div className="flex items-center gap-2 text-right min-w-0">
+              <span className="text-xs font-semibold text-white truncate">{p.value}</span>
+              {p.delta && (
+                <span className={`text-[10px] flex-shrink-0 font-medium ${p.deltaUp ? 'text-green-400' : 'text-red-400'}`}>
+                  {p.delta}
+                </span>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -457,21 +567,8 @@ export default function MonthlyReportPage() {
                 )}
               </div>
 
-              {/* ── AI Narrative ── */}
-              {report.ai_narrative && (
-                <div className="bg-gradient-to-br from-gray-900 to-gray-900/80 border border-gray-700 rounded-xl p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-base">✨</span>
-                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Executive Summary</h3>
-                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">Claude</span>
-                  </div>
-                  <div className="space-y-3">
-                    {report.ai_narrative.split('\n\n').map((para, i) => (
-                      <p key={i} className="text-sm text-gray-300 leading-relaxed">{para}</p>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* ── Quick Summary (bullet points) ── */}
+              <QuickSummary d={d} report={report} />
 
               {/* ── Keyword Rankings ── */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -667,7 +764,9 @@ export default function MonthlyReportPage() {
                     </div>
                     <div className="bg-gray-800 rounded-lg p-3 text-center">
                       <p className="text-xl font-bold text-amber-400">
-                        {d.backlinks.totalCostThisMonth > 0 ? fmtUsd(d.backlinks.totalCostThisMonth) : '—'}
+                        {fmtCostByCurrency(d.backlinks.costsByCurrency) !== '—'
+                          ? fmtCostByCurrency(d.backlinks.costsByCurrency)
+                          : (d.backlinks.totalCostThisMonth > 0 ? fmtUsd(d.backlinks.totalCostThisMonth) : '—')}
                       </p>
                       <p className="text-[10px] text-gray-500 mt-0.5">Cost this month</p>
                     </div>
@@ -743,7 +842,7 @@ export default function MonthlyReportPage() {
                                   </td>
                                   <td className="py-2 text-right">
                                     <span className={link.costAmount != null && link.costAmount > 0 ? 'text-amber-400' : 'text-gray-600'}>
-                                      {link.costAmount != null && link.costAmount > 0 ? fmtUsd(link.costAmount) : '—'}
+                                      {link.costAmount != null && link.costAmount > 0 ? fmtCost(link.costAmount, link.costCurrency) : '—'}
                                     </span>
                                   </td>
                                 </tr>
@@ -838,6 +937,22 @@ export default function MonthlyReportPage() {
                     <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">AI-recommended</span>
                   </div>
                   <ActionPlan raw={report.ai_action_plan} />
+                </div>
+              )}
+
+              {/* ── ✨ Executive Summary (full narrative — for deep reading) ── */}
+              {report.ai_narrative && (
+                <div className="bg-gradient-to-br from-gray-900 to-gray-900/80 border border-gray-700 rounded-xl p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-base">✨</span>
+                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Executive Summary</h3>
+                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">Claude</span>
+                  </div>
+                  <div className="space-y-3">
+                    {report.ai_narrative.split('\n\n').map((para, i) => (
+                      <p key={i} className="text-sm text-gray-300 leading-relaxed">{para}</p>
+                    ))}
+                  </div>
                 </div>
               )}
 

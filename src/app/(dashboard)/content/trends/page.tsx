@@ -4,6 +4,12 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 
+function addToMapUrl(keyword: string, volume?: number) {
+  const params = new URLSearchParams({ add: keyword })
+  if (volume) params.set('volume', String(volume))
+  return `/content/keyword-map?${params}`
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GameTrend {
   steam_appid:       number
@@ -177,13 +183,21 @@ function GameCard({ game, selected, onToggle, onSelect, onCreateContent }: {
         </div>
       </div>
 
-      <div className="px-3 pb-3">
+      <div className="px-3 pb-3 flex gap-1.5">
         <button
           onClick={e => { e.stopPropagation(); onCreateContent(game) }}
-          className="w-full text-xs bg-red-700/80 hover:bg-red-600 text-white font-semibold py-1.5 rounded-lg transition flex items-center justify-center gap-1.5"
+          className="flex-1 text-xs bg-red-700/80 hover:bg-red-600 text-white font-semibold py-1.5 rounded-lg transition flex items-center justify-center gap-1.5"
         >
-          ✍️ Create Content
+          ✍️ Create
         </button>
+        <a
+          href={addToMapUrl(game.name, game.search_volume)}
+          onClick={e => e.stopPropagation()}
+          className="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white font-semibold py-1.5 px-2 rounded-lg transition flex items-center justify-center"
+          title="Add to Keyword Map"
+        >
+          🗺️
+        </a>
       </div>
     </div>
   )
@@ -277,12 +291,19 @@ function GameRow({ game, selected, onToggle, onSelect, onCreateContent }: {
 
       {/* CTA */}
       <td className="px-3 py-3">
-        <button
-          onClick={() => onCreateContent(game)}
-          className="text-xs bg-red-700/70 hover:bg-red-600 text-white font-medium px-3 py-1 rounded-lg transition whitespace-nowrap"
-        >
-          ✍️ Create
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => onCreateContent(game)}
+            className="text-xs bg-red-700/70 hover:bg-red-600 text-white font-medium px-3 py-1 rounded-lg transition whitespace-nowrap"
+          >
+            ✍️ Create
+          </button>
+          <a
+            href={addToMapUrl(game.name, game.search_volume)}
+            className="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-white px-2 py-1 rounded-lg transition"
+            title="Add to Keyword Map"
+          >🗺️</a>
+        </div>
       </td>
     </tr>
   )
@@ -354,13 +375,20 @@ function DetailPanel({ game, onClose, onCreateContent }: {
         </div>
 
         {/* Create content CTA */}
-        <div className="p-4 border-b border-gray-800">
+        <div className="p-4 border-b border-gray-800 flex gap-2">
           <button
             onClick={() => onCreateContent(game)}
-            className="w-full bg-red-700 hover:bg-red-600 text-white text-sm font-semibold py-2.5 rounded-lg transition flex items-center justify-center gap-2"
+            className="flex-1 bg-red-700 hover:bg-red-600 text-white text-sm font-semibold py-2.5 rounded-lg transition flex items-center justify-center gap-2"
           >
             ✍️ Create Content for {game.name} →
           </button>
+          <a
+            href={addToMapUrl(game.name, game.search_volume)}
+            className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 hover:text-white text-sm font-semibold px-3 py-2.5 rounded-lg transition flex items-center gap-1.5 whitespace-nowrap"
+            title="Add to Keyword Map"
+          >
+            🗺️ Map
+          </a>
         </div>
 
         {/* Keywords */}
@@ -381,7 +409,7 @@ function DetailPanel({ game, onClose, onCreateContent }: {
                       <div key={kw.keyword}
                         className="flex items-center justify-between bg-gray-900 rounded-lg px-3 py-2 hover:bg-gray-800 transition group">
                         <span className="text-xs text-white">{kw.keyword}</span>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
                           {kw.search_volume != null && (
                             <span className="text-xs text-gray-400">{kw.search_volume.toLocaleString()}</span>
                           )}
@@ -391,6 +419,11 @@ function DetailPanel({ game, onClose, onCreateContent }: {
                           >
                             Create →
                           </button>
+                          <a
+                            href={addToMapUrl(kw.keyword, kw.search_volume ?? undefined)}
+                            className="text-[10px] text-blue-400 hover:text-blue-300 opacity-0 group-hover:opacity-100 transition"
+                            title="Add to Keyword Map"
+                          >🗺️</a>
                         </div>
                       </div>
                     ))}
@@ -408,7 +441,7 @@ function DetailPanel({ game, onClose, onCreateContent }: {
                       <div key={kw.keyword}
                         className="flex items-center justify-between bg-gray-900 rounded-lg px-3 py-2 hover:bg-gray-800 transition group">
                         <span className="text-xs text-white">{kw.keyword}</span>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
                           {kw.search_volume != null && (
                             <span className="text-xs text-gray-400">{kw.search_volume.toLocaleString()}</span>
                           )}
@@ -418,6 +451,11 @@ function DetailPanel({ game, onClose, onCreateContent }: {
                           >
                             Create →
                           </button>
+                          <a
+                            href={addToMapUrl(kw.keyword, kw.search_volume ?? undefined)}
+                            className="text-[10px] text-blue-400 hover:text-blue-300 opacity-0 group-hover:opacity-100 transition"
+                            title="Add to Keyword Map"
+                          >🗺️</a>
                         </div>
                       </div>
                     ))}
