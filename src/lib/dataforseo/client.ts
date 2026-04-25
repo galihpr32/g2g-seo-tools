@@ -397,6 +397,69 @@ export async function getOnPageSummary(taskId: string): Promise<OnPageAuditSumma
   }
 }
 
+// ─── On-Page: Pages List ─────────────────────────────────────────────────────
+// Returns all crawled pages with their inbound/outbound internal link counts
+export interface OnPagePageItem {
+  url: string
+  inlinks_count: number          // how many internal pages link TO this page
+  links_internal: number         // how many internal links go OUT from this page
+  links_external: number
+  onpage_score: number | null
+  resource_type: string
+  status_code: number | null
+  meta?: { title?: string; canonical?: string }
+}
+
+export async function getOnPagePages(
+  taskId: string,
+  limit = 1000
+): Promise<OnPagePageItem[]> {
+  const data = await dfsPost<any>('/on_page/pages', [{
+    id: taskId,
+    limit,
+    filters: [['resource_type', '=', 'html']],
+    order_by: ['meta.inlinks_count,desc'],
+  }])
+  const items: any[] = data?.tasks?.[0]?.result?.[0]?.items ?? []
+  return items.map(i => ({
+    url:            i.url ?? '',
+    inlinks_count:  i.meta?.inlinks_count ?? 0,
+    links_internal: i.meta?.internal_links_count ?? 0,
+    links_external: i.meta?.external_links_count ?? 0,
+    onpage_score:   i.onpage_score ?? null,
+    resource_type:  i.resource_type ?? 'html',
+    status_code:    i.status_code ?? null,
+    meta: { title: i.meta?.title ?? '', canonical: i.meta?.canonical ?? '' },
+  }))
+}
+
+// ─── On-Page: Internal Links ──────────────────────────────────────────────────
+// Returns all discovered internal links (link_from → link_to) from a crawl
+export interface OnPageLinkItem {
+  link_from: string
+  link_to:   string
+  anchor:    string | null
+  dofollow:  boolean
+}
+
+export async function getOnPageLinks(
+  taskId: string,
+  limit = 5000
+): Promise<OnPageLinkItem[]> {
+  const data = await dfsPost<any>('/on_page/links', [{
+    id: taskId,
+    limit,
+    filters: [['link_type', '=', 'anchor'], ['internal', '=', true]],
+  }])
+  const items: any[] = data?.tasks?.[0]?.result?.[0]?.items ?? []
+  return items.map(i => ({
+    link_from: i.link_from ?? '',
+    link_to:   i.link_to   ?? '',
+    anchor:    i.anchor    ?? null,
+    dofollow:  !(i.link_attribute ?? []).includes('nofollow'),
+  }))
+}
+
 // Poll until finished (max ~45s)
 export async function pollOnPageTask(taskId: string, maxWaitMs = 45_000): Promise<OnPageAuditSummary | null> {
   const interval = 5_000

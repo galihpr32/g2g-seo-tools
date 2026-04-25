@@ -53,6 +53,9 @@ const navItems = [
       { label: 'Knowledge Base',    href: '/knowledge-base',              icon: '🧠' },
       { label: 'Game Trends',       href: '/content/trends',              icon: '🎮' },
       { label: 'Keyword Map',       href: '/content/keyword-map',         icon: '🗺️' },
+      { label: 'Internal Links',    href: '/content/internal-links',      icon: '🔗' },
+      { label: 'Cannibalization',   href: '/content/cannibalization',     icon: '🍖' },
+      { label: 'Broken URL Monitor', href: '/content/broken-urls',        icon: '🔴' },
       { label: 'Page Opportunities', href: '/competitive/opportunities',  icon: '🆕' },
     ],
   },
@@ -72,8 +75,10 @@ const navItems = [
     items: [
       { label: 'Weekly Pulse',   href: '/reports/weekly',        icon: '📊' },
       { label: 'Monthly SEO',    href: '/reports/monthly',       icon: '📅' },
+      { label: 'Multi-Market',   href: '/reports/multi-market',  icon: '🌍' },
       { label: 'Backlink Audit', href: '/reports/backlinks',     icon: '🔗' },
       { label: 'SERP Features',  href: '/reports/serp-features', icon: '⭐' },
+      { label: 'Content ROI',    href: '/reports/content-roi',   icon: '💰' },
     ],
   },
 ]

@@ -77,3 +77,109 @@ export function parseGA4Rows(data: { rows?: { dimensionValues?: { value?: string
 export function sumMetric(rows: Record<string, string>[], metric: string) {
   return rows.reduce((sum, r) => sum + parseFloat(r[metric] ?? '0'), 0)
 }
+
+// ─── GA4 Revenue by Landing Page (SEO attribution) ───────────────────────────
+// Sessions that started on a landing page via Organic Search → revenue earned in that session
+// This is the most SEO-relevant revenue metric: did this page drive purchase intent?
+export async function getGA4RevenueByLandingPage(
+  auth: OAuth2Client,
+  propertyId: string,
+  startDate: string,
+  endDate: string,
+  limit = 500
+) {
+  const analyticsdata = google.analyticsdata({ version: 'v1beta', auth })
+  const res = await analyticsdata.properties.runReport({
+    property: `properties/${propertyId}`,
+    requestBody: {
+      dateRanges: [{ startDate, endDate }],
+      dimensions: [{ name: 'landingPage' }],
+      metrics: [
+        { name: 'sessions' },
+        { name: 'purchaseRevenue' },
+        { name: 'transactions' },
+        { name: 'engagedSessions' },
+      ],
+      // Filter to Organic Search channel only
+      dimensionFilter: {
+        filter: {
+          fieldName: 'sessionDefaultChannelGroup',
+          stringFilter: { matchType: 'EXACT', value: 'Organic Search' },
+        },
+      },
+      orderBys: [{ metric: { metricName: 'purchaseRevenue' }, desc: true }],
+      limit: String(limit),
+    },
+  })
+  return parseGA4Rows(res.data)
+}
+
+// ─── GA4 Revenue by Page Path (on-page purchase events) ──────────────────────
+// Purchase events fired directly on a given page path
+// Useful for product/checkout pages where the purchase event fires on the same page
+export async function getGA4RevenueByPage(
+  auth: OAuth2Client,
+  propertyId: string,
+  startDate: string,
+  endDate: string,
+  limit = 500
+) {
+  const analyticsdata = google.analyticsdata({ version: 'v1beta', auth })
+  const res = await analyticsdata.properties.runReport({
+    property: `properties/${propertyId}`,
+    requestBody: {
+      dateRanges: [{ startDate, endDate }],
+      dimensions: [{ name: 'pagePath' }],
+      metrics: [
+        { name: 'purchaseRevenue' },
+        { name: 'transactions' },
+        { name: 'screenPageViews' },
+      ],
+      // Only rows that had at least one purchase
+      metricFilter: {
+        filter: {
+          fieldName: 'transactions',
+          numericFilter: { operation: 'GREATER_THAN', value: { int64Value: '0' } },
+        },
+      },
+      orderBys: [{ metric: { metricName: 'purchaseRevenue' }, desc: true }],
+      limit: String(limit),
+    },
+  })
+  return parseGA4Rows(res.data)
+}
+
+// ─── GA4 Organic Sessions by Page ────────────────────────────────────────────
+// Sessions + engagement per page path, filtered to Organic Search
+export async function getGA4OrganicSessionsByPage(
+  auth: OAuth2Client,
+  propertyId: string,
+  startDate: string,
+  endDate: string,
+  limit = 500
+) {
+  const analyticsdata = google.analyticsdata({ version: 'v1beta', auth })
+  const res = await analyticsdata.properties.runReport({
+    property: `properties/${propertyId}`,
+    requestBody: {
+      dateRanges: [{ startDate, endDate }],
+      dimensions: [{ name: 'pagePath' }],
+      metrics: [
+        { name: 'sessions' },
+        { name: 'engagedSessions' },
+        { name: 'bounceRate' },
+        { name: 'averageSessionDuration' },
+        { name: 'screenPageViews' },
+      ],
+      dimensionFilter: {
+        filter: {
+          fieldName: 'sessionDefaultChannelGroup',
+          stringFilter: { matchType: 'EXACT', value: 'Organic Search' },
+        },
+      },
+      orderBys: [{ metric: { metricName: 'sessions' }, desc: true }],
+      limit: String(limit),
+    },
+  })
+  return parseGA4Rows(res.data)
+}

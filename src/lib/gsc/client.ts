@@ -9,7 +9,8 @@ export async function getSearchAnalytics(
   startDate: string,
   endDate: string,
   dimensions: string[] = ['page'],
-  rowLimit = 1000
+  rowLimit = 1000,
+  dimensionFilterGroups?: object[]
 ) {
   const webmasters = google.webmasters({ version: 'v3', auth })
   const res = await webmasters.searchanalytics.query({
@@ -19,9 +20,33 @@ export async function getSearchAnalytics(
       endDate,
       dimensions,
       rowLimit,
+      ...(dimensionFilterGroups ? { dimensionFilterGroups } : {}),
     },
   })
   return res.data.rows ?? []
+}
+
+// Fetch query+page data filtered to a specific country (GSC alpha-3 codes: 'usa', 'idn', etc.)
+export async function getSearchAnalyticsByCountry(
+  auth: OAuth2Client,
+  siteUrl: string,
+  startDate: string,
+  endDate: string,
+  countryCode: string,           // e.g. 'usa' or 'idn'
+  dimensions: string[] = ['query', 'page'],
+  rowLimit = 10000
+) {
+  return getSearchAnalytics(auth, siteUrl, startDate, endDate, dimensions, rowLimit, [
+    {
+      filters: [
+        {
+          dimension: 'country',
+          operator:  'equals',
+          expression: countryCode,
+        },
+      ],
+    },
+  ])
 }
 
 export async function getSitesList(auth: OAuth2Client) {
