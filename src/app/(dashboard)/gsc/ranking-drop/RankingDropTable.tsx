@@ -773,18 +773,28 @@ export function RankingDropTable({ drops: initialDrops, totalTracked, alerts, sn
                                   <th className="text-right text-gray-500 font-medium py-1.5 px-3">Clicks</th>
                                   <th className="text-right text-gray-500 font-medium py-1.5 px-3">Impressions</th>
                                   <th className="text-right text-gray-500 font-medium py-1.5 px-3">CTR</th>
-                                  <th className="text-right text-gray-500 font-medium py-1.5 pl-3">Position</th>
+                                  <th className="text-right text-gray-500 font-medium py-1.5 px-3">Position</th>
+                                  <th className="w-8"></th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {visibleQueries.map((q, i) => (
-                                  <tr key={i} className="border-b border-gray-700/50">
+                                  <tr key={i} className="border-b border-gray-700/50 group">
                                     <td className="py-2 pr-4 text-gray-200 font-medium">{q.query}</td>
                                     <td className="py-2 px-3 text-right text-white">{q.clicks}</td>
                                     <td className="py-2 px-3 text-right text-gray-400">{q.impressions.toLocaleString()}</td>
                                     <td className="py-2 px-3 text-right text-gray-400">{(q.ctr * 100).toFixed(1)}%</td>
-                                    <td className={`py-2 pl-3 text-right font-medium ${q.position <= 10 ? 'text-green-400' : q.position <= 20 ? 'text-yellow-400' : 'text-gray-400'}`}>
+                                    <td className={`py-2 px-3 text-right font-medium ${q.position <= 10 ? 'text-green-400' : q.position <= 20 ? 'text-yellow-400' : 'text-gray-400'}`}>
                                       {q.position.toFixed(1)}
+                                    </td>
+                                    <td className="py-2 pl-1">
+                                      <a
+                                        href={`/content/keyword-map?add=${encodeURIComponent(q.query)}${q.impressions > 0 ? `&volume=${q.impressions}` : ''}`}
+                                        title="Add to Keyword Map"
+                                        className="opacity-0 group-hover:opacity-100 text-sm transition-opacity hover:scale-110 inline-block"
+                                      >
+                                        🗺️
+                                      </a>
                                     </td>
                                   </tr>
                                 ))}
