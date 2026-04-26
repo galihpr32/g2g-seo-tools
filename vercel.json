@@ -3,10 +3,6 @@
     {
       "path": "/api/cron/gsc-daily",
       "schedule": "0 1 * * *"
-    },
-    {
-      "path": "/api/cron/agents-scheduler",
-      "schedule": "*/30 * * * *"
     }
   ]
 }

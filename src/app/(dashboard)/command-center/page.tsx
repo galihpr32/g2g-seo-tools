@@ -3,6 +3,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 import { createServiceClient } from '@/lib/supabase/service'
 import ApprovalQueueWidget from '@/components/agents/ApprovalQueueWidget'
 import AgentStatusPanel from '@/components/agents/AgentStatusPanel'
+import NeedsAttentionWidget from '@/components/agents/NeedsAttentionWidget'
 
 export default async function CommandCenterPage() {
   const supabase = await createClient()
@@ -39,6 +40,9 @@ export default async function CommandCenterPage() {
           </p>
         </div>
       )}
+
+      {/* Needs Attention — surfaces partial / failed runs (silently hidden if none) */}
+      <NeedsAttentionWidget />
 
       {/* Approval Queue Widget */}
       <div className="mb-8">

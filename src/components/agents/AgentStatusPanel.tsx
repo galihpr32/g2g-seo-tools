@@ -187,7 +187,18 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
   }
 
   const statusIcon = (s: string | null) =>
-    s === 'success' ? '✅' : s === 'error' ? '❌' : s === 'running' ? '⏳' : '—'
+    s === 'success' ? '✅'
+    : s === 'partial' ? '⚠️'
+    : s === 'error' ? '❌'
+    : s === 'running' ? '⏳'
+    : '—'
+
+  const statusLabelClass = (s: string | null) =>
+    s === 'success' ? 'text-green-400'
+    : s === 'partial' ? 'text-amber-400'
+    : s === 'error' ? 'text-red-400'
+    : s === 'running' ? 'text-blue-400'
+    : 'text-gray-500'
 
   // Only show full loading screen on the very first fetch (status === null).
   // Subsequent auto-refreshes keep the existing cards visible — no blipping.
@@ -228,7 +239,9 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
                 <p className="text-gray-400 text-xs mt-0.5">{AGENT_ROLES[key]}</p>
                 {agent && (
                   <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500">
-                    <span>{statusIcon(agent.lastRunStatus)} {agent.lastRunStatus ?? 'never run'}</span>
+                    <span className={statusLabelClass(agent.lastRunStatus)}>
+                      {statusIcon(agent.lastRunStatus)} {agent.lastRunStatus ?? 'never run'}
+                    </span>
                     <span>·</span>
                     <span>Last run: {formatTimeAgo(agent.lastRunAt)}</span>
                     {agent.lastRunSummary && (

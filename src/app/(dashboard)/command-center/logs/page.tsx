@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'next/navigation'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -54,6 +55,7 @@ const AGENT_COLORS: Record<string, string> = {
 
 const STATUS_STYLES: Record<string, string> = {
   success:  'bg-green-900/40 text-green-400',
+  partial:  'bg-amber-900/40 text-amber-300',
   error:    'bg-red-900/40 text-red-400',
   running:  'bg-blue-900/40 text-blue-400',
   pending:  'bg-gray-800 text-gray-400',
@@ -64,6 +66,7 @@ const STATUS_STYLES: Record<string, string> = {
 
 const STATUS_ICONS: Record<string, string> = {
   success:  '✅',
+  partial:  '⚠️',
   error:    '❌',
   running:  '⏳',
   pending:  '🕐',
@@ -98,14 +101,19 @@ function Badge({ text, className }: { text: string; className: string }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export default function AgentLogsPage() {
+  const searchParams = useSearchParams()
+  const initialStatus = searchParams.get('status') ?? ''
+  const initialAgent  = searchParams.get('agent')  ?? ''
+  const initialRunId  = searchParams.get('run')
+
   const [tab, setTab] = useState<'runs' | 'actions'>('runs')
-  const [agentFilter, setAgentFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
+  const [agentFilter, setAgentFilter] = useState(initialAgent)
+  const [statusFilter, setStatusFilter] = useState(initialStatus)
 
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [actions, setActions] = useState<AgentAction[]>([])
   const [loading, setLoading] = useState(true)
-  const [expandedRun, setExpandedRun] = useState<string | null>(null)
+  const [expandedRun, setExpandedRun] = useState<string | null>(initialRunId)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -132,6 +140,7 @@ export default function AgentLogsPage() {
   const runStats = {
     total:   runs.length,
     success: runs.filter(r => r.status === 'success').length,
+    partial: runs.filter(r => r.status === 'partial').length,
     error:   runs.filter(r => r.status === 'error').length,
     totalFindings: runs.reduce((s, r) => s + (r.findings_count ?? 0), 0),
     totalQueued:   runs.reduce((s, r) => s + (r.actions_queued ?? 0), 0),
@@ -201,7 +210,7 @@ export default function AgentLogsPage() {
         >
           <option value="">All Statuses</option>
           {tab === 'runs'
-            ? ['success', 'error', 'running'].map(s => <option key={s} value={s}>{s}</option>)
+            ? ['success', 'partial', 'error', 'running'].map(s => <option key={s} value={s}>{s}</option>)
             : ['pending', 'approved', 'executed', 'rejected'].map(s => <option key={s} value={s}>{s}</option>)
           }
         </select>
@@ -211,10 +220,11 @@ export default function AgentLogsPage() {
       {tab === 'runs' && (
         <>
           {/* Summary cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 mb-6">
             {[
               { label: 'Total Runs',    value: runStats.total },
               { label: 'Successful',    value: runStats.success,       color: 'text-green-400' },
+              { label: 'Partial',       value: runStats.partial,       color: 'text-amber-400' },
               { label: 'Errors',        value: runStats.error,         color: 'text-red-400' },
               { label: 'Total Findings',value: runStats.totalFindings, color: 'text-blue-400' },
               { label: 'Actions Queued',value: runStats.totalQueued,   color: 'text-purple-400' },
