@@ -1,26 +1,44 @@
+import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
+import { getSiteUrlForSlug, buildCategoryUrl } from '@/lib/agents/site-helpers'
 
 /**
  * Hermod — Off-Page / Outreach Agent
  *
  * Logic:
- * 1. Pull recently approved keyword-gap actions from Intel Bakso
- * 2. For each gap, check serp_snapshots for sites ranking for that keyword
- * 3. Cross-reference with existing outreach_prospects to avoid duplicates
- * 4. Generate a tailored outreach pitch per prospect
- * 5. Queue draft_outreach actions (max 8 per run)
+ * 1. Pre-flight: require recent (≤ 14d) Loki gap actions; otherwise warn
+ *    instead of silently outputting nothing.
+ * 2. Pull recently approved keyword-gap actions from Loki.
+ * 3. For each gap, use the most recent SERP snapshot to identify outreach
+ *    candidates ranking top-15 for the keyword.
+ * 4. Cross-reference with `outreach_prospects` and pending hermod actions
+ *    so we don't pitch the same domain twice.
+ * 5. Use Claude to personalise the outreach pitch using domain + keyword +
+ *    ranking position context. (No more boilerplate template matching.)
+ * 6. Queue up to 8 draft_outreach actions per run.
+ *
+ * Removed: the "manual research needed" fallback — it was unactionable
+ * spam in the queue. If we can't find candidates, we just skip the keyword
+ * and surface that in the summary.
  */
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+const PITCH_MODEL = 'claude-haiku-4-5-20251001'
+
 export async function runHermod(
   ownerId: string,
   siteSlug: string,
   runId: string
 ): Promise<{ summary: string; actionsQueued: number }> {
   const db = createServiceClient()
+  const warnings: string[] = []
 
   try {
-    // 1. Get recently approved keyword-gap intel from Intel Bakso (last 14 days)
-    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
+    const site = await getSiteUrlForSlug(db, siteSlug)
+    const ourDomain = site.domain
+    const siteUrl   = site.siteUrl
 
+    // 1. Get Loki gap actions in last 14d
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
     const { data: gapActions } = await db
       .from('agent_actions')
       .select('*')
@@ -33,12 +51,23 @@ export async function runHermod(
       .limit(10)
 
     if (!gapActions?.length) {
-      const summary = 'No recent Loki keyword gaps to work with. Run Loki first.'
-      await _finishRun(db, runId, ownerId, 'success', summary, 0, 0)
+      // Pre-flight check: when did Loki last run successfully?
+      const { data: lokiAgent } = await db
+        .from('agents')
+        .select('last_run_at, last_run_status')
+        .eq('owner_user_id', ownerId)
+        .eq('agent_key', 'loki')
+        .maybeSingle()
+
+      const summary = lokiAgent?.last_run_at
+        ? `No approved Loki gaps in the last 14 days (Loki last ran ${new Date(lokiAgent.last_run_at as string).toISOString().slice(0, 10)} → ${lokiAgent.last_run_status}). Approve some Loki gaps first.`
+        : `Loki has never been run. Run Loki, approve at least one keyword gap, then run Hermod.`
+
+      await _finishRun(db, runId, ownerId, 'success', summary, 0, 0, warnings)
       return { summary, actionsQueued: 0 }
     }
 
-    // 2. Load known competitors and existing outreach domains to skip
+    // 2. Skip-list: ourDomain, competitors, existing prospects, pending hermod actions
     const { data: competitors } = await db
       .from('competitors')
       .select('domain')
@@ -49,13 +78,12 @@ export async function runHermod(
       .select('domain')
       .eq('owner_user_id', ownerId)
 
-    const skipDomains = new Set([
-      'g2g.com',
-      ...(competitors?.map(c => c.domain) ?? []),
-      ...(existingProspects?.map(p => p.domain) ?? []),
+    const skipDomains = new Set<string>([
+      ourDomain,
+      ...((competitors ?? []).map(c => String(c.domain).toLowerCase())),
+      ...((existingProspects ?? []).map(p => String(p.domain).toLowerCase())),
     ])
 
-    // 3. Also check for already-pending draft_outreach actions this session
     const { data: pendingOutreach } = await db
       .from('agent_actions')
       .select('data')
@@ -65,62 +93,82 @@ export async function runHermod(
 
     for (const o of pendingOutreach ?? []) {
       const d = o.data as Record<string, unknown>
-      if (d.domain) skipDomains.add(String(d.domain))
+      if (d.domain) skipDomains.add(String(d.domain).toLowerCase())
     }
 
     let actionsQueued = 0
     const findings: string[] = []
     const processedKeywords = new Set<string>()
+    const skippedNoCandidates: string[] = []
 
     for (const action of gapActions) {
       if (actionsQueued >= 8) break
 
       const d = action.data as Record<string, unknown>
       const keyword          = String(d.keyword ?? '')
-      const competitorDomain = String(d.competitor_domain ?? '')
+      const competitorDomain = String(d.competitor_domain ?? '').toLowerCase()
       const searchVolume     = Number(d.search_volume ?? 0)
-      const targetPage       = `https://g2g.com/categories/${keyword.toLowerCase().replace(/\s+/g, '-')}`
+      const targetPage       = String(d.competitor_url ? buildCategoryUrl(siteUrl, keyword) : buildCategoryUrl(siteUrl, keyword))
 
       if (!keyword || processedKeywords.has(keyword)) continue
       processedKeywords.add(keyword)
 
-      // 4a. Find sites ranking for this keyword from SERP snapshots.
-      // serp_snapshots stores results as jsonb array: [{domain, position, url, title}]
-      // We fetch the most recent snapshot for this keyword and flatten in JS.
+      // 3. Latest SERP snapshot for this keyword
       const { data: serpSnaps } = await db
         .from('serp_snapshots')
-        .select('results')
+        .select('results, snapshot_date')
         .eq('owner_user_id', ownerId)
         .ilike('keyword', keyword)
         .order('snapshot_date', { ascending: false })
         .limit(1)
 
-      type SerpResult = { domain: string; position: number }
+      type SerpResult = { domain: string; position: number; title?: string; url?: string }
       const serpRows: SerpResult[] = ((serpSnaps?.[0]?.results ?? []) as SerpResult[])
-        .filter(r => r.domain && r.position <= 15)
+        .filter(r => r.domain && r.position <= 20)  // widened from 15 → 20 for more candidates
         .sort((a, b) => a.position - b.position)
         .slice(0, 10)
 
-      // 4b. Candidates: SERP snapshot sites + the competitor Loki found
-      const candidateDomains: { domain: string; position: number; source: string }[] = []
-
+      // 4. Candidate domains
+      const candidateDomains: { domain: string; position: number; title?: string; url?: string; source: 'serp' | 'loki' }[] = []
       for (const row of serpRows) {
-        if (row.domain && !skipDomains.has(row.domain)) {
-          candidateDomains.push({ domain: row.domain, position: row.position, source: 'serp' })
+        const d = row.domain.toLowerCase()
+        if (!skipDomains.has(d)) {
+          candidateDomains.push({ domain: d, position: row.position, title: row.title, url: row.url, source: 'serp' })
         }
       }
-
-      // Add competitor domain as an outreach candidate if not already tracked
       if (competitorDomain && !skipDomains.has(competitorDomain) && !candidateDomains.find(c => c.domain === competitorDomain)) {
-        candidateDomains.push({ domain: competitorDomain, position: Number(d.competitor_position ?? 5), source: 'loki' })
+        candidateDomains.push({
+          domain:   competitorDomain,
+          position: Number(d.competitor_position ?? 5),
+          url:      typeof d.competitor_url === 'string' ? d.competitor_url : undefined,
+          source:   'loki',
+        })
       }
 
-      // Take top 2 candidates per keyword
+      if (candidateDomains.length === 0) {
+        skippedNoCandidates.push(keyword)
+        continue
+      }
+
+      // 5. Top 2 candidates per keyword, personalised by Claude
       for (const candidate of candidateDomains.slice(0, 2)) {
         if (actionsQueued >= 8) break
-        skipDomains.add(candidate.domain) // avoid same domain twice
+        skipDomains.add(candidate.domain)
 
-        const angle    = buildOutreachAngle(keyword, candidate.domain, targetPage, searchVolume)
+        const angle = await buildPersonalisedAngle({
+          keyword,
+          domain:        candidate.domain,
+          position:      candidate.position,
+          rankingTitle:  candidate.title,
+          rankingUrl:    candidate.url,
+          targetPage,
+          searchVolume,
+          ourDomain,
+        }).catch(err => {
+          warnings.push(`LLM pitch failed for ${candidate.domain}: ${err instanceof Error ? err.message : String(err)}`)
+          return buildFallbackAngle(keyword, candidate.domain, targetPage, searchVolume)
+        })
+
         const priority = searchVolume > 5000 ? 'high' : searchVolume > 1000 ? 'medium' : 'low'
 
         const { error: insertErr } = await db
@@ -139,6 +187,8 @@ export async function runHermod(
               keyword,
               search_volume:    searchVolume,
               serp_position:    candidate.position,
+              ranking_url:      candidate.url ?? null,
+              ranking_title:    candidate.title ?? null,
               target_url:       targetPage,
               topic:            angle.topic,
               draft_email:      angle.email,
@@ -147,117 +197,107 @@ export async function runHermod(
             },
           })
 
-        if (!insertErr) {
+        if (insertErr) {
+          console.error('[hermod] insert failed:', insertErr.message)
+        } else {
           actionsQueued++
           findings.push(`${candidate.domain} → "${keyword}"`)
         }
       }
+    }
 
-      // If no SERP/competitor data, queue a self-sourced prospect for manual research
-      if (candidateDomains.length === 0 && actionsQueued < 8) {
-        const angle    = buildOutreachAngle(keyword, 'manual-research', targetPage, searchVolume)
-        const priority = searchVolume > 5000 ? 'high' : 'medium'
-
-        await db.from('agent_actions').insert({
-          owner_user_id: ownerId,
-          agent_key:     'hermod',
-          run_id:        runId,
-          site_slug:     siteSlug,
-          action_type:   'draft_outreach',
-          title:         `Outreach opportunity: "${keyword}" (${searchVolume.toLocaleString()} searches) — find prospects`,
-          description:   `G2G doesn't rank for "${keyword}". Recommend finding outreach prospects manually for this keyword.`,
-          priority,
-          data: {
-            domain:           '',
-            keyword,
-            search_volume:    searchVolume,
-            target_url:       targetPage,
-            topic:            angle.topic,
-            draft_email:      '',
-            source:           'suggestion',
-            source_action_id: action.id,
-          },
-        })
-        actionsQueued++
-        findings.push(`"${keyword}" (manual research needed)`)
-      }
+    if (skippedNoCandidates.length > 0) {
+      warnings.push(`No candidates for ${skippedNoCandidates.length} keyword(s); run a SERP snapshot job first`)
     }
 
     const summary = actionsQueued > 0
-      ? `Found ${actionsQueued} outreach prospect${actionsQueued !== 1 ? 's' : ''} across ${processedKeywords.size} keyword gaps: ${findings.slice(0, 3).join(', ')}${findings.length > 3 ? '…' : ''}`
-      : `Scanned ${processedKeywords.size} keyword gap${processedKeywords.size !== 1 ? 's' : ''} — all domains already in tracker.`
+      ? `Found ${actionsQueued} outreach prospect${actionsQueued !== 1 ? 's' : ''} across ${processedKeywords.size} keyword gap${processedKeywords.size !== 1 ? 's' : ''}: ${findings.slice(0, 3).join(', ')}${findings.length > 3 ? '…' : ''}`
+      : `Scanned ${processedKeywords.size} keyword gap${processedKeywords.size !== 1 ? 's' : ''} — no new candidates available.`
 
-    await _finishRun(db, runId, ownerId, 'success', summary, findings.length, actionsQueued)
-    return { summary, actionsQueued }
+    const finalSummary = warnings.length ? `${summary} ⚠ ${warnings.join('; ')}` : summary
+    const status = warnings.length ? 'partial' : 'success'
+
+    await _finishRun(db, runId, ownerId, status, finalSummary, findings.length, actionsQueued, warnings)
+    return { summary: finalSummary, actionsQueued }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-    await _finishRun(db, runId, ownerId, 'error', errorMessage, 0, 0, errorMessage)
+    await _finishRun(db, runId, ownerId, 'error', errorMessage, 0, 0, warnings, errorMessage)
     throw err
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── LLM-personalised pitch ────────────────────────────────────────────────────
 
-interface OutreachAngle {
-  topic: string
-  pitch: string
-  email: string
+interface AngleInput {
+  keyword:       string
+  domain:        string
+  position:      number
+  rankingTitle?: string
+  rankingUrl?:   string
+  targetPage:    string
+  searchVolume:  number
+  ourDomain:     string
+}
+interface OutreachAngle { topic: string; pitch: string; email: string }
+
+const angleTool: Anthropic.Tool = {
+  name: 'submit_outreach_angle',
+  description: 'Submit a personalised outreach pitch.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      topic: { type: 'string', description: 'Short subject line / topic, ≤ 60 chars.' },
+      pitch: { type: 'string', description: 'One-sentence summary of why this prospect is a fit (for the queue UI).' },
+      email: { type: 'string', description: 'Plain-text outreach email body, 3-5 short paragraphs, NOT spammy. Reference the specific ranking title/page if provided.' },
+    },
+    required: ['topic', 'pitch', 'email'],
+  },
 }
 
-function buildOutreachAngle(keyword: string, domain: string, targetUrl: string, searchVolume: number): OutreachAngle {
-  const gameName = keyword
-    .replace(/\s+(buy|gold|currency|items|coins|boost|account|cd\s*key)\b.*/i, '')
-    .trim()
+async function buildPersonalisedAngle(input: AngleInput): Promise<OutreachAngle> {
+  const prompt = `You are writing a B2B outreach email for G2G.com (${input.ourDomain}), a peer-to-peer gaming marketplace.
 
-  const isBuy  = /buy|purchase|cheap|price/i.test(keyword)
-  const isGuide = /guide|how\s+to|tips|best/i.test(keyword)
+Outreach context:
+- Target prospect domain: ${input.domain}
+- Their ranking position: #${input.position} for the keyword "${input.keyword}" (${input.searchVolume.toLocaleString()} monthly searches)
+${input.rankingTitle ? `- Specific ranking page title: "${input.rankingTitle}"` : ''}
+${input.rankingUrl ? `- Specific ranking URL: ${input.rankingUrl}` : ''}
+- Our target page we want them to link to: ${input.targetPage}
 
-  if (isBuy) {
-    return {
-      topic: `G2G Marketplace Mention — ${keyword}`,
-      pitch: `${domain} ranks for "${keyword}" (${searchVolume.toLocaleString()} searches/mo). Pitch: include G2G as the recommended marketplace for ${gameName} items.`,
-      email: `Hi,
+Write a NON-SPAMMY outreach email that:
+- Opens with a specific reference to their ranking content (use the title/URL above) — NEVER generic ("I came across your site").
+- States a concrete value exchange (resource link, partnership, expert quote, data) — NOT just "please link to us".
+- Ends with a soft, low-pressure ask. No fake compliments. No emoji.
+- 3-5 short paragraphs, plain text only.
 
-I came across your page ranking for "${keyword}" and wanted to reach out.
+Call the submit_outreach_angle tool.`
 
-G2G.com is the world's leading marketplace for ${gameName} currency and items — trusted by millions of players globally with the best prices and instant delivery.
+  const res = await anthropic.messages.create({
+    model:       PITCH_MODEL,
+    max_tokens:  1024,
+    tools:       [angleTool],
+    tool_choice: { type: 'tool', name: 'submit_outreach_angle' },
+    messages:    [{ role: 'user', content: prompt }],
+  })
 
-We'd love to be featured as a recommended resource on your page. Would you be open to a collaboration?
-
-Happy to discuss details — feel free to reply here.
-
-Best regards`,
-    }
+  const toolUse = res.content.find(b => b.type === 'tool_use')
+  if (!toolUse || toolUse.type !== 'tool_use') {
+    throw new Error(`Claude did not call submit_outreach_angle (stop=${res.stop_reason})`)
   }
-
-  if (isGuide) {
-    return {
-      topic: `Resource Link for ${gameName} Guide`,
-      pitch: `${domain} ranks for "${keyword}". Pitch: add G2G as a resource where readers can buy ${gameName} items to follow the guide.`,
-      email: `Hi,
-
-Your guide on "${keyword}" is really helpful — great work!
-
-I noticed it could benefit from a resource link where readers can get ${gameName} items quickly to follow along. G2G.com is the #1 trusted marketplace for this, with the best prices and instant delivery.
-
-Would you consider adding G2G as a recommended resource? We'd love to support your content.
-
-Best regards`,
-    }
-  }
-
+  const out = toolUse.input as Record<string, unknown>
   return {
-    topic: `G2G Partnership for ${gameName} Content`,
-    pitch: `${domain} covers content related to "${keyword}". Pitch: partnership or mention as the go-to marketplace for ${gameName}.`,
-    email: `Hi,
+    topic: String(out.topic ?? `Outreach: ${input.keyword}`),
+    pitch: String(out.pitch ?? `Pitch ${input.domain} for "${input.keyword}".`),
+    email: String(out.email ?? ''),
+  }
+}
 
-I noticed your site covers ${gameName} and ranks well for related searches.
-
-G2G.com is the world's largest peer-to-peer gaming marketplace — if your audience plays ${gameName}, they'd find G2G invaluable for buying in-game items, currency, and accounts at the best prices.
-
-Would you be interested in exploring a partnership or editorial mention? We're flexible on format.
-
-Best regards`,
+function buildFallbackAngle(keyword: string, domain: string, targetUrl: string, searchVolume: number): OutreachAngle {
+  // Used only if Claude call fails. Generic but flagged in description so user knows.
+  return {
+    topic: `G2G outreach — ${keyword}`,
+    pitch: `${domain} ranks for "${keyword}" (${searchVolume.toLocaleString()} searches/mo). Manually personalise before sending.`,
+    email: `[NOTE: LLM personalisation unavailable — review and personalise before sending.]\n\nHi,\n\nI noticed your site ranks for "${keyword}" and wanted to reach out about a potential resource link to ${targetUrl}.\n\nHappy to discuss specifics — what works best for your audience?\n\nBest regards`,
   }
 }
 
@@ -265,10 +305,11 @@ async function _finishRun(
   db: ReturnType<typeof createServiceClient>,
   runId: string,
   ownerId: string,
-  status: 'success' | 'error',
+  status: 'success' | 'error' | 'partial',
   summary: string,
   findingsCount: number,
   actionsQueued: number,
+  warnings: string[],
   errorMessage?: string
 ) {
   await db.from('agent_runs').update({
@@ -276,7 +317,7 @@ async function _finishRun(
     summary,
     findings_count: findingsCount,
     actions_queued: actionsQueued,
-    error_message:  errorMessage ?? null,
+    error_message:  errorMessage ?? (warnings.length ? warnings.join('; ') : null),
     finished_at:    new Date().toISOString(),
   }).eq('id', runId)
 

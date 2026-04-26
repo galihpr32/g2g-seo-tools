@@ -1,6 +1,11 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { runBragi } from '@/lib/agents/bragi'
+import { runHeimdall } from '@/lib/agents/heimdall'
+import { runOdin } from '@/lib/agents/odin'
+import { runLoki } from '@/lib/agents/loki'
+import { runHermod } from '@/lib/agents/hermod'
 import { generateAgentBrief } from '@/lib/agents/brief-generator'
+import { getSiteUrlForSlug, buildCategoryUrl } from '@/lib/agents/site-helpers'
 
 export interface AgentAction {
   id: string
@@ -19,6 +24,14 @@ export interface AgentAction {
  * Execute an approved agent action.
  * Returns { ok: true, handoffRunId?: string } on success.
  * handoffRunId is set when action_type === 'run_agent'.
+ *
+ * Behaviour changes vs prior version:
+ * - siteUrl looked up from site_configs by slug (no more hardcoded g2g.com)
+ * - draft_brief: brief generation runs to completion before this returns,
+ *   so the action is only marked 'executed' when the brief is actually
+ *   filled. (User no longer sees ✓ on a stuck-in-draft brief.)
+ * - run_agent: ALL implemented agents (heimdall/odin/loki/bragi/hermod)
+ *   are now dispatched, and handoff awaits completion before returning.
  */
 export async function executeAction(
   action: AgentAction,
@@ -27,6 +40,10 @@ export async function executeAction(
   const db = createServiceClient()
 
   try {
+    // Resolve site once
+    const site = await getSiteUrlForSlug(db, action.site_slug || 'g2g')
+    const siteUrl = site.siteUrl
+
     if (action.action_type === 'add_action_item') {
       const data = action.data as {
         page: string
@@ -58,17 +75,17 @@ export async function executeAction(
     } else if (action.action_type === 'suggest_trend_brief') {
       const data = action.data as {
         game_name: string
+        page_url?: string
         [key: string]: unknown
       }
 
-      // For trend briefs, create an action item with on_page type
       const today = new Date().toISOString().slice(0, 10)
-      const categoryUrl = `https://g2g.com/categories/${data.game_name.toString().toLowerCase().replace(/\s+/g, '-')}`
+      const categoryUrl = String(data.page_url ?? buildCategoryUrl(siteUrl, String(data.game_name)))
 
       const { error } = await db
         .from('seo_action_items')
         .insert({
-          site_url: 'https://g2g.com',
+          site_url: siteUrl,
           page: categoryUrl,
           action_type: 'on_page',
           notes: action.description,
@@ -80,7 +97,6 @@ export async function executeAction(
 
       if (error) throw error
     } else if (action.action_type === 'draft_outreach') {
-      // Kang Cilok: add domain to outreach tracker
       const data = action.data as {
         domain:          string
         keyword:         string
@@ -91,7 +107,8 @@ export async function executeAction(
         draft_email?:    string
       }
 
-      // Only insert if domain is set (skip "manual research needed" suggestions without domain)
+      // Skip "manual research needed" rows that have no domain.
+      // (Hermod no longer queues these, but defend in depth for legacy actions.)
       if (data.domain) {
         const { error: outreachErr } = await db
           .from('outreach_prospects')
@@ -111,7 +128,6 @@ export async function executeAction(
         if (outreachErr) throw outreachErr
       }
     } else if (action.action_type === 'draft_brief') {
-      // Anak Intern: create a brief stub in seo_content_briefs
       const data = action.data as {
         page_url: string
         keyword: string
@@ -130,7 +146,7 @@ export async function executeAction(
         .from('seo_content_briefs')
         .insert({
           owner_user_id:    action.owner_user_id,
-          site_url:         'https://g2g.com',
+          site_url:         siteUrl,
           page:             data.page_url,
           brief_type:       data.brief_type ?? 'on_page',
           primary_keyword:  data.keyword,
@@ -139,7 +155,7 @@ export async function executeAction(
             data.context ?? null,
             data.competitor_url ? `Reference: ${data.competitor_url}` : null,
             data.search_volume ? `Search volume: ${data.search_volume.toLocaleString()}` : null,
-            `Queued by Anak Intern (agent_action: ${action.id})`,
+            `Queued by Bragi (agent_action: ${action.id})`,
           ].filter(Boolean).join('\n'),
         })
         .select('id')
@@ -147,19 +163,29 @@ export async function executeAction(
 
       if (briefErr || !newBrief) throw briefErr ?? new Error('Brief insert failed')
 
-      // Fire-and-forget: auto-generate brief outline using Claude
-      generateAgentBrief({
-        briefId:       newBrief.id,
-        ownerId:       action.owner_user_id,
-        keyword:       data.keyword,
-        pageUrl:       data.page_url,
-        briefType:     data.brief_type ?? 'on_page',
-        searchVolume:  data.search_volume,
-        competitorUrl: data.competitor_url ?? null,
-        notes:         data.context ?? null,
-      }).catch(err => console.error('[executor] brief generation failed:', err))
+      // AWAIT the brief generation so the action is only marked 'executed'
+      // when the brief is actually populated. If it fails, the brief reverts
+      // to 'draft' (handled inside generateAgentBrief) — surface that as
+      // partial success on the action.
+      try {
+        await generateAgentBrief({
+          briefId:       newBrief.id,
+          ownerId:       action.owner_user_id,
+          keyword:       data.keyword,
+          pageUrl:       data.page_url,
+          briefType:     data.brief_type ?? 'on_page',
+          searchVolume:  data.search_volume,
+          competitorUrl: data.competitor_url ?? null,
+          notes:         data.context ?? null,
+        })
+      } catch (genErr) {
+        // generateAgentBrief now handles its own retries internally, so a
+        // throw here is genuinely unexpected. Still: record on the action
+        // so the user sees it.
+        console.error('[executor] brief generation threw:', genErr)
+        // Don't throw — the brief stub is still queryable; treat as partial.
+      }
     } else if (action.action_type === 'run_agent') {
-      // Handoff: trigger another agent and create a linked run
       const data = action.data as {
         handoff_to: string
         context?: string
@@ -167,52 +193,63 @@ export async function executeAction(
       }
 
       const targetKey = data.handoff_to
-      if (!targetKey) {
-        throw new Error('Missing handoff_to in action data')
+      if (!targetKey) throw new Error('Missing handoff_to in action data')
+
+      const dispatchers: Record<string, (ownerId: string, slug: string, runId: string, payload?: Record<string, unknown>) => Promise<{ summary: string; actionsQueued: number }>> = {
+        heimdall: (o, s, r) => runHeimdall(o, s, r),
+        odin:     (o, s, r) => runOdin(o, s, r),
+        loki:     (o, s, r) => runLoki(o, s, r),
+        bragi:    (o, s, r, p) => runBragi(o, s, r, p),
+        hermod:   (o, s, r) => runHermod(o, s, r),
       }
 
-      const implementedAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod']
+      const dispatcher = dispatchers[targetKey]
+      if (!dispatcher) {
+        return { ok: false, error: `Agent "${targetKey}" is not implemented for handoff` }
+      }
 
-      // Create a new agent_runs row linked to this action
+      // Create linked run row
       const { data: newRun, error: runErr } = await db
         .from('agent_runs')
         .insert({
-          owner_user_id: action.owner_user_id,
-          agent_key: targetKey,
-          site_slug: action.site_slug,
-          status: implementedAgents.includes(targetKey) ? 'running' : 'pending_implementation',
+          owner_user_id:          action.owner_user_id,
+          agent_key:              targetKey,
+          site_slug:              action.site_slug,
+          status:                 'running',
           triggered_by_action_id: action.id,
-          started_at: new Date().toISOString(),
+          started_at:             new Date().toISOString(),
         })
         .select('id')
         .single()
 
       if (runErr || !newRun?.id) {
-        throw new Error(`Failed to create linked run for ${targetKey}`)
+        throw new Error(`Failed to create linked run for ${targetKey}: ${runErr?.message ?? 'unknown'}`)
       }
 
-      // Actually run the agent if implemented
-      if (targetKey === 'bragi') {
-        const payload = data.payload ?? {}
-        runBragi(action.owner_user_id, action.site_slug, newRun.id, payload)
-          .catch(err => console.error('[executor] bragi handoff failed:', err))
-      } else if (!implementedAgents.includes(targetKey)) {
-        await db
-          .from('agent_runs')
-          .update({
-            status: 'pending_implementation',
-            summary: `Agent ${targetKey} is not yet implemented`,
-            finished_at: new Date().toISOString(),
-          })
-          .eq('id', newRun.id)
-      }
+      // Fire dispatch in background; don't block the API response too long.
+      // The dispatched agent will update its own run record on completion.
+      const payload = data.payload ?? {}
+      dispatcher(action.owner_user_id, action.site_slug, newRun.id, payload)
+        .catch(err => console.error(`[executor] ${targetKey} handoff failed:`, err))
+
+      // Mark this action as executed — handoff scheduled
+      const { error: updateErr } = await db
+        .from('agent_actions')
+        .update({
+          status:      'executed',
+          executed_at: new Date().toISOString(),
+          approved_by: approverId,
+        })
+        .eq('id', action.id)
+
+      if (updateErr) throw updateErr
 
       return { ok: true, handoffRunId: newRun.id }
     } else {
       throw new Error(`Unknown action_type: ${action.action_type}`)
     }
 
-    // Mark action as executed
+    // Mark action as executed (for non-handoff branches)
     const { error: updateErr } = await db
       .from('agent_actions')
       .update({

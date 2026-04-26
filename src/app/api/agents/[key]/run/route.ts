@@ -24,6 +24,12 @@ export async function POST(
   const body = await request.json()
   const siteSlug = body.site ?? 'g2g'
 
+  // Track runId in outer scope so the outer catch can mark the run as failed
+  // even if the agent throws *before* entering its own try-block (e.g. import
+  // error, createServiceClient failure). Previously such errors left the
+  // agent_runs row stuck in 'running' status forever.
+  let runId: string | null = null
+
   try {
     // Fetch agent config from DB (if exists)
     const { data: agentRow } = await db
@@ -52,7 +58,8 @@ export async function POST(
       return NextResponse.json({ error: 'Failed to create run record' }, { status: 500 })
     }
 
-    const runId = runRecord.id
+    const dispatchRunId: string = runRecord.id
+    runId = dispatchRunId
 
     // Dispatch agent based on key
     let result: { summary: string; actionsQueued: number }
@@ -69,15 +76,15 @@ export async function POST(
           ? savedConfig.minPctDrop
           : HEIMDALL_DEFAULTS.minPctDrop,
       }
-      result = await runHeimdall(effectiveOwnerId, siteSlug, runId, config)
+      result = await runHeimdall(effectiveOwnerId, siteSlug, dispatchRunId, config)
     } else if (key === 'odin') {
-      result = await runOdin(effectiveOwnerId, siteSlug, runId)
+      result = await runOdin(effectiveOwnerId, siteSlug, dispatchRunId)
     } else if (key === 'loki') {
-      result = await runLoki(effectiveOwnerId, siteSlug, runId)
+      result = await runLoki(effectiveOwnerId, siteSlug, dispatchRunId)
     } else if (key === 'bragi') {
-      result = await runBragi(effectiveOwnerId, siteSlug, runId)
+      result = await runBragi(effectiveOwnerId, siteSlug, dispatchRunId)
     } else if (key === 'hermod') {
-      result = await runHermod(effectiveOwnerId, siteSlug, runId)
+      result = await runHermod(effectiveOwnerId, siteSlug, dispatchRunId)
     } else {
       return NextResponse.json(
         { error: `Agent not yet implemented: ${key}` },
@@ -92,7 +99,7 @@ export async function POST(
         .select('id, title, description, priority, action_type')
         .eq('owner_user_id', effectiveOwnerId)
         .eq('agent_key', key)
-        .eq('run_id', runId)
+        .eq('run_id', dispatchRunId)
         .eq('status', 'pending')
         .order('priority', { ascending: false })
         .limit(5)
@@ -105,16 +112,45 @@ export async function POST(
         actionType:  a.action_type,
       }))
 
-      notifyAgentRun(buildAgentNotification(key, runId, result, actions))
+      notifyAgentRun(buildAgentNotification(key, dispatchRunId, result, actions))
         .catch(err => console.error('[slack] notify failed:', err))
     }
 
     return NextResponse.json({
-      runId,
+      runId: dispatchRunId,
       ...result,
     })
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error'
-    return NextResponse.json({ error: errorMessage }, { status: 500 })
+
+    // If the agent threw *before* it could finalise its own run record
+    // (e.g. import-time error, DB connection failure), the row would stay
+    // stuck in 'running'. Heal it here.
+    if (runId) {
+      try {
+        await db
+          .from('agent_runs')
+          .update({
+            status:        'error',
+            error_message: errorMessage,
+            finished_at:   new Date().toISOString(),
+          })
+          .eq('id', runId)
+          .eq('status', 'running')   // only overwrite if agent didn't already finalise
+        await db
+          .from('agents')
+          .update({
+            last_run_at:      new Date().toISOString(),
+            last_run_status:  'error',
+            last_run_summary: errorMessage,
+          })
+          .eq('owner_user_id', effectiveOwnerId)
+          .eq('agent_key', key)
+      } catch (healErr) {
+        console.error('[agents/run] failed to heal run record:', healErr)
+      }
+    }
+
+    return NextResponse.json({ error: errorMessage, runId }, { status: 500 })
   }
 }
