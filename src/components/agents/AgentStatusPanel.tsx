@@ -83,6 +83,45 @@ interface AgentStatusPanelProps {
   userId: string
 }
 
+// ── Extra agents (Tyr/Vor/Saga) settings schema ─────────────────────────────
+// Heimdall keeps its existing dedicated UI below. These are the new agents
+// that need schema-driven settings — each field becomes a numeric input.
+interface FieldSpec {
+  key:   string
+  label: string
+  min:   number
+  max:   number
+  help:  string
+}
+type ExtraConfig = Record<string, number>
+
+const EXTRA_CONFIG_SCHEMA: Record<string, FieldSpec[]> = {
+  tyr: [
+    { key: 'minScore',         label: 'Auto-promote score (≥)', min: 50, max: 100, help: 'Brief score that auto-promotes to "reviewed". Lower = more lenient.' },
+    { key: 'borderlineWindow', label: 'Borderline window',       min: 0,  max: 30,  help: 'Score range below threshold treated as "borderline" (revert to draft + notes).' },
+    { key: 'maxBriefsPerDay',  label: 'Max briefs / day',        min: 1,  max: 200, help: 'Daily quota — Claude calls capped to control cost.' },
+  ],
+  vor: [
+    { key: 'windowDays',           label: 'Lookback window (days)', min: 7,  max: 90,    help: 'How far back Vor reads agent_actions to compute approval rates.' },
+    { key: 'minSampleSize',        label: 'Min sample size',         min: 5,  max: 100,   help: 'Skip suggestion if fewer than N actions in window — avoids tuning on noise.' },
+    { key: 'approvalRateThresh',   label: 'Tighten threshold (0-1)', min: 0,  max: 1,     help: 'Reject rate above this triggers a "tighten" suggestion. Default 0.5.' },
+    { key: 'highConfidenceThresh', label: 'Loosen threshold (0-1)',  min: 0,  max: 1,     help: 'Approve rate above this triggers a "loosen" suggestion. Default 0.85.' },
+  ],
+  saga: [
+    { key: 'windowDays',           label: 'Lookback window (days)',     min: 7,  max: 90,  help: 'How far back to scan agent_actions for cluster candidates.' },
+    { key: 'minKeywordsForTopic',  label: 'Min keywords for new topic', min: 2,  max: 10,  help: 'How many candidate keywords needed to propose a brand-new topic_map.' },
+    { key: 'archiveAgeDays',       label: 'Archive age (days)',         min: 30, max: 365, help: 'Cluster inactive this long becomes archive candidate.' },
+    { key: 'maxProposalsPerRun',   label: 'Max proposals / run',        min: 1,  max: 50,  help: 'Total cap (cluster + archive + coverage combined).' },
+    { key: 'coverageThresholdPct', label: 'Coverage alert below (%)',   min: 10, max: 90,  help: 'Topics below this completion get a coverage_review action.' },
+  ],
+}
+
+const EXTRA_CONFIG_DEFAULTS: Record<string, ExtraConfig> = {
+  tyr:  { minScore: 80, borderlineWindow: 10, maxBriefsPerDay: 30 },
+  vor:  { windowDays: 30, minSampleSize: 10, approvalRateThresh: 0.5, highConfidenceThresh: 0.85 },
+  saga: { windowDays: 30, minKeywordsForTopic: 3, archiveAgeDays: 90, maxProposalsPerRun: 15, coverageThresholdPct: 50 },
+}
+
 export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -97,6 +136,15 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
   })
   const [savingConfig, setSavingConfig] = useState(false)
   const [configSaved, setConfigSaved] = useState(false)
+
+  // Tyr/Vor/Saga config state — schema-driven
+  const [extraConfigs, setExtraConfigs] = useState<Record<string, ExtraConfig>>({
+    tyr:  EXTRA_CONFIG_DEFAULTS.tyr,
+    vor:  EXTRA_CONFIG_DEFAULTS.vor,
+    saga: EXTRA_CONFIG_DEFAULTS.saga,
+  })
+  const [savingExtra, setSavingExtra] = useState<string | null>(null)
+  const [extraSaved, setExtraSaved] = useState<string | null>(null)
 
   const fetchStatus = async () => {
     try {
@@ -124,12 +172,63 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
+  const fetchExtraConfigs = async () => {
+    const next: Record<string, ExtraConfig> = { ...extraConfigs }
+    for (const key of Object.keys(EXTRA_CONFIG_SCHEMA)) {
+      try {
+        const res = await fetch(`/api/agents/${key}/config`)
+        if (!res.ok) continue
+        const data = await res.json() as { config?: Record<string, unknown> }
+        if (data.config) {
+          const merged = { ...EXTRA_CONFIG_DEFAULTS[key] }
+          for (const f of EXTRA_CONFIG_SCHEMA[key]) {
+            const v = data.config[f.key]
+            if (typeof v === 'number') merged[f.key] = v
+          }
+          next[key] = merged
+        }
+      } catch { /* defaults */ }
+    }
+    setExtraConfigs(next)
+  }
+
   useEffect(() => {
     fetchStatus()
     fetchPakRTConfig()
+    fetchExtraConfigs()
     const interval = setInterval(fetchStatus, 30000)
     return () => clearInterval(interval)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const handleSaveExtraConfig = async (agentKey: string) => {
+    setSavingExtra(agentKey)
+    try {
+      await fetch(`/api/agents/${agentKey}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: extraConfigs[agentKey] }),
+      })
+      setExtraSaved(agentKey)
+      setTimeout(() => setExtraSaved(null), 2000)
+    } catch (err) {
+      console.error(`Failed to save ${agentKey} config:`, err)
+    } finally {
+      setSavingExtra(null)
+    }
+  }
+
+  const updateExtraField = (agentKey: string, field: string, raw: string) => {
+    const spec = EXTRA_CONFIG_SCHEMA[agentKey]?.find(f => f.key === field)
+    if (!spec) return
+    const num  = parseFloat(raw)
+    if (Number.isNaN(num)) return
+    const clamped = Math.max(spec.min, Math.min(spec.max, num))
+    setExtraConfigs(prev => ({
+      ...prev,
+      [agentKey]: { ...prev[agentKey], [field]: clamped },
+    }))
+  }
 
   const handleRunAgent = async (key: string) => {
     setRunning(prev => new Set([...prev, key]))
@@ -269,8 +368,8 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
               </div>
 
               <div className="flex items-center gap-2 flex-shrink-0 ml-4">
-                {/* Settings gear — only for implemented agents */}
-                {isImplemented && key === 'heimdall' && (
+                {/* Settings gear — Heimdall + any agent with EXTRA_CONFIG_SCHEMA */}
+                {isImplemented && (key === 'heimdall' || EXTRA_CONFIG_SCHEMA[key]) && (
                   <button
                     onClick={() => setExpandedSettings(settingsOpen ? null : key)}
                     className={`p-2 rounded text-sm transition ${settingsOpen ? 'text-white bg-gray-700' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
@@ -354,6 +453,40 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
                     className="px-4 py-1.5 rounded text-sm font-medium bg-green-700 text-white hover:bg-green-600 transition disabled:opacity-50"
                   >
                     {savingConfig ? 'Saving...' : configSaved ? '✅ Saved' : 'Save Settings'}
+                  </button>
+                  <p className="text-xs text-gray-500">Changes apply on next run</p>
+                </div>
+              </div>
+            )}
+
+            {/* Settings panel — schema-driven for Tyr / Vor / Saga */}
+            {settingsOpen && EXTRA_CONFIG_SCHEMA[key] && (
+              <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
+                <p className="text-xs text-gray-400 mb-3 font-medium uppercase tracking-wider">{AGENT_NAMES[key]} Settings</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {EXTRA_CONFIG_SCHEMA[key].map(field => (
+                    <div key={field.key}>
+                      <label className="block text-xs text-gray-400 mb-1">{field.label}</label>
+                      <input
+                        type="number"
+                        step={field.max <= 1 ? 0.05 : 1}
+                        min={field.min}
+                        max={field.max}
+                        value={extraConfigs[key]?.[field.key] ?? EXTRA_CONFIG_DEFAULTS[key][field.key]}
+                        onChange={e => updateExtraField(key, field.key, e.target.value)}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
+                      />
+                      <p className="text-xs text-gray-600 mt-1">{field.help}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-3 mt-4">
+                  <button
+                    onClick={() => handleSaveExtraConfig(key)}
+                    disabled={savingExtra === key}
+                    className="px-4 py-1.5 rounded text-sm font-medium bg-green-700 text-white hover:bg-green-600 transition disabled:opacity-50"
+                  >
+                    {savingExtra === key ? 'Saving...' : extraSaved === key ? '✅ Saved' : 'Save Settings'}
                   </button>
                   <p className="text-xs text-gray-500">Changes apply on next run</p>
                 </div>

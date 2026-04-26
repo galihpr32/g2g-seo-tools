@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useRealtimeRefresh } from '@/lib/hooks/useRealtimeRefresh'
 
 interface AgentAction {
   id: string
@@ -16,20 +17,43 @@ interface AgentAction {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const AGENTS = [
-  { key: 'all',        label: 'All',        emoji: '📋' },
-  { key: 'heimdall',     label: 'Heimdall',     emoji: '🔍' },
-  { key: 'odin',  label: 'Odin',  emoji: '📈' },
-  { key: 'loki',label: 'Loki',emoji: '🕵️' },
-  { key: 'bragi',label: 'Bragi',emoji: '✍️' },
-  { key: 'hermod', label: 'Hermod', emoji: '🤝' },
+  { key: 'all',      label: 'All',      emoji: '📋' },
+  { key: 'heimdall', label: 'Heimdall', emoji: '👁️' },
+  { key: 'odin',     label: 'Odin',     emoji: '🔮' },
+  { key: 'loki',     label: 'Loki',     emoji: '🕵️' },
+  { key: 'bragi',    label: 'Bragi',    emoji: '✍️' },
+  { key: 'hermod',   label: 'Hermod',   emoji: '🤝' },
+  { key: 'tyr',      label: 'Tyr',      emoji: '⚖️' },
+  { key: 'vor',      label: 'Vor',      emoji: '🦉' },
+  { key: 'saga',     label: 'Saga',     emoji: '📜' },
 ]
 
 const AGENT_BADGE: Record<string, string> = {
-  'heimdall':      'bg-blue-900/60 text-blue-300 border border-blue-700/40',
-  'odin':   'bg-green-900/60 text-green-300 border border-green-700/40',
-  'loki': 'bg-purple-900/60 text-purple-300 border border-purple-700/40',
-  'bragi': 'bg-yellow-900/60 text-yellow-300 border border-yellow-700/40',
-  'hermod':  'bg-orange-900/60 text-orange-300 border border-orange-700/40',
+  'heimdall': 'bg-blue-900/60 text-blue-300 border border-blue-700/40',
+  'odin':     'bg-green-900/60 text-green-300 border border-green-700/40',
+  'loki':     'bg-purple-900/60 text-purple-300 border border-purple-700/40',
+  'bragi':    'bg-yellow-900/60 text-yellow-300 border border-yellow-700/40',
+  'hermod':   'bg-orange-900/60 text-orange-300 border border-orange-700/40',
+  'tyr':      'bg-amber-900/60 text-amber-300 border border-amber-700/40',
+  'vor':      'bg-indigo-900/60 text-indigo-300 border border-indigo-700/40',
+  'saga':     'bg-rose-900/60 text-rose-300 border border-rose-700/40',
+}
+
+// Per-action_type icon + human-readable label. Falls back to a generic
+// rendering if the type isn't listed (e.g., an action_type added in future).
+const ACTION_TYPE_META: Record<string, { icon: string; label: string }> = {
+  add_action_item:     { icon: '📌', label: 'action item' },
+  suggest_trend_brief: { icon: '🌟', label: 'trend brief'  },
+  draft_brief:         { icon: '📝', label: 'draft brief'  },
+  draft_outreach:      { icon: '✉️', label: 'outreach'     },
+  run_agent:           { icon: '⚡', label: 'handoff'      },
+  // Tyr / Vor / Saga additions
+  regenerate_brief:    { icon: '🔁', label: 'regenerate'    },
+  tune_config:         { icon: '⚙️', label: 'tune config'   },
+  add_to_cluster:      { icon: '➕', label: 'add cluster'   },
+  create_topic_map:    { icon: '🌱', label: 'new topic'     },
+  archive_cluster:     { icon: '📦', label: 'archive'       },
+  coverage_review:     { icon: '📊', label: 'coverage review' },
 }
 
 const PRIORITY_CONFIG: Record<string, { label: string; dot: string; text: string }> = {
@@ -46,7 +70,7 @@ interface ApprovalQueueWidgetProps {
   userId: string
 }
 
-export default function ApprovalQueueWidget({ userId: _ }: ApprovalQueueWidgetProps) {
+export default function ApprovalQueueWidget({ userId }: ApprovalQueueWidgetProps) {
   const [actions, setActions]           = useState<AgentAction[]>([])
   const [loading, setLoading]           = useState(true)
   const [activeAgent, setActiveAgent]   = useState('all')
@@ -77,10 +101,27 @@ export default function ApprovalQueueWidget({ userId: _ }: ApprovalQueueWidgetPr
 
   useEffect(() => {
     fetchActions()
-    // Poll every 2 minutes silently — only resets list if count changes
+    // Polling fallback (every 2 minutes) — kicks in if realtime isn't available
     const t = setInterval(() => fetchActions(true), 120000)
     return () => clearInterval(t)
   }, [])
+
+  // Realtime: refetch immediately when agent_actions changes for this owner.
+  const handleRealtime = useCallback(() => fetchActions(true), [])
+  useRealtimeRefresh({
+    table:    'agent_actions',
+    filter:   userId ? `owner_user_id=eq.${userId}` : undefined,
+    events:   ['INSERT', 'UPDATE', 'DELETE'],
+    onChange: handleRealtime,
+  })
+  // Brief status changes (especially generating → agent_generated) — refetch
+  // queue so action's brief link reflects latest state.
+  useRealtimeRefresh({
+    table:    'seo_content_briefs',
+    filter:   userId ? `owner_user_id=eq.${userId}` : undefined,
+    events:   ['UPDATE'],
+    onChange: handleRealtime,
+  })
 
   // ── Derived data ─────────────────────────────────────────────────────────────
 
@@ -352,9 +393,18 @@ export default function ApprovalQueueWidget({ userId: _ }: ApprovalQueueWidgetPr
                     </span>
 
                     {/* Action type */}
-                    <span className="text-xs text-gray-600 bg-gray-800/60 px-1.5 py-0.5 rounded">
-                      {action.action_type.replace(/_/g, ' ')}
-                    </span>
+                    {(() => {
+                      const meta = ACTION_TYPE_META[action.action_type] ?? {
+                        icon: '🔹',
+                        label: action.action_type.replace(/_/g, ' '),
+                      }
+                      return (
+                        <span className="inline-flex items-center gap-1 text-xs text-gray-400 bg-gray-800/60 px-1.5 py-0.5 rounded">
+                          <span>{meta.icon}</span>
+                          <span>{meta.label}</span>
+                        </span>
+                      )
+                    })()}
                   </div>
 
                   <p className="text-white text-sm font-medium leading-snug">{action.title}</p>

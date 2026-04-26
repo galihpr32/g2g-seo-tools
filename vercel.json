@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/gsc-daily",
       "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/game-trends-refresh",
+      "schedule": "0 3 * * *"
     }
   ]
 }

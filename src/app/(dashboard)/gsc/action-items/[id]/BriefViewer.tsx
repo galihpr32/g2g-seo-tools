@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { PageLoader, LottieLoader } from '@/components/ui/LottieLoader'
 import TyrScoreBadge from '@/components/agents/TyrScoreBadge'
+import { useRealtimeRefresh } from '@/lib/hooks/useRealtimeRefresh'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -518,6 +519,20 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
   useEffect(() => {
     if (existingBriefId) pollBrief(existingBriefId)
   }, [existingBriefId, pollBrief])
+
+  // Realtime: refetch immediately when this brief row updates server-side
+  // (e.g. brief-generator finishes, Tyr scores it). Polling fallback above
+  // still runs while status is 'generating'.
+  const handleBriefRealtime = useCallback(() => {
+    if (brief?.id) pollBrief(brief.id)
+  }, [brief?.id, pollBrief])
+  useRealtimeRefresh({
+    table:    'seo_content_briefs',
+    filter:   brief?.id ? `id=eq.${brief.id}` : undefined,
+    events:   ['UPDATE'],
+    onChange: handleBriefRealtime,
+    enabled:  !!brief?.id,
+  })
 
   // Fetch DMCA hits when brief is published
   useEffect(() => {
