@@ -38,19 +38,23 @@ interface AgentAction {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const AGENT_NAMES: Record<string, string> = {
-  'heimdall':      'Pak RT',
-  'odin':   'Mas Gacor',
-  'loki': 'Loki',
-  'bragi': 'Bragi',
-  'hermod':  'Kang Cilok',
+  'heimdall': 'Heimdall',
+  'odin':     'Odin',
+  'loki':     'Loki',
+  'bragi':    'Bragi',
+  'hermod':   'Hermod',
+  'tyr':      'Tyr',
+  'mimir':    'Mimir',
 }
 
 const AGENT_COLORS: Record<string, string> = {
-  'heimdall':      'bg-blue-900/50 text-blue-300',
-  'odin':   'bg-green-900/50 text-green-300',
-  'loki': 'bg-purple-900/50 text-purple-300',
-  'bragi': 'bg-yellow-900/50 text-yellow-300',
-  'hermod':  'bg-orange-900/50 text-orange-300',
+  'heimdall': 'bg-blue-900/50 text-blue-300',
+  'odin':     'bg-green-900/50 text-green-300',
+  'loki':     'bg-purple-900/50 text-purple-300',
+  'bragi':    'bg-yellow-900/50 text-yellow-300',
+  'hermod':   'bg-orange-900/50 text-orange-300',
+  'tyr':      'bg-amber-900/50 text-amber-300',
+  'mimir':    'bg-indigo-900/50 text-indigo-300',
 }
 
 const STATUS_STYLES: Record<string, string> = {
