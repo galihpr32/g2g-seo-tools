@@ -33,11 +33,14 @@ export interface PendingAction {
 // ── Agent meta ────────────────────────────────────────────────────────────────
 
 const AGENT_META: Record<string, { label: string; emoji: string }> = {
-  'heimdall':      { label: 'Heimdall',      emoji: '🔍' },
-  'odin':         { label: 'Odin',   emoji: '📈' },
-  'loki':         { label: 'Loki', emoji: '🕵️' },
-  'bragi':        { label: 'Bragi', emoji: '✍️' },
-  'hermod':       { label: 'Hermod',  emoji: '🤝' },
+  'heimdall': { label: 'Heimdall', emoji: '👁️' },
+  'odin':     { label: 'Odin',     emoji: '🔮' },
+  'loki':     { label: 'Loki',     emoji: '🕵️' },
+  'bragi':    { label: 'Bragi',    emoji: '✍️' },
+  'hermod':   { label: 'Hermod',   emoji: '🤝' },
+  'tyr':      { label: 'Tyr',      emoji: '⚖️' },
+  'mimir':    { label: 'Mimir',    emoji: '🦉' },
+  'saga':     { label: 'Saga',     emoji: '📜' },
 }
 
 // ── Main notify function ──────────────────────────────────────────────────────
@@ -207,18 +210,78 @@ export function buildAgentNotification(
   runId: string,
   result: { summary: string; actionsQueued: number },
   pendingActions: PendingAction[],
-  status: 'success' | 'error' = 'success'
+  status: 'success' | 'error' | 'partial' = 'success'
 ): AgentRunNotification {
   const meta = AGENT_META[agentKey] ?? { label: agentKey, emoji: '🤖' }
   return {
     agentKey,
     agentLabel:    meta.label,
     agentEmoji:    meta.emoji,
-    status,
+    // partial maps to 'success' for the colour treatment but we keep the
+    // ⚠ already inlined in the summary by the agent itself
+    status:        status === 'partial' ? 'success' : status,
     summary:       result.summary,
     actionsQueued: result.actionsQueued,
     runId,
     appUrl:        process.env.NEXT_PUBLIC_APP_URL ?? 'https://g2g-seo-tools.vercel.app',
     pendingActions,
+  }
+}
+
+// ── Tyr-specific event notifier ─────────────────────────────────────────────-
+// Used for: quota reached, brief failed (score < failThreshold),
+// borderline accumulation (lots of borderlines = manual review backlog)
+
+export interface TyrEvent {
+  kind:        'quota_reached' | 'brief_failed' | 'borderline_backlog'
+  reviewedCount?: number
+  quota?:        number
+  briefId?:      string
+  briefKeyword?: string
+  briefScore?:   number
+  briefThreshold?: number
+  borderlineCount?: number
+}
+
+export async function notifyTyrEvent(evt: TyrEvent): Promise<void> {
+  if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL_ID) {
+    console.warn('[slack] Tyr notif skipped — missing token/channel')
+    return
+  }
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://g2g-seo-tools.vercel.app'
+  let header = ''
+  let body = ''
+
+  if (evt.kind === 'quota_reached') {
+    header = '⚖️ Tyr — daily quota reached'
+    body   = `Reviewed ${evt.reviewedCount ?? '?'}/${evt.quota ?? '?'} briefs today. Pending briefs will be picked up tomorrow. <${appUrl}/command-center/logs?agent=tyr|View runs>`
+  } else if (evt.kind === 'brief_failed') {
+    header = '⚖️ Tyr — brief failed quality review'
+    body   = `Brief for "${evt.briefKeyword ?? '?'}" scored ${evt.briefScore ?? '?'}/100 (threshold ${evt.briefThreshold ?? '?'}). Regenerate action queued. <${appUrl}/gsc/action-items/${evt.briefId ?? ''}|Open brief>`
+  } else if (evt.kind === 'borderline_backlog') {
+    header = '⚖️ Tyr — borderline briefs accumulating'
+    body   = `${evt.borderlineCount ?? '?'} brief(s) in borderline state — need manual review. <${appUrl}/content/studio?status=borderline|Review now>`
+  }
+
+  try {
+    const res = await fetch('https://slack.com/api/chat.postMessage', {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json; charset=utf-8',
+        'Authorization': `Bearer ${SLACK_BOT_TOKEN}`,
+      },
+      body: JSON.stringify({
+        channel: SLACK_CHANNEL_ID,
+        text:    header,
+        blocks: [
+          { type: 'header', text: { type: 'plain_text', text: header, emoji: true } },
+          { type: 'section', text: { type: 'mrkdwn', text: body } },
+        ],
+      }),
+    })
+    if (!res.ok) console.warn('[slack] notifyTyrEvent non-OK:', res.status)
+  } catch (e) {
+    console.error('[slack] notifyTyrEvent failed:', e)
   }
 }

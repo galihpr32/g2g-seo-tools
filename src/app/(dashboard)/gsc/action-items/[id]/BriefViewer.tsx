@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { PageLoader, LottieLoader } from '@/components/ui/LottieLoader'
+import TyrScoreBadge from '@/components/agents/TyrScoreBadge'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,18 @@ type Brief = {
   published_url?: string
   created_at: string
   updated_at: string
+  // Tyr review fields
+  tyr_score?: number | null
+  tyr_status?: string | null
+  tyr_reviewed_at?: string | null
+  tyr_breakdown?: {
+    coverage?: number
+    intent_match?: number
+    keyword_grounding?: number
+    faq_realism?: number
+    redflags?: string[]
+    reasoning?: string
+  } | null
 }
 
 // ── Off-page content type config ──────────────────────────────────────────────
@@ -925,6 +938,13 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
             : 'text-gray-400 bg-gray-500/10 border-gray-500/20'}`}>
             {brief.status === 'agent_generated' ? '🤖 AI Draft Ready' : brief.status}
           </span>
+          {/* Tyr quality score (when reviewed) */}
+          {brief.tyr_score != null && (
+            <TyrScoreBadge
+              score={brief.tyr_score}
+              breakdown={brief.tyr_breakdown ?? null}
+            />
+          )}
           <span className="text-gray-500 text-xs">Generated {new Date(brief.created_at).toLocaleString('id-ID')}</span>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

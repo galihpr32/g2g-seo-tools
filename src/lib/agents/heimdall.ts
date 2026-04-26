@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { normalizeUrl } from '@/lib/agents/site-helpers'
+import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
 
 /**
  * Heimdall (Watchdog) — detects ranking drops and queues action items.
@@ -220,6 +221,11 @@ export async function runHeimdall(
           : `Recommend on-page review (intent match, freshness, internal links, schema).`,
       ].join(' ')
 
+      // Derive keyword candidate from URL path for universe lookup.
+      // /categories/wow-gold → "wow gold"
+      const keywordGuess = drop.original_page.split('/').pop()?.replace(/-/g, ' ') ?? drop.original_page
+      const universe = await lookupKeywordInUniverse(db, ownerId, keywordGuess)
+
       const sharedData = {
         page:             drop.original_page,
         site_url:         siteUrl,
@@ -231,6 +237,10 @@ export async function runHeimdall(
         position_now:     drop.position_now,
         position_diff:    drop.position_diff,
         snapshot_date:    drop.snapshot_date,
+        keyword_map_cluster_id: universe.keyword_map_cluster_id,
+        keyword_map_id:         universe.keyword_map_id,
+        topic:                  universe.topic,
+        outside_universe:       universe.outside_universe,
       }
 
       let insertErr

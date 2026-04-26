@@ -30,6 +30,7 @@ const AGENT_NAMES: Record<string, string> = {
   'hermod': 'Hermod',
   'tyr':    'Tyr',
   'mimir':  'Mimir',
+  'saga':   'Saga',
 }
 
 const AGENT_ROLES: Record<string, string> = {
@@ -40,6 +41,7 @@ const AGENT_ROLES: Record<string, string> = {
   'hermod': 'Outreach Agent — finds prospects from keyword gaps, drafts pitches',
   'tyr':    'Quality Reviewer — scores generated briefs, auto-promotes or flags for revision',
   'mimir':  'Config Tuner — proposes threshold adjustments based on your approval patterns',
+  'saga':   'Universe Curator — maintains keyword map: proposes clusters, archives decay, surfaces coverage gaps',
 }
 
 const AGENT_EMOJI: Record<string, string> = {
@@ -50,6 +52,7 @@ const AGENT_EMOJI: Record<string, string> = {
   'hermod': '🤝',
   'tyr':    '⚖️',
   'mimir':  '🦉',
+  'saga':   '📜',
 }
 
 // Button label when idle (start state)
@@ -61,6 +64,7 @@ const AGENT_START_LABEL: Record<string, string> = {
   'hermod':   'Find Prospect',
   'tyr':      'Review Briefs',
   'mimir':    'Tune Configs',
+  'saga':     'Curate Universe',
 }
 
 // Button label while the agent is actively running
@@ -72,6 +76,7 @@ const AGENT_RUNNING_LABEL: Record<string, string> = {
   'hermod':   'Reaching Out...',
   'tyr':      'Judging...',
   'mimir':    'Pondering...',
+  'saga':     'Chronicling...',
 }
 
 interface AgentStatusPanelProps {
@@ -84,7 +89,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
   const [running, setRunning] = useState<Set<string>>(new Set())
   const [expandedSettings, setExpandedSettings] = useState<string | null>(null)
 
-  // Pak RT config state
+  // Heimdall config state
   const [pakRTConfig, setPakRTConfig] = useState<PakRTConfig>({
     maxDropsPerDay: 10,
     minClicksDrop: 5,
@@ -184,7 +189,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
-  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir']
+  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir', 'saga']
   const agentMap = new Map((status?.agents || []).map(a => [a.key, a]))
 
   const formatTimeAgo = (iso: string | null) => {
@@ -225,7 +230,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
       {allAgents.map(key => {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
-        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir'].includes(key)
+        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir', 'saga'].includes(key)
         const isRunning = running.has(key)
         const settingsOpen = expandedSettings === key
 
@@ -288,7 +293,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
               </div>
             </div>
 
-            {/* Settings panel — Pak RT */}
+            {/* Settings panel — Heimdall */}
             {settingsOpen && key === 'heimdall' && (
               <div className="border-t border-gray-800 bg-gray-950 px-5 py-4">
                 <p className="text-xs text-gray-400 mb-3 font-medium uppercase tracking-wider">Heimdall Settings</p>

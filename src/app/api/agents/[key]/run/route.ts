@@ -9,6 +9,7 @@ import { runBragi } from '@/lib/agents/bragi'
 import { runHermod } from '@/lib/agents/hermod'
 import { runTyr,   TYR_DEFAULTS,   type TyrConfig }   from '@/lib/agents/tyr'
 import { runMimir, MIMIR_DEFAULTS, type MimirConfig } from '@/lib/agents/mimir'
+import { runSaga,  SAGA_DEFAULTS,  type SagaConfig }  from '@/lib/agents/saga'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export async function POST(
@@ -103,6 +104,15 @@ export async function POST(
         highConfidenceThresh: typeof savedConfig.highConfidenceThresh === 'number' ? savedConfig.highConfidenceThresh : MIMIR_DEFAULTS.highConfidenceThresh,
       }
       result = await runMimir(effectiveOwnerId, siteSlug, dispatchRunId, mimirConfig)
+    } else if (key === 'saga') {
+      const sagaConfig: Partial<SagaConfig> = {
+        windowDays:           typeof savedConfig.windowDays === 'number'           ? savedConfig.windowDays           : SAGA_DEFAULTS.windowDays,
+        minKeywordsForTopic:  typeof savedConfig.minKeywordsForTopic === 'number'  ? savedConfig.minKeywordsForTopic  : SAGA_DEFAULTS.minKeywordsForTopic,
+        archiveAgeDays:       typeof savedConfig.archiveAgeDays === 'number'       ? savedConfig.archiveAgeDays       : SAGA_DEFAULTS.archiveAgeDays,
+        maxProposalsPerRun:   typeof savedConfig.maxProposalsPerRun === 'number'   ? savedConfig.maxProposalsPerRun   : SAGA_DEFAULTS.maxProposalsPerRun,
+        coverageThresholdPct: typeof savedConfig.coverageThresholdPct === 'number' ? savedConfig.coverageThresholdPct : SAGA_DEFAULTS.coverageThresholdPct,
+      }
+      result = await runSaga(effectiveOwnerId, siteSlug, dispatchRunId, sagaConfig)
     } else {
       return NextResponse.json(
         { error: `Agent not yet implemented: ${key}` },

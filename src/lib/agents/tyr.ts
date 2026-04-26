@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
+import { notifyTyrEvent } from '@/lib/slack/notify'
 
 /**
  * Tyr — Brief Quality Reviewer (Norse god of justice)
@@ -141,6 +142,12 @@ export async function runTyr(
       const summary = `Daily quota reached (${reviewedToday ?? 0}/${maxBriefsPerDay}). Skipping review until tomorrow.`
       warnings.push('quota_exhausted')
       await _finishRun(db, runId, ownerId, 'partial', summary, 0, 0, warnings)
+      // Slack: alert that quota is exhausted (fire-and-forget)
+      notifyTyrEvent({
+        kind:          'quota_reached',
+        reviewedCount: reviewedToday ?? 0,
+        quota:         maxBriefsPerDay,
+      }).catch(e => console.error('[tyr] quota notif failed:', e))
       return { summary, actionsQueued: 0 }
     }
 
@@ -247,6 +254,14 @@ export async function runTyr(
           console.error('[tyr] failed to queue regenerate_brief:', queueErr.message)
         } else {
           actionsQueued++
+          // Slack: notify of failed brief
+          notifyTyrEvent({
+            kind:           'brief_failed',
+            briefId:        brief.id,
+            briefKeyword:   brief.primary_keyword ?? brief.page ?? undefined,
+            briefScore:     score,
+            briefThreshold: minScore,
+          }).catch(e => console.error('[tyr] brief_failed notif failed:', e))
         }
       }
 
@@ -267,6 +282,22 @@ export async function runTyr(
     const summaryBase = `Reviewed ${reviewed} brief${reviewed !== 1 ? 's' : ''}: ${promoted} auto-promoted, ${borderline} borderline, ${failed} failed${errored ? `, ${errored} errors` : ''}.`
     const summary = warnings.length ? `${summaryBase} ⚠ ${warnings.join('; ')}` : summaryBase
     const status = warnings.length || errored > 0 ? 'partial' : 'success'
+
+    // Slack: alert if borderline backlog accumulating (>5 still in borderline DB-wide)
+    try {
+      const { count: borderlineTotal } = await db
+        .from('seo_content_briefs')
+        .select('id', { count: 'exact', head: true })
+        .eq('owner_user_id', ownerId)
+        .eq('tyr_status', 'borderline')
+        .eq('status', 'draft')
+      if ((borderlineTotal ?? 0) >= 5) {
+        notifyTyrEvent({
+          kind: 'borderline_backlog',
+          borderlineCount: borderlineTotal ?? 0,
+        }).catch(e => console.error('[tyr] borderline_backlog notif failed:', e))
+      }
+    } catch { /* non-fatal */ }
 
     await _finishRun(db, runId, ownerId, status, summary, reviewed, actionsQueued, warnings)
     return { summary, actionsQueued }

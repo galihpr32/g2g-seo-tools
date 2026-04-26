@@ -487,7 +487,7 @@ function BulkBar({ selected, onClear, onBulkCreate, onBulkSendToIntern }: {
         <button
           onClick={onBulkSendToIntern}
           className="px-3 py-1.5 rounded text-xs font-medium bg-purple-700/80 text-white hover:bg-purple-600 transition"
-          title="Queue brief drafts for selected games via Anak Intern"
+          title="Queue brief drafts for selected games via Bragi"
         >
           ✍️ Draft briefs ({selected.size})
         </button>
@@ -562,17 +562,17 @@ export default function GameTrendsPage() {
     if (!selectedGames.length) return
     setSending(true)
     try {
-      // Trigger Anak Intern run (it will scan recently approved actions)
+      // Trigger Bragi run (it will scan recently approved actions)
       // We surface a quick toast/notification pattern
       await fetch('/api/agents/bragi/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ site: 'g2g' }),
       })
-      alert(`✅ Anak Intern queued brief drafts for ${selectedGames.length} game${selectedGames.length !== 1 ? 's' : ''}. Check the Approval Queue.`)
+      alert(`✅ Bragi queued brief drafts for ${selectedGames.length} game${selectedGames.length !== 1 ? 's' : ''}. Check the Approval Queue.`)
       setCheckedIds(new Set())
     } catch {
-      alert('Failed to trigger Anak Intern. Please try again.')
+      alert('Failed to trigger Bragi. Please try again.')
     } finally {
       setSending(false)
     }
@@ -818,7 +818,7 @@ export default function GameTrendsPage() {
       {sending && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-8 text-center">
-            <LottieLoader size={60} text="Sending to Anak Intern…" />
+            <LottieLoader size={60} text="Sending to Bragi…" />
           </div>
         </div>
       )}

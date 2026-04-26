@@ -320,6 +320,99 @@ export async function executeAction(
           config_after:     newConfig,
           reasoning:        data.reasoning ?? null,
         })
+    } else if (action.action_type === 'add_to_cluster') {
+      // Saga proposed adding a keyword as a cluster under an existing topic.
+      const data = action.data as {
+        keyword:      string
+        map_id:       string
+        topic?:       string
+        search_volume?: number
+        sources?:     string[]
+        sample_action_id?: string
+      }
+      if (!data.keyword || !data.map_id) throw new Error('add_to_cluster: missing keyword or map_id')
+
+      const { error: insertErr } = await db
+        .from('keyword_map_clusters')
+        .insert({
+          map_id:         data.map_id,
+          owner_user_id:  action.owner_user_id,
+          keyword:        data.keyword,
+          search_volume:  data.search_volume ?? null,
+          intent:         'commercial',
+          content_type:   'landing_page',
+          cluster_group:  'Supporting',
+          status:         'not_started',
+          source:         (data.sources?.[0] ?? 'saga') as string,
+          source_ref_id:  data.sample_action_id ?? null,
+          last_action_at: new Date().toISOString(),
+        })
+
+      if (insertErr) throw insertErr
+    } else if (action.action_type === 'create_topic_map') {
+      // Saga proposed creating a brand-new topic map with initial clusters.
+      const data = action.data as {
+        proposed_topic:      string
+        proposed_topic_slug: string
+        pillar_keyword:      string
+        candidate_keywords:  Array<{ keyword: string; search_volume?: number }>
+      }
+      if (!data.proposed_topic_slug || !data.pillar_keyword) {
+        throw new Error('create_topic_map: missing topic_slug or pillar_keyword')
+      }
+
+      const { data: newMap, error: mapErr } = await db
+        .from('keyword_maps')
+        .insert({
+          owner_user_id:   action.owner_user_id,
+          topic:           data.proposed_topic,
+          topic_slug:      data.proposed_topic_slug,
+          aliases:         [],
+          pillar_keyword:  data.pillar_keyword,
+          pillar_url_slug: data.proposed_topic_slug,
+          pillar_title:    `Buy ${data.proposed_topic} — G2G Marketplace`,
+          market:          'us',
+          status:          'planning',
+        })
+        .select('id')
+        .single()
+
+      if (mapErr || !newMap) throw mapErr ?? new Error('topic map insert failed')
+
+      // Insert clusters: pillar first (is_pillar=true), then supporting
+      const candidates = data.candidate_keywords ?? []
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i]
+        await db
+          .from('keyword_map_clusters')
+          .insert({
+            map_id:        newMap.id,
+            owner_user_id: action.owner_user_id,
+            keyword:       c.keyword,
+            search_volume: c.search_volume ?? null,
+            intent:        'commercial',
+            content_type:  'landing_page',
+            cluster_group: i === 0 ? 'Pillar' : 'Supporting',
+            url_slug:      data.proposed_topic_slug,
+            priority_order: i + 1,
+            is_pillar:     i === 0,
+            status:        'not_started',
+            source:        'saga',
+            last_action_at: new Date().toISOString(),
+          })
+      }
+    } else if (action.action_type === 'archive_cluster') {
+      const data = action.data as { cluster_id: string }
+      if (!data.cluster_id) throw new Error('archive_cluster: missing cluster_id')
+      const { error } = await db
+        .from('keyword_map_clusters')
+        .update({ status: 'archived', last_action_at: new Date().toISOString() })
+        .eq('id', data.cluster_id)
+        .eq('owner_user_id', action.owner_user_id)
+      if (error) throw error
+    } else if (action.action_type === 'coverage_review') {
+      // Informational only — approving means user acknowledged the report.
+      // No DB mutation. The action just gets marked executed.
     } else if (action.action_type === 'regenerate_brief') {
       // Tyr requested a regeneration after the brief failed quality review.
       const data = action.data as {

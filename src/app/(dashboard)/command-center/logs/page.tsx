@@ -45,6 +45,7 @@ const AGENT_NAMES: Record<string, string> = {
   'hermod':   'Hermod',
   'tyr':      'Tyr',
   'mimir':    'Mimir',
+  'saga':     'Saga',
 }
 
 const AGENT_COLORS: Record<string, string> = {
@@ -55,6 +56,7 @@ const AGENT_COLORS: Record<string, string> = {
   'hermod':   'bg-orange-900/50 text-orange-300',
   'tyr':      'bg-amber-900/50 text-amber-300',
   'mimir':    'bg-indigo-900/50 text-indigo-300',
+  'saga':     'bg-rose-900/50 text-rose-300',
 }
 
 const STATUS_STYLES: Record<string, string> = {

@@ -62,10 +62,16 @@ export default async function CommandCenterPage() {
               ⚙️ Schedules
             </a>
             <a
+              href="/command-center/insights"
+              className="text-sm text-gray-400 hover:text-white transition"
+            >
+              📊 Insights
+            </a>
+            <a
               href="/command-center/performance"
               className="text-sm text-gray-400 hover:text-white transition"
             >
-              📊 Performance
+              📈 Performance
             </a>
             <a
               href="/command-center/logs"

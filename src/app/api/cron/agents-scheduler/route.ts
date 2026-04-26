@@ -7,6 +7,7 @@ import { runBragi } from '@/lib/agents/bragi'
 import { runHermod } from '@/lib/agents/hermod'
 import { runTyr,   TYR_DEFAULTS,   type TyrConfig }   from '@/lib/agents/tyr'
 import { runMimir, MIMIR_DEFAULTS, type MimirConfig } from '@/lib/agents/mimir'
+import { runSaga,  SAGA_DEFAULTS,  type SagaConfig }  from '@/lib/agents/saga'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export const maxDuration = 300
@@ -139,6 +140,15 @@ export async function GET(request: Request) {
           highConfidenceThresh: typeof config.highConfidenceThresh === 'number' ? config.highConfidenceThresh : MIMIR_DEFAULTS.highConfidenceThresh,
         }
         result = await runMimir(ownerId, siteSlug, runId, mimirConfig)
+      } else if (key === 'saga') {
+        const sagaConfig: Partial<SagaConfig> = {
+          windowDays:           typeof config.windowDays === 'number'           ? config.windowDays           : SAGA_DEFAULTS.windowDays,
+          minKeywordsForTopic:  typeof config.minKeywordsForTopic === 'number'  ? config.minKeywordsForTopic  : SAGA_DEFAULTS.minKeywordsForTopic,
+          archiveAgeDays:       typeof config.archiveAgeDays === 'number'       ? config.archiveAgeDays       : SAGA_DEFAULTS.archiveAgeDays,
+          maxProposalsPerRun:   typeof config.maxProposalsPerRun === 'number'   ? config.maxProposalsPerRun   : SAGA_DEFAULTS.maxProposalsPerRun,
+          coverageThresholdPct: typeof config.coverageThresholdPct === 'number' ? config.coverageThresholdPct : SAGA_DEFAULTS.coverageThresholdPct,
+        }
+        result = await runSaga(ownerId, siteSlug, runId, sagaConfig)
       } else {
         results[`${ownerId}/${key}`] = { status: 'skipped', reason: 'not implemented' }
         continue

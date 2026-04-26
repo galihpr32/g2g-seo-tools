@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { getSiteUrlForSlug, buildCategoryUrl, normalizeUrl } from '@/lib/agents/site-helpers'
+import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
 
 /**
  * Odin (Trend Spotter) — identifies trending games and queues brief suggestions.
@@ -150,14 +151,18 @@ export async function runOdin(
       ...(existingActions?.map(a => normalizeUrl(a.page)) ?? []),
     ])
 
-    let actionsQueued = 0
-    let steamFailures = 0
-    let steamSkipped  = 0
+    let actionsQueued    = 0
+    let steamFailures    = 0
+    let skippedNoContext = 0
+    let skippedExisting  = 0
 
     // 4. For each candidate game (top 20 by concurrent players)
     for (const game of trends.slice(0, 20)) {
       const categoryPageUrl = buildCategoryUrl(siteUrl, String(game.name))
-      if (existingPagesNorm.has(normalizeUrl(categoryPageUrl))) continue
+      if (existingPagesNorm.has(normalizeUrl(categoryPageUrl))) {
+        skippedExisting++
+        continue
+      }
 
       // Existing GSC ranking? Use maybeSingle so a no-row miss doesn't throw.
       const gameSlug = String(game.name).toLowerCase().replace(/\s+/g, '-')
@@ -171,36 +176,40 @@ export async function runOdin(
 
       const existingPageUrl: string | null = rankings?.page ?? null
 
-      // Priority — weighted, *normalized* score so the two metrics don't dwarf each other.
-      // Search volume contributes log-scaled (commercial intent indicator),
-      // concurrent players contributes log-scaled (active demand indicator),
-      // require BOTH to be material for 'high'.
       const sv  = Number(game.search_volume  ?? 0)
       const p2w = Number(game.players_2weeks ?? 0)
-      const svScore  = sv  > 0 ? Math.log10(sv  + 1) : 0   // ~3 for 1k, ~4 for 10k
-      const p2wScore = p2w > 0 ? Math.log10(p2w + 1) : 0   // ~4 for 10k, ~5 for 100k
+      const svScore  = sv  > 0 ? Math.log10(sv  + 1) : 0
+      const p2wScore = p2w > 0 ? Math.log10(p2w + 1) : 0
 
+      // Priority bands — calibrated for a gaming MARKETPLACE (niche games with
+      // small but active audiences are valuable too, not just AAA titles).
+      //   high   = sv ≥3.2k AND p2w ≥10k        (clear AAA / mass appeal)
+      //   medium = sv ≥500   OR  p2w ≥5k        (niche but commercial)
+      //   low    = anything below
       let priority: 'high' | 'medium' | 'low' = 'low'
-      if (svScore >= 3.5 && p2wScore >= 4)        priority = 'high'    // ≥3.2k SV AND ≥10k players
-      else if (svScore >= 3 || p2wScore >= 4.5)   priority = 'medium'  // ≥1k SV OR ≥30k players
+      if (svScore >= 3.5 && p2wScore >= 4)         priority = 'high'
+      else if (svScore >= 2.7 || p2wScore >= 3.7)  priority = 'medium'
       const composite = svScore + p2wScore
 
-      // Fetch trend reasons (with retry) for medium+. If Steam fails entirely
-      // and we have NO concurrency baseline either, SKIP — better than queuing
-      // an empty-context action.
+      // Always fetch Steam reasons when an appid exists — Steam API is free,
+      // even a low-priority game with a 50% sale or new DLC is a valid trend
+      // signal we don't want to miss. The retry/timeout logic handles failure
+      // gracefully (returns empty reasons + steamHit=false).
       let trendReasons: TrendReason[] = []
       let steamHit = false
-      if (game.steam_appid && priority !== 'low') {
+      if (game.steam_appid) {
         const r = await fetchTrendReasons(Number(game.steam_appid), p2w)
         trendReasons = r.reasons
         steamHit = r.steamHit
         if (!steamHit) steamFailures++
       }
 
-      // If we have neither steam reasons NOR meaningful local signals, skip.
-      const hasMeaningfulContext = trendReasons.length > 0 || sv > 1000 || p2w > 20000
+      // Permissive context check: if a game made it into the trending cache,
+      // it deserves a chance. Skip ONLY if literally every signal is empty:
+      // no search volume, no concurrent players, no Steam reasons.
+      const hasMeaningfulContext = trendReasons.length > 0 || sv > 0 || p2w > 2000
       if (!hasMeaningfulContext) {
-        steamSkipped++
+        skippedNoContext++
         continue
       }
 
@@ -228,6 +237,9 @@ export async function runOdin(
         isFastPath ? '⚡ Approve to auto-draft a brief via Bragi.' : '',
       ].filter(Boolean).join(' ')
 
+      // Soft universe enforcement: tag with topic match if any.
+      const universe = await lookupKeywordInUniverse(db, ownerId, String(game.name))
+
       const sharedData = {
         game_name:         game.name,
         steam_appid:       game.steam_appid,
@@ -243,6 +255,10 @@ export async function runOdin(
         existing_page_url: existingPageUrl,
         suggested_action:  suggestedAction,
         page_url:          categoryPageUrl,
+        keyword_map_cluster_id: universe.keyword_map_cluster_id,
+        keyword_map_id:         universe.keyword_map_id,
+        topic:                  universe.topic,
+        outside_universe:       universe.outside_universe,
       }
 
       let insertErr
@@ -296,10 +312,13 @@ export async function runOdin(
       }
     }
 
-    if (steamFailures > 0) warnings.push(`Steam API enrichment failed for ${steamFailures} game(s)`)
-    if (steamSkipped > 0)  warnings.push(`Skipped ${steamSkipped} game(s) lacking meaningful context`)
+    if (steamFailures > 0)    warnings.push(`Steam API enrichment failed for ${steamFailures} game(s)`)
+    if (skippedNoContext > 0) warnings.push(`Skipped ${skippedNoContext} game(s) with no signals`)
 
-    const summaryBase = `Analyzed ${trends.length} trending games. Queued ${actionsQueued} new opportunities.`
+    const breakdownParts = [`${actionsQueued} queued`]
+    if (skippedExisting > 0)  breakdownParts.push(`${skippedExisting} skipped (already have page)`)
+    if (skippedNoContext > 0) breakdownParts.push(`${skippedNoContext} skipped (no signals)`)
+    const summaryBase = `Analyzed ${trends.length} trending games · ${breakdownParts.join(', ')}.`
     const summary = warnings.length ? `${summaryBase} ⚠ ${warnings.join('; ')}` : summaryBase
     const status = warnings.length ? 'partial' : 'success'
 

@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { getDomainRankedKeywords } from '@/lib/dataforseo/client'
 import { getSiteUrlForSlug } from '@/lib/agents/site-helpers'
+import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
 
 /**
  * Loki — Competitive Analysis Agent
@@ -137,6 +138,9 @@ export async function runLoki(
               : `Recommended action: ${ourPos && ourPos < 50 ? 'on-page optimisation of existing page' : 'create a new dedicated page targeting this term'}.`,
           ].join(' ')
 
+          // Soft universe enforcement: tag with cluster/topic match if any.
+          const universe = await lookupKeywordInUniverse(db, ownerId, gap.keyword ?? '')
+
           const sharedData = {
             keyword:             gap.keyword,
             competitor_domain:   competitor.domain,
@@ -144,6 +148,10 @@ export async function runLoki(
             competitor_position: gap.position,
             our_position:        ourPos ?? null,
             search_volume:       volume,
+            keyword_map_cluster_id: universe.keyword_map_cluster_id,
+            keyword_map_id:         universe.keyword_map_id,
+            topic:                  universe.topic,
+            outside_universe:       universe.outside_universe,
           }
 
           let insertErr
