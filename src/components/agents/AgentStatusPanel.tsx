@@ -28,6 +28,8 @@ const AGENT_NAMES: Record<string, string> = {
   'loki': 'Loki',
   'bragi': 'Bragi',
   'hermod': 'Hermod',
+  'tyr':    'Tyr',
+  'mimir':  'Mimir',
 }
 
 const AGENT_ROLES: Record<string, string> = {
@@ -36,6 +38,8 @@ const AGENT_ROLES: Record<string, string> = {
   'loki': 'Competitive Intel — keyword gaps, SOV, competitor pages',
   'bragi': 'Content Drafter — turns approved trends & gaps into brief drafts',
   'hermod': 'Outreach Agent — finds prospects from keyword gaps, drafts pitches',
+  'tyr':    'Quality Reviewer — scores generated briefs, auto-promotes or flags for revision',
+  'mimir':  'Config Tuner — proposes threshold adjustments based on your approval patterns',
 }
 
 const AGENT_EMOJI: Record<string, string> = {
@@ -44,6 +48,8 @@ const AGENT_EMOJI: Record<string, string> = {
   'loki': '🕵️',
   'bragi': '✍️',
   'hermod': '🤝',
+  'tyr':    '⚖️',
+  'mimir':  '🦉',
 }
 
 // Button label when idle (start state)
@@ -53,6 +59,8 @@ const AGENT_START_LABEL: Record<string, string> = {
   'loki':     'Gather Intel',
   'bragi':    'Start Writing',
   'hermod':   'Find Prospect',
+  'tyr':      'Review Briefs',
+  'mimir':    'Tune Configs',
 }
 
 // Button label while the agent is actively running
@@ -62,6 +70,8 @@ const AGENT_RUNNING_LABEL: Record<string, string> = {
   'loki':     'Spying...',
   'bragi':    'Writing...',
   'hermod':   'Reaching Out...',
+  'tyr':      'Judging...',
+  'mimir':    'Pondering...',
 }
 
 interface AgentStatusPanelProps {
@@ -174,7 +184,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
-  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod']
+  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir']
   const agentMap = new Map((status?.agents || []).map(a => [a.key, a]))
 
   const formatTimeAgo = (iso: string | null) => {
@@ -215,7 +225,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
       {allAgents.map(key => {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
-        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod'].includes(key)
+        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir'].includes(key)
         const isRunning = running.has(key)
         const settingsOpen = expandedSettings === key
 

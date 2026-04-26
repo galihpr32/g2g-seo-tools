@@ -51,7 +51,7 @@ export async function runHermod(
       .limit(10)
 
     if (!gapActions?.length) {
-      // Pre-flight check: when did Loki last run successfully?
+      // Strict pre-flight: when did Loki last run, and is its data fresh?
       const { data: lokiAgent } = await db
         .from('agents')
         .select('last_run_at, last_run_status')
@@ -59,10 +59,51 @@ export async function runHermod(
         .eq('agent_key', 'loki')
         .maybeSingle()
 
-      const summary = lokiAgent?.last_run_at
-        ? `No approved Loki gaps in the last 14 days (Loki last ran ${new Date(lokiAgent.last_run_at as string).toISOString().slice(0, 10)} → ${lokiAgent.last_run_status}). Approve some Loki gaps first.`
-        : `Loki has never been run. Run Loki, approve at least one keyword gap, then run Hermod.`
+      const lokiLastRunMs = lokiAgent?.last_run_at
+        ? new Date(lokiAgent.last_run_at as string).getTime()
+        : null
+      const lokiAgeDays = lokiLastRunMs ? (Date.now() - lokiLastRunMs) / (1000 * 60 * 60 * 24) : null
 
+      // If Loki hasn't run in >7 days, queue a run_agent action to trigger
+      // Loki first. User approves it, Loki produces gaps, then Hermod can
+      // run and find prospects. This breaks the "Hermod silently no-ops
+      // because dependency is stale" pattern.
+      if (lokiAgeDays === null || lokiAgeDays > 7) {
+        const { error: insertErr } = await db
+          .from('agent_actions')
+          .insert({
+            owner_user_id: ownerId,
+            agent_key:     'hermod',
+            run_id:        runId,
+            site_slug:     siteSlug,
+            action_type:   'run_agent',
+            title:         lokiAgeDays === null
+              ? 'Hermod blocked: run Loki first to find keyword gaps'
+              : `Hermod blocked: Loki data stale (${lokiAgeDays.toFixed(0)}d old) — refresh?`,
+            description:   `Hermod needs recent Loki keyword gaps to identify outreach prospects. ${lokiAgeDays === null ? 'Loki has never run — approve to trigger first run.' : `Loki last ran ${lokiAgeDays.toFixed(0)} days ago, beyond the 7-day freshness window. Approve to re-run Loki, then Hermod will pick up the new gaps automatically next run.`}`,
+            priority:      'high',
+            data: {
+              handoff_to: 'loki',
+              context:    'hermod_dependency_refresh',
+              payload:    {},
+              triggered_by: 'hermod',
+              hermod_run_id: runId,
+            },
+          })
+
+        const summary = insertErr
+          ? `No Loki gaps + failed to queue refresh (${insertErr.message})`
+          : lokiAgeDays === null
+            ? 'Loki has never run. Queued run_agent action to trigger Loki first — approve to proceed.'
+            : `Loki data is ${lokiAgeDays.toFixed(0)}d old. Queued run_agent action to refresh Loki — approve to proceed.`
+        warnings.push('loki_dependency_stale')
+        await _finishRun(db, runId, ownerId, 'partial', summary, 0, insertErr ? 0 : 1, warnings)
+        return { summary, actionsQueued: insertErr ? 0 : 1 }
+      }
+
+      // Loki ran recently but no approved gaps yet — likely user hasn't
+      // approved any. Surface that, no automation needed.
+      const summary = `Loki ran ${lokiAgeDays.toFixed(0)}d ago but no gaps have been approved yet. Approve some Loki gaps from the queue, then re-run Hermod.`
       await _finishRun(db, runId, ownerId, 'success', summary, 0, 0, warnings)
       return { summary, actionsQueued: 0 }
     }

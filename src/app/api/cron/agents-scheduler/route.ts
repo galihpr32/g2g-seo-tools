@@ -5,6 +5,8 @@ import { runOdin } from '@/lib/agents/odin'
 import { runLoki } from '@/lib/agents/loki'
 import { runBragi } from '@/lib/agents/bragi'
 import { runHermod } from '@/lib/agents/hermod'
+import { runTyr,   TYR_DEFAULTS,   type TyrConfig }   from '@/lib/agents/tyr'
+import { runMimir, MIMIR_DEFAULTS, type MimirConfig } from '@/lib/agents/mimir'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export const maxDuration = 300
@@ -121,6 +123,22 @@ export async function GET(request: Request) {
         result = await runBragi(ownerId, siteSlug, runId)
       } else if (key === 'hermod') {
         result = await runHermod(ownerId, siteSlug, runId)
+      } else if (key === 'tyr') {
+        const tyrConfig: Partial<TyrConfig> = {
+          minScore:         typeof config.minScore === 'number'         ? config.minScore         : TYR_DEFAULTS.minScore,
+          borderlineWindow: typeof config.borderlineWindow === 'number' ? config.borderlineWindow : TYR_DEFAULTS.borderlineWindow,
+          maxBriefsPerDay:  typeof config.maxBriefsPerDay === 'number'  ? config.maxBriefsPerDay  : TYR_DEFAULTS.maxBriefsPerDay,
+          timezone:         typeof config.timezone === 'string'         ? config.timezone         : TYR_DEFAULTS.timezone,
+        }
+        result = await runTyr(ownerId, siteSlug, runId, tyrConfig)
+      } else if (key === 'mimir') {
+        const mimirConfig: Partial<MimirConfig> = {
+          windowDays:           typeof config.windowDays === 'number'           ? config.windowDays           : MIMIR_DEFAULTS.windowDays,
+          minSampleSize:        typeof config.minSampleSize === 'number'        ? config.minSampleSize        : MIMIR_DEFAULTS.minSampleSize,
+          approvalRateThresh:   typeof config.approvalRateThresh === 'number'   ? config.approvalRateThresh   : MIMIR_DEFAULTS.approvalRateThresh,
+          highConfidenceThresh: typeof config.highConfidenceThresh === 'number' ? config.highConfidenceThresh : MIMIR_DEFAULTS.highConfidenceThresh,
+        }
+        result = await runMimir(ownerId, siteSlug, runId, mimirConfig)
       } else {
         results[`${ownerId}/${key}`] = { status: 'skipped', reason: 'not implemented' }
         continue

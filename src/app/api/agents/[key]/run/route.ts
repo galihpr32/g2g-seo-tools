@@ -7,6 +7,8 @@ import { runOdin } from '@/lib/agents/odin'
 import { runLoki } from '@/lib/agents/loki'
 import { runBragi } from '@/lib/agents/bragi'
 import { runHermod } from '@/lib/agents/hermod'
+import { runTyr,   TYR_DEFAULTS,   type TyrConfig }   from '@/lib/agents/tyr'
+import { runMimir, MIMIR_DEFAULTS, type MimirConfig } from '@/lib/agents/mimir'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
 export async function POST(
@@ -85,6 +87,22 @@ export async function POST(
       result = await runBragi(effectiveOwnerId, siteSlug, dispatchRunId)
     } else if (key === 'hermod') {
       result = await runHermod(effectiveOwnerId, siteSlug, dispatchRunId)
+    } else if (key === 'tyr') {
+      const tyrConfig: Partial<TyrConfig> = {
+        minScore:         typeof savedConfig.minScore === 'number'         ? savedConfig.minScore         : TYR_DEFAULTS.minScore,
+        borderlineWindow: typeof savedConfig.borderlineWindow === 'number' ? savedConfig.borderlineWindow : TYR_DEFAULTS.borderlineWindow,
+        maxBriefsPerDay:  typeof savedConfig.maxBriefsPerDay === 'number'  ? savedConfig.maxBriefsPerDay  : TYR_DEFAULTS.maxBriefsPerDay,
+        timezone:         typeof savedConfig.timezone === 'string'         ? savedConfig.timezone         : TYR_DEFAULTS.timezone,
+      }
+      result = await runTyr(effectiveOwnerId, siteSlug, dispatchRunId, tyrConfig)
+    } else if (key === 'mimir') {
+      const mimirConfig: Partial<MimirConfig> = {
+        windowDays:           typeof savedConfig.windowDays === 'number'           ? savedConfig.windowDays           : MIMIR_DEFAULTS.windowDays,
+        minSampleSize:        typeof savedConfig.minSampleSize === 'number'        ? savedConfig.minSampleSize        : MIMIR_DEFAULTS.minSampleSize,
+        approvalRateThresh:   typeof savedConfig.approvalRateThresh === 'number'   ? savedConfig.approvalRateThresh   : MIMIR_DEFAULTS.approvalRateThresh,
+        highConfidenceThresh: typeof savedConfig.highConfidenceThresh === 'number' ? savedConfig.highConfidenceThresh : MIMIR_DEFAULTS.highConfidenceThresh,
+      }
+      result = await runMimir(effectiveOwnerId, siteSlug, dispatchRunId, mimirConfig)
     } else {
       return NextResponse.json(
         { error: `Agent not yet implemented: ${key}` },

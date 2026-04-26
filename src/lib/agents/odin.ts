@@ -214,6 +214,10 @@ export async function runOdin(
       const trendBasis = basisParts.join(' · ')
 
       const suggestedAction: 'create_page' | 'update_page' = existingPageUrl ? 'update_page' : 'create_page'
+      // Fast-path: high-priority NEW trend (no existing page) → handoff to
+      // Bragi directly. Skips the suggest_trend_brief → manual approve →
+      // Bragi-scan three-step. One approval = one brief.
+      const isFastPath = priority === 'high' && suggestedAction === 'create_page'
 
       const description = [
         `Why trending: ${trendBasis}.`,
@@ -221,36 +225,69 @@ export async function runOdin(
           ? `No category page exists yet — create one to capture this demand.`
           : `Existing page (${existingPageUrl}) — refresh content to match current demand.`,
         !steamHit && game.steam_appid ? '(Steam enrichment unavailable — using cached signals only.)' : '',
+        isFastPath ? '⚡ Approve to auto-draft a brief via Bragi.' : '',
       ].filter(Boolean).join(' ')
 
-      const { error: insertErr } = await db
-        .from('agent_actions')
-        .insert({
-          owner_user_id: ownerId,
-          agent_key: 'odin',
-          run_id: runId,
-          site_slug: siteSlug,
-          action_type: 'suggest_trend_brief',
-          title: `"${game.name}" is trending — ${suggestedAction === 'create_page' ? 'create' : 'update'} category page`,
-          description,
-          priority,
-          data: {
-            game_name:         game.name,
-            steam_appid:       game.steam_appid,
-            trend_score:       composite,
-            search_volume:     sv,
-            players_2weeks:    p2w,
-            buy_search_volume: game.buy_search_volume || 0,
-            keywords:          [],
-            trend_basis:       trendBasis,
-            trend_reasons:     trendReasons.map(r => r.type),
-            trend_reason_details: trendReasons,
-            steam_enriched:    steamHit,
-            existing_page_url: existingPageUrl,
-            suggested_action:  suggestedAction,
-            page_url:          categoryPageUrl,
-          },
-        })
+      const sharedData = {
+        game_name:         game.name,
+        steam_appid:       game.steam_appid,
+        trend_score:       composite,
+        search_volume:     sv,
+        players_2weeks:    p2w,
+        buy_search_volume: game.buy_search_volume || 0,
+        keywords:          [],
+        trend_basis:       trendBasis,
+        trend_reasons:     trendReasons.map(r => r.type),
+        trend_reason_details: trendReasons,
+        steam_enriched:    steamHit,
+        existing_page_url: existingPageUrl,
+        suggested_action:  suggestedAction,
+        page_url:          categoryPageUrl,
+      }
+
+      let insertErr
+      if (isFastPath) {
+        ;({ error: insertErr } = await db
+          .from('agent_actions')
+          .insert({
+            owner_user_id: ownerId,
+            agent_key: 'odin',
+            run_id: runId,
+            site_slug: siteSlug,
+            action_type: 'run_agent',
+            title: `⚡ Trending: "${game.name}" — draft category brief?`,
+            description,
+            priority: 'high',
+            data: {
+              handoff_to: 'bragi',
+              context:    'odin_high_value_trend',
+              payload: {
+                keyword:       game.name,
+                page_url:      categoryPageUrl,
+                search_volume: sv,
+                source_agent:  'odin',
+                brief_type:    'category_page',
+                context:       `Trending game basis: ${trendBasis}`,
+              },
+              ...sharedData,
+              fast_path:     true,
+            },
+          }))
+      } else {
+        ;({ error: insertErr } = await db
+          .from('agent_actions')
+          .insert({
+            owner_user_id: ownerId,
+            agent_key: 'odin',
+            run_id: runId,
+            site_slug: siteSlug,
+            action_type: 'suggest_trend_brief',
+            title: `"${game.name}" is trending — ${suggestedAction === 'create_page' ? 'create' : 'update'} category page`,
+            description,
+            priority,
+            data: sharedData,
+          }))
+      }
 
       if (insertErr) {
         console.error('[odin] insert failed:', insertErr.message)

@@ -208,6 +208,37 @@ export async function executeAction(
         return { ok: false, error: `Agent "${targetKey}" is not implemented for handoff` }
       }
 
+      // Dedup: if a run for the same owner+key is already in 'running' state,
+      // don't spawn a duplicate. Reuse the existing run.
+      const { data: inflightRuns } = await db
+        .from('agent_runs')
+        .select('id, started_at')
+        .eq('owner_user_id', action.owner_user_id)
+        .eq('agent_key', targetKey)
+        .eq('status', 'running')
+        .order('started_at', { ascending: false })
+        .limit(1)
+
+      // Only treat as duplicate if the existing run started in the last 5 min
+      // (anything older is presumed stuck — let the new dispatch heal it).
+      const existing = inflightRuns?.[0]
+      const isDuplicate = existing
+        && (Date.now() - new Date(existing.started_at as string).getTime()) < 5 * 60 * 1000
+
+      if (isDuplicate) {
+        // Mark this action as executed and link to the existing in-flight run.
+        // No new dispatch — the in-flight run will produce results.
+        await db
+          .from('agent_actions')
+          .update({
+            status:      'executed',
+            executed_at: new Date().toISOString(),
+            approved_by: approverId,
+          })
+          .eq('id', action.id)
+        return { ok: true, handoffRunId: existing.id as string }
+      }
+
       // Create linked run row
       const { data: newRun, error: runErr } = await db
         .from('agent_runs')
@@ -226,13 +257,12 @@ export async function executeAction(
         throw new Error(`Failed to create linked run for ${targetKey}: ${runErr?.message ?? 'unknown'}`)
       }
 
-      // Fire dispatch in background; don't block the API response too long.
-      // The dispatched agent will update its own run record on completion.
+      // Fire dispatch in background; the dispatched agent updates its own
+      // run record on completion (success / partial / error).
       const payload = data.payload ?? {}
       dispatcher(action.owner_user_id, action.site_slug, newRun.id, payload)
         .catch(err => console.error(`[executor] ${targetKey} handoff failed:`, err))
 
-      // Mark this action as executed — handoff scheduled
       const { error: updateErr } = await db
         .from('agent_actions')
         .update({
@@ -243,6 +273,120 @@ export async function executeAction(
         .eq('id', action.id)
 
       if (updateErr) throw updateErr
+      return { ok: true, handoffRunId: newRun.id }
+    } else if (action.action_type === 'tune_config') {
+      // Mimir's config tuning suggestion was approved.
+      const data = action.data as {
+        target_agent:     string
+        current_config:   Record<string, unknown>
+        suggested_config: Record<string, unknown>
+        reasoning?:       string
+      }
+
+      if (!data.target_agent || !data.suggested_config) {
+        throw new Error('tune_config: missing target_agent or suggested_config')
+      }
+
+      // Read the current full config (data.current_config might be partial — only the keys Mimir suggested changing)
+      const { data: agentRow } = await db
+        .from('agents')
+        .select('config')
+        .eq('owner_user_id', action.owner_user_id)
+        .eq('agent_key', data.target_agent)
+        .maybeSingle()
+
+      const currentFullConfig = (agentRow?.config ?? {}) as Record<string, unknown>
+      const newConfig = { ...currentFullConfig, ...data.suggested_config }
+
+      // Update agents.config
+      const { error: updateConfigErr } = await db
+        .from('agents')
+        .update({ config: newConfig })
+        .eq('owner_user_id', action.owner_user_id)
+        .eq('agent_key', data.target_agent)
+
+      if (updateConfigErr) throw updateConfigErr
+
+      // Audit row in agent_config_history
+      await db
+        .from('agent_config_history')
+        .insert({
+          owner_user_id:    action.owner_user_id,
+          agent_key:        data.target_agent,
+          applied_by:       approverId,
+          source:           'mimir_suggestion',
+          source_action_id: action.id,
+          config_before:    currentFullConfig,
+          config_after:     newConfig,
+          reasoning:        data.reasoning ?? null,
+        })
+    } else if (action.action_type === 'regenerate_brief') {
+      // Tyr requested a regeneration after the brief failed quality review.
+      const data = action.data as {
+        brief_id:      string
+        keyword:       string
+        page_url:      string
+        brief_type?:   string
+        tyr_score?:    number
+        tyr_breakdown?: Record<string, unknown>
+        regenerate_reason?: string
+      }
+
+      if (!data.brief_id || !data.keyword || !data.page_url) {
+        throw new Error('regenerate_brief: missing brief_id / keyword / page_url')
+      }
+
+      // Mark the original brief as superseded — keep the row for audit trail
+      // but flip status to 'draft' explicitly and add a note.
+      await db
+        .from('seo_content_briefs')
+        .update({
+          status: 'draft',
+          notes:  `[regenerate] Original brief failed Tyr review (score ${data.tyr_score ?? '?'}). Superseded by re-draft via Bragi handoff. Original retained for audit.`,
+        })
+        .eq('id', data.brief_id)
+
+      // Spawn a Bragi handoff run with refined context
+      const { data: newRun, error: runErr } = await db
+        .from('agent_runs')
+        .insert({
+          owner_user_id:          action.owner_user_id,
+          agent_key:              'bragi',
+          site_slug:              action.site_slug,
+          status:                 'running',
+          triggered_by_action_id: action.id,
+          started_at:             new Date().toISOString(),
+        })
+        .select('id')
+        .single()
+
+      if (runErr || !newRun?.id) {
+        throw new Error(`regenerate_brief: failed to create Bragi run: ${runErr?.message ?? 'unknown'}`)
+      }
+
+      const redflagSummary = (data.tyr_breakdown as Record<string, unknown>)?.redflags
+      const refinedContext = [
+        `Re-draft requested by Tyr after brief failed quality review (score ${data.tyr_score}/100).`,
+        Array.isArray(redflagSummary) ? `Avoid these issues from the previous draft: ${redflagSummary.slice(0, 3).join('; ')}` : '',
+      ].filter(Boolean).join(' ')
+
+      runBragi(action.owner_user_id, action.site_slug, newRun.id, {
+        keyword:      data.keyword,
+        page_url:     data.page_url,
+        brief_type:   data.brief_type ?? 'on_page',
+        source_agent: 'tyr',
+        context:      refinedContext,
+      }).catch(err => console.error('[executor] regenerate_brief Bragi failed:', err))
+
+      // Mark action executed
+      await db
+        .from('agent_actions')
+        .update({
+          status:      'executed',
+          executed_at: new Date().toISOString(),
+          approved_by: approverId,
+        })
+        .eq('id', action.id)
 
       return { ok: true, handoffRunId: newRun.id }
     } else {

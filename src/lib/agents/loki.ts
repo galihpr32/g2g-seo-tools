@@ -125,35 +125,75 @@ export async function runLoki(
           const volume   = gap.volume ?? 0
           const priority = volume > 5000 ? 'high' : volume > 1000 ? 'medium' : 'low'
           const ourPos   = ourMap.get(gap.keyword?.toLowerCase() ?? '')?.position
+          // Fast-path: high-volume gaps where we don't already rank go directly
+          // to a Bragi handoff. Threshold = SV ≥ 10k. One approval = one brief.
+          const isHighValue = volume >= 10000 && (!ourPos || ourPos > 50)
 
           const description = [
             `${competitor.domain} ranks #${gap.position} for "${gap.keyword}" (${volume.toLocaleString()} monthly searches).`,
             ourPos ? `We rank #${ourPos} (page ${Math.ceil(ourPos / 10)}+).` : `We don't rank in top 100.`,
-            `Recommended action: ${ourPos && ourPos < 50 ? 'on-page optimisation of existing page' : 'create a new dedicated page targeting this term'}.`,
+            isHighValue
+              ? `⚡ High-value gap — approve to auto-draft a brief via Bragi.`
+              : `Recommended action: ${ourPos && ourPos < 50 ? 'on-page optimisation of existing page' : 'create a new dedicated page targeting this term'}.`,
           ].join(' ')
 
-          const { error: insertErr } = await db
-            .from('agent_actions')
-            .insert({
-              owner_user_id: ownerId,
-              agent_key:     'loki',
-              run_id:        runId,
-              site_slug:     siteSlug,
-              action_type:   'add_action_item',
-              title:         `Keyword gap: "${gap.keyword}" — ${competitor.domain} #${gap.position}`,
-              description,
-              priority,
-              data: {
-                keyword:             gap.keyword,
-                competitor_domain:   competitor.domain,
-                competitor_url:      gap.url ?? null,
-                competitor_position: gap.position,
-                our_position:        ourPos ?? null,
-                search_volume:       volume,
-                cpc:                 0,   // DataForSEO ranked_keywords doesn't return CPC
-                action_type:         ourPos && ourPos < 50 ? 'on_page' : 'new_page',
-              },
-            })
+          const sharedData = {
+            keyword:             gap.keyword,
+            competitor_domain:   competitor.domain,
+            competitor_url:      gap.url ?? null,
+            competitor_position: gap.position,
+            our_position:        ourPos ?? null,
+            search_volume:       volume,
+          }
+
+          let insertErr
+          if (isHighValue) {
+            ;({ error: insertErr } = await db
+              .from('agent_actions')
+              .insert({
+                owner_user_id: ownerId,
+                agent_key:     'loki',
+                run_id:        runId,
+                site_slug:     siteSlug,
+                action_type:   'run_agent',
+                title:         `⚡ High-value gap: "${gap.keyword}" (${volume.toLocaleString()} SV) — draft brief?`,
+                description,
+                priority:      'high',
+                data: {
+                  handoff_to: 'bragi',
+                  context:    'loki_high_value_gap',
+                  payload: {
+                    keyword:        gap.keyword,
+                    competitor_url: gap.url ?? null,
+                    search_volume:  volume,
+                    source_agent:   'loki',
+                    brief_type:     'on_page',
+                    context:        `Competitor ${competitor.domain} ranks #${gap.position} for this term. We don't rank in top 50.`,
+                  },
+                  ...sharedData,
+                  fast_path:      true,
+                  action_type:    'new_page',
+                },
+              }))
+          } else {
+            ;({ error: insertErr } = await db
+              .from('agent_actions')
+              .insert({
+                owner_user_id: ownerId,
+                agent_key:     'loki',
+                run_id:        runId,
+                site_slug:     siteSlug,
+                action_type:   'add_action_item',
+                title:         `Keyword gap: "${gap.keyword}" — ${competitor.domain} #${gap.position}`,
+                description,
+                priority,
+                data: {
+                  ...sharedData,
+                  cpc:         0,
+                  action_type: ourPos && ourPos < 50 ? 'on_page' : 'new_page',
+                },
+              }))
+          }
 
           if (insertErr) {
             console.error('[loki] insert failed:', insertErr.message)

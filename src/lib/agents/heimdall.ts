@@ -226,11 +226,17 @@ export async function runHeimdall(
       .slice(0, maxDropsPerDay)
 
     // 5. Queue agent_actions
+    // Fast-path: critical drops (>50% AND prev clicks ≥100) get a run_agent
+    // handoff to Bragi so they go straight to brief drafting upon approval —
+    // skipping the intermediate add_action_item → Bragi-scan dance. Mutually
+    // exclusive with the normal path: each drop produces exactly one action.
+    const fastPathEnabled = (config as Partial<HeimdallConfig> & { fastPathEnabled?: boolean }).fastPathEnabled !== false
     let actionsQueued = 0
     let queueErrors   = 0
 
     for (const drop of newDrops) {
       const priority = drop.clicks_drop > 20 || drop.clicks_drop_pct > 50 ? 'high' : 'medium'
+      const isCritical = fastPathEnabled && drop.clicks_drop_pct > 50 && drop.clicks_prev >= 100
       const posChangeStr = drop.position_change > 0
         ? `slipped ${drop.position_change.toFixed(1)} positions (avg ${drop.pos_prev_avg.toFixed(1)} → ${drop.pos_now_avg.toFixed(1)})`
         : drop.position_change < 0
@@ -240,35 +246,73 @@ export async function runHeimdall(
       const description = [
         `Clicks down ${drop.clicks_drop.toFixed(0)} (-${drop.clicks_drop_pct.toFixed(1)}%): ${drop.clicks_prev} → ${drop.clicks_now} over the last 7 days vs prior 7.`,
         `Position: ${posChangeStr}.`,
-        `Recommend on-page review (intent match, freshness, internal links, schema).`,
+        isCritical
+          ? `⚡ Critical drop — approve to auto-draft a brief via Bragi (skip the manual triage step).`
+          : `Recommend on-page review (intent match, freshness, internal links, schema).`,
       ].join(' ')
 
-      const { error: insertErr } = await db
-        .from('agent_actions')
-        .insert({
-          owner_user_id: ownerId,
-          agent_key: 'heimdall',
-          run_id: runId,
-          site_slug: siteSlug,
-          action_type: 'add_action_item',
-          title: `"${drop.original_page}" dropped ${drop.clicks_drop.toFixed(0)} clicks (-${drop.clicks_drop_pct.toFixed(1)}%)`,
-          description,
-          priority,
-          data: {
-            page:             drop.original_page,
-            site_url:         siteUrl,
-            clicks_prev:      drop.clicks_prev,
-            clicks_now:       drop.clicks_now,
-            clicks_drop:      drop.clicks_drop,
-            clicks_drop_pct:  drop.clicks_drop_pct,
-            position_change:  drop.position_change,
-            pos_prev_avg:     drop.pos_prev_avg,
-            pos_now_avg:      drop.pos_now_avg,
-            pos_best_now:     drop.pos_best_now,
-            pos_worst_now:    drop.pos_worst_now,
-            action_type:      'on_page',
-          },
-        })
+      const sharedData = {
+        page:             drop.original_page,
+        site_url:         siteUrl,
+        clicks_prev:      drop.clicks_prev,
+        clicks_now:       drop.clicks_now,
+        clicks_drop:      drop.clicks_drop,
+        clicks_drop_pct:  drop.clicks_drop_pct,
+        position_change:  drop.position_change,
+        pos_prev_avg:     drop.pos_prev_avg,
+        pos_now_avg:      drop.pos_now_avg,
+        pos_best_now:     drop.pos_best_now,
+        pos_worst_now:    drop.pos_worst_now,
+      }
+
+      let insertErr
+      if (isCritical) {
+        // Fast-path: queue run_agent handoff to Bragi
+        ;({ error: insertErr } = await db
+          .from('agent_actions')
+          .insert({
+            owner_user_id: ownerId,
+            agent_key: 'heimdall',
+            run_id: runId,
+            site_slug: siteSlug,
+            action_type: 'run_agent',
+            title: `⚡ Critical drop: "${drop.original_page}" -${drop.clicks_drop_pct.toFixed(0)}% — draft brief?`,
+            description,
+            priority: 'high',
+            data: {
+              handoff_to: 'bragi',
+              context:    'heimdall_critical_drop',
+              payload: {
+                keyword:        drop.original_page.split('/').pop()?.replace(/-/g, ' ') ?? drop.original_page,
+                page_url:       drop.original_page,
+                source_agent:   'heimdall',
+                brief_type:     'on_page',
+                context:        `Critical ranking drop: ${description}`,
+                position_change: drop.position_change,
+              },
+              ...sharedData,
+              fast_path:        true,
+            },
+          }))
+      } else {
+        // Normal path: add_action_item, requires Bragi scan to pick up later
+        ;({ error: insertErr } = await db
+          .from('agent_actions')
+          .insert({
+            owner_user_id: ownerId,
+            agent_key: 'heimdall',
+            run_id: runId,
+            site_slug: siteSlug,
+            action_type: 'add_action_item',
+            title: `"${drop.original_page}" dropped ${drop.clicks_drop.toFixed(0)} clicks (-${drop.clicks_drop_pct.toFixed(1)}%)`,
+            description,
+            priority,
+            data: {
+              ...sharedData,
+              action_type: 'on_page',
+            },
+          }))
+      }
 
       if (insertErr) {
         queueErrors++
