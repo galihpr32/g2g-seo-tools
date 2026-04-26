@@ -11,7 +11,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
  *   outside_universe       (boolean)      — true when no match at all
  *
  * Behaviour stays unchanged when there's no match — agents still queue the
- * action, but the tag lets the queue UI / Saga / Mimir downstream filter
+ * action, but the tag lets the queue UI / Saga / Vor downstream filter
  * "out-of-universe" findings without blocking the flow.
  */
 

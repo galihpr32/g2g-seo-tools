@@ -20,7 +20,7 @@ import { notifyTyrEvent } from '@/lib/slack/notify'
  *
  * Failure handling: if Claude call itself errors, brief stays at
  * 'agent_generated' (preserves progress). tyr_status='error' is recorded so
- * Mimir can flag persistent errors.
+ * Vor can flag persistent errors.
  */
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })

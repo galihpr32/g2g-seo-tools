@@ -163,6 +163,74 @@ export async function executeAction(
 
       if (briefErr || !newBrief) throw briefErr ?? new Error('Brief insert failed')
 
+      // ── Brief ↔ Cluster linkage ─────────────────────────────────────────
+      // If this brief's keyword matches an existing keyword_map_cluster,
+      // wire them together so:
+      //   1. The cluster row points to this brief (brief_id FK)
+      //   2. cluster.last_action_at is bumped (used by Saga decay logic)
+      //   3. cluster.status moves not_started → writing (lifecycle promote)
+      // We use Bragi's payload upstream tag if available (Loki/Heimdall/Odin
+      // already attach keyword_map_cluster_id when they queue actions).
+      // Fall back to keyword-based lookup otherwise.
+      try {
+        let targetClusterId: string | null = null
+
+        // Pull source action data — it may already contain the cluster id
+        if (data.source_action_id) {
+          const { data: srcAction } = await db
+            .from('agent_actions')
+            .select('data')
+            .eq('id', data.source_action_id)
+            .maybeSingle()
+          const srcData = (srcAction?.data ?? {}) as Record<string, unknown>
+          if (typeof srcData.keyword_map_cluster_id === 'string') {
+            targetClusterId = srcData.keyword_map_cluster_id
+          }
+        }
+
+        // Fallback: case-insensitive keyword match
+        if (!targetClusterId) {
+          const { data: clusterMatch } = await db
+            .from('keyword_map_clusters')
+            .select('id, status')
+            .eq('owner_user_id', action.owner_user_id)
+            .ilike('keyword', data.keyword)
+            .limit(1)
+            .maybeSingle()
+          if (clusterMatch) targetClusterId = clusterMatch.id as string
+        }
+
+        if (targetClusterId) {
+          // Lifecycle promote: not_started → writing (only if currently not_started)
+          const { error: clusterUpdErr } = await db
+            .from('keyword_map_clusters')
+            .update({
+              brief_id:       newBrief.id,
+              last_action_at: new Date().toISOString(),
+              // Only bump status if it's still 'not_started'. Otherwise leave alone
+              // (keeps 'writing'/'review'/'published' intact during regeneration).
+              status: 'writing',
+            })
+            .eq('id', targetClusterId)
+            .eq('owner_user_id', action.owner_user_id)
+            .eq('status', 'not_started')   // conditional update — only no-op if already advanced
+          if (clusterUpdErr) console.warn('[executor] cluster promote failed:', clusterUpdErr.message)
+
+          // Independently: always link brief_id + bump last_action_at, regardless of current status
+          await db
+            .from('keyword_map_clusters')
+            .update({
+              brief_id:       newBrief.id,
+              last_action_at: new Date().toISOString(),
+            })
+            .eq('id', targetClusterId)
+            .eq('owner_user_id', action.owner_user_id)
+        }
+      } catch (linkErr) {
+        // Non-fatal — brief is created, cluster link missing is just lost telemetry
+        console.warn('[executor] brief↔cluster link failed:', linkErr)
+      }
+
       // AWAIT the brief generation so the action is only marked 'executed'
       // when the brief is actually populated. If it fails, the brief reverts
       // to 'draft' (handled inside generateAgentBrief) — surface that as
@@ -275,7 +343,7 @@ export async function executeAction(
       if (updateErr) throw updateErr
       return { ok: true, handoffRunId: newRun.id }
     } else if (action.action_type === 'tune_config') {
-      // Mimir's config tuning suggestion was approved.
+      // Vor's config tuning suggestion was approved.
       const data = action.data as {
         target_agent:     string
         current_config:   Record<string, unknown>
@@ -287,7 +355,7 @@ export async function executeAction(
         throw new Error('tune_config: missing target_agent or suggested_config')
       }
 
-      // Read the current full config (data.current_config might be partial — only the keys Mimir suggested changing)
+      // Read the current full config (data.current_config might be partial — only the keys Vor suggested changing)
       const { data: agentRow } = await db
         .from('agents')
         .select('config')
@@ -314,7 +382,7 @@ export async function executeAction(
           owner_user_id:    action.owner_user_id,
           agent_key:        data.target_agent,
           applied_by:       approverId,
-          source:           'mimir_suggestion',
+          source:           'vor_suggestion',
           source_action_id: action.id,
           config_before:    currentFullConfig,
           config_after:     newConfig,

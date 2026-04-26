@@ -6,7 +6,7 @@ import { runLoki } from '@/lib/agents/loki'
 import { runBragi } from '@/lib/agents/bragi'
 import { runHermod } from '@/lib/agents/hermod'
 import { runTyr,   TYR_DEFAULTS,   type TyrConfig }   from '@/lib/agents/tyr'
-import { runMimir, MIMIR_DEFAULTS, type MimirConfig } from '@/lib/agents/mimir'
+import { runVor,   VOR_DEFAULTS,   type VorConfig }   from '@/lib/agents/vor'
 import { runSaga,  SAGA_DEFAULTS,  type SagaConfig }  from '@/lib/agents/saga'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
 
@@ -132,14 +132,14 @@ export async function GET(request: Request) {
           timezone:         typeof config.timezone === 'string'         ? config.timezone         : TYR_DEFAULTS.timezone,
         }
         result = await runTyr(ownerId, siteSlug, runId, tyrConfig)
-      } else if (key === 'mimir') {
-        const mimirConfig: Partial<MimirConfig> = {
-          windowDays:           typeof config.windowDays === 'number'           ? config.windowDays           : MIMIR_DEFAULTS.windowDays,
-          minSampleSize:        typeof config.minSampleSize === 'number'        ? config.minSampleSize        : MIMIR_DEFAULTS.minSampleSize,
-          approvalRateThresh:   typeof config.approvalRateThresh === 'number'   ? config.approvalRateThresh   : MIMIR_DEFAULTS.approvalRateThresh,
-          highConfidenceThresh: typeof config.highConfidenceThresh === 'number' ? config.highConfidenceThresh : MIMIR_DEFAULTS.highConfidenceThresh,
+      } else if (key === 'vor') {
+        const vorConfig: Partial<VorConfig> = {
+          windowDays:           typeof config.windowDays === 'number'           ? config.windowDays           : VOR_DEFAULTS.windowDays,
+          minSampleSize:        typeof config.minSampleSize === 'number'        ? config.minSampleSize        : VOR_DEFAULTS.minSampleSize,
+          approvalRateThresh:   typeof config.approvalRateThresh === 'number'   ? config.approvalRateThresh   : VOR_DEFAULTS.approvalRateThresh,
+          highConfidenceThresh: typeof config.highConfidenceThresh === 'number' ? config.highConfidenceThresh : VOR_DEFAULTS.highConfidenceThresh,
         }
-        result = await runMimir(ownerId, siteSlug, runId, mimirConfig)
+        result = await runVor(ownerId, siteSlug, runId, vorConfig)
       } else if (key === 'saga') {
         const sagaConfig: Partial<SagaConfig> = {
           windowDays:           typeof config.windowDays === 'number'           ? config.windowDays           : SAGA_DEFAULTS.windowDays,

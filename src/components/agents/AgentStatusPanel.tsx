@@ -29,7 +29,7 @@ const AGENT_NAMES: Record<string, string> = {
   'bragi': 'Bragi',
   'hermod': 'Hermod',
   'tyr':    'Tyr',
-  'mimir':  'Mimir',
+  'vor':    'Vor',
   'saga':   'Saga',
 }
 
@@ -40,7 +40,7 @@ const AGENT_ROLES: Record<string, string> = {
   'bragi': 'Content Drafter — turns approved trends & gaps into brief drafts',
   'hermod': 'Outreach Agent — finds prospects from keyword gaps, drafts pitches',
   'tyr':    'Quality Reviewer — scores generated briefs, auto-promotes or flags for revision',
-  'mimir':  'Config Tuner — proposes threshold adjustments based on your approval patterns',
+  'vor':    'Config Tuner — proposes threshold adjustments based on your approval patterns',
   'saga':   'Universe Curator — maintains keyword map: proposes clusters, archives decay, surfaces coverage gaps',
 }
 
@@ -51,7 +51,7 @@ const AGENT_EMOJI: Record<string, string> = {
   'bragi': '✍️',
   'hermod': '🤝',
   'tyr':    '⚖️',
-  'mimir':  '🦉',
+  'vor':    '🦉',
   'saga':   '📜',
 }
 
@@ -63,7 +63,7 @@ const AGENT_START_LABEL: Record<string, string> = {
   'bragi':    'Start Writing',
   'hermod':   'Find Prospect',
   'tyr':      'Review Briefs',
-  'mimir':    'Tune Configs',
+  'vor':      'Tune Configs',
   'saga':     'Curate Universe',
 }
 
@@ -75,7 +75,7 @@ const AGENT_RUNNING_LABEL: Record<string, string> = {
   'bragi':    'Writing...',
   'hermod':   'Reaching Out...',
   'tyr':      'Judging...',
-  'mimir':    'Pondering...',
+  'vor':      'Watching...',
   'saga':     'Chronicling...',
 }
 
@@ -189,7 +189,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
-  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir', 'saga']
+  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'vor', 'saga']
   const agentMap = new Map((status?.agents || []).map(a => [a.key, a]))
 
   const formatTimeAgo = (iso: string | null) => {
@@ -230,7 +230,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
       {allAgents.map(key => {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
-        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'mimir', 'saga'].includes(key)
+        const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'vor', 'saga'].includes(key)
         const isRunning = running.has(key)
         const settingsOpen = expandedSettings === key
 

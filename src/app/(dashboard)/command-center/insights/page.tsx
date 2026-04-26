@@ -23,7 +23,7 @@ interface InsightsResponse {
 
 const AGENT_LABEL: Record<string, string> = {
   heimdall: 'Heimdall', odin: 'Odin', loki: 'Loki', bragi: 'Bragi',
-  hermod: 'Hermod', tyr: 'Tyr', mimir: 'Mimir', saga: 'Saga',
+  hermod: 'Hermod', tyr: 'Tyr', vor: 'Vor', saga: 'Saga',
 }
 
 const ACTION_TYPE_LABEL: Record<string, string> = {
@@ -73,7 +73,7 @@ export default function InsightsPage() {
           📊 Insights
         </h1>
         <p className="text-gray-400 mt-2 text-sm">
-          Last {data.windowDays} days · Mimir &amp; Saga proposals · Tyr quality trends · Topic coverage
+          Last {data.windowDays} days · Vor &amp; Saga proposals · Tyr quality trends · Topic coverage
         </p>
       </div>
 

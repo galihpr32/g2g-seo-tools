@@ -39,7 +39,7 @@ const AGENT_META: Record<string, { label: string; emoji: string }> = {
   'bragi':    { label: 'Bragi',    emoji: '✍️' },
   'hermod':   { label: 'Hermod',   emoji: '🤝' },
   'tyr':      { label: 'Tyr',      emoji: '⚖️' },
-  'mimir':    { label: 'Mimir',    emoji: '🦉' },
+  'vor':      { label: 'Vor',      emoji: '🦉' },
   'saga':     { label: 'Saga',     emoji: '📜' },
 }
 

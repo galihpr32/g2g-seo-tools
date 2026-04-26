@@ -44,7 +44,7 @@ const AGENT_NAMES: Record<string, string> = {
   'bragi':    'Bragi',
   'hermod':   'Hermod',
   'tyr':      'Tyr',
-  'mimir':    'Mimir',
+  'vor':      'Vor',
   'saga':     'Saga',
 }
 
@@ -55,7 +55,7 @@ const AGENT_COLORS: Record<string, string> = {
   'bragi':    'bg-yellow-900/50 text-yellow-300',
   'hermod':   'bg-orange-900/50 text-orange-300',
   'tyr':      'bg-amber-900/50 text-amber-300',
-  'mimir':    'bg-indigo-900/50 text-indigo-300',
+  'vor':      'bg-indigo-900/50 text-indigo-300',
   'saga':     'bg-rose-900/50 text-rose-300',
 }
 

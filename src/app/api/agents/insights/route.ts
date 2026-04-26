@@ -10,7 +10,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
  *   - Approval rate per agent (last 30d)
  *   - Tyr score distribution (last 30d) with mean / median / borderline count
  *   - Topic coverage (per active topic: published vs total clusters)
- *   - Pending tune_config + coverage_review actions (Mimir + Saga suggestions)
+ *   - Pending tune_config + coverage_review actions (Vor + Saga suggestions)
  */
 export async function GET() {
   const supabase = await createClient()
@@ -95,7 +95,7 @@ export async function GET() {
     }
   })
 
-  // 4. Pending tune_config + coverage_review (Mimir + Saga proposals)
+  // 4. Pending tune_config + coverage_review (Vor + Saga proposals)
   const { data: pendingMeta } = await db
     .from('agent_actions')
     .select('id, agent_key, action_type, title, description, priority, created_at')
