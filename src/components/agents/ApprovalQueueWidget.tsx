@@ -420,7 +420,7 @@ export default function ApprovalQueueWidget({ userId }: ApprovalQueueWidgetProps
                   {/* "View brief" link — only for regenerate_brief actions where Tyr has the brief_id */}
                   {action.action_type === 'regenerate_brief' && typeof action.data?.brief_id === 'string' && (
                     <a
-                      href={`/gsc/action-items/${action.data.brief_id}`}
+                      href={`/content/briefs/${action.data.brief_id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="px-2.5 py-1.5 rounded text-xs font-medium bg-purple-900/40 text-purple-300 border border-purple-700/40 hover:bg-purple-900/60 transition whitespace-nowrap"
