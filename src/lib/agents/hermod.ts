@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getSiteUrlForSlug, buildCategoryUrl } from '@/lib/agents/site-helpers'
 import { logClaudeUsage } from '@/lib/api-logger'
+import { persistFindingsBulk } from '@/lib/agents/findings'
 
 /**
  * Hermod — Off-Page / Outreach Agent
@@ -206,6 +207,33 @@ export async function runHermod(
         skippedNoCandidates.push(keyword)
         continue
       }
+
+      // 4b. Persist all discovered candidates as findings — even ones we
+      //     don't pitch (beyond the 8/run cap, beyond the top-2-per-keyword
+      //     limit). The /outreach page surfaces these as a "discovered by
+      //     Hermod" feed so users can see the full pipeline, not just
+      //     queued draft emails.
+      const discoveredFindings = candidateDomains.map(c => ({
+        agentKey:    'hermod',
+        ownerId,
+        runId,
+        siteSlug,
+        findingType: 'prospect_discovered',
+        subject:     c.domain,
+        severity:    (searchVolume >= 5000 ? 'high'
+                     : searchVolume >= 1000 ? 'medium' : 'low') as 'high' | 'medium' | 'low',
+        data: {
+          domain:           c.domain,
+          keyword,
+          search_volume:    searchVolume,
+          serp_position:    c.position,
+          ranking_url:      c.url ?? null,
+          ranking_title:    c.title ?? null,
+          source:           c.source,
+          source_action_id: action.id,
+        },
+      }))
+      await persistFindingsBulk(db, discoveredFindings)
 
       // 5. Top 2 candidates per keyword, personalised by Claude
       for (const candidate of candidateDomains.slice(0, 2)) {

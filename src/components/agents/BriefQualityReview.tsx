@@ -23,7 +23,11 @@ interface Suggestion {
 }
 
 export interface TyrBreakdown {
-  // New rich shape (from Tyr v2+)
+  // New rich shape (from Tyr v2+).
+  // `internal_links` is OPTIONAL — Tyr omits it for standalone pages with
+  // no related content to link to (isolated product lines, one-off landings).
+  // The UI iterates Object.entries(dimensions) so missing entries simply
+  // aren't rendered, and the overall score scales by present dimensions.
   dimensions?: {
     coverage:           DimensionScore
     intent_match:       DimensionScore
@@ -32,7 +36,7 @@ export interface TyrBreakdown {
     eeat_signals:       DimensionScore
     faq_quality:        DimensionScore
     meta_description:   DimensionScore
-    internal_links:     DimensionScore
+    internal_links?:    DimensionScore
   }
   strengths?:    string[]
   weaknesses?:   string[]
@@ -119,7 +123,12 @@ export default function BriefQualityReview({
             ⚖️ Tyr Quality Review
           </h2>
           <p className="text-gray-400 text-xs mt-0.5">
-            Comprehensive 8-dimension SEO brief audit
+            {(() => {
+              const dimCount = isRichShape && breakdown.dimensions
+                ? Object.values(breakdown.dimensions).filter(Boolean).length
+                : 4
+              return `Comprehensive ${dimCount}-dimension SEO brief audit`
+            })()}
             {reviewedAt && ` · Reviewed ${new Date(reviewedAt).toLocaleDateString()}`}
           </p>
         </div>
@@ -177,9 +186,16 @@ export default function BriefQualityReview({
         <div className="mb-6">
           <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-3">Per-Dimension Breakdown</h3>
           <div className="space-y-2.5">
+            {/* N/A note: Tyr omits internal_links for standalone pages with no related content */}
+            {!breakdown.dimensions.internal_links && (
+              <div className="mb-2.5 px-3 py-2 bg-gray-950/50 border border-gray-800/60 border-dashed rounded-lg flex items-center gap-2 text-xs text-gray-500">
+                <span>🔗</span>
+                <span><span className="text-gray-400 font-medium">Internal Linking</span> — N/A (no related G2G content for this page; not scored)</span>
+              </div>
+            )}
             {Object.entries(breakdown.dimensions).map(([key, dim]) => {
               const meta = DIMENSION_META[key as keyof typeof DIMENSION_META]
-              if (!meta) return null
+              if (!meta || !dim) return null  // skip if dim missing (e.g. internal_links omitted)
               return (
                 <div key={key} className="bg-gray-950 border border-gray-800 rounded-lg p-3">
                   <div className="flex items-center justify-between mb-1.5 gap-3">

@@ -156,6 +156,49 @@ export default async function RankingDropPage() {
     .order('created_at', { ascending: false })
     .limit(5)
 
+  /**
+   * Pull the latest Heimdall analysis for each page currently shown in the
+   * table. Heimdall writes a `drop_analysis` finding (in agent_findings) for
+   * every significant drop it detects on each run — we surface its verdict
+   * inline next to each row so users get "what does Heimdall think this is?"
+   * without having to dig into action items.
+   *
+   * Multiple findings per page accumulate over runs; we keep only the most
+   * recent per (subject = page URL).
+   */
+  const heimdallByPage: Record<string, {
+    category:       'algorithmic' | 'technical' | 'content' | 'unknown'
+    severity:       'high' | 'medium' | 'low' | 'info' | null
+    reasoning:      string
+    recommendation: string
+    analyzed_at:    string
+  }> = {}
+  if (drops.length > 0 && effectiveOwnerId) {
+    const pagesShown = drops.map(d => d.page)
+    const { data: heimFindings } = await supabase
+      .from('agent_findings')
+      .select('subject, severity, data, observed_at')
+      .eq('owner_user_id', effectiveOwnerId)
+      .eq('agent_key', 'heimdall')
+      .eq('finding_type', 'drop_analysis')
+      .in('subject', pagesShown)
+      .order('observed_at', { ascending: false })
+      .limit(500)
+
+    for (const f of heimFindings ?? []) {
+      const subj = String(f.subject ?? '')
+      if (!subj || heimdallByPage[subj]) continue   // first wins (DESC = latest)
+      const d = (f.data ?? {}) as { category?: string; reasoning?: string; recommendation?: string }
+      heimdallByPage[subj] = {
+        category:       (d.category as 'algorithmic' | 'technical' | 'content' | 'unknown') ?? 'unknown',
+        severity:       (f.severity as 'high' | 'medium' | 'low' | 'info' | null) ?? null,
+        reasoning:      String(d.reasoning ?? ''),
+        recommendation: String(d.recommendation ?? ''),
+        analyzed_at:    String(f.observed_at),
+      }
+    }
+  }
+
   return (
     <div className="p-8">
       <div className="mb-6 flex items-center justify-between">
@@ -198,6 +241,7 @@ export default async function RankingDropPage() {
           alerts={alerts ?? []}
           snapshotDate={today}
           siteUrl={conn.site_url}
+          heimdallByPage={heimdallByPage}
         />
       )}
     </div>

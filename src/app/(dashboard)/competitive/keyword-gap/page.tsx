@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import { IntentBadge, type Intent } from '@/components/ui/IntentBadge'
+import LokiFindingsPanel from '@/components/agents/LokiFindingsPanel'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const COMP_COLORS = ['#ef4444', '#a855f7', '#06b6d4', '#ec4899']
@@ -1010,6 +1011,15 @@ export default function KeywordGapPage() {
           Compare G2G's organic rankings against up to 3 competitors — find gaps, overlaps, and winning opportunities.
         </p>
       </div>
+
+      {/* Loki agent's recent gap findings — surfaces keyword gaps Loki
+          discovered automatically (without requiring user to run a fresh
+          gap analysis). Complements the manual tool below. */}
+      <LokiFindingsPanel
+        mode="keyword-gap"
+        limit={200}
+        title="🦊 Loki — Recent gaps discovered automatically"
+      />
 
       {/* Success banner */}
       {successMsg && (

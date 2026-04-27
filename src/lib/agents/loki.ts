@@ -3,6 +3,13 @@ import { getDomainRankedKeywords } from '@/lib/dataforseo/client'
 import { getSiteUrlForSlug } from '@/lib/agents/site-helpers'
 import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
 import { logApiUsage } from '@/lib/api-logger'
+import {
+  persistFindingsBulk,
+  persistFinding,
+  type LokiKeywordGapData,
+  type LokiSovSnapshotData,
+  type LokiCompetitorSummaryData,
+} from '@/lib/agents/findings'
 
 /**
  * Loki — Competitive Analysis Agent
@@ -126,10 +133,63 @@ export async function runLoki(
             && kw && !isBranded(kw)
         })
 
+        // Sort by SV — used both for queueing and findings persistence
+        const sortedGaps = gaps.sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
+
         // Queue top 3 gaps per competitor, sorted by search volume
-        const topGaps = gaps
-          .sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
-          .slice(0, 3)
+        const topGaps = sortedGaps.slice(0, 3)
+        const topGapKeywords = new Set(topGaps.map(g => g.keyword?.toLowerCase() ?? ''))
+
+        // Persist ALL discovered gaps (up to 50/competitor) as findings —
+        // even ones we don't queue as actions. This is what powers the
+        // /competitive pages so users can browse historical gap data.
+        const gapFindings: LokiKeywordGapData[] = sortedGaps.slice(0, 50).map(g => {
+          const ourPos = g.keyword ? ourMap.get(g.keyword.toLowerCase())?.position ?? null : null
+          const volume = g.volume ?? 0
+          return {
+            keyword:             g.keyword ?? '',
+            competitor_domain:   competitor.domain,
+            competitor_position: g.position ?? 0,
+            competitor_url:      g.url ?? null,
+            our_position:        ourPos,
+            search_volume:       volume,
+            cpc:                 0,
+            queued_as_action:    topGapKeywords.has(g.keyword?.toLowerCase() ?? ''),
+            is_high_value:       volume >= 10000 && (!ourPos || ourPos > 50),
+          }
+        })
+
+        await persistFindingsBulk(db, gapFindings.map(d => ({
+          agentKey:    'loki',
+          ownerId,
+          runId,
+          siteSlug,
+          findingType: 'keyword_gap',
+          subject:     d.keyword,
+          severity:    d.search_volume >= 10000 ? 'high'
+                      : d.search_volume >= 1000  ? 'medium' : 'low',
+          data:        d as unknown as Record<string, unknown>,
+        })))
+
+        // Per-competitor summary finding — one row per competitor analysed,
+        // useful for the competitor leaderboard widget.
+        const competitorSummary: LokiCompetitorSummaryData = {
+          domain:              competitor.domain,
+          total_keywords:      compKws.length,
+          top10_count:         compKws.filter(k => (k.position ?? 999) <= 10).length,
+          gaps_found:          gaps.length,
+          sample_gap_keywords: topGaps.map(g => g.keyword ?? '').filter(Boolean).slice(0, 5),
+        }
+        await persistFinding(db, {
+          agentKey:    'loki',
+          ownerId,
+          runId,
+          siteSlug,
+          findingType: 'competitor_summary',
+          subject:     competitor.domain,
+          severity:    'info',
+          data:        competitorSummary as unknown as Record<string, unknown>,
+        })
 
         for (const gap of topGaps) {
           if (actionsQueued >= 10) break
@@ -275,6 +335,59 @@ export async function runLoki(
         const sovChange = ourRecent - ourOlder
         const sovPct    = ourOlder > 0 ? (sovChange / ourOlder) * 100 : 0
 
+        // Build lost keyword sample upfront — used both by action queue
+        // path AND the SoV snapshot finding (which persists every run).
+        const lostKwSamplePersist: string[] = []
+        if (recentSnaps && olderSnaps) {
+          const presenceRecent = new Map<string, boolean>()
+          const presenceOlder  = new Map<string, boolean>()
+          for (const s of recentSnaps) {
+            const hit = ((s.results ?? []) as FlatRow[]).some(r => r.domain === ourDomain && r.position <= 10)
+            presenceRecent.set(String((s as { keyword: string }).keyword), hit)
+          }
+          for (const s of olderSnaps) {
+            const hit = ((s.results ?? []) as FlatRow[]).some(r => r.domain === ourDomain && r.position <= 10)
+            presenceOlder.set(String((s as { keyword: string }).keyword), hit)
+          }
+          for (const [kw, was] of presenceOlder.entries()) {
+            if (was && !presenceRecent.get(kw)) lostKwSamplePersist.push(kw)
+            if (lostKwSamplePersist.length >= 10) break
+          }
+        }
+
+        // Persist SoV snapshot — every Loki run produces one row, so the
+        // /competitive pages have historical SoV data to chart.
+        const sovSnapshot: LokiSovSnapshotData = {
+          our_domain:             ourDomain,
+          our_recent_sov:         ourRecent,
+          our_older_sov:          ourOlder,
+          sov_change:             sovChange,
+          sov_change_pct:         sovPct,
+          top_competitors_recent: Array.from(recentSOV.entries())
+            .filter(([d]) => d !== ourDomain)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10),
+          top_competitors_older:  Array.from(olderSOV.entries())
+            .filter(([d]) => d !== ourDomain)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10),
+          lost_keywords:          lostKwSamplePersist,
+          recent_window_start:    thirtyDaysAgo,
+          older_window_start:     sixtyDaysAgo,
+          total_keywords_tracked: recentSnaps.length,
+          triggered_action:       sovPct <= -20 && sovChange <= -3,
+        }
+        await persistFinding(db, {
+          agentKey:    'loki',
+          ownerId,
+          runId,
+          siteSlug,
+          findingType: 'sov_snapshot',
+          subject:     ourDomain,
+          severity:    sovPct <= -20 ? 'high' : sovPct <= -10 ? 'medium' : 'info',
+          data:        sovSnapshot as unknown as Record<string, unknown>,
+        })
+
         // Trigger ONLY if relative drop ≥ 20% AND absolute drop ≥ 3 positions
         // (avoids noise in low-volume segments)
         if (sovPct <= -20 && sovChange <= -3 && actionsQueued < 10) {
@@ -283,28 +396,10 @@ export async function runLoki(
             .filter(([d]) => competitors.some(c => c.domain === d))
             .sort((a, b) => b[1] - a[1])[0]
 
-          // Find specific keywords where we lost ground
-          const ourRecentKws = new Set(recentRows.filter(r => r.domain === ourDomain && r.position <= 10).map((_, i) => i))
-          const ourOlderKws  = new Set(olderRows.filter(r => r.domain === ourDomain  && r.position <= 10).map((_, i) => i))
-          const lostKwSample: string[] = []
-          if (recentSnaps && olderSnaps) {
-            // Build keyword → top-10 presence map
-            const presenceRecent = new Map<string, boolean>()
-            const presenceOlder  = new Map<string, boolean>()
-            for (const s of recentSnaps) {
-              const hit = ((s.results ?? []) as FlatRow[]).some(r => r.domain === ourDomain && r.position <= 10)
-              presenceRecent.set(String((s as { keyword: string }).keyword), hit)
-            }
-            for (const s of olderSnaps) {
-              const hit = ((s.results ?? []) as FlatRow[]).some(r => r.domain === ourDomain && r.position <= 10)
-              presenceOlder.set(String((s as { keyword: string }).keyword), hit)
-            }
-            for (const [kw, was] of presenceOlder.entries()) {
-              if (was && !presenceRecent.get(kw)) lostKwSample.push(kw)
-              if (lostKwSample.length >= 5) break
-            }
-            void ourRecentKws; void ourOlderKws
-          }
+          // Reuse lostKwSamplePersist computed above (same algorithm,
+          // already populated with up to 10 lost keywords). The action
+          // description previously used a separate 5-entry computation.
+          const lostKwSample = lostKwSamplePersist.slice(0, 5)
 
           const description = [
             `Top-10 SOV dropped from ${ourOlder} → ${ourRecent} keywords (-${Math.abs(sovChange)}, -${Math.abs(sovPct).toFixed(1)}%) over the last 30 days.`,

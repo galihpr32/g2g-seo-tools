@@ -1,6 +1,54 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { normalizeUrl } from '@/lib/agents/site-helpers'
 import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
+import { persistFindingsBulk, type HeimdallDropAnalysisData } from '@/lib/agents/findings'
+
+/**
+ * Classify a ranking drop into a likely root-cause category, using only
+ * signals available from gsc_ranking_drops (no extra API calls). The output
+ * is heuristic — meant to give the user a starting hypothesis, not a verdict.
+ *
+ *   algorithmic → big position slide; likely SERP layout shift, link decay,
+ *                 or topical authority loss. Recommend link/E-E-A-T audit.
+ *   technical   → position held but clicks tanked; impressions or CTR loss.
+ *                 Recommend indexation / schema / snippet review.
+ *   content     → moderate position drop with sharp click loss; intent
+ *                 mismatch or stale content. Recommend on-page refresh.
+ *   unknown     → signal mix doesn't fit cleanly.
+ */
+function categorizeDrop(args: {
+  clicksDropPct:  number
+  positionDiff:   number    // positive = slipped down
+  clicksPrev:     number
+}): { category: HeimdallDropAnalysisData['category']; reasoning: string; recommendation: string } {
+  const { clicksDropPct, positionDiff } = args
+  if (positionDiff >= 5) {
+    return {
+      category:       'algorithmic',
+      reasoning:      `Slipped ${positionDiff.toFixed(1)} positions — likely SERP/algorithm shift or backlink decay. Position drop is the dominant signal here.`,
+      recommendation: 'Audit recent backlinks (lost / toxic), check for SERP layout changes (AI overviews, new feature snippets), review competitors who gained positions.',
+    }
+  }
+  if (Math.abs(positionDiff) < 1 && clicksDropPct >= 30) {
+    return {
+      category:       'technical',
+      reasoning:      `Position held (${positionDiff.toFixed(1)}) but clicks fell ${clicksDropPct.toFixed(0)}% — suggests CTR or impression loss, not ranking loss. Likely indexation, snippet, or schema issue.`,
+      recommendation: 'Check GSC indexation status, verify schema/structured data, review snippet (title/meta) for staleness, confirm canonical and robots.txt unchanged.',
+    }
+  }
+  if (positionDiff >= 2 && positionDiff < 5 && clicksDropPct >= 25) {
+    return {
+      category:       'content',
+      reasoning:      `Moderate position slip (${positionDiff.toFixed(1)}) combined with ${clicksDropPct.toFixed(0)}% click drop — content may be misaligned with current intent or has gone stale.`,
+      recommendation: 'Review on-page content for freshness, intent match against current SERP top-3, refresh internal links and meta description, check for new sub-intents to cover.',
+    }
+  }
+  return {
+    category:       'unknown',
+    reasoning:      `Mixed signals — clicks down ${clicksDropPct.toFixed(0)}%, position diff ${positionDiff.toFixed(1)}. Likely combination of factors.`,
+    recommendation: 'Run full audit: indexation, on-page freshness, backlink profile, SERP layout, internal links.',
+  }
+}
 
 /**
  * Heimdall (Watchdog) — detects ranking drops and queues action items.
@@ -168,6 +216,63 @@ export async function runHeimdall(
           snapshot_date:   row.snapshot_date,
         })
       }
+    }
+
+    // 4b. Persist drop_analysis findings for EVERY significant drop —
+    //     including ones that get deduped or capped below. This is what
+    //     powers the /gsc/ranking-drop page enrichment so users see
+    //     Heimdall's verdict on all drops, not just queued ones.
+    if (significantDrops.length > 0) {
+      // Fetch top dropped queries per page (best-effort — non-blocking).
+      // gsc_ranking_drop_queries is keyed by (site_url, snapshot_date, page).
+      const pagesForQueries = significantDrops.map(d => d.original_page)
+      const { data: queriesRows } = await db
+        .from('gsc_ranking_drop_queries')
+        .select('page, query, clicks, position')
+        .eq('site_url', siteUrl)
+        .in('page', pagesForQueries)
+        .order('clicks', { ascending: false })
+
+      const queriesByPage = new Map<string, { query: string; clicks_drop: number }[]>()
+      for (const q of queriesRows ?? []) {
+        const arr = queriesByPage.get(q.page) ?? []
+        if (arr.length < 5) {
+          arr.push({ query: String(q.query), clicks_drop: Number(q.clicks ?? 0) })
+          queriesByPage.set(q.page, arr)
+        }
+      }
+
+      const findingPayloads = significantDrops.map(d => {
+        const verdict = categorizeDrop({
+          clicksDropPct: d.clicks_drop_pct,
+          positionDiff:  d.position_diff,
+          clicksPrev:    d.clicks_prev,
+        })
+        const data: HeimdallDropAnalysisData = {
+          page:                d.original_page,
+          clicks_drop:         d.clicks_drop_abs,
+          pct_drop:            d.clicks_drop_pct,
+          position_diff:       d.position_diff,
+          category:            verdict.category,
+          reasoning:           verdict.reasoning,
+          recommendation:      verdict.recommendation,
+          top_dropped_queries: queriesByPage.get(d.original_page) ?? [],
+        }
+        const severity: 'high' | 'medium' | 'low' =
+          d.clicks_drop_pct >= 50 || d.clicks_drop_abs >= 50 ? 'high'
+          : d.clicks_drop_pct >= 30                          ? 'medium' : 'low'
+        return {
+          agentKey:    'heimdall',
+          ownerId,
+          runId,
+          siteSlug,
+          findingType: 'drop_analysis',
+          subject:     d.original_page,
+          severity,
+          data:        data as unknown as Record<string, unknown>,
+        }
+      })
+      await persistFindingsBulk(db, findingPayloads)
     }
 
     // 5. Dedup against pending action_items + existing briefs

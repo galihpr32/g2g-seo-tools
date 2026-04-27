@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { persistFinding, type VorTuneRecommendationData } from '@/lib/agents/findings'
 
 /**
  * Vor — Config Tuner (Norse goddess "the careful one — nothing can be hidden from her")
@@ -135,6 +136,37 @@ export async function runVor(
         warnings.push(`failed to queue suggestion for ${agent_key}`)
       } else {
         actionsQueued++
+      }
+
+      // Persist as agent_finding so /command-center/tuning can show the
+      // full proposal feed (incl. ones that were approved/rejected and
+      // are no longer in the active queue).
+      // NOTE: each suggestion may target multiple parameters. Write one
+      // finding per parameter delta so the page can render a clean per-
+      // parameter row.
+      const currentEntries = Object.entries(suggestion.currentConfig)
+      for (const [param, currentVal] of currentEntries) {
+        const suggestedVal = suggestion.suggestedConfig[param]
+        if (suggestedVal === undefined || suggestedVal === currentVal) continue
+        const recData: VorTuneRecommendationData = {
+          target_agent:    agent_key,
+          parameter:       param,
+          current_value:   currentVal as number | string,
+          suggested_value: suggestedVal as number | string,
+          reasoning:       suggestion.reasoning,
+          confidence:      Math.min(1, suggestion.sampleSize / 30),   // crude — sample-size based
+          metric_basis:    `sample_size=${suggestion.sampleSize} over last ${cfg.windowDays}d`,
+        }
+        await persistFinding(db, {
+          agentKey:    'vor',
+          ownerId,
+          runId,
+          siteSlug,
+          findingType: 'tune_recommendation',
+          subject:     `${agent_key}.${param}`,
+          severity:    'info',
+          data:        { ...recData, headline: suggestion.headline } as unknown as Record<string, unknown>,
+        })
       }
     }
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import LokiFindingsPanel from '@/components/agents/LokiFindingsPanel'
 
 interface Competitor {
   id: string
@@ -184,7 +185,7 @@ export default function CompetitorsPage() {
   const paused = competitors.filter(c => !c.active)
 
   return (
-    <div className="p-8 max-w-3xl">
+    <div className="p-8 max-w-5xl">
       {/* Header */}
       <div className="mb-6 flex items-start justify-between">
         <div>
@@ -201,6 +202,10 @@ export default function CompetitorsPage() {
           + Add competitor
         </button>
       </div>
+
+      {/* Loki agent findings — surfaces SoV deltas + keyword gaps from
+          recent runs so the page isn't just a CRUD list of domains. */}
+      <LokiFindingsPanel mode="compact" limit={150} />
 
       {/* Form */}
       {(showForm || editing) && (

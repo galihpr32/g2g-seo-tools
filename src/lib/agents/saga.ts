@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { slugify } from '@/lib/agents/site-helpers'
 import { logClaudeUsage } from '@/lib/api-logger'
+import { persistFinding, type SagaProposalData } from '@/lib/agents/findings'
 
 /**
  * Saga — Keyword Universe Curator (Norse goddess of history & chronicling)
@@ -288,6 +289,25 @@ async function proposeClusters(
       } else {
         actionsQueued++
         findings.push(`+cluster "${cand.keyword}" → ${topic.topic}`)
+        // Persist as agent_finding so /content/keyword-map can surface it
+        // even if the action gets rejected later (historical proposal trail).
+        const proposal: SagaProposalData = {
+          proposal_type: 'cluster',
+          cluster_name:  cand.keyword,
+          keywords:      [cand.keyword],
+          reasoning:     `Appeared in ${cand.occurrences} action(s) from ${Array.from(cand.sources).join(', ')}; SV ${cand.search_volume.toLocaleString()}. Fits topic "${topic.topic}".`,
+          affected_count: 1,
+        }
+        await persistFinding(db, {
+          agentKey:    'saga',
+          ownerId,
+          runId,
+          siteSlug,
+          findingType: 'cluster_proposal',
+          subject:     cand.keyword,
+          severity:    cand.search_volume > 5000 ? 'high' : cand.search_volume > 1000 ? 'medium' : 'low',
+          data:        { ...proposal, target_topic: topic.topic, target_map_id: mapId, search_volume: cand.search_volume } as unknown as Record<string, unknown>,
+        })
       }
     }
   }
@@ -320,6 +340,23 @@ async function proposeClusters(
     } else {
       actionsQueued++
       findings.push(`+topic "${topicGuess}" (${cands.length} kw)`)
+      const proposal: SagaProposalData = {
+        proposal_type:  'cluster',
+        cluster_name:   topicGuess,
+        keywords:       cands.slice(0, 20).map(c => c.keyword),
+        reasoning:      `${cands.length} keywords cluster together but don't fit existing topics. Pillar candidate: "${cands[0].keyword}".`,
+        affected_count: cands.length,
+      }
+      await persistFinding(db, {
+        agentKey:    'saga',
+        ownerId,
+        runId,
+        siteSlug,
+        findingType: 'cluster_proposal',
+        subject:     topicGuess,
+        severity:    cands.length >= 5 ? 'high' : 'medium',
+        data:        { ...proposal, is_new_topic: true, proposed_topic_slug: slug } as unknown as Record<string, unknown>,
+      })
     }
   }
 
@@ -383,6 +420,29 @@ async function proposeArchives(
     if (!insertErr) {
       actionsQueued++
       findings.push(`archive "${cand.keyword}"`)
+      const proposal: SagaProposalData = {
+        proposal_type: 'archive',
+        cluster_name:  cand.keyword,
+        reasoning:     `Inactive ${cfg.archiveAgeDays}+ days${cand.gsc_clicks_30d === 0 ? ', zero GSC clicks last 30d' : ''}. Status: ${cand.status}.`,
+      }
+      await persistFinding(db, {
+        agentKey:    'saga',
+        ownerId,
+        runId,
+        siteSlug,
+        findingType: 'archive_candidate',
+        subject:     cand.keyword,
+        severity:    'low',
+        data: {
+          ...proposal,
+          cluster_id:     cand.id,
+          map_id:         cand.map_id,
+          topic:          topic?.topic ?? null,
+          status_before:  cand.status,
+          last_action_at: cand.last_action_at,
+          gsc_clicks_30d: cand.gsc_clicks_30d,
+        } as unknown as Record<string, unknown>,
+      })
     }
   }
 
@@ -452,6 +512,28 @@ async function proposeCoverageReviews(
     if (!insertErr) {
       actionsQueued++
       findings.push(`coverage "${issue.map.topic}" ${issue.pct.toFixed(0)}%`)
+      const proposal: SagaProposalData = {
+        proposal_type:  'coverage_gap',
+        cluster_name:   issue.map.topic,
+        reasoning:      `${issue.reason}. Topic has ${issue.total} clusters but only ${issue.published} published.`,
+        affected_count: issue.total - issue.published,
+      }
+      await persistFinding(db, {
+        agentKey:    'saga',
+        ownerId,
+        runId,
+        siteSlug,
+        findingType: 'coverage_gap',
+        subject:     issue.map.topic,
+        severity:    issue.pct < 25 ? 'high' : 'medium',
+        data: {
+          ...proposal,
+          map_id:       issue.map.id,
+          total:        issue.total,
+          published:    issue.published,
+          coverage_pct: issue.pct,
+        } as unknown as Record<string, unknown>,
+      })
     }
   }
 

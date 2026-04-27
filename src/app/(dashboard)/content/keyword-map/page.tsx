@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import SagaProposalsPanel from '@/components/agents/SagaProposalsPanel'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1098,6 +1099,11 @@ export default function KeywordMapPage() {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          {/* Saga universe-curation proposals — surfaces what Saga wants
+              to add/archive/flag, regardless of approval state. Collapsible
+              so it doesn't dominate the view. */}
+          <SagaProposalsPanel limit={150} />
+
           {!activeMapId ? (
             /* Empty state */
             <div className="flex flex-col items-center justify-center h-full text-center">

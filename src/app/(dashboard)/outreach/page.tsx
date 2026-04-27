@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import HermodFindingsPanel from '@/components/agents/HermodFindingsPanel'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Status = 'prospecting' | 'contacted' | 'negotiating' | 'accepted' | 'published' | 'rejected'
@@ -521,7 +522,7 @@ export default function OutreachPage() {
 
   useEffect(() => { fetchProspects() }, [fetchProspects])
 
-  async function handleAddToTracker(c: Candidate, keyword: string) {
+  async function handleAddToTracker(c: Candidate, keyword: string, discoveredVia: string = 'semrush') {
     await fetch('/api/outreach/prospects', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -531,7 +532,7 @@ export default function OutreachPage() {
         organic_traffic:  c.organicTraffic,
         organic_keywords: c.organicKeywords,
         source_keyword:   keyword,
-        discovered_via:   'semrush',
+        discovered_via:   discoveredVia,
       }),
     })
     await fetchProspects()
@@ -614,7 +615,28 @@ export default function OutreachPage() {
 
       {/* Content */}
       {tab === 'discover' && (
-        <DiscoveryPanel onAddToTracker={handleAddToTracker} />
+        <>
+          {/* Hermod agent's recently discovered prospects — surfaces
+              candidates from automated runs above the manual discovery tool. */}
+          <HermodFindingsPanel
+            limit={150}
+            onPromote={data => {
+              const d = data as { domain?: string; keyword?: string; ranking_url?: string | null }
+              handleAddToTracker({
+                domain:          d.domain ?? '',
+                rankingUrl:      d.ranking_url ?? '',
+                position:        0,
+                organicTraffic:  0,
+                organicKeywords: 0,
+                authorityScore:  0,
+                inTracker:       false,
+                trackerStatus:   null,
+              }, d.keyword ?? '', 'hermod_finding')
+              setTab('tracker')
+            }}
+          />
+          <DiscoveryPanel onAddToTracker={handleAddToTracker} />
+        </>
       )}
 
       {tab === 'tracker' && (

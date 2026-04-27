@@ -177,6 +177,24 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
   return <span className="text-red-400 ml-1">{sortDir === 'asc' ? '↑' : '↓'}</span>
 }
 
+// ── Heimdall analysis (per-page enrichment from agent_findings) ───────────────
+export interface HeimdallAnalysis {
+  category:       'algorithmic' | 'technical' | 'content' | 'unknown'
+  severity:       'high' | 'medium' | 'low' | 'info' | null
+  reasoning:      string
+  recommendation: string
+  analyzed_at:    string
+}
+
+const HEIMDALL_CATEGORY_META: Record<HeimdallAnalysis['category'], {
+  emoji: string; label: string; color: string
+}> = {
+  algorithmic: { emoji: '📉',  label: 'Algorithmic',  color: 'text-purple-300 bg-purple-900/30 border-purple-700/40' },
+  technical:   { emoji: '🔧',  label: 'Technical',    color: 'text-blue-300 bg-blue-900/30 border-blue-700/40' },
+  content:     { emoji: '📝',  label: 'Content',      color: 'text-amber-300 bg-amber-900/30 border-amber-700/40' },
+  unknown:     { emoji: '❓',  label: 'Mixed',        color: 'text-gray-300 bg-gray-800 border-gray-700/40' },
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 interface Props {
   drops: PageDropWithQueries[]
@@ -184,10 +202,15 @@ interface Props {
   alerts: { id: string; created_at: string; title: string; severity: string }[]
   snapshotDate: string
   siteUrl: string
+  /**
+   * Heimdall agent's verdict per page, keyed by page URL. Empty when
+   * Heimdall hasn't run yet or hasn't analysed this snapshot's pages.
+   */
+  heimdallByPage?: Record<string, HeimdallAnalysis>
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export function RankingDropTable({ drops: initialDrops, totalTracked, alerts, snapshotDate, siteUrl }: Props) {
+export function RankingDropTable({ drops: initialDrops, totalTracked, alerts, snapshotDate, siteUrl, heimdallByPage = {} }: Props) {
 
   // ── Date state ───────────────────────────────────────────────────────────────
   const [activeDate, setActiveDate]       = useState(snapshotDate)
@@ -691,6 +714,8 @@ export function RankingDropTable({ drops: initialDrops, totalTracked, alerts, sn
                   !queryExclusions.some(ex => q.query.toLowerCase().includes(ex))
                 )
                 const regionMeta = REGION_META[r.region]
+                const heimdall   = heimdallByPage[r.page]
+                const heimMeta   = heimdall ? HEIMDALL_CATEGORY_META[heimdall.category] : null
 
                 return (
                   <>
@@ -726,6 +751,18 @@ export function RankingDropTable({ drops: initialDrops, totalTracked, alerts, sn
                             {regionMeta && (
                               <span className="text-xs text-gray-600">{regionMeta.flag} {regionMeta.label}</span>
                             )}
+                            {/* Heimdall agent verdict — pulled from agent_findings.
+                                Surfaces "what does Heimdall think this drop is?"
+                                inline so users don't have to dig into action items. */}
+                            {heimdall && heimMeta && (
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${heimMeta.color} mt-0.5 inline-flex items-center gap-1`}
+                                title={heimdall.reasoning}
+                              >
+                                <span>🛡️</span>
+                                <span>{heimMeta.emoji} {heimMeta.label}</span>
+                              </span>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -755,6 +792,26 @@ export function RankingDropTable({ drops: initialDrops, totalTracked, alerts, sn
                     {isExpanded && (
                       <tr key={`${r.page}-queries`} className="border-t border-gray-700">
                         <td colSpan={9} className="bg-gray-800/60 px-8 py-4">
+                          {/* Heimdall verdict block — only when analysis exists */}
+                          {heimdall && heimMeta && (
+                            <div className={`mb-4 p-3 rounded-lg border ${heimMeta.color}`}>
+                              <div className="flex items-start gap-3">
+                                <span className="text-xl flex-shrink-0">🛡️</span>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs uppercase tracking-wider opacity-80 mb-0.5">
+                                    Heimdall verdict · {heimMeta.emoji} {heimMeta.label}
+                                  </p>
+                                  <p className="text-sm leading-relaxed">{heimdall.reasoning}</p>
+                                  <p className="text-xs leading-relaxed opacity-90 mt-2">
+                                    <span className="font-semibold">Recommendation:</span> {heimdall.recommendation}
+                                  </p>
+                                  <p className="text-[10px] opacity-60 mt-1">
+                                    Analysed {new Date(heimdall.analyzed_at).toLocaleString('id-ID')}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                           <p className="text-xs text-gray-500 font-semibold uppercase tracking-wider mb-3">
                             Queries for this page (snapshot: {activeDate})
                             {queryExclusions.length > 0 && visibleQueries.length < r.queries.length && (

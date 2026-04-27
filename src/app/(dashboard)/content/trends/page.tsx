@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import OdinScoringPanel from '@/components/agents/OdinScoringPanel'
 
 function addToMapUrl(keyword: string, volume?: number) {
   const params = new URLSearchParams({ add: keyword })
@@ -628,6 +629,7 @@ export default function GameTrendsPage() {
             Trending games from Steam + search interest · Find content opportunities for G2G
           </p>
         </div>
+        {/* — Odin's scoring lives below the header — */}
         <div className="flex items-center gap-3">
           {source && (
             <span className="text-xs text-gray-600">
@@ -649,6 +651,9 @@ export default function GameTrendsPage() {
           </button>
         </div>
       </div>
+
+      {/* Odin agent's trend scoring — collapsible panel above stats */}
+      <OdinScoringPanel limit={80} />
 
       {/* Stats row */}
       {!loading && games.length > 0 && (

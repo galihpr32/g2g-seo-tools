@@ -1,6 +1,7 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { getSiteUrlForSlug, buildCategoryUrl, normalizeUrl } from '@/lib/agents/site-helpers'
 import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
+import { persistFinding, type OdinTrendScoreData } from '@/lib/agents/findings'
 
 /**
  * Odin (Trend Spotter) — identifies trending games and queues brief suggestions.
@@ -310,6 +311,41 @@ export async function runOdin(
       } else {
         actionsQueued++
       }
+
+      // Persist trend_score finding for every analysed game — even ones
+      // that didn't queue an action (e.g. existing-page case where the
+      // suggestion is "update", or low-priority items). This is what
+      // populates the Odin column on /content/trends.
+      const odinScore = Math.min(100, Math.round(composite * 12))   // log-composite → 0-100
+      const trendData: OdinTrendScoreData = {
+        steam_appid:    Number(game.steam_appid ?? 0),
+        game_name:      String(game.name),
+        priority,
+        score:          odinScore,
+        reasoning:      trendBasis || 'No specific Steam signals; cache-only candidate.',
+        signals: {
+          players_2weeks:  p2w,
+          search_volume:   sv,
+          g2g_recommended: !!game.g2g_recommended,
+        },
+        queued_as_brief: !insertErr,
+      }
+      await persistFinding(db, {
+        agentKey:    'odin',
+        ownerId,
+        runId,
+        siteSlug,
+        findingType: 'trend_score',
+        subject:     String(game.name),
+        severity:    priority === 'high' ? 'high' : priority === 'medium' ? 'medium' : 'low',
+        data: {
+          ...trendData,
+          suggested_action:  suggestedAction,
+          existing_page_url: existingPageUrl,
+          trend_reasons:     trendReasons.map(r => r.type),
+          steam_enriched:    steamHit,
+        } as unknown as Record<string, unknown>,
+      })
     }
 
     if (steamFailures > 0)    warnings.push(`Steam API enrichment failed for ${steamFailures} game(s)`)

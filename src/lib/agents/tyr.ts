@@ -75,7 +75,11 @@ export interface Suggestion {
 }
 
 interface ScoreBreakdown {
-  // Per-dimension structured scores (8 of them — see below)
+  // Per-dimension structured scores (7 required + 1 optional — see below)
+  // `internal_links` is OPTIONAL: not every page has related categories/
+  // pillars to link to (standalone landings, isolated product lines). Tyr
+  // omits it for those cases so the brief isn't penalised unfairly. Score
+  // normalisation is dynamic — counts present dimensions and scales to 100.
   dimensions: {
     coverage:           DimensionScore   // sub-intent coverage
     intent_match:       DimensionScore   // H1 + meta vs search intent
@@ -84,7 +88,7 @@ interface ScoreBreakdown {
     eeat_signals:       DimensionScore   // E-E-A-T plan (trust, expertise, etc.)
     faq_quality:        DimensionScore   // FAQ realism + value
     meta_description:   DimensionScore   // meta crafting (length, keyword, CTA)
-    internal_links:     DimensionScore   // does the brief plan internal linking?
+    internal_links?:    DimensionScore   // OPTIONAL — only if related content exists
   }
   strengths:    string[]      // 2-3 things the brief gets right
   weaknesses:   string[]      // 2-4 specific issues
@@ -122,7 +126,7 @@ const judgeTool: Anthropic.Tool = {
       eeat_signals:      dimensionSpec('E-E-A-T plan: does the brief incorporate trust signals (buyer protection, ratings, secure transactions, refund policy, expert/staff voice, authoritative sourcing)? For commercial gaming marketplace, focus on TRUST + EXPERIENCE.'),
       faq_quality:       dimensionSpec('FAQs: are questions things real users search ("People also ask" style)? Are answers grounded (no hallucinated specifics like "5-minute delivery" without source)? 3-5 questions ideal.'),
       meta_description:  dimensionSpec('Meta description: 150-160 chars, includes primary keyword, has clear CTA. Penalise generic / over-stuffed.'),
-      internal_links:    dimensionSpec('Does the brief plan internal links to related categories / pillar pages / supporting content? Internal linking is critical for topical authority.'),
+      internal_links:    dimensionSpec('OPTIONAL — only score if the page HAS related categories / pillar pages / supporting content available. For standalone landing pages or isolated product lines with no related content to link to, OMIT this field entirely (do not include it in your response). When present: 10=plans 3+ contextual internal links, 5=mentions linking generally, 0=no plan despite having related content available.'),
 
       strengths: {
         type: 'array',
@@ -156,7 +160,7 @@ const judgeTool: Anthropic.Tool = {
         description: '1-2 sentence overall verdict. What\'s the headline takeaway?',
       },
     },
-    required: ['coverage', 'intent_match', 'heading_structure', 'keyword_strategy', 'eeat_signals', 'faq_quality', 'meta_description', 'internal_links', 'strengths', 'weaknesses', 'suggestions', 'redflags', 'reasoning'],
+    required: ['coverage', 'intent_match', 'heading_structure', 'keyword_strategy', 'eeat_signals', 'faq_quality', 'meta_description', 'strengths', 'weaknesses', 'suggestions', 'redflags', 'reasoning'],
   },
 }
 
@@ -253,17 +257,16 @@ export async function runTyr(
         continue
       }
 
-      // Score = sum of 8 dimensions × 10 = 80 max → normalised to 0-100
-      const dims  = breakdown.dimensions
-      const total = dims.coverage.score
-                  + dims.intent_match.score
-                  + dims.heading_structure.score
-                  + dims.keyword_strategy.score
-                  + dims.eeat_signals.score
-                  + dims.faq_quality.score
-                  + dims.meta_description.score
-                  + dims.internal_links.score
-      const score = Math.round((total / 80) * 100)
+      // Score = sum of present dimensions × 10 → normalised to 0-100.
+      // `internal_links` is OPTIONAL: omitted by Tyr for standalone pages
+      // with no related content to link to. We scale the denominator by
+      // the actual number of dimensions Claude returned (7 or 8).
+      const dimList = Object.values(breakdown.dimensions).filter(
+        (d): d is DimensionScore => d != null
+      )
+      const total   = dimList.reduce((sum, d) => sum + d.score, 0)
+      const maxPts  = dimList.length * 10  // 70 if internal_links omitted, 80 if all 8
+      const score   = maxPts > 0 ? Math.round((total / maxPts) * 100) : 0
       const failThreshold = minScore - borderlineWindow
 
       let newStatus: 'reviewed' | 'draft'
@@ -412,7 +415,8 @@ REVIEW RUBRIC — score each dimension 0-10 (be strict, 7-8 = ready, 9-10 = rare
 5. **eeat_signals** — E-E-A-T plan: trust signals (buyer protection, ratings, secure payments, refund policy), staff/expert voice, authoritative sourcing. Critical for marketplace.
 6. **faq_quality** — questions match real "People Also Ask"; answers grounded (no hallucinated specifics like "5-min delivery" without source).
 7. **meta_description** — 150-160 chars, includes primary keyword, has clear CTA, not over-stuffed
-8. **internal_links** — does the brief plan internal links (to related categories, pillar pages, supporting content)?
+8. **internal_links** — *OPTIONAL.* Does the brief plan internal links to related categories / pillar pages / supporting content?
+   ⚠ **OMIT this field entirely** if this page is a STANDALONE landing or part of an isolated product line with no related G2G content to link to (e.g. a brand-new game category with no existing pillars yet, or a one-off promo page). Don't penalise pages where internal linking isn't applicable. Only score if related content actually exists for this topic.
 
 After scoring, provide:
 - **strengths** (2-3): specific wins, cite section/FAQ. Example: "FAQ #3 'How long does delivery take?' matches a high-intent PAA query".
@@ -463,7 +467,10 @@ Call submit_brief_review with all fields.`
     }).filter(s => s.text)
   }
 
-  const dimensions = {
+  // `internal_links` is OPTIONAL — Claude omits it for pages with no related
+  // content to link to (standalone landings, isolated product lines). We only
+  // include it in the breakdown when Claude actually returned a score.
+  const dimensions: ScoreBreakdown['dimensions'] = {
     coverage:          dim(raw.coverage),
     intent_match:      dim(raw.intent_match),
     heading_structure: dim(raw.heading_structure),
@@ -471,7 +478,9 @@ Call submit_brief_review with all fields.`
     eeat_signals:      dim(raw.eeat_signals),
     faq_quality:       dim(raw.faq_quality),
     meta_description:  dim(raw.meta_description),
-    internal_links:    dim(raw.internal_links),
+  }
+  if (raw.internal_links != null && typeof raw.internal_links === 'object') {
+    dimensions.internal_links = dim(raw.internal_links)
   }
 
   return {

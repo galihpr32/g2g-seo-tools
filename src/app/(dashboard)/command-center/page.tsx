@@ -80,6 +80,12 @@ export default async function CommandCenterPage() {
               📈 Performance
             </a>
             <a
+              href="/command-center/tuning"
+              className="text-sm text-gray-400 hover:text-white transition"
+            >
+              🪶 Tuning
+            </a>
+            <a
               href="/command-center/logs"
               className="text-sm text-blue-400 hover:text-blue-300 transition"
             >
