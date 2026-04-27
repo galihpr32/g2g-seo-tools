@@ -14,6 +14,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { slugify } from '@/lib/agents/site-helpers'
+import { logClaudeUsage } from '@/lib/api-logger'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -116,6 +117,14 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
         tools:       [briefTool],
         tool_choice: { type: 'tool', name: 'submit_seo_brief' },
         messages:    [{ role: 'user', content: prompt }],
+      })
+
+      logClaudeUsage(db, input.ownerId, {
+        model:       MODEL,
+        endpoint:    'brief_outline',
+        triggeredBy: 'agent_bragi',
+        usage:       response.usage,
+        extra:       { brief_id: input.briefId, attempt },
       })
 
       // Find the tool_use block

@@ -13,6 +13,16 @@ interface BalanceData {
   }
   semrush: {
     units_remaining: number | null
+    plan_supports_balance?: boolean
+    error?: string
+  }
+  anthropic: {
+    month_to_date_usd:  number
+    total_calls_mtd:    number
+    total_input_tokens:  number
+    total_output_tokens: number
+    by_model:    { model: string; calls: number; cost_usd: number; input_tokens: number; output_tokens: number }[]
+    by_endpoint: { endpoint: string; calls: number; cost_usd: number }[]
     error?: string
   }
   checked_at: string
@@ -222,12 +232,12 @@ export default function ApiCostsPage() {
           )}
 
           {balance && (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* DataForSEO */}
               <div className={`border rounded-xl p-5 ${API_BG.dataforseo}`}>
                 <p className="text-blue-400 font-semibold mb-3">📊 DataForSEO</p>
                 {balance.dataforseo.error ? (
-                  <p className="text-red-400 text-sm">{balance.dataforseo.error}</p>
+                  <p className="text-red-400 text-sm break-words">{balance.dataforseo.error}</p>
                 ) : (
                   <div className="space-y-2">
                     <div>
@@ -235,36 +245,102 @@ export default function ApiCostsPage() {
                       <p className="text-2xl font-bold text-white">
                         ${balance.dataforseo.money_balance?.toFixed(2) ?? '—'}
                       </p>
-                    </div>
-                    <div className="flex gap-6 text-sm">
-                      <div>
-                        <p className="text-gray-500 text-xs">Calls today</p>
-                        <p className="text-gray-300">{balance.dataforseo.api_calls_today?.toLocaleString() ?? '—'}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500 text-xs">All-time calls</p>
-                        <p className="text-gray-300">{balance.dataforseo.api_calls_total?.toLocaleString() ?? '—'}</p>
-                      </div>
+                      <p className="text-gray-500 text-[11px] mt-1">Live from DataForSEO API</p>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* SEMrush */}
+              {/* SEMrush — graceful for plans without api_units */}
               <div className={`border rounded-xl p-5 ${API_BG.semrush}`}>
                 <p className="text-orange-400 font-semibold mb-3">🎯 SEMrush</p>
-                {balance.semrush.error ? (
-                  <p className="text-red-400 text-sm">{balance.semrush.error}</p>
+                {balance.semrush.error && balance.semrush.plan_supports_balance === false ? (
+                  <div>
+                    <p className="text-amber-300 text-sm">⚠️ Plan limit</p>
+                    <p className="text-gray-400 text-xs mt-1.5 leading-relaxed">{balance.semrush.error}</p>
+                    <a
+                      href="https://www.semrush.com/api-analytics/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-orange-400 text-xs underline mt-2 inline-block"
+                    >
+                      Check usage in SEMrush dashboard →
+                    </a>
+                  </div>
+                ) : balance.semrush.error ? (
+                  <p className="text-red-400 text-sm break-words">{balance.semrush.error}</p>
                 ) : (
                   <div>
                     <p className="text-gray-400 text-xs">API Units Remaining</p>
                     <p className="text-2xl font-bold text-white">
                       {balance.semrush.units_remaining?.toLocaleString() ?? '—'}
                     </p>
-                    <p className="text-gray-500 text-xs mt-2">Resets monthly with subscription</p>
+                    <p className="text-gray-500 text-[11px] mt-2">Resets monthly with subscription</p>
                   </div>
                 )}
               </div>
+
+              {/* Anthropic — month-to-date spend computed from logs */}
+              <div className={`border rounded-xl p-5 ${API_BG.claude}`}>
+                <p className="text-purple-400 font-semibold mb-3">🧠 Anthropic (Claude)</p>
+                {balance.anthropic.error ? (
+                  <p className="text-red-400 text-sm break-words">{balance.anthropic.error}</p>
+                ) : (
+                  <div className="space-y-2">
+                    <div>
+                      <p className="text-gray-400 text-xs">Spent this month</p>
+                      <p className="text-2xl font-bold text-white">
+                        ${balance.anthropic.month_to_date_usd.toFixed(2)}
+                      </p>
+                    </div>
+                    <div className="flex gap-4 text-xs flex-wrap">
+                      <div>
+                        <p className="text-gray-500">Calls</p>
+                        <p className="text-gray-300">{balance.anthropic.total_calls_mtd.toLocaleString()}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-500">Tokens (in / out)</p>
+                        <p className="text-gray-300">
+                          {(balance.anthropic.total_input_tokens / 1000).toFixed(0)}K / {(balance.anthropic.total_output_tokens / 1000).toFixed(0)}K
+                        </p>
+                      </div>
+                    </div>
+                    <p className="text-gray-500 text-[11px]">Computed from token logs × pricing table</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Anthropic per-model breakdown (only if there's spend) */}
+          {balance?.anthropic && balance.anthropic.by_model.length > 0 && (
+            <div className="mt-4 bg-gray-950 border border-gray-800 rounded-xl p-4">
+              <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">Claude spend breakdown (this month)</p>
+              <table className="w-full text-xs">
+                <thead className="text-gray-500">
+                  <tr>
+                    <th className="text-left  py-1.5">Model / endpoint</th>
+                    <th className="text-right py-1.5">Calls</th>
+                    <th className="text-right py-1.5">Cost (USD)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800/50">
+                  {balance.anthropic.by_model.map(m => (
+                    <tr key={m.model} className="text-purple-300">
+                      <td className="py-1 font-mono">{m.model}</td>
+                      <td className="py-1 text-right text-gray-300">{m.calls}</td>
+                      <td className="py-1 text-right">${m.cost_usd.toFixed(4)}</td>
+                    </tr>
+                  ))}
+                  {balance.anthropic.by_endpoint.map(e => (
+                    <tr key={e.endpoint} className="text-gray-400">
+                      <td className="py-1 pl-3 italic">└ {e.endpoint}</td>
+                      <td className="py-1 text-right">{e.calls}</td>
+                      <td className="py-1 text-right">${e.cost_usd.toFixed(4)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 

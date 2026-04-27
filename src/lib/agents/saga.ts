@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { slugify } from '@/lib/agents/site-helpers'
+import { logClaudeUsage } from '@/lib/api-logger'
 
 /**
  * Saga — Keyword Universe Curator (Norse goddess of history & chronicling)
@@ -229,7 +230,7 @@ async function proposeClusters(
 
   let classifications: ClassificationResult[]
   try {
-    classifications = await classifyKeywords(candidateList.map(c => c.keyword), maps)
+    classifications = await classifyKeywords(candidateList.map(c => c.keyword), maps, db, ownerId)
   } catch (err) {
     warnings.push(`Claude classification failed: ${err instanceof Error ? err.message : String(err)}`)
     return { actionsQueued, findings, warnings }
@@ -544,7 +545,12 @@ const classifyTool: Anthropic.Tool = {
   },
 }
 
-async function classifyKeywords(keywords: string[], maps: MapRow[]): Promise<ClassificationResult[]> {
+async function classifyKeywords(
+  keywords: string[],
+  maps:     MapRow[],
+  db?:      ReturnType<typeof createServiceClient>,
+  ownerId?: string,
+): Promise<ClassificationResult[]> {
   if (keywords.length === 0) return []
 
   const topicList = maps.map(m =>
@@ -577,6 +583,16 @@ Call submit_classifications with exactly ${keywords.length} results, in the same
     tool_choice: { type: 'tool', name: 'submit_classifications' },
     messages:    [{ role: 'user', content: prompt }],
   })
+
+  if (db && ownerId) {
+    logClaudeUsage(db, ownerId, {
+      model:       MODEL,
+      endpoint:    'classify_keywords',
+      triggeredBy: 'agent_saga',
+      usage:       res.usage,
+      extra:       { keyword_count: keywords.length, topic_count: maps.length },
+    })
+  }
 
   const toolUse = res.content.find(b => b.type === 'tool_use')
   if (!toolUse || toolUse.type !== 'tool_use') {

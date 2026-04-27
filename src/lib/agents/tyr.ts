@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { notifyTyrEvent } from '@/lib/slack/notify'
+import { logClaudeUsage } from '@/lib/api-logger'
 
 /**
  * Tyr — Brief Quality Reviewer (Norse god of justice)
@@ -174,7 +175,7 @@ export async function runTyr(
 
       let breakdown: ScoreBreakdown
       try {
-        breakdown = await judgeBrief(brief)
+        breakdown = await judgeBrief(brief, db, ownerId)
       } catch (err) {
         errored++
         const msg = err instanceof Error ? err.message : String(err)
@@ -308,7 +309,11 @@ export async function runTyr(
   }
 }
 
-async function judgeBrief(brief: BriefRow): Promise<ScoreBreakdown> {
+async function judgeBrief(
+  brief: BriefRow,
+  db?:   ReturnType<typeof createServiceClient>,
+  ownerId?: string,
+): Promise<ScoreBreakdown> {
   const prompt = `You are a strict SEO content quality reviewer for G2G.com (a peer-to-peer gaming marketplace).
 
 Evaluate the following brief and call submit_brief_review with structured scores.
@@ -344,6 +349,16 @@ In redflags, be specific — name the section, FAQ number, or keyword. Vague red
     tool_choice: { type: 'tool', name: 'submit_brief_review' },
     messages:    [{ role: 'user', content: prompt }],
   })
+
+  if (db && ownerId) {
+    logClaudeUsage(db, ownerId, {
+      model:       MODEL,
+      endpoint:    'review_brief',
+      triggeredBy: 'agent_tyr',
+      usage:       res.usage,
+      extra:       { brief_id: brief.id },
+    })
+  }
 
   const toolUse = res.content.find(b => b.type === 'tool_use')
   if (!toolUse || toolUse.type !== 'tool_use') {

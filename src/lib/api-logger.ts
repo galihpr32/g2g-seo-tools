@@ -16,6 +16,14 @@ export type TriggerSource =
   | 'backlink_refresh'
   | 'backlink_check'
   | 'keyword_load'
+  | 'agent_heimdall'
+  | 'agent_loki'
+  | 'agent_odin'
+  | 'agent_bragi'
+  | 'agent_hermod'
+  | 'agent_tyr'
+  | 'agent_vor'
+  | 'agent_saga'
   | 'other'
 
 export interface LogApiUsageParams {
@@ -44,4 +52,53 @@ export function logApiUsage(
       metadata:      params.metadata ?? {},
     })
     .then(() => {/* silent */}, (err: unknown) => console.error('[api-logger] insert error:', err))
+}
+
+// ── Convenience wrapper for Anthropic calls ─────────────────────────────────-
+// Captures token counts in metadata so api-costs page can compute spend.
+//
+// Usage:
+//   const res = await anthropic.messages.create({ model, ... })
+//   logClaudeUsage(supabase, ownerId, {
+//     model, endpoint: 'review_brief', triggeredBy: 'agent_tyr', usage: res.usage,
+//   })
+//
+// The `usage` arg accepts Anthropic's full response.usage shape OR a manual
+// { input_tokens, output_tokens } object.
+interface ClaudeUsage {
+  input_tokens?:                number | null
+  output_tokens?:               number | null
+  cache_creation_input_tokens?: number | null
+  cache_read_input_tokens?:     number | null
+}
+
+export interface LogClaudeUsageParams {
+  model:       string
+  endpoint:    string             // descriptive label, e.g. 'review_brief', 'classify_keywords'
+  triggeredBy: TriggerSource
+  usage?:      ClaudeUsage
+  extra?:      Record<string, unknown>
+}
+
+export function logClaudeUsage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: SupabaseClient<any>,
+  ownerId:  string,
+  params:   LogClaudeUsageParams,
+): void {
+  const u = params.usage ?? {}
+  logApiUsage(supabase, ownerId, {
+    api:         'claude',
+    endpoint:    params.endpoint,
+    triggeredBy: params.triggeredBy,
+    callCount:   1,
+    metadata: {
+      model:                       params.model,
+      input_tokens:                u.input_tokens                ?? 0,
+      output_tokens:               u.output_tokens               ?? 0,
+      cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+      cache_read_input_tokens:     u.cache_read_input_tokens     ?? 0,
+      ...(params.extra ?? {}),
+    },
+  })
 }

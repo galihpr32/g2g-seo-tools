@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getDomainRankedKeywords } from '@/lib/dataforseo/client'
 import { getSiteUrlForSlug } from '@/lib/agents/site-helpers'
 import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
+import { logApiUsage } from '@/lib/api-logger'
 
 /**
  * Loki — Competitive Analysis Agent
@@ -86,6 +87,15 @@ export async function runLoki(
       const compKwsP   = competitorsToAnalyze.map(c =>
         getDomainRankedKeywords(c.domain, LOCATION_CODE, LANGUAGE_CODE, FETCH_LIMIT)
       )
+      // Log DataForSEO calls (1 per domain analysed)
+      const totalDfsCalls = 1 + competitorsToAnalyze.length
+      logApiUsage(db, ownerId, {
+        api:         'dataforseo',
+        endpoint:    'dataforseo_labs/google/ranked_keywords',
+        triggeredBy: 'agent_loki',
+        callCount:   totalDfsCalls,
+        metadata:    { domains: [ourDomain, ...competitorsToAnalyze.map(c => c.domain)] },
+      })
       // Use allSettled so one slow/failing competitor doesn't kill the others
       const [ourSettled, ...compSettled] = await Promise.allSettled([ourKwsP, ...compKwsP])
 

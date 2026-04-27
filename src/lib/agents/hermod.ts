@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getSiteUrlForSlug, buildCategoryUrl } from '@/lib/agents/site-helpers'
+import { logClaudeUsage } from '@/lib/api-logger'
 
 /**
  * Hermod — Off-Page / Outreach Agent
@@ -205,7 +206,7 @@ export async function runHermod(
           targetPage,
           searchVolume,
           ourDomain,
-        }).catch(err => {
+        }, db, ownerId).catch(err => {
           warnings.push(`LLM pitch failed for ${candidate.domain}: ${err instanceof Error ? err.message : String(err)}`)
           return buildFallbackAngle(keyword, candidate.domain, targetPage, searchVolume)
         })
@@ -295,7 +296,11 @@ const angleTool: Anthropic.Tool = {
   },
 }
 
-async function buildPersonalisedAngle(input: AngleInput): Promise<OutreachAngle> {
+async function buildPersonalisedAngle(
+  input:    AngleInput,
+  db?:      ReturnType<typeof createServiceClient>,
+  ownerId?: string,
+): Promise<OutreachAngle> {
   const prompt = `You are writing a B2B outreach email for G2G.com (${input.ourDomain}), a peer-to-peer gaming marketplace.
 
 Outreach context:
@@ -320,6 +325,16 @@ Call the submit_outreach_angle tool.`
     tool_choice: { type: 'tool', name: 'submit_outreach_angle' },
     messages:    [{ role: 'user', content: prompt }],
   })
+
+  if (db && ownerId) {
+    logClaudeUsage(db, ownerId, {
+      model:       PITCH_MODEL,
+      endpoint:    'outreach_pitch',
+      triggeredBy: 'agent_hermod',
+      usage:       res.usage,
+      extra:       { domain: input.domain, keyword: input.keyword },
+    })
+  }
 
   const toolUse = res.content.find(b => b.type === 'tool_use')
   if (!toolUse || toolUse.type !== 'tool_use') {
