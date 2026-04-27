@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,8 @@ interface ReportData {
     trackedCompetitors: { domain: string; name?: string }[]
     sovTable: SovRow[]
   }
+  // Agent activity (v3+) — null for old reports
+  agentInsights?: AgentInsightsLite | null
 }
 
 interface MonthlyReport {
@@ -570,6 +573,9 @@ export default function MonthlyReportPage() {
               {/* ── Quick Summary (bullet points) ── */}
               <QuickSummary d={d} report={report} />
 
+              {/* ── Agent Activity (auto-hidden if no activity) ── */}
+              <AgentActivitySummary insights={d.agentInsights ?? null} />
+
               {/* ── Keyword Rankings ── */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                 <div className="flex items-center justify-between mb-5">
@@ -961,13 +967,62 @@ export default function MonthlyReportPage() {
         </div>
       </div>
 
-      {/* Print styles */}
+      {/* Print styles — match weekly + tweaks for monthly cadence */}
       <style jsx global>{`
         @media print {
-          body { background: white; color: black; }
+          /* Preserve dark theme + colours when printing to PDF */
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
+          }
+          html, body {
+            background: #030712 !important;
+            color: #f9fafb !important;
+            font-size: 11px;
+          }
+
+          /* Page setup — A4 portrait with comfortable margins */
+          @page {
+            margin: 16mm 12mm 18mm 12mm;
+            size: A4 portrait;
+          }
+
+          /* Hide app chrome */
           .print\\:hidden { display: none !important; }
           .print\\:block  { display: block !important; }
-          aside { display: none !important; }
+          aside, nav     { display: none !important; }
+
+          /* Main layout: collapse sidebar, full width content */
+          .flex.gap-6 { display: block !important; }
+
+          /* Cards stay on one page where possible */
+          .rounded-xl, .rounded-2xl, section { page-break-inside: avoid; break-inside: avoid; }
+
+          /* Force page break before strategic narrative blocks so they
+             don't get split across pages awkwardly. */
+          h2 + section,
+          h3 + section { page-break-inside: avoid; break-inside: avoid; }
+
+          /* Tighter spacing */
+          .space-y-6 > * + * { margin-top: 14px !important; }
+          .p-5 { padding: 14px !important; }
+          .p-6 { padding: 16px !important; }
+
+          /* Force expected grid layouts in print (some are responsive-only) */
+          .grid-cols-2, .md\\:grid-cols-2 { grid-template-columns: 1fr 1fr !important; }
+          .md\\:grid-cols-3               { grid-template-columns: 1fr 1fr 1fr !important; }
+          .md\\:grid-cols-4               { grid-template-columns: 1fr 1fr 1fr 1fr !important; }
+
+          /* Trim oversized stat numbers so cards fit on the printed page */
+          .text-3xl { font-size: 1.5rem  !important; }
+          .text-2xl { font-size: 1.25rem !important; }
+
+          /* Links: don't append visible URL after anchor text */
+          a[href]:after { content: '' !important; }
+
+          /* Tables: avoid splitting rows */
+          tr { page-break-inside: avoid; break-inside: avoid; }
         }
       `}</style>
     </div>

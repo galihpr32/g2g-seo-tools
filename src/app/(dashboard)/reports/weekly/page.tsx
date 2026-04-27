@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,6 +88,8 @@ interface ReportData {
   aiIssues?: string
   aiManagementPlan?: string
   aiTeamPlan?: string
+  // Agent activity (v3+) — null when agents haven't run in window
+  agentInsights?: AgentInsightsLite | null
 }
 
 interface WeeklyReport {
@@ -537,6 +540,9 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 </div>
               )}
 
+              {/* ── Agent Activity (auto-hidden if no activity) ── */}
+              <AgentActivitySummary insights={d.agentInsights ?? null} />
+
               {/* ── Traffic + Keywords ── */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
@@ -866,8 +872,9 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
           /* Main layout: collapse sidebar, full width */
           .flex.gap-6 { display: block !important; }
 
-          /* Cards: avoid breaking across pages */
-          .rounded-xl { page-break-inside: avoid; break-inside: avoid; }
+          /* Cards stay on one page where possible */
+          .rounded-xl, .rounded-2xl, section { page-break-inside: avoid; break-inside: avoid; }
+          tr { page-break-inside: avoid; break-inside: avoid; }
 
           /* Slightly tighter spacing for print */
           .space-y-6 > * + * { margin-top: 14px !important; }
@@ -877,8 +884,10 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
           /* Ensure grid columns work in print */
           .grid-cols-2, .md\\:grid-cols-2 { grid-template-columns: 1fr 1fr !important; }
           .md\\:grid-cols-3               { grid-template-columns: 1fr 1fr 1fr !important; }
+          .md\\:grid-cols-4               { grid-template-columns: 1fr 1fr 1fr 1fr !important; }
 
           /* Prevent stat cards from being too large */
+          .text-3xl { font-size: 1.5rem  !important; }
           .text-2xl { font-size: 1.25rem !important; }
 
           /* Links — don't show URL in print */

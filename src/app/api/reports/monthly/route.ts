@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
+import { getAgentInsights, formatInsightsForPrompt } from '@/lib/reports/agent-insights'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
@@ -75,13 +76,36 @@ export async function GET(req: Request) {
 // Body: { year?: number, month?: number }  defaults to last complete calendar month
 
 export async function POST(req: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const body = await req.clone().json().catch(() => ({}))
+  const db   = createServiceClient()
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const db = createServiceClient()
-  const body = await req.json().catch(() => ({}))
+  // Auth: user session OR Bearer ${CRON_SECRET} (cron mode = body.owner_user_id)
+  const authHeader = req.headers.get('authorization')
+  const isCron = authHeader === `Bearer ${process.env.CRON_SECRET}`
+
+  let ownerId: string
+  if (isCron) {
+    if (!body.owner_user_id || typeof body.owner_user_id !== 'string') {
+      return NextResponse.json({ error: 'Cron mode requires body.owner_user_id' }, { status: 400 })
+    }
+    ownerId = body.owner_user_id as string
+  } else {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    ownerId = await getEffectiveOwnerId(supabase, user.id)
+  }
+
+  // Resolve site_config so SEMrush domain & display name match weekly's behaviour.
+  // Defaults to 'g2g' for back-compat (existing reports always assumed g2g).
+  const siteSlug   = (body.site as string | undefined) ?? 'g2g'
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('slug, display_name, semrush_domain, gsc_property, ga4_property_id')
+    .eq('slug', siteSlug)
+    .maybeSingle()
+  const semrushDomain = siteConfig?.semrush_domain ?? 'g2g.com'
+  const siteDisplay   = siteConfig?.display_name   ?? 'G2G'
 
   // Default to last complete month
   const now = new Date()
@@ -333,8 +357,8 @@ export async function POST(req: Request) {
 
   try {
     const [keywords, overview] = await Promise.all([
-      getDomainKeywords('g2g.com', 'us', 500),
-      getDomainOverview('g2g.com', 'us'),
+      getDomainKeywords(semrushDomain, 'us', 500),
+      getDomainOverview(semrushDomain, 'us'),
     ])
     const up   = keywords.filter(k => k.positionDiff < 0).sort((a, b) => a.positionDiff - b.positionDiff).slice(0, 10)
     const down = keywords.filter(k => k.positionDiff > 0).sort((a, b) => b.positionDiff - a.positionDiff).slice(0, 10)
@@ -481,18 +505,28 @@ export async function POST(req: Request) {
     console.warn('[monthly-report] SoV failed:', e)
   }
 
+  // ── Agent insights ───────────────────────────────────────────────────────
+  const agentInsights = await getAgentInsights(db, ownerId, monthStart, monthEnd)
+    .catch(e => {
+      console.warn('[monthly-report] agent insights failed:', e)
+      return null
+    })
+
   // ── Assemble report_data ─────────────────────────────────────────────────────
   const reportData = {
     monthStart,
     monthEnd,
     monthLabel: monthLabel(targetYear, targetMonth),
     prevMonthLabel: monthLabel(prevYear, prevMonth),
+    siteSlug,
+    siteName: siteDisplay,
     gsc: gscData,
     ga4: ga4Data,
     semrush: semrushData,
     actionItems: actionItemsData,
     competitive: { trackedCompetitors: competitorList, sovTable },
     backlinks: backlinksData,
+    agentInsights,
     generatedAt: new Date().toISOString(),
   }
 
@@ -583,7 +617,12 @@ function buildNarrativePrompt(d: {
     totalActive: number; newThisMonth: number; pendingLinks: number; brokenLinks: number
     totalCostThisMonth: number; totalCostAllTime: number; avgPositionImprovement: number | null
   }
+  agentInsights?: { windowStart: string; windowEnd: string } | null
+  siteName?: string
 }): string {
+  const agentInsightsBlock = d.agentInsights
+    ? formatInsightsForPrompt(d.agentInsights as Parameters<typeof formatInsightsForPrompt>[0])
+    : ''
   const fmtUrl = (url: string) => url.replace('https://www.g2g.com', '').replace('https://g2g.com', '') || '/'
   const fmtUsd = (n: number) => n >= 1_000_000 ? `$${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `$${(n/1_000).toFixed(0)}K` : `$${Math.round(n)}`
   const pctStr = (v: number | null) => v != null ? `${v > 0 ? '+' : ''}${v}%` : 'n/a'
@@ -594,7 +633,7 @@ function buildNarrativePrompt(d: {
   const sov      = d.competitive.sovTable.slice(0, 5).map(s => `  • ${s.domain}: ${s.sov}%`).join('\n') || '  No data'
   const competitors = d.competitive.trackedCompetitors.map(c => c.domain).join(', ') || 'none tracked'
 
-  return `You are an expert SEO strategist writing a monthly performance report for G2G.com — a gaming marketplace (gift cards, game items, top-up) primarily targeting the US market.
+  return `You are an expert SEO strategist writing a monthly performance report for ${d.siteName ?? 'G2G.com'} — a gaming marketplace (gift cards, game items, top-up) primarily targeting the US market.
 
 Analyze the following data for ${d.monthLabel} (vs ${d.prevMonthLabel}) and write:
 1. A comprehensive executive narrative (4–5 paragraphs) covering:
@@ -647,6 +686,8 @@ ${d.backlinks.avgPositionImprovement != null ? `- Avg position improvement for l
 - Pending / broken: ${d.backlinks.pendingLinks} / ${d.backlinks.brokenLinks}
 
 Tracked competitors: ${competitors}
+
+${agentInsightsBlock}
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
 [Write the 4-5 paragraph executive narrative here]

@@ -7,6 +7,7 @@ import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
+import { getAgentInsights, formatInsightsForPrompt } from '@/lib/reports/agent-insights'
 import Anthropic from '@anthropic-ai/sdk'
 
 // CTR curve for SoV calculation (positions 1–10)
@@ -80,13 +81,29 @@ export async function GET(req: Request) {
 // Body: { site?: string, week_start?: string, week_end?: string }
 export async function POST(req: Request) {
   try {
-    const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const body = await req.clone().json().catch(() => ({}))
+    const db   = createServiceClient()
 
-    const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const db = createServiceClient()
-    const body = await req.json().catch(() => ({}))
+    // ── Auth: user session OR Bearer ${CRON_SECRET} ─────────────────────────
+    // Cron mode: Bearer ${CRON_SECRET} + body.owner_user_id (used by
+    // /api/cron/weekly-report-generator to auto-generate per owner).
+    const authHeader = req.headers.get('authorization')
+    const isCron = authHeader === `Bearer ${process.env.CRON_SECRET}`
+
+    let ownerId: string
+    let supabase: Awaited<ReturnType<typeof createClient>>
+    if (isCron) {
+      if (!body.owner_user_id || typeof body.owner_user_id !== 'string') {
+        return NextResponse.json({ error: 'Cron mode requires body.owner_user_id' }, { status: 400 })
+      }
+      ownerId  = body.owner_user_id as string
+      supabase = await createClient()   // for site config lookup; service client for writes
+    } else {
+      supabase = await createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      ownerId = await getEffectiveOwnerId(supabase, user.id)
+    }
 
     // ── Resolve site config ──────────────────────────────────────────────────
     const siteSlug = (body.site as string) ?? 'g2g'
@@ -479,6 +496,15 @@ export async function POST(req: Request) {
       sovEstimated,
     }
 
+    // ── Agent insights ───────────────────────────────────────────────────────
+    // Aggregates agent_runs + agent_actions + briefs activity within the
+    // report window. Failures non-fatal — captured in `agentInsights.warnings`.
+    const agentInsights = await getAgentInsights(db, ownerId, weekStart, weekEnd)
+      .catch(e => {
+        console.warn('[weekly-report] agent insights failed:', e)
+        return null
+      })
+
     // ── Base report data ─────────────────────────────────────────────────────
     const baseReportData = {
       weekStart,
@@ -490,6 +516,7 @@ export async function POST(req: Request) {
       actionItems: actionItemsData,
       competitive: competitiveData,
       domainAuthority,
+      agentInsights,
       generatedAt: new Date().toISOString(),
     }
 
@@ -504,6 +531,7 @@ export async function POST(req: Request) {
       actionItems: actionItemsData,
       competitive: competitiveData,
       domainAuthority,
+      agentInsightsBlock: agentInsights ? formatInsightsForPrompt(agentInsights) : '',
     })
 
     let aiNarrative      = ''
@@ -607,6 +635,7 @@ function buildNarrativePrompt(d: {
   actionItems: { total: number; pending: number; inProgress: number; done: number; assignedThisWeek: number; completedThisWeek: number }
   competitive: { trackedCompetitors: { domain: string; name?: string }[] }
   domainAuthority?: { organicKeywords: number; organicTraffic: number; organicCost: number } | null
+  agentInsightsBlock?: string
 }): string {
   const siteOrigin = `https://www.${d.siteDomain}`
   const fmtUrl = (url: string) => url.replace(siteOrigin, '').replace(`https://${d.siteDomain}`, '') || '/'
@@ -665,6 +694,8 @@ Action Items:
 - Assigned this week: ${d.actionItems.assignedThisWeek} | Completed this week: ${d.actionItems.completedThisWeek}
 
 Tracked competitors: ${competitors}
+
+${d.agentInsightsBlock ?? ''}
 
 FORMAT YOUR RESPONSE EXACTLY LIKE THIS (use these exact marker lines):
 
