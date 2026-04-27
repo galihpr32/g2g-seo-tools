@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { PageLoader, LottieLoader } from '@/components/ui/LottieLoader'
 import TyrScoreBadge from '@/components/agents/TyrScoreBadge'
+import BriefQualityReview, { type TyrBreakdown } from '@/components/agents/BriefQualityReview'
 import { useRealtimeRefresh } from '@/lib/hooks/useRealtimeRefresh'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -42,14 +43,7 @@ type Brief = {
   tyr_score?: number | null
   tyr_status?: string | null
   tyr_reviewed_at?: string | null
-  tyr_breakdown?: {
-    coverage?: number
-    intent_match?: number
-    keyword_grounding?: number
-    faq_realism?: number
-    redflags?: string[]
-    reasoning?: string
-  } | null
+  tyr_breakdown?: TyrBreakdown | null
 }
 
 // ── Off-page content type config ──────────────────────────────────────────────
@@ -998,6 +992,14 @@ export function BriefViewer({ actionItemId, existingBriefId, actionType, initial
           </button>
         </div>
       </div>
+
+      {/* Tyr comprehensive quality review (auto-shown if brief has been reviewed) */}
+      <BriefQualityReview
+        score={brief.tyr_score}
+        status={brief.tyr_status}
+        reviewedAt={brief.tyr_reviewed_at}
+        breakdown={brief.tyr_breakdown ?? null}
+      />
 
       {/* DMCA Warning Banner (published briefs with flagged terms) */}
       {brief.status === 'published' && dmcaHits.length > 0 && (

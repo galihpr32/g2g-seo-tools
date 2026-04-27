@@ -56,6 +56,12 @@ export default async function CommandCenterPage() {
           <h2 className="text-lg font-semibold text-white">Agent Status</h2>
           <div className="flex items-center gap-4">
             <a
+              href="/command-center/health"
+              className="text-sm text-gray-400 hover:text-white transition"
+            >
+              🩺 Health
+            </a>
+            <a
               href="/command-center/settings"
               className="text-sm text-gray-400 hover:text-white transition"
             >

@@ -39,29 +39,37 @@ export async function runHermod(
     const siteUrl   = site.siteUrl
 
     // 1. Get Loki gap actions in last 14d
+    // Include BOTH normal-path 'add_action_item' AND fast-path 'run_agent'
+    // — Loki's high-value gaps go straight to Bragi handoff via run_agent
+    // and we want to source outreach from those too.
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
     const { data: gapActions } = await db
       .from('agent_actions')
       .select('*')
       .eq('owner_user_id', ownerId)
       .eq('agent_key', 'loki')
-      .eq('action_type', 'add_action_item')
+      .in('action_type', ['add_action_item', 'run_agent'])
       .in('status', ['approved', 'executed'])
       .gte('created_at', fourteenDaysAgo)
       .order('created_at', { ascending: false })
       .limit(10)
 
     if (!gapActions?.length) {
-      // Strict pre-flight: when did Loki last run, and is its data fresh?
-      const { data: lokiAgent } = await db
-        .from('agents')
-        .select('last_run_at, last_run_status')
+      // Strict pre-flight — query agent_runs DIRECTLY (the `agents` table's
+      // last_run_at field only updates if the row exists; rows are only
+      // auto-created when an agent has a settings UI, so it's an unreliable
+      // signal for "has Loki ever run").
+      const { data: lokiRuns } = await db
+        .from('agent_runs')
+        .select('started_at, status')
         .eq('owner_user_id', ownerId)
         .eq('agent_key', 'loki')
-        .maybeSingle()
+        .in('status', ['success', 'partial'])
+        .order('started_at', { ascending: false })
+        .limit(1)
 
-      const lokiLastRunMs = lokiAgent?.last_run_at
-        ? new Date(lokiAgent.last_run_at as string).getTime()
+      const lokiLastRunMs = lokiRuns?.[0]?.started_at
+        ? new Date(lokiRuns[0].started_at as string).getTime()
         : null
       const lokiAgeDays = lokiLastRunMs ? (Date.now() - lokiLastRunMs) / (1000 * 60 * 60 * 24) : null
 
@@ -146,7 +154,14 @@ export async function runHermod(
     for (const action of gapActions) {
       if (actionsQueued >= 8) break
 
-      const d = action.data as Record<string, unknown>
+      // Action data shape differs by Loki path:
+      //  - Normal path (action_type='add_action_item'): keyword/competitor_domain at root
+      //  - Fast-path     (action_type='run_agent'):     payload nested under data.payload + sharedData spread at root
+      // Read with fallback to both shapes.
+      const dRoot    = (action.data ?? {}) as Record<string, unknown>
+      const dPayload = ((dRoot.payload ?? {}) as Record<string, unknown>)
+      const d        = { ...dRoot, ...dPayload }   // payload values win where both exist (cleaner shape)
+
       const keyword          = String(d.keyword ?? '')
       const competitorDomain = String(d.competitor_domain ?? '').toLowerCase()
       const searchVolume     = Number(d.search_volume ?? 0)
@@ -173,9 +188,9 @@ export async function runHermod(
       // 4. Candidate domains
       const candidateDomains: { domain: string; position: number; title?: string; url?: string; source: 'serp' | 'loki' }[] = []
       for (const row of serpRows) {
-        const d = row.domain.toLowerCase()
-        if (!skipDomains.has(d)) {
-          candidateDomains.push({ domain: d, position: row.position, title: row.title, url: row.url, source: 'serp' })
+        const dom = row.domain.toLowerCase()
+        if (!skipDomains.has(dom)) {
+          candidateDomains.push({ domain: dom, position: row.position, title: row.title, url: row.url, source: 'serp' })
         }
       }
       if (competitorDomain && !skipDomains.has(competitorDomain) && !candidateDomains.find(c => c.domain === competitorDomain)) {

@@ -55,48 +55,108 @@ interface BriefRow {
   tyr_score:        number | null
 }
 
-interface ScoreBreakdown {
-  coverage:           number   // 0-10
-  intent_match:       number   // 0-10
-  keyword_grounding:  number   // 0-10
-  faq_realism:        number   // 0-10
-  redflags:           string[]
-  reasoning:          string
+// ── Score model — 8 dimensions × 10 = 80 max → normalised to 0-100 ─────────-
+// Each dimension carries a score AND a per-dimension comment so the brief
+// detail UI can explain WHY each score is what it is (SEMrush SWA-style).
+//
+// Backwards-compat: legacy `coverage` / `intent_match` / `keyword_grounding`
+// / `faq_realism` flat number fields are kept on the breakdown and mirror
+// the new `dimensions[*].score` for downstream consumers (Vor analyser, FE
+// score badge) that haven't migrated yet.
+
+export interface DimensionScore {
+  score:    number          // 0-10
+  comment:  string          // per-dimension explanation
 }
+
+export interface Suggestion {
+  priority: 'high' | 'medium' | 'low'
+  text:     string
+}
+
+interface ScoreBreakdown {
+  // Per-dimension structured scores (8 of them — see below)
+  dimensions: {
+    coverage:           DimensionScore   // sub-intent coverage
+    intent_match:       DimensionScore   // H1 + meta vs search intent
+    heading_structure:  DimensionScore   // outline hierarchy quality
+    keyword_strategy:   DimensionScore   // primary + LSI variants strategy
+    eeat_signals:       DimensionScore   // E-E-A-T plan (trust, expertise, etc.)
+    faq_quality:        DimensionScore   // FAQ realism + value
+    meta_description:   DimensionScore   // meta crafting (length, keyword, CTA)
+    internal_links:     DimensionScore   // does the brief plan internal linking?
+  }
+  strengths:    string[]      // 2-3 things the brief gets right
+  weaknesses:   string[]      // 2-4 specific issues
+  suggestions:  Suggestion[]  // prioritised actionable improvements
+  redflags:     string[]      // legacy flat list — mirrors weaknesses for back-compat
+  reasoning:    string        // 1-2 sentence overall verdict
+
+  // Legacy flat scores — kept for back-compat (tooltip badge etc.)
+  coverage:          number
+  intent_match:      number
+  keyword_grounding: number
+  faq_realism:       number
+}
+
+const dimensionSpec = (description: string) => ({
+  type: 'object',
+  properties: {
+    score:   { type: 'integer', description: '0-10 score for this dimension. Be strict — 7-8 means "solid, ready". 9-10 should be rare.' },
+    comment: { type: 'string',  description: 'One specific sentence explaining the score. Cite outline section, FAQ #, or keyword.' },
+  },
+  required: ['score', 'comment'],
+  description,
+})
 
 const judgeTool: Anthropic.Tool = {
   name: 'submit_brief_review',
-  description: 'Submit the structured quality review for an SEO brief.',
+  description: 'Submit the comprehensive quality review for an SEO brief — 8 dimensions, strengths, weaknesses, prioritised suggestions.',
   input_schema: {
     type: 'object',
     properties: {
-      coverage: {
-        type: 'integer',
-        description: '0-10. Does the outline cover the sub-intents a real user searching this keyword would expect? 10=comprehensive, 5=missing key angles, 0=off-topic.',
+      coverage:          dimensionSpec('Does the outline cover the sub-intents a real user searching this keyword expects? Penalise generic "What is X" intros for clearly transactional intent.'),
+      intent_match:      dimensionSpec('Does the H1 + meta description match the commercial/transactional intent? Penalise off-intent phrasing.'),
+      heading_structure: dimensionSpec('Outline hierarchy quality. Single H1, well-named H2s, no skipped levels (H1→H3), descriptive (not generic). 4-6 H2s ideal.'),
+      keyword_strategy:  dimensionSpec('Primary keyword + LSI/variants strategy. Are target_keywords legitimate semantic variations or filler ("buy X cheap" + "cheap X" + "X cheap")? 10=organic variation across intent angles, 5=some padding, 0=spam.'),
+      eeat_signals:      dimensionSpec('E-E-A-T plan: does the brief incorporate trust signals (buyer protection, ratings, secure transactions, refund policy, expert/staff voice, authoritative sourcing)? For commercial gaming marketplace, focus on TRUST + EXPERIENCE.'),
+      faq_quality:       dimensionSpec('FAQs: are questions things real users search ("People also ask" style)? Are answers grounded (no hallucinated specifics like "5-minute delivery" without source)? 3-5 questions ideal.'),
+      meta_description:  dimensionSpec('Meta description: 150-160 chars, includes primary keyword, has clear CTA. Penalise generic / over-stuffed.'),
+      internal_links:    dimensionSpec('Does the brief plan internal links to related categories / pillar pages / supporting content? Internal linking is critical for topical authority.'),
+
+      strengths: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '2-3 specific things the brief gets RIGHT. Cite section/keyword. Example: "FAQ #1 ‘How long does delivery take?’ matches a high-intent People Also Ask query".',
       },
-      intent_match: {
-        type: 'integer',
-        description: '0-10. Does the H1 + meta description match the commercial/transactional intent? Penalise generic "welcome to" or off-intent phrasing.',
+      weaknesses: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '2-4 specific issues. Cite section/FAQ/keyword. Example: "Outline section 3 ‘How to Buy’ is generic boilerplate — needs marketplace-specific steps with screenshots planned".',
       },
-      keyword_grounding: {
-        type: 'integer',
-        description: '0-10. Are target_keywords legitimate variants/LSI terms, or filler ("buy X cheap", "X for sale", "X 2024" repeated)? 10=organic variation, 5=some padding, 0=spam.',
-      },
-      faq_realism: {
-        type: 'integer',
-        description: '0-10. Are FAQ questions things real users actually search ("People also ask" style)? Penalise if questions are pretextual or contain unverifiable claims (e.g. "instant 5-minute delivery" without source).',
+      suggestions: {
+        type: 'array',
+        description: '3-6 prioritised, actionable improvements. High = blocks publish. Medium = polish before publish. Low = nice-to-have.',
+        items: {
+          type: 'object',
+          properties: {
+            priority: { type: 'string', enum: ['high', 'medium', 'low'] },
+            text:     { type: 'string', description: 'One imperative sentence. Example: "Replace H2 #4 with a Comparison Table section showing seller ratings vs price."' },
+          },
+          required: ['priority', 'text'],
+        },
       },
       redflags: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Specific issues with the brief — short imperative phrases. Examples: "FAQ #2 hallucinates 5-minute delivery (unverifiable)", "outline section 3 is generic boilerplate".',
+        description: 'Backwards-compat: same as weaknesses, kept for legacy consumers. You can mirror weaknesses here.',
       },
       reasoning: {
         type: 'string',
-        description: '1-2 sentence overall justification.',
+        description: '1-2 sentence overall verdict. What\'s the headline takeaway?',
       },
     },
-    required: ['coverage', 'intent_match', 'keyword_grounding', 'faq_realism', 'redflags', 'reasoning'],
+    required: ['coverage', 'intent_match', 'heading_structure', 'keyword_strategy', 'eeat_signals', 'faq_quality', 'meta_description', 'internal_links', 'strengths', 'weaknesses', 'suggestions', 'redflags', 'reasoning'],
   },
 }
 
@@ -193,8 +253,17 @@ export async function runTyr(
         continue
       }
 
-      const total = breakdown.coverage + breakdown.intent_match + breakdown.keyword_grounding + breakdown.faq_realism
-      const score = Math.round((total / 40) * 100)
+      // Score = sum of 8 dimensions × 10 = 80 max → normalised to 0-100
+      const dims  = breakdown.dimensions
+      const total = dims.coverage.score
+                  + dims.intent_match.score
+                  + dims.heading_structure.score
+                  + dims.keyword_strategy.score
+                  + dims.eeat_signals.score
+                  + dims.faq_quality.score
+                  + dims.meta_description.score
+                  + dims.internal_links.score
+      const score = Math.round((total / 80) * 100)
       const failThreshold = minScore - borderlineWindow
 
       let newStatus: 'reviewed' | 'draft'
@@ -314,33 +383,45 @@ async function judgeBrief(
   db?:   ReturnType<typeof createServiceClient>,
   ownerId?: string,
 ): Promise<ScoreBreakdown> {
-  const prompt = `You are a strict SEO content quality reviewer for G2G.com (a peer-to-peer gaming marketplace).
+  const prompt = `You are a senior SEO content quality reviewer for G2G.com — a peer-to-peer gaming marketplace (gift cards, in-game items, top-up, accounts) primarily targeting US.
 
-Evaluate the following brief and call submit_brief_review with structured scores.
+Your job: comprehensive SWA-style review of the SEO brief below. Score 8 dimensions (each 0-10), then provide strengths, weaknesses, and prioritised suggestions. Cite SPECIFIC sections / FAQ numbers / keywords in every comment — vague feedback is useless.
 
 PRIMARY KEYWORD: "${brief.primary_keyword ?? '(missing)'}"
-TARGET PAGE: ${brief.page ?? '(missing)'}
-BRIEF TYPE: ${brief.brief_type ?? 'on_page'}
+TARGET PAGE:     ${brief.page ?? '(missing)'}
+BRIEF TYPE:      ${brief.brief_type ?? 'on_page'}
 
 CONTENT DRAFT:
 ${brief.content_draft ?? '(empty)'}
 
-CONTENT OUTLINE:
+CONTENT OUTLINE (H2 structure):
 ${JSON.stringify(brief.content_outline, null, 2)}
 
-TARGET KEYWORDS (new_keywords):
+TARGET KEYWORDS:
 ${JSON.stringify(brief.new_keywords, null, 2)}
 
 FAQ SUGGESTIONS:
 ${JSON.stringify(brief.faq_suggestions, null, 2)}
 
-Scoring rules — be strict, not generous:
-- A score of 7-8 means "solid, ready to publish".
-- A score of 9-10 should be rare and reserved for briefs that demonstrably nail intent + grounding.
-- Penalise: generic intros ("What is X?" as section 1 for clearly transactional intent), padded keyword lists ("buy X cheap" + "cheap X" + "X cheap" all listed), FAQs with unverifiable claims (specific timings, prices, guarantees not in the brief context).
-- Reward: outlines that lead with what the user came for (price/listings/trust), keywords with semantic variation, FAQs that mirror real "People also ask" patterns.
+REVIEW RUBRIC — score each dimension 0-10 (be strict, 7-8 = ready, 9-10 = rare excellence):
 
-In redflags, be specific — name the section, FAQ number, or keyword. Vague redflags ("could be better") are useless.`
+1. **coverage** — does the outline cover sub-intents users searching this keyword expect?
+2. **intent_match** — H1 + meta align with commercial/transactional intent? Penalise generic "Welcome to" or off-intent phrasing.
+3. **heading_structure** — single H1, 4-6 well-named H2s, no skipped levels (H1→H3), descriptive (not generic)
+4. **keyword_strategy** — primary + LSI variants, semantic variation across intent angles. Penalise padded variants ("X cheap" + "cheap X" + "X cheap online").
+5. **eeat_signals** — E-E-A-T plan: trust signals (buyer protection, ratings, secure payments, refund policy), staff/expert voice, authoritative sourcing. Critical for marketplace.
+6. **faq_quality** — questions match real "People Also Ask"; answers grounded (no hallucinated specifics like "5-min delivery" without source).
+7. **meta_description** — 150-160 chars, includes primary keyword, has clear CTA, not over-stuffed
+8. **internal_links** — does the brief plan internal links (to related categories, pillar pages, supporting content)?
+
+After scoring, provide:
+- **strengths** (2-3): specific wins, cite section/FAQ. Example: "FAQ #3 'How long does delivery take?' matches a high-intent PAA query".
+- **weaknesses** (2-4): specific issues. Example: "Outline section 4 'How to Buy' is generic — needs marketplace-specific steps with seller comparison".
+- **suggestions** (3-6 prioritised): high = blocks publish, medium = polish before publish, low = nice-to-have.
+- **redflags**: copy of weaknesses (back-compat).
+- **reasoning**: 1-2 sentence overall verdict.
+
+Call submit_brief_review with all fields.`
 
   const res = await anthropic.messages.create({
     model:       MODEL,
@@ -368,14 +449,44 @@ In redflags, be specific — name the section, FAQ number, or keyword. Vague red
   const raw = toolUse.input as Record<string, unknown>
   const num = (v: unknown) => Math.max(0, Math.min(10, Math.round(Number(v) || 0)))
   const arr = (v: unknown) => Array.isArray(v) ? v.map(String) : []
+  const dim = (v: unknown): DimensionScore => {
+    const obj = (v ?? {}) as Record<string, unknown>
+    return { score: num(obj.score), comment: String(obj.comment ?? '') }
+  }
+  const sugg = (v: unknown): Suggestion[] => {
+    if (!Array.isArray(v)) return []
+    return v.map(item => {
+      const o = (item ?? {}) as Record<string, unknown>
+      const p = String(o.priority ?? 'medium')
+      const priority: Suggestion['priority'] = p === 'high' || p === 'low' ? p : 'medium'
+      return { priority, text: String(o.text ?? '') }
+    }).filter(s => s.text)
+  }
+
+  const dimensions = {
+    coverage:          dim(raw.coverage),
+    intent_match:      dim(raw.intent_match),
+    heading_structure: dim(raw.heading_structure),
+    keyword_strategy:  dim(raw.keyword_strategy),
+    eeat_signals:      dim(raw.eeat_signals),
+    faq_quality:       dim(raw.faq_quality),
+    meta_description:  dim(raw.meta_description),
+    internal_links:    dim(raw.internal_links),
+  }
 
   return {
-    coverage:          num(raw.coverage),
-    intent_match:      num(raw.intent_match),
-    keyword_grounding: num(raw.keyword_grounding),
-    faq_realism:       num(raw.faq_realism),
-    redflags:          arr(raw.redflags),
-    reasoning:         String(raw.reasoning ?? ''),
+    dimensions,
+    strengths:   arr(raw.strengths),
+    weaknesses:  arr(raw.weaknesses),
+    suggestions: sugg(raw.suggestions),
+    redflags:    arr(raw.redflags).length ? arr(raw.redflags) : arr(raw.weaknesses),
+    reasoning:   String(raw.reasoning ?? ''),
+
+    // Legacy flat scores — mirror new dimensions for back-compat
+    coverage:          dimensions.coverage.score,
+    intent_match:      dimensions.intent_match.score,
+    keyword_grounding: dimensions.keyword_strategy.score,
+    faq_realism:       dimensions.faq_quality.score,
   }
 }
 

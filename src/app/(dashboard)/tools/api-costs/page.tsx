@@ -23,6 +23,14 @@ interface BalanceData {
     total_output_tokens: number
     by_model:    { model: string; calls: number; cost_usd: number; input_tokens: number; output_tokens: number }[]
     by_endpoint: { endpoint: string; calls: number; cost_usd: number }[]
+    budget?: {
+      monthly_usd:    number | null
+      projected_usd:  number
+      pct_used:       number | null
+      pct_projected:  number | null
+      days_elapsed:   number
+      days_in_month:  number
+    }
     error?: string
   }
   checked_at: string
@@ -306,6 +314,30 @@ export default function ApiCostsPage() {
                       </div>
                     </div>
                     <p className="text-gray-500 text-[11px]">Computed from token logs × pricing table</p>
+
+                    {/* Budget tracker — only shown if ANTHROPIC_MONTHLY_BUDGET_USD env set */}
+                    {balance.anthropic.budget?.monthly_usd && balance.anthropic.budget.pct_used !== null && (
+                      <div className="pt-2 border-t border-purple-700/30">
+                        <div className="flex items-center justify-between text-[11px] mb-1">
+                          <span className="text-gray-400">Budget · ${balance.anthropic.budget.monthly_usd.toFixed(0)}/mo</span>
+                          <span className={
+                            balance.anthropic.budget.pct_projected != null && balance.anthropic.budget.pct_projected > 100 ? 'text-red-300' :
+                            balance.anthropic.budget.pct_projected != null && balance.anthropic.budget.pct_projected > 80  ? 'text-amber-300' : 'text-gray-400'
+                          }>
+                            {balance.anthropic.budget.pct_used}% used · projected {balance.anthropic.budget.pct_projected}%
+                          </span>
+                        </div>
+                        <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                          <div
+                            className={
+                              balance.anthropic.budget.pct_used > 100 ? 'h-full bg-red-500' :
+                              balance.anthropic.budget.pct_used > 80  ? 'h-full bg-amber-500' : 'h-full bg-purple-500'
+                            }
+                            style={{ width: `${Math.min(balance.anthropic.budget.pct_used, 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

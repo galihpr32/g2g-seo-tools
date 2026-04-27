@@ -29,10 +29,25 @@ export async function GET() {
     computeAnthropicSpend(db, ownerId),
   ])
 
+  // Budget: optional ANTHROPIC_MONTHLY_BUDGET_USD env var sets the cap
+  const budgetUsd = parseFloat(process.env.ANTHROPIC_MONTHLY_BUDGET_USD ?? '0') || null
+  const today    = new Date()
+  const daysInMonth = new Date(today.getUTCFullYear(), today.getUTCMonth() + 1, 0).getUTCDate()
+  const dayOfMonth  = today.getUTCDate()
+  const projected   = dayOfMonth > 0 ? (anthropicSpend.month_to_date_usd / dayOfMonth) * daysInMonth : 0
+  const budget = {
+    monthly_usd:       budgetUsd,
+    projected_usd:     Number(projected.toFixed(2)),
+    pct_used:          budgetUsd ? Number(((anthropicSpend.month_to_date_usd / budgetUsd) * 100).toFixed(1)) : null,
+    pct_projected:     budgetUsd ? Number(((projected / budgetUsd) * 100).toFixed(1)) : null,
+    days_elapsed:      dayOfMonth,
+    days_in_month:     daysInMonth,
+  }
+
   return NextResponse.json({
     dataforseo: dfsBalance,
     semrush:    semrushBalance,
-    anthropic:  anthropicSpend,
+    anthropic:  { ...anthropicSpend, budget },
     checked_at: new Date().toISOString(),
   })
 }

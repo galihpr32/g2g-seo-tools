@@ -12,6 +12,7 @@ interface AgentAction {
   priority: string
   status: string
   created_at: string
+  data?: Record<string, unknown> | null
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -415,7 +416,19 @@ export default function ApprovalQueueWidget({ userId }: ApprovalQueueWidgetProps
                 </div>
 
                 {/* Action buttons */}
-                <div className="flex gap-1.5 flex-shrink-0 mt-0.5">
+                <div className="flex gap-1.5 flex-shrink-0 mt-0.5 flex-wrap">
+                  {/* "View brief" link — only for regenerate_brief actions where Tyr has the brief_id */}
+                  {action.action_type === 'regenerate_brief' && typeof action.data?.brief_id === 'string' && (
+                    <a
+                      href={`/gsc/action-items/${action.data.brief_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1.5 rounded text-xs font-medium bg-purple-900/40 text-purple-300 border border-purple-700/40 hover:bg-purple-900/60 transition whitespace-nowrap"
+                      title="Open the failed brief in a new tab to review Tyr's full audit before approving regeneration"
+                    >
+                      ⚖️ View brief →
+                    </a>
+                  )}
                   <button
                     onClick={() => act(action.id, 'rejected')}
                     disabled={isProcessing}
