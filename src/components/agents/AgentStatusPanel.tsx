@@ -288,7 +288,30 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
-  const allAgents = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'vor', 'saga']
+  const AGENT_CATEGORIES: { label: string; description: string; cooldown: string; color: string; agents: string[] }[] = [
+    {
+      label:       'Detection',
+      description: 'Monitor, discover, and surface opportunities. Run first — their output feeds Execution agents.',
+      cooldown:    '3h cooldown',
+      color:       'text-blue-400 border-blue-800/40 bg-blue-950/20',
+      agents:      ['heimdall', 'odin', 'loki'],
+    },
+    {
+      label:       'Execution',
+      description: 'Act on detected signals — draft content, find outreach prospects, curate keyword maps.',
+      cooldown:    '1h cooldown',
+      color:       'text-green-400 border-green-800/40 bg-green-950/20',
+      agents:      ['bragi', 'hermod', 'saga'],
+    },
+    {
+      label:       'Review & Maintenance',
+      description: 'Quality-gate and self-tune the system. Run after Execution to keep quality high.',
+      cooldown:    '30min cooldown',
+      color:       'text-amber-400 border-amber-800/40 bg-amber-950/20',
+      agents:      ['tyr', 'vor'],
+    },
+  ]
+
   const agentMap = new Map((status?.agents || []).map(a => [a.key, a]))
 
   const formatTimeAgo = (iso: string | null) => {
@@ -324,9 +347,7 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     )
   }
 
-  return (
-    <div className="space-y-2">
-      {allAgents.map(key => {
+  function renderAgentCard(key: string) {
         const agent = agentMap.get(key)
         const pendingCount = status?.actionsByAgent[key] ?? 0
         const isImplemented = ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'tyr', 'vor', 'saga'].includes(key)
@@ -494,7 +515,29 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
             )}
           </div>
         )
-      })}
+  }
+
+  return (
+    <div className="space-y-8">
+      {AGENT_CATEGORIES.map(cat => (
+        <div key={cat.label}>
+          {/* Category header */}
+          <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl border mb-3 ${cat.color}`}>
+            <div>
+              <span className={`text-xs font-bold uppercase tracking-widest ${cat.color.split(' ')[0]}`}>
+                {cat.label}
+              </span>
+              <p className="text-gray-400 text-xs mt-0.5">{cat.description}</p>
+            </div>
+            <span className="text-[11px] text-gray-500 font-medium flex-shrink-0 ml-4">{cat.cooldown}</span>
+          </div>
+
+          {/* Agent cards in this category */}
+          <div className="space-y-2">
+            {cat.agents.map(key => renderAgentCard(key))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

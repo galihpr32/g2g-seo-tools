@@ -102,11 +102,18 @@ export async function POST(req: Request) {
   }
 
   // ── 4. Fire the run via existing endpoint ─────────────────────────────────
-  // Forward the user's session cookie so the run endpoint can authenticate.
+  // We use a race between the actual run fetch and a 7-second timeout.
+  // On Vercel Hobby plan the free-tier timeout is 10s per function invocation.
+  // The agent run is its own separate serverless function invocation — it
+  // continues running independently even after this function returns.
+  // So: if the agent completes within 7s we return the full result; otherwise
+  // we return "triggered" immediately and let the agent run in the background.
+  // The user can check Command Center for the result.
+
   const origin = req.headers.get('origin') ?? process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
   const cookie = req.headers.get('cookie') ?? ''
 
-  const runRes = await fetch(`${origin}/api/agents/${agentKey}/run`, {
+  const runFetch = fetch(`${origin}/api/agents/${agentKey}/run`, {
     method:  'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -115,6 +122,25 @@ export async function POST(req: Request) {
     body: JSON.stringify({ site: 'g2g' }),
   })
 
+  // Race: 7 s ceiling so this function returns well within Vercel's 10 s limit
+  const TIMEOUT_MS = 7_000
+  const timeoutSignal = new Promise<null>(resolve =>
+    setTimeout(() => resolve(null), TIMEOUT_MS)
+  )
+
+  const winner = await Promise.race([runFetch, timeoutSignal])
+
+  // ── Timed out — agent is still running in the background ─────────────────
+  if (winner === null) {
+    return NextResponse.json({
+      ok:    true,
+      agent: agentKey,
+      note:  `${agentKey} is running in the background (takes 10–60s). Check the Command Center in a minute for results and queued actions.`,
+    })
+  }
+
+  // ── Agent responded within 7 s ────────────────────────────────────────────
+  const runRes  = winner as Response
   const runData = await runRes.json().catch(() => ({})) as {
     runId?: string
     summary?: string
@@ -124,7 +150,7 @@ export async function POST(req: Request) {
 
   if (!runRes.ok) {
     return NextResponse.json(
-      { error: runData.error ?? `Agent run failed (${runRes.status})` },
+      { error: runData.error ?? `Agent run failed (HTTP ${runRes.status})` },
       { status: 500 }
     )
   }

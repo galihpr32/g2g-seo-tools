@@ -246,33 +246,68 @@ async function executeTool(
       }
 
       case 'get_action_items': {
-        const status = String(toolInput.status ?? 'all')
-        const limit  = Number(toolInput.limit  ?? 15)
+        const statusFilter = String(toolInput.status ?? 'all')
+        const limit        = Number(toolInput.limit  ?? 15)
 
-        const query = db
+        // agent_actions = the approval queue where agents write pending items.
+        // seo_action_items = the team's work tracker (populated when executor
+        //   approves an action). We query both so Mimir sees the full picture.
+
+        // 1. Pending items in the approval queue (agent_actions)
+        const { data: agentActions } = await db
+          .from('agent_actions')
+          .select('title, action_type, priority, status, agent_key, created_at')
+          .eq('owner_user_id', ownerId)
+          .in('status', ['pending'])
+          .order('created_at', { ascending: false })
+          .limit(limit)
+
+        // 2. Approved / in-progress / done items in the team work tracker
+        const teamQuery = db
           .from('seo_action_items')
           .select('title, action_type, status, priority, assigned_to, created_at, completed_at')
           .eq('owner_user_id', ownerId)
           .order('created_at', { ascending: false })
           .limit(limit)
 
-        if (status !== 'all') query.eq('status', status)
-
-        const { data } = await query
-        if (!data?.length) return `No action items found${status !== 'all' ? ` with status "${status}"` : ''}.`
-
-        const grouped = { pending: [] as typeof data, in_progress: [] as typeof data, done: [] as typeof data }
-        for (const item of data) {
-          if (item.status === 'pending')     grouped.pending.push(item)
-          else if (item.status === 'in_progress') grouped.in_progress.push(item)
-          else if (item.status === 'done')   grouped.done.push(item)
+        if (statusFilter === 'pending') {
+          // Only the approval queue — skip team tracker query
+        } else if (statusFilter !== 'all') {
+          teamQuery.eq('status', statusFilter)
         }
 
-        let result = `Action items (${data.length} total):\n`
-        if (grouped.pending.length)    result += `\n🟡 Pending (${grouped.pending.length}):\n` + grouped.pending.slice(0, 5).map(i => `• [${i.priority}] ${i.title}`).join('\n')
-        if (grouped.in_progress.length) result += `\n🔵 In Progress (${grouped.in_progress.length}):\n` + grouped.in_progress.slice(0, 5).map(i => `• [${i.priority}] ${i.title}`).join('\n')
-        if (grouped.done.length)       result += `\n✅ Done (${grouped.done.length} recent):\n` + grouped.done.slice(0, 3).map(i => `• ${i.title}`).join('\n')
-        return result
+        const { data: teamItems } = statusFilter === 'pending'
+          ? { data: [] as Array<{ title: string; action_type: string; status: string; priority: string; assigned_to?: string | null; created_at: string; completed_at?: string | null }> }
+          : await teamQuery
+
+        const pendingCount = agentActions?.length ?? 0
+        const teamCount    = teamItems?.length ?? 0
+
+        if (!pendingCount && !teamCount) {
+          return `No action items found${statusFilter !== 'all' ? ` with status "${statusFilter}"` : ''}. ` +
+            `Run Detection agents (Heimdall, Odin, Loki) to surface new opportunities.`
+        }
+
+        let result = ''
+
+        if (pendingCount > 0) {
+          result += `\n🟡 **Pending in Approval Queue** (${pendingCount} — needs review):\n`
+          result += (agentActions ?? []).slice(0, 8).map(i =>
+            `• [${i.agent_key}] [${i.priority}] ${i.title}`
+          ).join('\n')
+        }
+
+        if (teamCount > 0) {
+          const inProgress = (teamItems ?? []).filter(i => i.status === 'in_progress')
+          const done       = (teamItems ?? []).filter(i => i.status === 'done')
+          const pending    = (teamItems ?? []).filter(i => i.status === 'pending')
+
+          if (pending.length)    result += `\n\n📋 **Team Queue — Pending** (${pending.length}):\n` + pending.slice(0, 5).map(i => `• [${i.priority}] ${i.title}`).join('\n')
+          if (inProgress.length) result += `\n\n🔵 **Team Queue — In Progress** (${inProgress.length}):\n` + inProgress.slice(0, 5).map(i => `• [${i.priority}] ${i.title}`).join('\n')
+          if (done.length)       result += `\n\n✅ **Done recently** (${done.length}):\n` + done.slice(0, 3).map(i => `• ${i.title}`).join('\n')
+        }
+
+        return `Action items summary (${pendingCount} pending approval · ${teamCount} in team tracker):\n${result}`
       }
 
       case 'get_competitor_sov': {
@@ -357,18 +392,19 @@ async function executeTool(
         const agent = String(toolInput.agent ?? 'all')
         const limit = Number(toolInput.limit ?? 5)
 
-        const query = db
+        // agent_runs uses started_at (not created_at) as the primary timestamp
+        const runsQuery = db
           .from('agent_runs')
-          .select('agent_key, status, summary, findings_count, actions_queued, created_at, finished_at')
+          .select('agent_key, status, summary, findings_count, actions_queued, started_at, finished_at')
           .eq('owner_user_id', ownerId)
-          .order('created_at', { ascending: false })
+          .order('started_at', { ascending: false })
           .limit(agent === 'all' ? limit * 5 : limit)
 
-        if (agent !== 'all') query.eq('agent_key', agent)
+        if (agent !== 'all') runsQuery.eq('agent_key', agent)
 
-        const { data: runs } = await query
+        const { data: runs } = await runsQuery
 
-        // Also get pending actions
+        // Pending actions in the approval queue
         const { data: pendingActions } = await db
           .from('agent_actions')
           .select('agent_key, action_type, title, priority, status')
@@ -377,31 +413,47 @@ async function executeTool(
           .order('created_at', { ascending: false })
           .limit(10)
 
-        if (!runs?.length) return `No agent run history found${agent !== 'all' ? ` for ${agent}` : ''}.`
-
         const AGENT_NAMES: Record<string, string> = {
           heimdall: 'Heimdall (Monitoring)', odin: 'Odin (Trends)',
           loki: 'Loki (Competitive)', bragi: 'Bragi (Content)', hermod: 'Hermod (Outreach)',
-          saga: 'Saga (Content Briefs)', tyr: 'Tyr (Action Review)', vor: 'Vor (Audit)',
+          saga: 'Saga (Content Briefs)', tyr: 'Tyr (Quality Review)', vor: 'Vor (Audit)',
         }
 
-        let result = `Recent agent activity:\n\n`
-        for (const run of runs.slice(0, limit)) {
-          const name = AGENT_NAMES[run.agent_key] ?? run.agent_key
-          const when = new Date(run.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-          result += `**${name}** — ${when} [${run.status}]\n${run.summary ?? 'No summary'}\n`
-          if (run.findings_count) result += `Findings: ${run.findings_count} · Actions queued: ${run.actions_queued}\n`
-          result += '\n'
+        // If no run history AND no pending actions → explain why
+        if (!runs?.length && !pendingActions?.length) {
+          return agent !== 'all'
+            ? `No run history found for ${AGENT_NAMES[agent] ?? agent}. Trigger it from the Command Center or via Mimir.`
+            : `No agent run history found. Trigger Detection agents (Heimdall, Odin, Loki) to start the pipeline. ` +
+              `Say "run Heimdall" or "trigger Loki" to kick one off.`
+        }
+
+        let result = ''
+
+        if (runs?.length) {
+          result += `Recent agent activity:\n\n`
+          for (const run of runs.slice(0, limit)) {
+            const name = AGENT_NAMES[run.agent_key] ?? run.agent_key
+            const when = run.started_at
+              ? new Date(run.started_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+              : 'unknown'
+            const statusEmoji = run.status === 'success' ? '✅' : run.status === 'running' ? '⏳' : run.status === 'partial' ? '⚠️' : '❌'
+            result += `**${name}** — ${when} ${statusEmoji} [${run.status}]\n${run.summary ?? 'No summary'}\n`
+            if (run.findings_count || run.actions_queued) {
+              result += `Findings: ${run.findings_count ?? 0} · Actions queued: ${run.actions_queued ?? 0}\n`
+            }
+            result += '\n'
+          }
         }
 
         if (pendingActions?.length) {
-          result += `\nPending actions waiting for approval (${pendingActions.length}):\n`
-          result += pendingActions.slice(0, 5).map(a =>
-            `• [${a.agent_key}] [${a.priority}] ${a.title}`
+          result += `\n📋 Pending in approval queue (${pendingActions.length} item${pendingActions.length !== 1 ? 's' : ''}):\n`
+          result += pendingActions.slice(0, 8).map(a =>
+            `• [${AGENT_NAMES[a.agent_key] ?? a.agent_key}] [${a.priority}] ${a.title}`
           ).join('\n')
+          result += '\n\nReview and approve in the **Command Center → Approval Queue**.'
         }
 
-        return result
+        return result.trim() || 'No agent activity to report.'
       }
 
       case 'get_content_opportunities': {

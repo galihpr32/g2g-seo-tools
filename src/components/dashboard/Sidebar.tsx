@@ -90,6 +90,81 @@ const navItems = [
 const KNOWN_SITE_SLUGS = ['g2g', 'offgamers']
 const STORAGE_KEY = 'sidebar-collapsed-groups'
 
+// ── Tour launcher with per-role shortcuts ────────────────────────────────────
+const TOUR_ROLES = [
+  { id: 'seo_manager', label: 'SEO Manager', icon: '🎯' },
+  { id: 'writer',      label: 'Writer',       icon: '✍️' },
+  { id: 'executive',   label: 'Executive',    icon: '📊' },
+] as const
+
+function TourLauncher() {
+  const [open, setOpen] = useState(false)
+
+  function launchAs(roleId: string) {
+    localStorage.removeItem('onboarding-completed')
+    localStorage.setItem('onboarding-role', roleId)
+    setOpen(false)
+    window.location.reload()
+  }
+
+  return (
+    <div className="relative">
+      {/* Role dropdown (opens above) */}
+      {open && (
+        <>
+          {/* Backdrop to close */}
+          <div
+            className="fixed inset-0 z-10"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute bottom-full left-0 right-0 mb-1 z-20 bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-500 px-3 pt-2.5 pb-1.5">
+              Preview as role
+            </p>
+            {TOUR_ROLES.map(role => (
+              <button
+                key={role.id}
+                onClick={() => launchAs(role.id)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700/60 transition text-left"
+              >
+                <span className="text-base leading-none">{role.icon}</span>
+                {role.label}
+              </button>
+            ))}
+            <div className="border-t border-gray-700/50 mt-1">
+              <button
+                onClick={() => {
+                  localStorage.removeItem('onboarding-completed')
+                  localStorage.removeItem('onboarding-role')
+                  setOpen(false)
+                  window.location.reload()
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/40 transition text-left"
+              >
+                ↺ Reset role + restart
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Main button */}
+      <button
+        onClick={() => setOpen(prev => !prev)}
+        className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm text-gray-500 hover:text-gray-300 hover:bg-gray-800/60 transition"
+      >
+        <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span className="flex-1 text-left">Restart tour</span>
+        <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
 export default function Sidebar() {
   const pathname = usePathname()
   const router   = useRouter()
@@ -275,8 +350,10 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Sign out */}
-      <div className="px-3 py-4 border-t border-gray-800">
+      {/* Sign out + Tour */}
+      <div className="px-3 py-4 border-t border-gray-800 space-y-1">
+        {/* Tour launcher — click main button OR pick a role directly */}
+        <TourLauncher />
         <button
           onClick={handleSignOut}
           className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition"

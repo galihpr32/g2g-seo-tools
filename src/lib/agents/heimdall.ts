@@ -113,25 +113,33 @@ export async function runHeimdall(
   const warnings: string[] = []
 
   try {
-    // 0. Trigger GSC sync to refresh upstream comparison
+    // 0. Best-effort GSC sync — hard-capped at 4 s so Heimdall stays within
+    //    Vercel Hobby's 10 s function limit. The gsc-daily cron runs at 1am UTC
+    //    and keeps data fresh; manual triggers just use whatever is cached.
     try {
       const appUrl     = process.env.NEXT_PUBLIC_APP_URL
       const cronSecret = process.env.CRON_SECRET
       if (appUrl && cronSecret) {
-        console.log('[heimdall] Triggering GSC sync before analysis…')
+        const controller = new AbortController()
+        const syncTimer  = setTimeout(() => controller.abort(), 4_000)
+        console.log('[heimdall] Attempting quick GSC sync (4 s cap)…')
         const syncRes = await fetch(`${appUrl}/api/cron/gsc-daily`, {
           headers: { Authorization: `Bearer ${cronSecret}` },
-        })
+          signal:  controller.signal,
+        }).finally(() => clearTimeout(syncTimer))
         if (!syncRes.ok) {
-          warnings.push(`GSC sync returned ${syncRes.status} (used cached data)`)
+          warnings.push(`GSC sync returned ${syncRes.status} — using cached data`)
         } else {
-          console.log('[heimdall] GSC sync completed.')
+          console.log('[heimdall] GSC sync completed within deadline.')
         }
       }
     } catch (syncErr) {
       const msg = syncErr instanceof Error ? syncErr.message : String(syncErr)
-      warnings.push(`GSC sync failed: ${msg} (used cached data)`)
-      console.warn('[heimdall] GSC sync failed:', syncErr)
+      // AbortError is expected on cap; log others
+      if ((syncErr as Error).name !== 'AbortError') {
+        console.warn('[heimdall] GSC sync failed:', syncErr)
+      }
+      warnings.push(`GSC sync skipped: ${msg} — using cached data`)
     }
 
     // 1. GSC connection

@@ -280,17 +280,31 @@ export default function AIAssistant() {
   async function handleConfirm(token: string, agentLabel: string) {
     setUsedTokens(prev => new Set([...prev, token]))
     try {
-      const res  = await fetch('/api/ai/confirm-agent-run', {
+      const res = await fetch('/api/ai/confirm-agent-run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmation_token: token }),
       })
-      const data = await res.json() as {
-        ok?: boolean; agent?: string; run_id?: string; summary?: string
-        actionsQueued?: number; error?: string
+
+      // Always read as text first — Vercel can return HTML on timeout/error
+      const text = await res.text()
+      let data: { ok?: boolean; agent?: string; run_id?: string; summary?: string; actionsQueued?: number; error?: string; note?: string } = {}
+      try { data = JSON.parse(text) } catch {
+        // Non-JSON response (e.g. Vercel 504 HTML) — treat as a background trigger
+        appendMessage('assistant',
+          `⚙️ **${agentLabel}** triggered — running in the background.\n` +
+          `Check the **Command Center** in a minute for results and queued actions.`
+        )
+        return
       }
+
       if (!res.ok || !data.ok) {
         appendMessage('assistant', `✗ Could not trigger ${agentLabel}: ${data.error ?? 'Unknown error'}`)
+      } else if (data.note) {
+        // Background-run case (returned within 7s but no full result yet)
+        appendMessage('assistant',
+          `⚙️ **${agentLabel}** triggered — running in the background.\n${data.note}`
+        )
       } else {
         const parts = [`✓ **${agentLabel}** triggered successfully.`]
         if (data.run_id)        parts.push(`Run ID: \`${data.run_id}\``)
@@ -299,7 +313,10 @@ export default function AIAssistant() {
         appendMessage('assistant', parts.join('\n'))
       }
     } catch (e) {
-      appendMessage('assistant', `✗ Network error triggering ${agentLabel}: ${String(e)}`)
+      appendMessage('assistant',
+        `⚙️ **${agentLabel}** may be running in the background — the request timed out locally.\n` +
+        `Check the **Command Center** in a minute. (Detail: ${String(e)})`
+      )
     }
   }
 
