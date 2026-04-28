@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { getRefreshedClient } from '@/lib/gsc/auth'
+import { getRefreshedClientFull, getRefreshedClient } from '@/lib/gsc/auth'
 import {
   getSearchAnalytics,
   getDateRange,
@@ -39,7 +39,19 @@ export async function GET(request: Request) {
 
   for (const conn of connections) {
     try {
-      const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
+      const { client: auth, newCredentials } = await getRefreshedClientFull(
+        conn.access_token, conn.refresh_token, conn.expires_at
+      )
+
+      // Persist refreshed token so future cold starts don't see an expired token
+      if (newCredentials) {
+        await supabase.from('gsc_connections').update({
+          access_token: newCredentials.accessToken,
+          expires_at:   newCredentials.expiresAt,
+          updated_at:   new Date().toISOString(),
+        }).eq('user_id', conn.user_id)
+      }
+
       const siteUrl = conn.site_url
       const today = getDateRange(0)
 

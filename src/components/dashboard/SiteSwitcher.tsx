@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { getSiteSlugFromPath } from '@/lib/sites'
 
@@ -33,6 +33,13 @@ export default function SiteSwitcher() {
     setOpen(false)
     if (slug === currentSlug) return
 
+    // Persist active site so server-side (OAuth callback, API routes) knows which site
+    // the user is working on. Both cookie (server-readable) and localStorage (client-readable).
+    try {
+      document.cookie = `active-site=${slug}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`
+      localStorage.setItem('active-site', slug)
+    } catch { /* ignore */ }
+
     // Strip the current site prefix if present, then prepend new site
     let base = pathname
     const slugs = SITES.map(s => s.slug)
@@ -47,6 +54,15 @@ export default function SiteSwitcher() {
 
     router.push(target)
   }
+
+  // On mount: stamp the cookie so server-side always knows the active site
+  // even when the user hasn't explicitly switched (first load, etc.)
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('active-site') ?? currentSite.slug
+      document.cookie = `active-site=${stored}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`
+    } catch { /* ignore */ }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="relative px-3 pb-3">

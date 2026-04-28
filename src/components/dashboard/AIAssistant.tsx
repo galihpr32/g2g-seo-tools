@@ -175,6 +175,23 @@ function ConfirmCard({
   )
 }
 
+const STORAGE_KEY = 'mimir-chat-history'
+
+function loadMessages(): Message[] {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    if (!raw) return []
+    return JSON.parse(raw) as Message[]
+  } catch { return [] }
+}
+
+function saveMessages(msgs: Message[]) {
+  try {
+    // Keep at most last 40 messages so sessionStorage doesn't grow unbounded
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(msgs.slice(-40)))
+  } catch { /* ignore quota errors */ }
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export default function AIAssistant() {
   const pathname = usePathname()
@@ -184,9 +201,23 @@ export default function AIAssistant() {
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
   // Track which tokens have been acted on (to disable buttons after first click)
-  const [usedTokens, setUsedTokens] = useState<Set<string>>(new Set())
+  const [usedTokens,  setUsedTokens]  = useState<Set<string>>(new Set())
+  const [hydrated, setHydrated] = useState(false)
   const bottomRef  = useRef<HTMLDivElement>(null)
   const inputRef   = useRef<HTMLTextAreaElement>(null)
+
+  // Restore chat history from sessionStorage after mount (avoid SSR mismatch)
+  useEffect(() => {
+    const saved = loadMessages()
+    if (saved.length > 0) setMessages(saved)
+    setHydrated(true)
+  }, [])
+
+  // Persist messages whenever they change
+  useEffect(() => {
+    if (!hydrated) return
+    saveMessages(messages)
+  }, [messages, hydrated])
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -271,7 +302,12 @@ export default function AIAssistant() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   }
 
-  function clearChat() { setMessages([]); setError(null); setUsedTokens(new Set()) }
+  function clearChat() {
+    setMessages([])
+    setError(null)
+    setUsedTokens(new Set())
+    try { sessionStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+  }
 
   return (
     <>

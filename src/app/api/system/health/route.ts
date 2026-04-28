@@ -119,7 +119,12 @@ export async function GET() {
       lastRun:  latestSchedulerRun ?? null,
       schedule: 'GitHub Actions · every 30 min',
       ok:       latestSchedulerRun ? (now - new Date(latestSchedulerRun).getTime()) < 90 * 60 * 1000 : false,
-      note:     latestSchedulerRun ? '' : 'No agent_runs in last 24h — scheduler may be silent',
+      note:     latestSchedulerRun
+        ? ''
+        : 'Vercel Hobby plan only allows daily cron expressions, so this scheduler runs via GitHub Actions (every 30 min). ' +
+          'If stale: (1) check repo Settings → Secrets that APP_URL and CRON_SECRET are set, ' +
+          '(2) open GitHub Actions tab → "Agents Scheduler" → Enable workflow if disabled, ' +
+          '(3) click "Run workflow" to trigger manually.',
     },
     {
       name:     'weekly-report-generator',
