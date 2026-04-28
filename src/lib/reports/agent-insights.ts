@@ -108,7 +108,7 @@ export async function getAgentInsights(
   const endIso   = `${windowEnd}T23:59:59`
 
   // Pull everything in parallel
-  const [runsRes, actionsRes, briefsRes] = await Promise.all([
+  const [runsRes, actionsRes, briefsRes, exclusionsRes] = await Promise.all([
     db
       .from('agent_runs')
       .select('id, agent_key, status, started_at, finished_at, actions_queued, findings_count')
@@ -128,6 +128,11 @@ export async function getAgentInsights(
       .gte('tyr_reviewed_at', startIso)
       .lte('tyr_reviewed_at', endIso)
       .not('tyr_score', 'is', null),
+    // Keyword exclusions — used to filter Loki gap highlights
+    db
+      .from('keyword_exclusions')
+      .select('pattern, match_type')
+      .eq('owner_user_id', ownerId),
   ])
 
   if (runsRes.error)    insights.warnings.push(`agent_runs query failed: ${runsRes.error.message}`)
@@ -137,6 +142,17 @@ export async function getAgentInsights(
   const runs    = (runsRes.data    ?? []) as Array<{ agent_key: string; status: string; actions_queued: number | null; findings_count: number | null }>
   const actions = (actionsRes.data ?? []) as Array<{ agent_key: string; action_type: string; status: string; priority: string | null; data: Record<string, unknown> | null }>
   const briefs  = (briefsRes.data  ?? []) as Array<{ tyr_score: number | null; tyr_status: string | null }>
+
+  // Build keyword exclusion checker
+  const exclusionPatterns = (exclusionsRes.data ?? []) as Array<{ pattern: string; match_type: string }>
+  const isExcludedKeyword = (kw: string): boolean => {
+    const k = kw.toLowerCase()
+    return exclusionPatterns.some(ex => {
+      const p = ex.pattern.toLowerCase()
+      if (ex.match_type === 'exact') return k === p
+      return k.includes(p)  // 'contains' (default)
+    })
+  }
 
   // ── Totals ────────────────────────────────────────────────────────────────
   insights.totals.runs = runs.length
@@ -192,7 +208,7 @@ export async function getAgentInsights(
     .sort((a, b) => (b.metric ?? 0) - (a.metric ?? 0))
     .slice(0, 5)
 
-  // Loki: top competitive gaps
+  // Loki: top competitive gaps — filter out excluded keywords (brand terms etc.)
   const lokiActions = actions.filter(a => a.agent_key === 'loki')
   insights.highlights.lokiGaps = lokiActions
     .map(a => {
@@ -208,7 +224,7 @@ export async function getAgentInsights(
         agent:  'loki',
       }
     })
-    .filter(h => h.title)
+    .filter(h => h.title && !isExcludedKeyword(h.title))
     .sort((a, b) => (b.metric ?? 0) - (a.metric ?? 0))
     .slice(0, 5)
 

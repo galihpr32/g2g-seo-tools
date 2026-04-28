@@ -434,11 +434,14 @@ export async function POST(req: Request) {
         const kwCount = new Map<string, number>()
         for (const snap of latestByKeyword.values()) {
           const vol = snap.search_volume ?? 0
-          const results = (snap.results ?? []) as { domain?: string; rank_absolute?: number }[]
+          // Support both storage formats:
+          // SERP tracker stores: { domain, position, url, title }
+          // Legacy format may use: { domain, rank_absolute }
+          const results = (snap.results ?? []) as { domain?: string; position?: number; rank_absolute?: number }[]
           for (const r of results) {
             if (!r.domain) continue
             const dom = normalizeDomain(r.domain)
-            const pos = r.rank_absolute ?? 99
+            const pos = r.position ?? r.rank_absolute ?? 99
             const ctr = CTR_CURVE[pos] ?? 0
             rawSov.set(dom, (rawSov.get(dom) ?? 0) + ctr * vol)
             kwCount.set(dom, (kwCount.get(dom) ?? 0) + 1)

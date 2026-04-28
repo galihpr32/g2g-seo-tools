@@ -44,37 +44,54 @@ const ROLES: { id: Role; label: string; icon: string; description: string }[] = 
 const AGENT_CATEGORIES = [
   {
     label:       'Detection',
+    step:        'Step 1',
     color:       'text-blue-400 border-blue-800/40 bg-blue-950/20',
     dot:         'bg-blue-400',
     cooldown:    '3h cooldown',
-    description: 'Monitor signals, discover opportunities, surface data.',
+    description: 'Monitor, discover, and surface opportunities.',
+    connector:   null,
     agents: [
-      { key: 'heimdall', name: 'Heimdall', desc: 'Watches for ranking drops & click anomalies' },
-      { key: 'odin',     name: 'Odin',     desc: 'Scans GSC for underperforming pages' },
-      { key: 'loki',     name: 'Loki',     desc: 'Detects keyword cannibalization & gaps' },
+      { key: 'heimdall', name: 'Heimdall', desc: 'Ranking drops & click anomalies' },
+      { key: 'odin',     name: 'Odin',     desc: 'Trending topics & content gaps' },
+      { key: 'loki',     name: 'Loki',     desc: 'Competitor keyword gaps & SOV' },
+    ],
+  },
+  {
+    label:       'Triage',
+    step:        'Step 2',
+    color:       'text-amber-400 border-amber-800/40 bg-amber-950/20',
+    dot:         'bg-amber-400',
+    cooldown:    '30min cooldown',
+    description: 'Validate the action queue before execution agents act on it.',
+    connector:   'findings fill queue →',
+    agents: [
+      { key: 'tyr', name: 'Tyr', desc: 'Scores & gates what reaches Execution' },
     ],
   },
   {
     label:       'Execution',
+    step:        'Step 3',
     color:       'text-green-400 border-green-800/40 bg-green-950/20',
     dot:         'bg-green-400',
     cooldown:    '1h cooldown',
-    description: 'Act on detected signals — generate briefs, sync data, build links.',
+    description: 'Act on approved signals — draft content, outreach, curate maps.',
+    connector:   'Tyr approves →',
     agents: [
       { key: 'bragi',  name: 'Bragi',  desc: 'Generates optimised content briefs' },
-      { key: 'hermod', name: 'Hermod', desc: 'Distributes tasks and syncs calendars' },
-      { key: 'saga',   name: 'Saga',   desc: 'Aggregates performance data & trends' },
+      { key: 'hermod', name: 'Hermod', desc: 'Finds prospects & drafts outreach' },
+      { key: 'saga',   name: 'Saga',   desc: 'Curates keyword clusters & coverage' },
     ],
   },
   {
-    label:       'Review & Maintenance',
-    color:       'text-amber-400 border-amber-800/40 bg-amber-950/20',
-    dot:         'bg-amber-400',
+    label:       'Audit',
+    step:        'Step 4',
+    color:       'text-purple-400 border-purple-800/40 bg-purple-950/20',
+    dot:         'bg-purple-400',
     cooldown:    '30min cooldown',
-    description: 'Quality-gate and self-tune the system.',
+    description: 'Post-execution quality gate — tunes thresholds based on what worked.',
+    connector:   'output produced →',
     agents: [
-      { key: 'tyr', name: 'Tyr', desc: 'Scores briefs; auto-promotes or flags for revision' },
-      { key: 'vor', name: 'Vor', desc: 'Monitors published content for ranking changes' },
+      { key: 'vor', name: 'Vor', desc: 'Tunes thresholds based on approval patterns' },
     ],
   },
 ]
@@ -311,6 +328,50 @@ function ConnectionBadge({ status }: { status?: 'connected' | 'expired' | 'missi
 }
 
 function Step2({ status, loading }: { status: ConnectionStatus | null; loading: boolean }) {
+  const allConnected = status?.gsc === 'connected' && status?.ga4 === 'connected'
+
+  // If everything is connected — show a clean "all good" state
+  if (!loading && allConnected) {
+    return (
+      <div className="space-y-5">
+        <div className="flex flex-col items-center justify-center py-6 text-center gap-3">
+          <div className="w-14 h-14 rounded-full bg-green-900/30 border border-green-700/40 flex items-center justify-center">
+            <svg className="w-7 h-7 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-white font-semibold">Both data sources are connected</p>
+            <p className="text-gray-400 text-sm mt-1">
+              Google Search Console and GA4 are live. Tokens are refreshed automatically — nothing to do here.
+            </p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          {[
+            { icon: '🔍', label: 'Google Search Console', desc: 'Rankings, clicks, impressions, index coverage' },
+            { icon: '📈', label: 'Google Analytics 4',     desc: 'Organic traffic, sessions, content performance' },
+          ].map(item => (
+            <div key={item.label} className="flex items-center gap-3 px-4 py-3 bg-green-950/20 border border-green-800/30 rounded-xl">
+              <span className="text-xl">{item.icon}</span>
+              <div>
+                <p className="text-sm font-medium text-gray-200">{item.label}</p>
+                <p className="text-xs text-gray-500">{item.desc}</p>
+              </div>
+              <span className="ml-auto flex items-center gap-1.5 text-xs font-medium text-green-400 flex-shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                Connected
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-gray-600 text-center">
+          Reconnect anytime from <Link href="/settings" className="text-gray-500 hover:text-gray-300 underline underline-offset-2">Settings</Link>.
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-5">
       <p className="text-gray-400 text-sm leading-relaxed">
@@ -414,33 +475,30 @@ function PipelineArrow({ label }: { label: string }) {
 }
 
 function Step3() {
-  // Ordered pipeline: Detection → Tyr validates → Execution → Vor audits
-  const PIPELINE: { cat: typeof AGENT_CATEGORIES[0]; connector?: string }[] = [
-    { cat: AGENT_CATEGORIES[0] },                                             // Detection
-    { cat: { ...AGENT_CATEGORIES[2], agents: [AGENT_CATEGORIES[2].agents[0]] }, connector: 'findings enter queue → Tyr validates' }, // Tyr only
-    { cat: AGENT_CATEGORIES[1], connector: 'approved items trigger' },        // Execution
-    { cat: { ...AGENT_CATEGORIES[2], agents: [AGENT_CATEGORIES[2].agents[1]] }, connector: 'results audited by' }, // Vor only
-  ]
-
   return (
     <div className="space-y-4">
       <p className="text-gray-400 text-sm leading-relaxed">
-        Eight agents run in three layers — each layer feeds the next. The flow always goes
-        Detection → Validate → Execute → Audit.
+        Eight agents run in four ordered stages. Each stage feeds the next — nothing jumps ahead.
       </p>
 
       <div>
-        {PIPELINE.map(({ cat, connector }, i) => (
-          <div key={`${cat.label}-${i}`}>
-            {/* Pipeline connector arrow */}
-            {connector && <PipelineArrow label={connector} />}
+        {AGENT_CATEGORIES.map((cat, i) => (
+          <div key={cat.label}>
+            {/* Inter-stage connector */}
+            {cat.connector && <PipelineArrow label={cat.connector} />}
 
             {/* Category header */}
             <div className={`flex items-center justify-between px-3 py-2 rounded-lg border mb-2 ${cat.color}`}>
               <div>
-                <span className={`text-[11px] font-bold uppercase tracking-widest ${cat.color.split(' ')[0]}`}>
-                  {cat.label}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-bold uppercase tracking-widest ${cat.color.split(' ')[0]}`}>
+                    {cat.step}
+                  </span>
+                  <span className="text-gray-600 text-[10px]">·</span>
+                  <span className={`text-[11px] font-bold uppercase tracking-widest ${cat.color.split(' ')[0]}`}>
+                    {cat.label}
+                  </span>
+                </div>
                 <p className="text-gray-400 text-xs mt-0.5">{cat.description}</p>
               </div>
               <span className="text-[11px] text-gray-500 font-medium flex-shrink-0 ml-3">{cat.cooldown}</span>
@@ -449,7 +507,7 @@ function Step3() {
             {/* Agent pills */}
             <div className="flex flex-wrap gap-2 pl-1 mb-1">
               {cat.agents.map(agent => (
-                <div key={agent.key} className="flex items-start gap-2 px-3 py-2 bg-gray-800/40 border border-gray-700 rounded-lg flex-1 min-w-[150px]">
+                <div key={agent.key} className="flex items-start gap-2 px-3 py-2 bg-gray-800/40 border border-gray-700 rounded-lg flex-1 min-w-[140px]">
                   <span className={`w-1.5 h-1.5 rounded-full ${cat.dot} mt-1.5 flex-shrink-0`} />
                   <div>
                     <p className="text-xs font-semibold text-gray-200">{agent.name}</p>
@@ -458,14 +516,19 @@ function Step3() {
                 </div>
               ))}
             </div>
+
+            {/* Small spacer between categories (not after last) */}
+            {i < AGENT_CATEGORIES.length - 1 && !AGENT_CATEGORIES[i + 1].connector && (
+              <div className="h-1" />
+            )}
           </div>
         ))}
       </div>
 
       <div className="p-3 bg-gray-800/30 border border-gray-700/50 rounded-lg">
         <p className="text-xs text-gray-500 leading-relaxed">
-          <span className="text-gray-400 font-medium">Command Center →</span> See each agent's
-          last run, output, and health. Ask Mimir to "run Heimdall" or "trigger Loki" to start.
+          <span className="text-gray-400 font-medium">Command Center →</span> Run individual agents
+          or click <em>Run Detection</em> / <em>Run Execution</em> to trigger a whole stage at once.
         </p>
       </div>
     </div>

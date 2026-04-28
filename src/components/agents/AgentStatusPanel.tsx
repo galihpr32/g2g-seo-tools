@@ -271,6 +271,10 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
   }
 
+  const handleRunCategory = async (agents: string[]) => {
+    await Promise.all(agents.map(key => handleRunAgent(key)))
+  }
+
   const handleSavePakRTConfig = async () => {
     setSavingConfig(true)
     try {
@@ -288,27 +292,51 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }
   }
 
-  const AGENT_CATEGORIES: { label: string; description: string; cooldown: string; color: string; agents: string[] }[] = [
+  // Correct pipeline order: Detection → Triage → Execution → Audit
+  const AGENT_CATEGORIES: {
+    label: string; description: string; pipelineNote: string
+    cooldown: string; color: string; btnColor: string; agents: string[]
+    runLabel: string
+  }[] = [
     {
-      label:       'Detection',
-      description: 'Monitor, discover, and surface opportunities. Run first — their output feeds Execution agents.',
-      cooldown:    '3h cooldown',
-      color:       'text-blue-400 border-blue-800/40 bg-blue-950/20',
-      agents:      ['heimdall', 'odin', 'loki'],
+      label:        'Detection',
+      description:  'Monitor, discover, and surface opportunities.',
+      pipelineNote: 'Step 1 — fills the action queue for Triage to review',
+      cooldown:     '3h cooldown',
+      color:        'text-blue-400 border-blue-800/40 bg-blue-950/20',
+      btnColor:     'bg-blue-700 hover:bg-blue-600',
+      agents:       ['heimdall', 'odin', 'loki'],
+      runLabel:     'Run Detection',
     },
     {
-      label:       'Execution',
-      description: 'Act on detected signals — draft content, find outreach prospects, curate keyword maps.',
-      cooldown:    '1h cooldown',
-      color:       'text-green-400 border-green-800/40 bg-green-950/20',
-      agents:      ['bragi', 'hermod', 'saga'],
+      label:        'Triage',
+      description:  'Validate the action queue before execution agents act on it.',
+      pipelineNote: 'Step 2 — Tyr scores & gates what reaches Execution',
+      cooldown:     '30min cooldown',
+      color:        'text-amber-400 border-amber-800/40 bg-amber-950/20',
+      btnColor:     'bg-amber-700 hover:bg-amber-600',
+      agents:       ['tyr'],
+      runLabel:     'Run Triage',
     },
     {
-      label:       'Review & Maintenance',
-      description: 'Quality-gate and self-tune the system. Run after Execution to keep quality high.',
-      cooldown:    '30min cooldown',
-      color:       'text-amber-400 border-amber-800/40 bg-amber-950/20',
-      agents:      ['tyr', 'vor'],
+      label:        'Execution',
+      description:  'Act on Triage-approved signals — draft content, outreach, curate keyword maps.',
+      pipelineNote: 'Step 3 — runs after Tyr has validated the queue',
+      cooldown:     '1h cooldown',
+      color:        'text-green-400 border-green-800/40 bg-green-950/20',
+      btnColor:     'bg-green-700 hover:bg-green-600',
+      agents:       ['bragi', 'hermod', 'saga'],
+      runLabel:     'Run Execution',
+    },
+    {
+      label:        'Audit',
+      description:  'Post-execution quality gate — tunes thresholds based on what worked.',
+      pipelineNote: 'Step 4 — runs last, after Execution agents have produced output',
+      cooldown:     '30min cooldown',
+      color:        'text-purple-400 border-purple-800/40 bg-purple-950/20',
+      btnColor:     'bg-purple-700 hover:bg-purple-600',
+      agents:       ['vor'],
+      runLabel:     'Run Audit',
     },
   ]
 
@@ -523,13 +551,23 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
         <div key={cat.label}>
           {/* Category header */}
           <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl border mb-3 ${cat.color}`}>
-            <div>
+            <div className="flex-1 min-w-0">
               <span className={`text-xs font-bold uppercase tracking-widest ${cat.color.split(' ')[0]}`}>
                 {cat.label}
               </span>
               <p className="text-gray-400 text-xs mt-0.5">{cat.description}</p>
+              <p className="text-gray-600 text-[11px] mt-0.5 italic">{cat.pipelineNote}</p>
             </div>
-            <span className="text-[11px] text-gray-500 font-medium flex-shrink-0 ml-4">{cat.cooldown}</span>
+            <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+              <span className="text-[11px] text-gray-500 font-medium">{cat.cooldown}</span>
+              <button
+                onClick={() => handleRunCategory(cat.agents)}
+                disabled={cat.agents.some(k => running.has(k))}
+                className={`px-3 py-1.5 rounded text-xs font-semibold text-white transition disabled:opacity-50 whitespace-nowrap ${cat.btnColor}`}
+              >
+                {cat.agents.some(k => running.has(k)) ? 'Running...' : cat.runLabel}
+              </button>
+            </div>
           </div>
 
           {/* Agent cards in this category */}
