@@ -147,8 +147,10 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     vor:  EXTRA_CONFIG_DEFAULTS.vor,
     saga: EXTRA_CONFIG_DEFAULTS.saga,
   })
-  const [savingExtra, setSavingExtra] = useState<string | null>(null)
-  const [extraSaved, setExtraSaved] = useState<string | null>(null)
+  const [savingExtra, setSavingExtra]     = useState<string | null>(null)
+  const [extraSaved,  setExtraSaved]      = useState<string | null>(null)
+  const [aggregating, setAggregating]     = useState(false)
+  const [aggregateNote, setAggregateNote] = useState<string | null>(null)
 
   const fetchStatus = async () => {
     try {
@@ -244,49 +246,84 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     }))
   }
 
-  const handleRunAgent = async (key: string) => {
+  /**
+   * Run a single agent and return a Promise that resolves when the agent
+   * finishes (or times out after ~2 min). This makes handleRunCategory
+   * able to await all agents before triggering the aggregator.
+   */
+  const handleRunAgent = (key: string): Promise<void> => {
     setRunning(prev => new Set([...prev, key]))
-    try {
-      const res = await fetch(`/api/agents/${key}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ site: 'g2g' }),
-      })
-      if (res.ok) {
-        // Poll every 3s until the agent is no longer running (up to 2 minutes)
-        let polls = 0
-        const poll = async () => {
-          polls++
-          await fetchStatus()
-          // Read fresh status from the API directly to avoid stale closure
-          try {
-            const statusRes = await fetch('/api/agents/status')
-            if (statusRes.ok) {
-              const data: StatusResponse = await statusRes.json()
-              const agent = data.agents?.find(a => a.key === key)
-              const stillRunning = agent?.lastRunStatus === 'running'
-              if (stillRunning && polls < 40) {
-                setTimeout(poll, 3000)
-                return
+
+    return fetch(`/api/agents/${key}/run`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ site: 'g2g' }),
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`Agent ${key} run returned ${res.status}`)
+
+        // Poll every 3 s until done (max 40 × 3 s = 2 min)
+        return new Promise<void>(resolve => {
+          let polls = 0
+          const poll = async () => {
+            polls++
+            try {
+              const statusRes = await fetch('/api/agents/status')
+              if (statusRes.ok) {
+                const data: StatusResponse = await statusRes.json()
+                const agent = data.agents?.find(a => a.key === key)
+                setStatus(data)  // keep UI live during polling
+                if (agent?.lastRunStatus === 'running' && polls < 40) {
+                  setTimeout(poll, 3000)
+                  return
+                }
               }
-            }
-          } catch { /* silent */ }
-          // Agent done or timed out — clear running state
-          setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
-          fetchStatus()
-        }
-        setTimeout(poll, 2000)
-        return // don't fall through to finally-clear
-      }
-    } catch (err) {
-      console.error('Failed to run agent:', err)
-    }
-    // Only clear here on error / non-ok response
-    setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
+            } catch { /* silent — keep polling */ }
+            // Done (or timed out)
+            setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
+            fetchStatus()
+            resolve()
+          }
+          setTimeout(poll, 2000)
+        })
+      })
+      .catch(err => {
+        console.error(`Failed to run agent ${key}:`, err)
+        setRunning(prev => { const n = new Set(prev); n.delete(key); return n })
+      })
   }
 
+  /**
+   * Run all agents in a category concurrently.
+   * After Detection agents complete, auto-trigger the Saga aggregator
+   * so seo_opportunities is kept up to date without a manual step.
+   */
   const handleRunCategory = async (agents: string[]) => {
+    // Run all agents in parallel; wait for ALL to finish
     await Promise.all(agents.map(key => handleRunAgent(key)))
+
+    // Auto-aggregate after any Detection run
+    const isDetection = agents.some(k => ['heimdall', 'loki', 'odin'].includes(k))
+    if (isDetection) {
+      try {
+        setAggregating(true)
+        setAggregateNote(null)
+        const res = await fetch('/api/agents/aggregate', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ site: 'g2g' }),
+        })
+        if (res.ok) {
+          const data = await res.json() as { summary?: string }
+          setAggregateNote(data.summary ?? 'Opportunities updated.')
+          setTimeout(() => setAggregateNote(null), 8000)
+        }
+      } catch (err) {
+        console.error('Aggregator failed:', err)
+      } finally {
+        setAggregating(false)
+      }
+    }
   }
 
   // Parse comma-separated pattern string → array of trimmed non-empty strings
@@ -604,6 +641,27 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
 
   return (
     <div className="space-y-8">
+      {/* Aggregator status banner — shown while aggregating or briefly after */}
+      {(aggregating || aggregateNote) && (
+        <div className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border text-sm ${
+          aggregating
+            ? 'bg-indigo-950/30 border-indigo-800/40 text-indigo-300'
+            : 'bg-green-950/30 border-green-800/40 text-green-300'
+        }`}>
+          <span>{aggregating ? '🔄' : '✅'}</span>
+          <span>
+            {aggregating
+              ? 'Saga Aggregator running — grouping signals into Opportunities…'
+              : `Opportunities updated · ${aggregateNote}`}
+          </span>
+          {!aggregating && (
+            <a href="/command-center/opportunities" className="ml-auto text-xs underline opacity-70 hover:opacity-100">
+              View →
+            </a>
+          )}
+        </div>
+      )}
+
       {AGENT_CATEGORIES.map(cat => (
         <div key={cat.label}>
           {/* Category header */}
