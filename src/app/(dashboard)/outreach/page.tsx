@@ -3,6 +3,260 @@
 import { useState, useEffect, useCallback } from 'react'
 import HermodFindingsPanel from '@/components/agents/HermodFindingsPanel'
 
+// ── Opener Modal ──────────────────────────────────────────────────────────────
+function OpenerModal({ prospect, onClose }: {
+  prospect: Prospect
+  onClose:  () => void
+}) {
+  const [tone,    setTone]    = useState<'professional' | 'casual' | 'direct'>('professional')
+  const [loading, setLoading] = useState(false)
+  const [subject, setSubject] = useState('')
+  const [opener,  setOpener]  = useState('')
+  const [error,   setError]   = useState('')
+  const [copied,  setCopied]  = useState<'subject' | 'opener' | 'both' | null>(null)
+
+  async function generate() {
+    setLoading(true)
+    setError('')
+    setSubject('')
+    setOpener('')
+    try {
+      const res  = await fetch(`/api/outreach/prospects/${prospect.id}/generate-opener`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ tone }),
+      })
+      const data = await res.json() as { ok: boolean; subject?: string; opener?: string; error?: string }
+      if (!data.ok) throw new Error(data.error ?? 'Generation failed')
+      setSubject(data.subject ?? '')
+      setOpener(data.opener  ?? '')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function copy(field: 'subject' | 'opener' | 'both') {
+    const text = field === 'subject' ? subject : field === 'opener' ? opener : `Subject: ${subject}\n\n${opener}`
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(field)
+      setTimeout(() => setCopied(null), 1800)
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-xl max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <div>
+            <h2 className="text-white font-semibold">✍️ Draft Outreach Opener</h2>
+            <p className="text-gray-500 text-xs mt-0.5">{prospect.domain}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">✕</button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {/* Prospect summary */}
+          <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg px-4 py-3 text-xs text-gray-400 space-y-1">
+            {prospect.contact_name  && <p>👤 {prospect.contact_name}{prospect.contact_email ? ` · ${prospect.contact_email}` : ''}</p>}
+            {prospect.topic         && <p>📝 Topic: {prospect.topic}</p>}
+            {prospect.target_url    && <p>🔗 Target: {prospect.target_url}</p>}
+            {prospect.anchor_text   && <p>⚓ Anchor: "{prospect.anchor_text}"</p>}
+            {prospect.source_keyword && <p>🔑 Keyword: "{prospect.source_keyword}"</p>}
+          </div>
+
+          {/* Tone selector */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-2">Tone</label>
+            <div className="flex gap-2">
+              {(['professional', 'casual', 'direct'] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTone(t)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                    tone === t ? 'bg-red-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                  }`}
+                >
+                  {t === 'professional' ? '🤝' : t === 'casual' ? '😊' : '⚡'} {t}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Generate button */}
+          <button
+            onClick={generate}
+            disabled={loading}
+            className="w-full py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center justify-center gap-2"
+          >
+            {loading ? <><span className="animate-spin">⟳</span> Bragi is writing…</> : '✨ Generate Opener'}
+          </button>
+
+          {error && <p className="text-sm text-red-400">{error}</p>}
+
+          {/* Generated content */}
+          {subject && (
+            <div className="space-y-3">
+              {/* Subject */}
+              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Subject line</label>
+                  <button
+                    onClick={() => copy('subject')}
+                    className="text-[10px] text-gray-500 hover:text-gray-300 transition"
+                  >
+                    {copied === 'subject' ? '✓ Copied' : '⎘ Copy'}
+                  </button>
+                </div>
+                <p className="text-white text-sm">{subject}</p>
+              </div>
+
+              {/* Opener */}
+              <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Email opener</label>
+                  <button
+                    onClick={() => copy('opener')}
+                    className="text-[10px] text-gray-500 hover:text-gray-300 transition"
+                  >
+                    {copied === 'opener' ? '✓ Copied' : '⎘ Copy'}
+                  </button>
+                </div>
+                <p className="text-gray-200 text-sm leading-relaxed whitespace-pre-wrap">{opener}</p>
+              </div>
+
+              {/* Copy both */}
+              <button
+                onClick={() => copy('both')}
+                className="w-full py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs rounded-lg transition"
+              >
+                {copied === 'both' ? '✓ Copied!' : '⎘ Copy subject + opener'}
+              </button>
+
+              <p className="text-[10px] text-gray-600 text-center">
+                Bragi generated this opener. Review before sending — personalise the greeting and add your name.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Push to Backlinks Modal ───────────────────────────────────────────────────
+function PushToBacklinksModal({ prospect, onClose, onPushed }: {
+  prospect: Prospect
+  onClose:  () => void
+  onPushed: () => void
+}) {
+  const [cost,     setCost]     = useState('')
+  const [currency, setCurrency] = useState('USD')
+  const [liveDate, setLiveDate] = useState(prospect.published_date ?? '')
+  const [pushing,  setPushing]  = useState(false)
+  const [error,    setError]    = useState('')
+
+  async function handlePush() {
+    setPushing(true)
+    setError('')
+    try {
+      const res  = await fetch(`/api/outreach/prospects/${prospect.id}/push-to-backlinks`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          cost_amount:   cost ? parseFloat(cost) : null,
+          cost_currency: currency,
+          live_date:     liveDate || null,
+        }),
+      })
+      const data = await res.json() as { ok: boolean; existing?: boolean; error?: string }
+      if (!data.ok) throw new Error(data.error ?? 'Push failed')
+      onPushed()
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Push failed')
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  const missing: string[] = []
+  if (!prospect.target_url)  missing.push('target URL')
+  if (!prospect.anchor_text) missing.push('anchor text')
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <h2 className="text-white font-semibold">→ Push to Backlinks Tracker</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">✕</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {/* Preview */}
+          <div className="bg-gray-800/50 border border-gray-700/50 rounded-lg px-4 py-3 text-xs text-gray-400 space-y-1">
+            <p>🌐 Site: <span className="text-gray-200">{prospect.domain}</span></p>
+            <p>🔗 External URL: <span className="text-gray-200">{prospect.published_url ?? `https://${prospect.domain}`}</span></p>
+            <p>📄 Target page: <span className="text-gray-200">{prospect.target_url ?? '—'}</span></p>
+            <p>⚓ Anchor: <span className="text-gray-200">{prospect.anchor_text ?? '—'}</span></p>
+          </div>
+
+          {missing.length > 0 && (
+            <div className="bg-amber-900/20 border border-amber-700/40 rounded-lg px-3 py-2 text-xs text-amber-300">
+              ⚠ Missing: {missing.join(', ')}. Edit the prospect to fill these in before pushing.
+            </div>
+          )}
+
+          {missing.length === 0 && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Cost (optional)</label>
+                  <input
+                    type="number"
+                    value={cost}
+                    onChange={e => setCost(e.target.value)}
+                    placeholder="0"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Currency</label>
+                  <select
+                    value={currency}
+                    onChange={e => setCurrency(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
+                  >
+                    <option>USD</option><option>IDR</option><option>SGD</option><option>GBP</option><option>EUR</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Live date</label>
+                <input
+                  type="date"
+                  value={liveDate}
+                  onChange={e => setLiveDate(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
+                />
+              </div>
+              {error && <p className="text-sm text-red-400">{error}</p>}
+              <button
+                onClick={handlePush}
+                disabled={pushing}
+                className="w-full py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
+              >
+                {pushing ? '⏳ Pushing…' : '🚀 Push to Backlinks Tracker'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Status = 'prospecting' | 'contacted' | 'negotiating' | 'accepted' | 'published' | 'rejected'
 
@@ -332,13 +586,15 @@ function DiscoveryPanel({ onAddToTracker }: { onAddToTracker: (c: Candidate, kw:
 }
 
 // ── Tracker Table ─────────────────────────────────────────────────────────────
-function TrackerTable({ prospects, counts, onEdit, onDelete, onCheck, checking }: {
-  prospects: Prospect[]
-  counts:    Record<string, number>
-  onEdit:    (p: Prospect) => void
-  onDelete:  (p: Prospect) => void
-  onCheck:   (p: Prospect) => void
-  checking:  Set<string>
+function TrackerTable({ prospects, counts, onEdit, onDelete, onCheck, checking, onOpenOpener, onPushBacklinks }: {
+  prospects:       Prospect[]
+  counts:          Record<string, number>
+  onEdit:          (p: Prospect) => void
+  onDelete:        (p: Prospect) => void
+  onCheck:         (p: Prospect) => void
+  checking:        Set<string>
+  onOpenOpener:    (p: Prospect) => void
+  onPushBacklinks: (p: Prospect) => void
 }) {
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [search, setSearch] = useState('')
@@ -464,16 +720,38 @@ function TrackerTable({ prospects, counts, onEdit, onDelete, onCheck, checking }
 
                   <td className="px-3 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
+                      {/* Bragi opener */}
+                      <button
+                        onClick={() => onOpenOpener(p)}
+                        className="px-2 py-1 text-xs text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded transition"
+                        title="Draft outreach opener with Bragi"
+                      >
+                        ✍️
+                      </button>
+
+                      {/* Push to backlinks (accepted / published only) */}
+                      {(p.status === 'accepted' || p.status === 'published') && (
+                        <button
+                          onClick={() => onPushBacklinks(p)}
+                          className="px-2 py-1 text-xs text-green-400 hover:text-green-300 hover:bg-green-900/30 rounded transition"
+                          title="Push to Backlinks Tracker"
+                        >
+                          → BL
+                        </button>
+                      )}
+
+                      {/* Check liveness (published + url) */}
                       {p.status === 'published' && p.published_url && (
                         <button
                           onClick={() => onCheck(p)}
                           disabled={checking.has(p.id)}
-                          className="px-2 py-1 text-xs text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded transition disabled:opacity-50"
+                          className="px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 rounded transition disabled:opacity-50"
                           title="Check if backlink is still live"
                         >
                           {checking.has(p.id) ? '⟳' : '🔍'}
                         </button>
                       )}
+
                       <button
                         onClick={() => onEdit(p)}
                         className="px-2 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded transition"
@@ -500,12 +778,14 @@ function TrackerTable({ prospects, counts, onEdit, onDelete, onCheck, checking }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function OutreachPage() {
-  const [tab,       setTab]      = useState<'discover' | 'tracker'>('discover')
-  const [prospects, setProspects] = useState<Prospect[]>([])
-  const [counts,    setCounts]   = useState<Record<string, number>>({})
-  const [loading,   setLoading]  = useState(true)
-  const [editModal, setEditModal] = useState<Prospect | 'new' | null>(null)
-  const [checking,  setChecking] = useState<Set<string>>(new Set())
+  const [tab,         setTab]        = useState<'discover' | 'tracker'>('discover')
+  const [prospects,   setProspects]  = useState<Prospect[]>([])
+  const [counts,      setCounts]     = useState<Record<string, number>>({})
+  const [loading,     setLoading]    = useState(true)
+  const [editModal,   setEditModal]  = useState<Prospect | 'new' | null>(null)
+  const [checking,    setChecking]   = useState<Set<string>>(new Set())
+  const [openerModal, setOpenerModal] = useState<Prospect | null>(null)
+  const [pushModal,   setPushModal]  = useState<Prospect | null>(null)
 
   const fetchProspects = useCallback(async () => {
     setLoading(true)
@@ -650,6 +930,8 @@ export default function OutreachPage() {
             onDelete={handleDelete}
             onCheck={handleCheck}
             checking={checking}
+            onOpenOpener={p => setOpenerModal(p)}
+            onPushBacklinks={p => setPushModal(p)}
           />
         )
       )}
@@ -660,6 +942,23 @@ export default function OutreachPage() {
           prospect={editModal === 'new' ? null : editModal}
           onClose={() => setEditModal(null)}
           onSaved={handleSaved}
+        />
+      )}
+
+      {/* Bragi Opener Modal */}
+      {openerModal && (
+        <OpenerModal
+          prospect={openerModal}
+          onClose={() => setOpenerModal(null)}
+        />
+      )}
+
+      {/* Push to Backlinks Modal */}
+      {pushModal && (
+        <PushToBacklinksModal
+          prospect={pushModal}
+          onClose={() => setPushModal(null)}
+          onPushed={fetchProspects}
         />
       )}
     </div>

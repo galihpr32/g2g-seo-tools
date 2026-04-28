@@ -503,6 +503,72 @@ function appendNote(existing: string | null, line: string): string {
   return existing ? `${existing}\n\n${line}` : line
 }
 
+/** Compute 0-100 score from a ScoreBreakdown (dynamic dim count). */
+function computeScore(breakdown: ScoreBreakdown): number {
+  const dimList = Object.values(breakdown.dimensions).filter(
+    (d): d is DimensionScore => d != null
+  )
+  const total  = dimList.reduce((sum, d) => sum + d.score, 0)
+  const maxPts = dimList.length * 10
+  return maxPts > 0 ? Math.round((total / maxPts) * 100) : 0
+}
+
+// ── Public single-brief review (used by the brief detail page action bar) ────
+
+export interface SingleBriefReviewResult {
+  score:     number
+  tyrStatus: 'reviewed' | 'borderline' | 'failed'
+  breakdown: ScoreBreakdown
+}
+
+/**
+ * Review one brief by ID and write the score back to seo_content_briefs.
+ * Mirrors the scoring/status logic in runTyr.
+ * Throws on Claude or DB error.
+ */
+export async function reviewSingleBrief(
+  briefId:  string,
+  ownerId:  string,
+  config:   Partial<TyrConfig> = {},
+): Promise<SingleBriefReviewResult> {
+  const { minScore, borderlineWindow } = { ...TYR_DEFAULTS, ...config }
+  const db = createServiceClient()
+
+  const { data: brief, error: fetchErr } = await db
+    .from('seo_content_briefs')
+    .select('id, owner_user_id, primary_keyword, page, brief_type, content_outline, content_draft, faq_suggestions, new_keywords, notes, tyr_score')
+    .eq('id', briefId)
+    .eq('owner_user_id', ownerId)
+    .single()
+
+  if (fetchErr || !brief) throw new Error(`Brief ${briefId} not found: ${fetchErr?.message}`)
+
+  const breakdown    = await judgeBrief(brief as BriefRow, db, ownerId)
+  const score        = computeScore(breakdown)
+  const failThresh   = minScore - borderlineWindow
+  const tyrStatus: SingleBriefReviewResult['tyrStatus'] =
+    score >= minScore ? 'reviewed' : score >= failThresh ? 'borderline' : 'failed'
+  const newBriefStatus = tyrStatus === 'reviewed' ? 'reviewed' : 'draft'
+
+  const pathNote = tyrStatus === 'reviewed'
+    ? `[tyr] Auto-promoted (score ${score}/100). Reasoning: ${breakdown.reasoning}`
+    : `[tyr] ${tyrStatus} (score ${score}/100, threshold ${minScore}). Issues:\n${breakdown.weaknesses.map((w, i) => `  ${i + 1}. ${w}`).join('\n')}`
+
+  await db
+    .from('seo_content_briefs')
+    .update({
+      tyr_score:       score,
+      tyr_status:      tyrStatus,
+      tyr_reviewed_at: new Date().toISOString(),
+      tyr_breakdown:   breakdown,
+      status:          newBriefStatus,
+      notes:           appendNote((brief as BriefRow).notes, pathNote),
+    })
+    .eq('id', briefId)
+
+  return { score, tyrStatus, breakdown }
+}
+
 async function _finishRun(
   db: ReturnType<typeof createServiceClient>,
   runId: string,

@@ -104,8 +104,10 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
   const [sortBy,        setSortBy]        = useState<'updated_at' | 'signal_count' | 'total_sv'>('updated_at')
   const [selected,      setSelected]      = useState<Set<string>>(new Set())
   const [expanded,      setExpanded]      = useState<string | null>(null)
-  const [saving,        setSaving]        = useState(false)
-  const [showDismissed, setShowDismissed] = useState(false)
+  const [saving,         setSaving]         = useState(false)
+  const [showDismissed,  setShowDismissed]  = useState(false)
+  const [queuingBrief,   setQueuingBrief]   = useState<string | null>(null)  // opportunityId
+  const [briefError,     setBriefError]     = useState<string | null>(null)
 
   // Filtered + sorted list
   const filtered = useMemo(() => {
@@ -160,6 +162,34 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
     }
   }
 
+  /**
+   * Queue a brief for an opportunity — calls the real endpoint that
+   * creates an seo_content_briefs row and fires Bragi generation in
+   * the background. Returns immediately after creating the brief stub.
+   */
+  async function queueBrief(opp: Opportunity) {
+    if (queuingBrief) return
+    setBriefError(null)
+    setQueuingBrief(opp.id)
+    try {
+      const res = await fetch(`/api/opportunities/${opp.id}/queue-brief`, { method: 'POST' })
+      const data = await res.json() as { briefId?: string; error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Failed to queue brief')
+      // Optimistic update — reflect brief_queued + brief_id immediately
+      setOpportunities(prev =>
+        prev.map(o => o.id === opp.id
+          ? { ...o, status: 'brief_queued', brief_id: data.briefId ?? o.brief_id }
+          : o
+        )
+      )
+    } catch (err) {
+      setBriefError(err instanceof Error ? err.message : 'Unknown error')
+      setTimeout(() => setBriefError(null), 6000)
+    } finally {
+      setQueuingBrief(null)
+    }
+  }
+
   function toggleSelect(id: string) {
     setSelected(prev => {
       const next = new Set(prev)
@@ -184,6 +214,13 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
 
   return (
     <div>
+      {/* Brief error banner */}
+      {briefError && (
+        <div className="mb-4 px-4 py-3 rounded-xl bg-red-950/30 border border-red-700/40 text-red-300 text-sm">
+          ⚠️ {briefError}
+        </div>
+      )}
+
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         {[
@@ -255,13 +292,7 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
             >
               Mark In Review
             </button>
-            <button
-              onClick={() => patchOpportunities(Array.from(selected), { status: 'brief_queued' })}
-              disabled={saving}
-              className="px-3 py-1.5 rounded text-xs font-medium bg-indigo-700 text-white hover:bg-indigo-600 disabled:opacity-50 transition"
-            >
-              Queue Brief
-            </button>
+            <span className="text-xs text-gray-500 italic">Expand a row to queue brief</span>
             <button
               onClick={() => patchOpportunities(Array.from(selected), { status: 'dismissed' })}
               disabled={saving}
@@ -456,12 +487,15 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
                         <div className="ml-auto flex items-center gap-2">
                           {opp.status !== 'brief_queued' && opp.status !== 'brief_ready' && (
                             <button
-                              onClick={() => patchOpportunities([opp.id], { status: 'brief_queued' })}
-                              disabled={saving}
+                              onClick={() => queueBrief(opp)}
+                              disabled={!!queuingBrief || saving}
                               className="px-3 py-1.5 rounded text-xs font-medium bg-indigo-700 text-white hover:bg-indigo-600 disabled:opacity-50 transition"
                             >
-                              ✍️ Queue Brief
+                              {queuingBrief === opp.id ? '⏳ Creating…' : '✍️ Queue Brief'}
                             </button>
+                          )}
+                          {(opp.status === 'brief_queued' && !opp.brief_id) && (
+                            <span className="text-xs text-indigo-300 animate-pulse">⏳ Bragi drafting…</span>
                           )}
                           {opp.brief_id && (
                             <a

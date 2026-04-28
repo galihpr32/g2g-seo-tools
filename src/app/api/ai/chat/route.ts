@@ -13,30 +13,41 @@ interface Message { role: 'user' | 'assistant'; content: string }
 // ── Page context map ──────────────────────────────────────────────────────────
 
 const PAGE_CONTEXTS: Record<string, string> = {
-  '/dashboard':                 'the main SEO dashboard showing traffic, clicks, and impressions overview',
-  '/gsc/ranking-drop':          'GSC Clicks Drop Alert — monitors pages that lost traffic recently',
-  '/gsc/product-rankings':      'Top Product Tracker — tracks keyword rankings for specific G2G product pages',
-  '/gsc/action-items':          'Action Items — SEO tasks and content briefs assigned to the team',
-  '/gsc/index-coverage':        'Index Coverage — shows Google indexing status for G2G pages',
-  '/gsc/core-web-vitals':       'Core Web Vitals — page performance metrics (LCP, CLS, INP)',
-  '/ga4/organic-traffic':       'GA4 Organic Traffic — sessions, engagement, and organic conversions',
-  '/ga4/content-performance':   'Content Performance — which pages drive the most engaged traffic',
-  '/semrush/rankings':          'SEMrush Keyword Rankings — G2G organic keyword positions with intent badges',
-  '/semrush/site-audit':        'Site Audit — technical SEO issues and DataForSEO on-page health check',
-  '/competitive/keyword-gap':   'Keyword Gap Finder — keywords competitors rank for that G2G does not',
-  '/competitive/opportunities': 'Page Opportunities — potential new pages based on keyword gaps',
-  '/competitive/serp-tracker':  'SERP & Share of Voice — G2G visibility across tracked keywords',
-  '/content/trends':            'Game Trends — trending games by Steam players and search volume',
-  '/content/studio':            'Content Studio — AI-powered content creation wizard for G2G product pages',
-  '/knowledge-base':            'Knowledge Base — G2G brand guidelines, USPs, and writing rules',
-  '/reports/weekly':            'Weekly Pulse Report — weekly SEO performance summary for G2G',
-  '/reports/monthly':           'Monthly SEO Report — monthly performance, wins, and action plan',
-  '/reports/backlinks':         'Backlink Audit — referring domains, anchor text, and toxic link signals',
-  '/backlinks':                 'Backlink Tracker — paid and organic backlinks being monitored',
-  '/link-building':             'Link Building — managing paid backlink placements and tracking ROI',
-  '/agents':                    'AI Agents — Norse-themed SEO agents: Heimdall, Odin, Loki, Bragi, Hermod',
-  '/campaigns':                 'SEO Campaigns — active campaign tracking with kanban board',
-  '/team-performance':          'Team Performance — output and activity metrics for the SEO team',
+  '/dashboard':                        'the main SEO dashboard showing traffic, clicks, and impressions overview',
+  '/gsc/ranking-drop':                 'GSC Clicks Drop Alert — monitors pages that lost traffic recently',
+  '/gsc/product-rankings':             'Top Product Tracker — tracks keyword rankings for specific G2G product pages',
+  '/gsc/action-items':                 'Action Items — SEO tasks and content briefs assigned to the team',
+  '/gsc/index-coverage':               'Index Coverage — shows Google indexing status for G2G pages',
+  '/gsc/core-web-vitals':              'Core Web Vitals — page performance metrics (LCP, CLS, INP)',
+  '/ga4/organic-traffic':              'GA4 Organic Traffic — sessions, engagement, and organic conversions',
+  '/ga4/content-performance':          'Content Performance — which pages drive the most engaged traffic',
+  '/semrush/rankings':                 'SEMrush Keyword Rankings — G2G organic keyword positions with intent badges',
+  '/semrush/site-audit':               'Site Audit — technical SEO issues and DataForSEO on-page health check',
+  '/competitive/keyword-gap':          'Keyword Gap Finder — keywords competitors rank for that G2G does not',
+  '/competitive/opportunities':        'Competitive Opportunities — potential new pages based on keyword gaps',
+  '/competitive/serp-tracker':         'SERP & Share of Voice — G2G visibility across tracked keywords',
+  '/content/trends':                   'Game Trends — trending games by Steam players and search volume',
+  '/content/studio':                   'Content Studio — AI-powered content creation wizard for G2G product pages',
+  '/content/briefs':                   'Brief Library — all AI-generated and reviewed SEO content briefs',
+  '/content/briefs/':                  'Brief detail page — full brief content, Tyr quality score, and action buttons (Regenerate, Run Tyr, Mark Published)',
+  '/content/writer-inbox':             'Writer Inbox — approved briefs ready for writers to pick up and draft',
+  '/content/calendar':                 'Editorial Calendar — timeline view of in-flight and published content across all briefs',
+  '/content/internal-links':           'Internal Linking Manager — surface internal link opportunities across G2G pages',
+  '/content/cannibalization':          'Keyword Cannibalization Detector — pages competing for the same keywords',
+  '/content/broken-urls':              'Broken URL Monitor — 4xx/5xx pages, ghost pages lost from GSC, pages with broken outlinks',
+  '/content/keyword-map':              'Keyword Map — visual cluster map of the G2G keyword universe',
+  '/command-center':                   'Command Center — run Norse AI agents, monitor pipeline health, review findings',
+  '/command-center/opportunities':     'Opportunities — unified triage queue grouping Heimdall + Loki + Odin signals by topic. Queue Brief here to send an opportunity to Bragi.',
+  '/knowledge-base':                   'Knowledge Base — G2G brand guidelines, USPs, and writing rules for Bragi and writers',
+  '/reports/weekly':                   'Weekly Pulse Report — weekly SEO performance summary for G2G',
+  '/reports/monthly':                  'Monthly SEO Report — monthly performance, wins, and action plan',
+  '/reports/backlinks':                'Backlink Audit — referring domains, anchor text, and toxic link signals',
+  '/reports/ranking-impact':           'Ranking Impact Tracker — GSC before/after snapshots for every published brief',
+  '/reports/content-roi':              'Content ROI — estimated revenue impact of published SEO content',
+  '/backlinks':                        'Backlink Tracker — paid and organic backlinks being monitored',
+  '/outreach':                         'Guestpost Outreach — managing outreach prospects and campaign progress',
+  '/campaigns':                        'SEO Campaigns — active campaign tracking with kanban board',
+  '/team-performance':                 'Team Performance — output and activity metrics for the SEO team',
 }
 
 function getPageContext(pathname: string): string {
@@ -124,6 +135,17 @@ const TOOLS: Anthropic.Tool[] = [
       properties: {
         limit:      { type: 'number', description: 'Number of opportunities (default 10)' },
         min_volume: { type: 'number', description: 'Minimum search volume (default 100)' },
+      },
+    },
+  },
+  {
+    name: 'get_opportunities',
+    description: 'Get SEO opportunities from the pipeline triage queue — topics grouped from Heimdall (click drops), Loki (keyword gaps), and Odin (trending games). Use when the user asks what opportunities exist, what topics to prioritise, what signals Saga aggregated, or which opportunities have briefs ready.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        status: { type: 'string', enum: ['new', 'triaged', 'brief_queued', 'brief_ready', 'dismissed', 'all'], description: 'Filter by status (default: all active)' },
+        limit:  { type: 'number', description: 'Number of opportunities to return (default 10)' },
       },
     },
   },
@@ -414,9 +436,9 @@ async function executeTool(
           .limit(10)
 
         const AGENT_NAMES: Record<string, string> = {
-          heimdall: 'Heimdall (Monitoring)', odin: 'Odin (Trends)',
-          loki: 'Loki (Competitive)', bragi: 'Bragi (Content)', hermod: 'Hermod (Outreach)',
-          saga: 'Saga (Content Briefs)', tyr: 'Tyr (Quality Review)', vor: 'Vor (Audit)',
+          heimdall: 'Heimdall (Click Drops)', odin: 'Odin (Trending Games)',
+          loki: 'Loki (Keyword Gaps)', bragi: 'Bragi (Brief Generator)', hermod: 'Hermod (Outreach)',
+          saga: 'Saga (Aggregator)', tyr: 'Tyr (Brief Quality)', vor: 'Vor (Daily Reporter)',
         }
 
         // If no run history AND no pending actions → explain why
@@ -509,6 +531,64 @@ async function executeTool(
           opps.map((o, i) =>
             `${i + 1}. **"${o.keyword}"** [${o.priority}]\n   ${o.search_volume.toLocaleString()} searches/month`
           ).join('\n\n')
+      }
+
+      case 'get_opportunities': {
+        const status = String(toolInput.status ?? 'all')
+        const limit  = Number(toolInput.limit  ?? 10)
+
+        const query = db
+          .from('seo_opportunities')
+          .select('id, topic, topic_slug, status, output_type, total_sv, signal_count, brief_id, last_signal_at, loki_signals, odin_signals, heimdall_signals')
+          .eq('owner_user_id', ownerId)
+          .order('total_sv', { ascending: false })
+          .limit(limit)
+
+        if (status !== 'all') {
+          query.eq('status', status)
+        } else {
+          query.not('status', 'eq', 'dismissed')
+        }
+
+        const { data: opps } = await query
+
+        if (!opps?.length) {
+          return status === 'all'
+            ? 'No opportunities found. Run Detection agents (Heimdall, Loki, Odin) to surface signals — Saga will automatically aggregate them into opportunities.'
+            : `No opportunities with status "${status}" found.`
+        }
+
+        const statusEmoji: Record<string, string> = {
+          new:          '🆕',
+          triaged:      '👁',
+          brief_queued: '⏳',
+          brief_ready:  '✅',
+          dismissed:    '❌',
+        }
+
+        const lines = (opps as Array<{
+          id: string; topic: string; status: string; output_type: string | null;
+          total_sv: number; signal_count: number; brief_id: string | null; last_signal_at: string | null;
+          loki_signals: unknown[]; odin_signals: unknown[]; heimdall_signals: unknown[];
+        }>).map((o, i) => {
+          const sources: string[] = []
+          if (Array.isArray(o.heimdall_signals) && o.heimdall_signals.length) sources.push('Heimdall')
+          if (Array.isArray(o.loki_signals)     && o.loki_signals.length)     sources.push('Loki')
+          if (Array.isArray(o.odin_signals)      && o.odin_signals.length)     sources.push('Odin')
+          const emoji = statusEmoji[o.status] ?? '•'
+          const sv    = o.total_sv ? `${Number(o.total_sv).toLocaleString()} SV` : 'no SV'
+          const type  = o.output_type ? ` [${o.output_type.replace('_', ' ')}]` : ''
+          const brief = o.brief_id ? ' · has brief' : ''
+          return `${i + 1}. ${emoji} **"${o.topic}"**${type} — ${sv} · ${o.signal_count} signal${o.signal_count !== 1 ? 's' : ''} (${sources.join(', ')})${brief}`
+        })
+
+        const statusCounts: Record<string, number> = {}
+        for (const o of opps as Array<{ status: string }>) {
+          statusCounts[o.status] = (statusCounts[o.status] ?? 0) + 1
+        }
+        const countStr = Object.entries(statusCounts).map(([s, c]) => `${c} ${s}`).join(' · ')
+
+        return `Found ${opps.length} opportunities (${countStr}):\n\n${lines.join('\n')}\n\nGo to **Opportunities** page to triage and queue briefs.`
       }
 
       case 'propose_agent_run': {
@@ -624,6 +704,20 @@ G2G (g2g.com) is a leading peer-to-peer gaming marketplace — in-game currency,
 The user is currently on: **${pageDesc}**${pageData ? `\n\nData already visible on this page:\n${pageData}` : ''}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+THE PIPELINE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+G2G SEO Tools runs a five-stage automated pipeline:
+
+1. **Detection** — Heimdall (click drops), Loki (keyword gaps), Odin (trending games)
+2. **Aggregation** — Saga clusters signals by topic into the Opportunities queue
+3. **Execution** — Bragi generates SEO content briefs from approved Opportunities
+4. **Quality** — Tyr scores each brief (0–100); ≥80 auto-promotes, lower flags for review
+5. **Publishing** — Writers work from Brief Library → Writer Inbox → Mark Published → Ranking Impact tracks before/after GSC data
+
+Human decision points: (A) Opportunities triage — approve or dismiss each topic; (B) Brief review — run Tyr, regenerate with notes, or override manually.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 YOUR CAPABILITIES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -633,8 +727,9 @@ You have tools to query G2G's live SEO data:
 • get_action_items — what is the team working on / what's pending?
 • get_competitor_sov — how does G2G's visibility compare to rivals?
 • get_backlinks — what does the backlink portfolio look like?
-• get_agent_insights — what have the Norse agents (Heimdall, Odin, Loki, Bragi, Hermod) found?
+• get_agent_insights — what have the Norse agents (Heimdall, Odin, Loki, Bragi, Hermod, Tyr, Vor) found?
 • get_content_opportunities — what new pages or content should G2G create?
+• get_opportunities — what topics are in the Opportunities triage queue? What signals did Saga aggregate?
 
 Use tools PROACTIVELY. If the user asks a question that could be answered better with data, call the tool first, then answer. You can call multiple tools if needed.
 

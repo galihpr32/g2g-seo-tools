@@ -48,24 +48,24 @@ const AGENT_CATEGORIES = [
     color:       'text-blue-400 border-blue-800/40 bg-blue-950/20',
     dot:         'bg-blue-400',
     cooldown:    '3h cooldown',
-    description: 'Monitor, discover, and surface opportunities.',
+    description: 'Monitor, discover, and surface signals from GSC, competitors, and trending games.',
     connector:   null,
     agents: [
       { key: 'heimdall', name: 'Heimdall', desc: 'Ranking drops & click anomalies' },
-      { key: 'odin',     name: 'Odin',     desc: 'Trending topics & content gaps' },
+      { key: 'odin',     name: 'Odin',     desc: 'Trending games & content gaps' },
       { key: 'loki',     name: 'Loki',     desc: 'Competitor keyword gaps & SOV' },
     ],
   },
   {
-    label:       'Triage',
+    label:       'Aggregation',
     step:        'Step 2',
-    color:       'text-amber-400 border-amber-800/40 bg-amber-950/20',
-    dot:         'bg-amber-400',
-    cooldown:    '30min cooldown',
-    description: 'Validate the action queue before execution agents act on it.',
-    connector:   'findings fill queue →',
+    color:       'text-cyan-400 border-cyan-800/40 bg-cyan-950/20',
+    dot:         'bg-cyan-400',
+    cooldown:    'auto after detection',
+    description: 'Groups signals by topic into Opportunities — your unified triage queue.',
+    connector:   'signals grouped →',
     agents: [
-      { key: 'tyr', name: 'Tyr', desc: 'Scores & gates what reaches Execution' },
+      { key: 'saga', name: 'Saga', desc: 'Clusters signals into ranked Opportunities' },
     ],
   },
   {
@@ -74,24 +74,24 @@ const AGENT_CATEGORIES = [
     color:       'text-green-400 border-green-800/40 bg-green-950/20',
     dot:         'bg-green-400',
     cooldown:    '1h cooldown',
-    description: 'Act on approved signals — draft content, outreach, curate maps.',
-    connector:   'Tyr approves →',
+    description: 'Act on approved Opportunities — draft briefs, find prospects, curate keyword maps.',
+    connector:   'opportunity approved →',
     agents: [
-      { key: 'bragi',  name: 'Bragi',  desc: 'Generates optimised content briefs' },
-      { key: 'hermod', name: 'Hermod', desc: 'Finds prospects & drafts outreach' },
-      { key: 'saga',   name: 'Saga',   desc: 'Curates keyword clusters & coverage' },
+      { key: 'bragi',  name: 'Bragi',  desc: 'Generates SEO content briefs from Opportunities' },
+      { key: 'hermod', name: 'Hermod', desc: 'Finds outreach prospects & drafts emails' },
     ],
   },
   {
-    label:       'Audit',
+    label:       'Quality & Audit',
     step:        'Step 4',
     color:       'text-purple-400 border-purple-800/40 bg-purple-950/20',
     dot:         'bg-purple-400',
     cooldown:    '30min cooldown',
-    description: 'Post-execution quality gate — tunes thresholds based on what worked.',
-    connector:   'output produced →',
+    description: 'Reviews briefs for quality; records daily pipeline stats.',
+    connector:   'brief generated →',
     agents: [
-      { key: 'vor', name: 'Vor', desc: 'Tunes thresholds based on approval patterns' },
+      { key: 'tyr', name: 'Tyr', desc: 'Scores brief quality — passes, flags, or fails' },
+      { key: 'vor', name: 'Vor', desc: 'Records daily stats & tunes agent thresholds' },
     ],
   },
 ]
@@ -99,10 +99,10 @@ const AGENT_CATEGORIES = [
 // Role-specific quick links for the final step
 const ROLE_LINKS: Record<Role, { label: string; href: string; icon: string }[]> = {
   seo_manager: [
-    { label: 'Command Center', href: '/command-center',       icon: '🤖' },
-    { label: 'Action Items',   href: '/gsc/action-items',    icon: '✅' },
-    { label: 'Brief Library',  href: '/content/briefs',       icon: '📚' },
-    { label: 'Weekly Pulse',   href: '/reports/weekly',       icon: '📊' },
+    { label: 'Opportunities',  href: '/command-center/opportunities', icon: '🎯' },
+    { label: 'Command Center', href: '/command-center',               icon: '🤖' },
+    { label: 'Brief Library',  href: '/content/briefs',               icon: '📚' },
+    { label: 'Weekly Pulse',   href: '/reports/weekly',               icon: '📊' },
   ],
   writer: [
     { label: 'Writer Inbox',       href: '/content/writer-inbox', icon: '✍️' },
@@ -111,10 +111,10 @@ const ROLE_LINKS: Record<Role, { label: string; href: string; icon: string }[]> 
     { label: 'Brief Library',      href: '/content/briefs',       icon: '📚' },
   ],
   executive: [
-    { label: 'Dashboard',       href: '/dashboard',            icon: '▦'  },
-    { label: 'Weekly Pulse',    href: '/reports/weekly',       icon: '📊' },
-    { label: 'Ranking Impact',  href: '/reports/ranking-impact', icon: '📈' },
-    { label: 'Content ROI',     href: '/reports/content-roi',  icon: '💰' },
+    { label: 'Dashboard',       href: '/dashboard',               icon: '▦'  },
+    { label: 'Weekly Pulse',    href: '/reports/weekly',          icon: '📊' },
+    { label: 'Ranking Impact',  href: '/reports/ranking-impact',  icon: '📈' },
+    { label: 'Content ROI',     href: '/reports/content-roi',     icon: '💰' },
   ],
 }
 
@@ -478,7 +478,7 @@ function Step3() {
   return (
     <div className="space-y-4">
       <p className="text-gray-400 text-sm leading-relaxed">
-        Eight agents run in four ordered stages. Each stage feeds the next — nothing jumps ahead.
+        Eight agents run in four ordered stages. Detection runs first and feeds the Opportunities triage queue — nothing jumps ahead.
       </p>
 
       <div>
@@ -527,8 +527,8 @@ function Step3() {
 
       <div className="p-3 bg-gray-800/30 border border-gray-700/50 rounded-lg">
         <p className="text-xs text-gray-500 leading-relaxed">
-          <span className="text-gray-400 font-medium">Command Center →</span> Run individual agents
-          or click <em>Run Detection</em> / <em>Run Execution</em> to trigger a whole stage at once.
+          <span className="text-gray-400 font-medium">Command Center →</span> Run individual agents or click <em>Run Detection</em> to trigger the whole first stage.
+          After detection completes, Saga auto-aggregates signals into your <span className="text-gray-400 font-medium">Opportunities</span> queue.
         </p>
       </div>
     </div>
@@ -538,18 +538,18 @@ function Step3() {
 // ─── Step 4: Approval Queue ───────────────────────────────────────────────────
 function Step4() {
   const FLOW = [
-    { icon: '🤖', label: 'Agent runs', desc: 'Bragi generates a brief. Tyr scores it.' },
-    { icon: '⏳', label: 'Queued for review', desc: 'Low-confidence items land in the queue.' },
-    { icon: '✅', label: 'You review', desc: 'Approve, edit, or reject — one click.' },
-    { icon: '🚀', label: 'Published', desc: 'Approved briefs push to Writer Inbox.' },
+    { icon: '🎯', label: 'Opportunities surface', desc: 'Saga groups Heimdall + Loki + Odin signals by topic into a ranked triage queue.' },
+    { icon: '👀', label: 'You triage', desc: 'Review each opportunity. One click to Queue Brief — Bragi generates it in the background.' },
+    { icon: '⚖️', label: 'Tyr scores the brief', desc: 'Tyr reviews Bragi\'s output. Scores ≥ 80 auto-promote; lower scores flag for your review.' },
+    { icon: '✍️', label: 'Writer picks it up', desc: 'Approved briefs land in Writer Inbox. Writers draft and mark done.' },
+    { icon: '🚀', label: 'Published & tracked', desc: 'Mark Published → Ranking Impact starts capturing GSC before/after data.' },
   ]
 
   return (
     <div className="space-y-5">
       <p className="text-gray-400 text-sm leading-relaxed">
-        Agents are autonomous but never invisible. Anything that needs a human decision
-        surfaces in the <strong className="text-gray-300">Approval Queue</strong> — your control panel
-        between AI output and live content.
+        The pipeline is human-in-the-loop at two points: Opportunity triage and Brief quality review.
+        Everything else runs automatically.
       </p>
 
       {/* Flow diagram */}
@@ -574,12 +574,12 @@ function Step4() {
 
       <div className="grid grid-cols-2 gap-3">
         <div className="p-3 bg-green-950/20 border border-green-800/30 rounded-lg">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-green-400 mb-1">Auto-approved</p>
-          <p className="text-xs text-gray-400 leading-relaxed">High-scoring briefs (Tyr ≥ 80) are promoted automatically to keep velocity high.</p>
+          <p className="text-[11px] font-bold uppercase tracking-wider text-green-400 mb-1">Auto-promoted</p>
+          <p className="text-xs text-gray-400 leading-relaxed">Briefs scoring ≥ 80 skip the queue and go straight to Writer Inbox.</p>
         </div>
         <div className="p-3 bg-amber-950/20 border border-amber-800/30 rounded-lg">
           <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1">Needs review</p>
-          <p className="text-xs text-gray-400 leading-relaxed">Lower scores or unclear intent trigger a manual review notification.</p>
+          <p className="text-xs text-gray-400 leading-relaxed">Borderline briefs surface in the Brief Library with Tyr's feedback. Regenerate with one click.</p>
         </div>
       </div>
     </div>
@@ -591,22 +591,30 @@ function Step5({ role }: { role: Role | null }) {
   const PIPELINE = [
     {
       step:  '1',
-      icon:  '📚',
-      label: 'Brief Library',
-      href:  '/content/briefs',
-      desc:  'Bragi generates keyword-targeted briefs. Tyr scores them. Approved ones are ready for writing.',
-      highlight: role === 'writer' || role === 'seo_manager',
+      icon:  '🎯',
+      label: 'Opportunities',
+      href:  '/command-center/opportunities',
+      desc:  'Detection agents surface signals; Saga groups them by topic. Triage here and queue briefs in one click.',
+      highlight: role === 'seo_manager',
     },
     {
       step:  '2',
-      icon:  '✍️',
-      label: 'Writer Inbox',
-      href:  '/content/writer-inbox',
-      desc:  'Approved briefs arrive here. Writers pick them up, draft, and mark done.',
-      highlight: role === 'writer',
+      icon:  '📚',
+      label: 'Brief Library',
+      href:  '/content/briefs',
+      desc:  'Bragi generates keyword-targeted briefs. Tyr scores each one. Review, regenerate, or override directly on the brief page.',
+      highlight: role === 'writer' || role === 'seo_manager',
     },
     {
       step:  '3',
+      icon:  '✍️',
+      label: 'Writer Inbox',
+      href:  '/content/writer-inbox',
+      desc:  'Approved briefs land here. Writers pick them up, draft, and mark done.',
+      highlight: role === 'writer',
+    },
+    {
+      step:  '4',
       icon:  '📅',
       label: 'Editorial Calendar',
       href:  '/content/calendar',
@@ -614,11 +622,11 @@ function Step5({ role }: { role: Role | null }) {
       highlight: role === 'seo_manager' || role === 'writer',
     },
     {
-      step:  '4',
+      step:  '5',
       icon:  '📈',
       label: 'Ranking Impact',
       href:  '/reports/ranking-impact',
-      desc:  'Vor tracks published pages. See before/after ranking changes for every piece.',
+      desc:  'Published briefs are tracked automatically. See before/after ranking changes for every piece of content.',
       highlight: role === 'seo_manager' || role === 'executive',
     },
   ]
@@ -626,7 +634,7 @@ function Step5({ role }: { role: Role | null }) {
   return (
     <div className="space-y-4">
       <p className="text-gray-400 text-sm leading-relaxed">
-        Content moves through a four-stage pipeline — from AI-generated brief to measurable
+        Content moves through a five-stage pipeline — from detected opportunity to measurable
         ranking improvement. Each stage is tracked automatically.
       </p>
 

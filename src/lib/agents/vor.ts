@@ -1,54 +1,101 @@
 import { createServiceClient } from '@/lib/supabase/service'
-import { persistFinding, type VorTuneRecommendationData } from '@/lib/agents/findings'
+import { persistFinding } from '@/lib/agents/findings'
 
 /**
- * Vor — Config Tuner (Norse goddess "the careful one — nothing can be hidden from her")
+ * Vor — Daily Stats Reporter
+ * (Norse goddess "the careful one — nothing can be hidden from her")
  *
- * Looks back over recent agent activity (default 30 days) and proposes
- * threshold adjustments to `agents.config` based on approval/rejection
- * patterns. Suggestions are queued as `tune_config` actions for the user
- * to approve. On approval, executor applies the new config and writes a
- * row to `agent_config_history`.
+ * Vor runs once a day and takes a full snapshot of the pipeline's health:
  *
- * NOTE: Renamed from "Mimir" to avoid name collision with the existing
- * "Mimir The All Knowing" interactive chatbot oracle (src/components/
- * dashboard/AIAssistant.tsx). They serve different purposes — the chatbot
- * answers questions on demand; this agent proactively tunes thresholds.
+ *   1. Brief pipeline counts  (draft → generating → agent_generated → reviewed → published)
+ *   2. Opportunity funnel     (new → triaged → brief_queued → brief_ready → dismissed)
+ *   3. Agent run activity     (last 24h: success/error counts per agent)
+ *   4. Action queue health    (pending / approved / rejected today)
+ *   5. Tyr quality metrics    (avg score, pass/borderline/fail counts for the week)
+ *   6. GSC snapshot           (total clicks + impressions from the most recent daily row)
  *
- * What Vor tunes (initial heuristics — kept conservative):
+ * Results are written as a `daily_snapshot` agent_finding so the
+ * Command Center → Performance page can chart them over time.
  *
- * 1. HEIMDALL.minClicksDrop / minPctDrop
- *    - If reject_rate(low-priority drops) > 0.5 over ≥10 actions → suggest +20% threshold
- *    - If approve_rate(low-priority drops) > 0.85 → suggest -10% (we're missing things)
- *
- * 2. LOKI.lowPriorityVolumeCutoff (synthesised)
- *    - If >70% of low-volume gap actions get rejected → suggest raising
- *      the "low" volume cutoff from 1000 → 2000.
- *
- * 3. ODIN.skipLowPriority (synthesised)
- *    - Track approve/reject by computed totalScore band; suggest cutoff shift.
- *
- * 4. TYR.minScore
- *    - If >85% of auto-promoted briefs (score ≥ minScore) get manually
- *      published WITHOUT user editing notes → suggest LOWER minScore.
- *    - If >30% of auto-promoted briefs get manually demoted by the user
- *      back to 'draft' → suggest HIGHER minScore.
- *
- * Vor does NOT auto-apply. Every suggestion goes through the approval queue.
+ * Config tuning (old Vor behaviour) still runs as a secondary step when
+ * enough sample data exists — suggestions surface in the approval queue.
  */
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 export interface VorConfig {
-  windowDays:           number   // default 30
+  windowDays:           number   // daily snapshot lookback: default 1 (yesterday)
+  configWindowDays:     number   // config tuning lookback: default 30
   minSampleSize:        number   // default 10
-  approvalRateThresh:   number   // default 0.5 — reject_rate > this → tighten
-  highConfidenceThresh: number   // default 0.85 — approve_rate > this → loosen
+  approvalRateThresh:   number   // reject_rate > this → tighten
+  highConfidenceThresh: number   // approve_rate > this → loosen
+  runConfigTuning:      boolean  // default true — set false to skip threshold suggestions
 }
 
 export const VOR_DEFAULTS: VorConfig = {
-  windowDays:           30,
+  windowDays:           1,
+  configWindowDays:     30,
   minSampleSize:        10,
   approvalRateThresh:   0.5,
   highConfidenceThresh: 0.85,
+  runConfigTuning:      true,
+}
+
+export interface DailySnapshot {
+  date:             string
+  brief_pipeline:   BriefPipelineStats
+  opportunities:    OpportunityStats
+  agent_activity:   AgentActivityStats
+  action_queue:     ActionQueueStats
+  tyr_metrics:      TyrMetrics
+  gsc:              GscStats | null
+}
+
+interface BriefPipelineStats {
+  draft:           number
+  generating:      number
+  agent_generated: number
+  reviewed:        number
+  published:       number
+  total:           number
+  published_today: number
+}
+
+interface OpportunityStats {
+  new:          number
+  triaged:      number
+  brief_queued: number
+  brief_ready:  number
+  dismissed:    number
+  total:        number
+}
+
+interface AgentActivityStats {
+  runs_24h:   number
+  success_24h: number
+  error_24h:  number
+  by_agent:   Record<string, { runs: number; success: number; error: number }>
+}
+
+interface ActionQueueStats {
+  pending:  number
+  approved_today: number
+  rejected_today: number
+  executed_today: number
+}
+
+interface TyrMetrics {
+  avg_score:      number | null
+  reviewed_week:  number
+  passed:         number
+  borderline:     number
+  failed:         number
+}
+
+interface GscStats {
+  total_clicks:      number
+  total_impressions: number
+  snapshot_date:     string
 }
 
 interface ActionRow {
@@ -61,131 +108,138 @@ interface ActionRow {
   created_at:  string
 }
 
-export async function runVor(
+// ── Daily snapshot ────────────────────────────────────────────────────────────
+
+async function captureDailySnapshot(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
   ownerId: string,
-  siteSlug: string,
-  runId: string,
-  config: Partial<VorConfig> = {}
-): Promise<{ summary: string; actionsQueued: number }> {
-  const cfg = { ...VOR_DEFAULTS, ...config }
-  const db = createServiceClient()
-  const warnings: string[] = []
-  const suggestions: Array<{ agent_key: string; suggestion: TuneSuggestion }> = []
+): Promise<DailySnapshot> {
+  const today     = new Date().toISOString().slice(0, 10)
+  const since24h  = new Date(Date.now() -  1 * 24 * 60 * 60 * 1000).toISOString()
+  const since7d   = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000).toISOString()
 
-  try {
-    const sinceIso = new Date(Date.now() - cfg.windowDays * 24 * 60 * 60 * 1000).toISOString()
+  // ── 1. Brief pipeline ───────────────────────────────────────────────────────
+  const { data: briefs } = await db
+    .from('seo_content_briefs')
+    .select('status, updated_at')
+    .eq('owner_user_id', ownerId)
 
-    // 1. Pull every action from the window
-    const { data: actions, error: actionsErr } = await db
-      .from('agent_actions')
-      .select('id, agent_key, action_type, priority, status, data, created_at')
-      .eq('owner_user_id', ownerId)
-      .gte('created_at', sinceIso)
-
-    if (actionsErr) throw new Error(`agent_actions query failed: ${actionsErr.message}`)
-
-    // 2. Get current config for each agent
-    const { data: agentRows } = await db
-      .from('agents')
-      .select('agent_key, config')
-      .eq('owner_user_id', ownerId)
-
-    const configByAgent = new Map<string, Record<string, unknown>>()
-    for (const a of agentRows ?? []) {
-      configByAgent.set(a.agent_key as string, (a.config ?? {}) as Record<string, unknown>)
+  const bstats: BriefPipelineStats = { draft: 0, generating: 0, agent_generated: 0, reviewed: 0, published: 0, total: 0, published_today: 0 }
+  for (const b of briefs ?? []) {
+    bstats.total++
+    const s = String(b.status ?? 'draft')
+    if (s === 'draft')           bstats.draft++
+    else if (s === 'generating') bstats.generating++
+    else if (s === 'agent_generated') bstats.agent_generated++
+    else if (s === 'reviewed')   bstats.reviewed++
+    else if (s === 'published') {
+      bstats.published++
+      // Published today
+      if (b.updated_at && String(b.updated_at).slice(0, 10) === today) bstats.published_today++
     }
+  }
 
-    // 3. Per-agent analysis
-    const heimdallSuggestion = analyseHeimdall(actions ?? [], configByAgent.get('heimdall') ?? {}, cfg)
-    if (heimdallSuggestion) suggestions.push({ agent_key: 'heimdall', suggestion: heimdallSuggestion })
+  // ── 2. Opportunities ────────────────────────────────────────────────────────
+  const { data: opps } = await db
+    .from('seo_opportunities')
+    .select('status')
+    .eq('owner_user_id', ownerId)
 
-    const lokiSuggestion = analyseLoki(actions ?? [], configByAgent.get('loki') ?? {}, cfg)
-    if (lokiSuggestion) suggestions.push({ agent_key: 'loki', suggestion: lokiSuggestion })
+  const ostats: OpportunityStats = { new: 0, triaged: 0, brief_queued: 0, brief_ready: 0, dismissed: 0, total: 0 }
+  for (const o of opps ?? []) {
+    ostats.total++
+    const s = String(o.status ?? 'new')
+    if      (s === 'new')          ostats.new++
+    else if (s === 'triaged')      ostats.triaged++
+    else if (s === 'brief_queued') ostats.brief_queued++
+    else if (s === 'brief_ready')  ostats.brief_ready++
+    else if (s === 'dismissed')    ostats.dismissed++
+  }
 
-    const odinSuggestion = analyseOdin(actions ?? [], configByAgent.get('odin') ?? {}, cfg)
-    if (odinSuggestion) suggestions.push({ agent_key: 'odin', suggestion: odinSuggestion })
+  // ── 3. Agent activity (last 24h) ────────────────────────────────────────────
+  const { data: runs } = await db
+    .from('agent_runs')
+    .select('agent_key, status, started_at')
+    .eq('owner_user_id', ownerId)
+    .gte('started_at', since24h)
 
-    const tyrSuggestion = await analyseTyr(db, ownerId, sinceIso, configByAgent.get('tyr') ?? {}, cfg)
-    if (tyrSuggestion) suggestions.push({ agent_key: 'tyr', suggestion: tyrSuggestion })
+  const astats: AgentActivityStats = { runs_24h: 0, success_24h: 0, error_24h: 0, by_agent: {} }
+  for (const r of runs ?? []) {
+    astats.runs_24h++
+    const key = String(r.agent_key ?? 'unknown')
+    if (!astats.by_agent[key]) astats.by_agent[key] = { runs: 0, success: 0, error: 0 }
+    astats.by_agent[key].runs++
+    if (r.status === 'success') { astats.success_24h++; astats.by_agent[key].success++ }
+    else if (r.status === 'error') { astats.error_24h++;   astats.by_agent[key].error++ }
+  }
 
-    // 4. Queue tune_config actions
-    let actionsQueued = 0
-    for (const { agent_key, suggestion } of suggestions) {
-      const { error: insertErr } = await db
-        .from('agent_actions')
-        .insert({
-          owner_user_id: ownerId,
-          agent_key:     'vor',
-          run_id:        runId,
-          site_slug:     siteSlug,
-          action_type:   'tune_config',
-          title:         `Tune ${capitalize(agent_key)} — ${suggestion.headline}`,
-          description:   suggestion.description,
-          priority:      'medium',
-          data: {
-            target_agent:     agent_key,
-            current_config:   suggestion.currentConfig,
-            suggested_config: suggestion.suggestedConfig,
-            reasoning:        suggestion.reasoning,
-            sample_size:      suggestion.sampleSize,
-          },
-        })
+  // ── 4. Action queue (today) ─────────────────────────────────────────────────
+  const { data: allActions } = await db
+    .from('agent_actions')
+    .select('status, updated_at')
+    .eq('owner_user_id', ownerId)
 
-      if (insertErr) {
-        console.error(`[vor] failed to queue tune_config for ${agent_key}:`, insertErr.message)
-        warnings.push(`failed to queue suggestion for ${agent_key}`)
-      } else {
-        actionsQueued++
-      }
+  const qstats: ActionQueueStats = { pending: 0, approved_today: 0, rejected_today: 0, executed_today: 0 }
+  for (const a of allActions ?? []) {
+    if (a.status === 'pending') { qstats.pending++; continue }
+    const updDate = a.updated_at ? String(a.updated_at).slice(0, 10) : null
+    const isToday = updDate === today
+    if (a.status === 'approved' && isToday)  qstats.approved_today++
+    if (a.status === 'rejected' && isToday)  qstats.rejected_today++
+    if (a.status === 'executed' && isToday)  qstats.executed_today++
+  }
 
-      // Persist as agent_finding so /command-center/tuning can show the
-      // full proposal feed (incl. ones that were approved/rejected and
-      // are no longer in the active queue).
-      // NOTE: each suggestion may target multiple parameters. Write one
-      // finding per parameter delta so the page can render a clean per-
-      // parameter row.
-      const currentEntries = Object.entries(suggestion.currentConfig)
-      for (const [param, currentVal] of currentEntries) {
-        const suggestedVal = suggestion.suggestedConfig[param]
-        if (suggestedVal === undefined || suggestedVal === currentVal) continue
-        const recData: VorTuneRecommendationData = {
-          target_agent:    agent_key,
-          parameter:       param,
-          current_value:   currentVal as number | string,
-          suggested_value: suggestedVal as number | string,
-          reasoning:       suggestion.reasoning,
-          confidence:      Math.min(1, suggestion.sampleSize / 30),   // crude — sample-size based
-          metric_basis:    `sample_size=${suggestion.sampleSize} over last ${cfg.windowDays}d`,
-        }
-        await persistFinding(db, {
-          agentKey:    'vor',
-          ownerId,
-          runId,
-          siteSlug,
-          findingType: 'tune_recommendation',
-          subject:     `${agent_key}.${param}`,
-          severity:    'info',
-          data:        { ...recData, headline: suggestion.headline } as unknown as Record<string, unknown>,
-        })
-      }
-    }
+  // ── 5. Tyr metrics (last 7d) ────────────────────────────────────────────────
+  const { data: reviewed } = await db
+    .from('seo_content_briefs')
+    .select('tyr_score, tyr_status')
+    .eq('owner_user_id', ownerId)
+    .gte('tyr_reviewed_at', since7d)
+    .not('tyr_score', 'is', null)
 
-    const summaryBase = suggestions.length
-      ? `Generated ${actionsQueued} tuning suggestion${actionsQueued !== 1 ? 's' : ''} for: ${suggestions.map(s => capitalize(s.agent_key)).join(', ')}.`
-      : `No tuning needed — current configs look balanced over last ${cfg.windowDays}d.`
-    const summary = warnings.length ? `${summaryBase} ⚠ ${warnings.join('; ')}` : summaryBase
-    const status = warnings.length ? 'partial' : 'success'
+  const tstats: TyrMetrics = { avg_score: null, reviewed_week: 0, passed: 0, borderline: 0, failed: 0 }
+  const scores: number[] = []
+  for (const b of reviewed ?? []) {
+    tstats.reviewed_week++
+    scores.push(Number(b.tyr_score))
+    const s = String(b.tyr_status ?? '')
+    if      (s === 'reviewed')   tstats.passed++
+    else if (s === 'borderline') tstats.borderline++
+    else if (s === 'failed')     tstats.failed++
+  }
+  if (scores.length) tstats.avg_score = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
 
-    await _finishRun(db, runId, ownerId, status, summary, suggestions.length, actionsQueued, warnings)
-    return { summary, actionsQueued }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unknown error'
-    await _finishRun(db, runId, ownerId, 'error', msg, 0, 0, warnings, msg)
-    throw err
+  // ── 6. GSC latest snapshot ──────────────────────────────────────────────────
+  let gscStats: GscStats | null = null
+  const { data: gscRows } = await db
+    .from('gsc_ranking_snapshots')
+    .select('clicks, impressions, snapshot_date')
+    .eq('owner_user_id', ownerId)
+    .order('snapshot_date', { ascending: false })
+    .limit(100)
+
+  if (gscRows?.length) {
+    const latestDate = String(gscRows[0].snapshot_date)
+    const latest = (gscRows as Array<{ clicks: number; impressions: number; snapshot_date: string }>)
+      .filter(r => String(r.snapshot_date) === latestDate)
+    const totalClicks      = latest.reduce((s, r) => s + (r.clicks ?? 0), 0)
+    const totalImpressions = latest.reduce((s, r) => s + (r.impressions ?? 0), 0)
+    gscStats = { total_clicks: totalClicks, total_impressions: totalImpressions, snapshot_date: latestDate }
+  }
+
+  return {
+    date:           today,
+    brief_pipeline: bstats,
+    opportunities:  ostats,
+    agent_activity: astats,
+    action_queue:   qstats,
+    tyr_metrics:    tstats,
+    gsc:            gscStats,
   }
 }
 
-// ── Per-agent analysers ─────────────────────────────────────────────────────
+// ── Config-tuning analysers (secondary, unchanged) ────────────────────────────
 
 interface TuneSuggestion {
   headline:        string
@@ -196,103 +250,72 @@ interface TuneSuggestion {
   sampleSize:      number
 }
 
-function analyseHeimdall(
-  allActions: ActionRow[],
-  currentConfig: Record<string, unknown>,
-  cfg: VorConfig,
-): TuneSuggestion | null {
+function analyseHeimdall(allActions: ActionRow[], currentConfig: Record<string, unknown>, cfg: VorConfig): TuneSuggestion | null {
   const heimActions = allActions.filter(a => a.agent_key === 'heimdall' && a.action_type === 'add_action_item')
   if (heimActions.length < cfg.minSampleSize) return null
-
   const lowPri = heimActions.filter(a => a.priority === 'medium')
   const lowResolved = lowPri.filter(a => ['approved', 'executed', 'rejected'].includes(a.status))
   if (lowResolved.length < cfg.minSampleSize) return null
-
   const rejectRate = lowResolved.filter(a => a.status === 'rejected').length / lowResolved.length
-
   const minClicksDrop = Number(currentConfig.minClicksDrop ?? 5)
   const minPctDrop    = Number(currentConfig.minPctDrop ?? 20)
-
   if (rejectRate > cfg.approvalRateThresh) {
-    const newClicks = Math.round(minClicksDrop * 1.4)
-    const newPct    = Math.round(minPctDrop * 1.2)
     return {
       headline:    `Reduce noise: ${(rejectRate * 100).toFixed(0)}% of medium drops rejected`,
-      description: `Over the last ${cfg.windowDays} days, you rejected ${(rejectRate * 100).toFixed(0)}% of Heimdall's medium-priority drop alerts (${lowResolved.length} samples). Suggest tightening thresholds so only worse drops get queued.`,
+      description: `Over the last ${cfg.configWindowDays} days, you rejected ${(rejectRate * 100).toFixed(0)}% of Heimdall's medium-priority drop alerts (${lowResolved.length} samples).`,
       currentConfig:   { minClicksDrop, minPctDrop },
-      suggestedConfig: { minClicksDrop: newClicks, minPctDrop: newPct },
-      reasoning:       `High rejection rate suggests current thresholds (${minClicksDrop} clicks / ${minPctDrop}%) are too lenient. Raising to ${newClicks} clicks / ${newPct}% should cut noise without losing significant drops.`,
-      sampleSize:      lowResolved.length,
+      suggestedConfig: { minClicksDrop: Math.round(minClicksDrop * 1.4), minPctDrop: Math.round(minPctDrop * 1.2) },
+      reasoning:   `High rejection rate suggests thresholds are too lenient.`,
+      sampleSize:  lowResolved.length,
     }
   }
-
   if (rejectRate < (1 - cfg.highConfidenceThresh) && minClicksDrop > 3) {
-    const newClicks = Math.max(3, Math.round(minClicksDrop * 0.8))
-    const newPct    = Math.max(10, Math.round(minPctDrop * 0.9))
     return {
       headline:    `Lower threshold: ${((1 - rejectRate) * 100).toFixed(0)}% of medium drops approved`,
-      description: `Over the last ${cfg.windowDays} days, ${((1 - rejectRate) * 100).toFixed(0)}% of medium-priority drops were approved (${lowResolved.length} samples). You may be missing smaller drops.`,
+      description: `${((1 - rejectRate) * 100).toFixed(0)}% of medium-priority drops were approved (${lowResolved.length} samples). You may be missing smaller drops.`,
       currentConfig:   { minClicksDrop, minPctDrop },
-      suggestedConfig: { minClicksDrop: newClicks, minPctDrop: newPct },
-      reasoning:       `Very high approval rate suggests Heimdall is being conservative. Lowering to ${newClicks} clicks / ${newPct}% surfaces additional candidates.`,
-      sampleSize:      lowResolved.length,
+      suggestedConfig: { minClicksDrop: Math.max(3, Math.round(minClicksDrop * 0.8)), minPctDrop: Math.max(10, Math.round(minPctDrop * 0.9)) },
+      reasoning:   `Very high approval rate — Heimdall is being conservative.`,
+      sampleSize:  lowResolved.length,
     }
   }
-
   return null
 }
 
-function analyseLoki(
-  allActions: ActionRow[],
-  currentConfig: Record<string, unknown>,
-  cfg: VorConfig,
-): TuneSuggestion | null {
-  const lokiGaps = allActions.filter(a => a.agent_key === 'loki' && a.action_type === 'add_action_item' && (a.data?.action_type === 'on_page' || a.data?.action_type === 'new_page'))
+function analyseLoki(allActions: ActionRow[], currentConfig: Record<string, unknown>, cfg: VorConfig): TuneSuggestion | null {
+  const lokiGaps = allActions.filter(a => a.agent_key === 'loki' && a.action_type === 'add_action_item')
   if (lokiGaps.length < cfg.minSampleSize) return null
-
   const lowVol = lokiGaps.filter(a => Number(a.data?.search_volume ?? 0) < 1000 && ['approved', 'rejected', 'executed'].includes(a.status))
   if (lowVol.length < cfg.minSampleSize) return null
-
   const rejectRate = lowVol.filter(a => a.status === 'rejected').length / lowVol.length
-
   if (rejectRate > 0.7) {
-    const currentLowCutoff = Number(currentConfig.lowPriorityVolumeCutoff ?? 1000)
+    const cutoff = Number(currentConfig.lowPriorityVolumeCutoff ?? 1000)
     return {
       headline:    `Skip low-volume gaps: ${(rejectRate * 100).toFixed(0)}% rejection rate`,
-      description: `${(rejectRate * 100).toFixed(0)}% of gaps under ${currentLowCutoff.toLocaleString()} monthly searches were rejected (${lowVol.length} samples). Suggest skipping these entirely.`,
-      currentConfig:   { lowPriorityVolumeCutoff: currentLowCutoff },
-      suggestedConfig: { lowPriorityVolumeCutoff: currentLowCutoff * 2 },
-      reasoning:       `Loki currently queues gaps with any volume. Raising the cutoff to ${(currentLowCutoff * 2).toLocaleString()} skips low-yield gaps that consistently get rejected.`,
-      sampleSize:      lowVol.length,
+      description: `${(rejectRate * 100).toFixed(0)}% of gaps under ${cutoff.toLocaleString()} SV were rejected (${lowVol.length} samples).`,
+      currentConfig:   { lowPriorityVolumeCutoff: cutoff },
+      suggestedConfig: { lowPriorityVolumeCutoff: cutoff * 2 },
+      reasoning:   `Raising cutoff to ${(cutoff * 2).toLocaleString()} removes low-yield noise.`,
+      sampleSize:  lowVol.length,
     }
   }
   return null
 }
 
-function analyseOdin(
-  allActions: ActionRow[],
-  currentConfig: Record<string, unknown>,
-  cfg: VorConfig,
-): TuneSuggestion | null {
-  const odinTrends = allActions.filter(a => a.agent_key === 'odin' && a.action_type === 'suggest_trend_brief')
-  if (odinTrends.length < cfg.minSampleSize) return null
-
-  const lowPri = odinTrends.filter(a => a.priority === 'low' && ['approved', 'rejected', 'executed'].includes(a.status))
+function analyseOdin(allActions: ActionRow[], currentConfig: Record<string, unknown>, cfg: VorConfig): TuneSuggestion | null {
+  const trends = allActions.filter(a => a.agent_key === 'odin' && a.action_type === 'suggest_trend_brief')
+  if (trends.length < cfg.minSampleSize) return null
+  const lowPri = trends.filter(a => a.priority === 'low' && ['approved', 'rejected', 'executed'].includes(a.status))
   if (lowPri.length < cfg.minSampleSize) return null
-
   const rejectRate = lowPri.filter(a => a.status === 'rejected').length / lowPri.length
-
-  if (rejectRate > 0.7) {
-    const currentSkipLow = Boolean(currentConfig.skipLowPriority ?? false)
-    if (!currentSkipLow) {
-      return {
-        headline:    `Skip low-priority trends: ${(rejectRate * 100).toFixed(0)}% rejected`,
-        description: `${(rejectRate * 100).toFixed(0)}% of low-priority trend suggestions were rejected (${lowPri.length} samples). Suggest filtering them out at source.`,
-        currentConfig:   { skipLowPriority: false },
-        suggestedConfig: { skipLowPriority: true },
-        reasoning:       `When skipLowPriority is true, Odin won't even queue trends scored as 'low'. Reduces noise.`,
-        sampleSize:      lowPri.length,
-      }
+  if (rejectRate > 0.7 && !Boolean(currentConfig.skipLowPriority)) {
+    return {
+      headline:    `Skip low-priority trends: ${(rejectRate * 100).toFixed(0)}% rejected`,
+      description: `${(rejectRate * 100).toFixed(0)}% of low-priority trend suggestions were rejected (${lowPri.length} samples).`,
+      currentConfig:   { skipLowPriority: false },
+      suggestedConfig: { skipLowPriority: true },
+      reasoning:   `skipLowPriority=true cuts these from the queue at source.`,
+      sampleSize:  lowPri.length,
     }
   }
   return null
@@ -300,55 +323,162 @@ function analyseOdin(
 
 async function analyseTyr(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db: any,
-  ownerId: string,
-  sinceIso: string,
-  currentConfig: Record<string, unknown>,
-  cfg: VorConfig,
+  db: any, ownerId: string, sinceIso: string,
+  currentConfig: Record<string, unknown>, cfg: VorConfig,
 ): Promise<TuneSuggestion | null> {
   const { data: briefs } = await db
     .from('seo_content_briefs')
-    .select('id, status, tyr_score, tyr_status, tyr_reviewed_at')
+    .select('status, tyr_score, tyr_status')
     .eq('owner_user_id', ownerId)
     .gte('tyr_reviewed_at', sinceIso)
     .not('tyr_score', 'is', null)
-
-  const reviewed: Array<{ status: string; tyr_score: number; tyr_status: string }> = (briefs ?? []) as Array<{ status: string; tyr_score: number; tyr_status: string }>
+  const reviewed = (briefs ?? []) as Array<{ status: string; tyr_score: number; tyr_status: string }>
   if (reviewed.length < cfg.minSampleSize) return null
-
-  const minScore = Number(currentConfig.minScore ?? 80)
-  const autoPromoted = reviewed.filter(b => b.tyr_status === 'reviewed')
+  const minScore      = Number(currentConfig.minScore ?? 80)
+  const autoPromoted  = reviewed.filter(b => b.tyr_status === 'reviewed')
   if (autoPromoted.length < cfg.minSampleSize) return null
-
-  const demotedRate   = autoPromoted.filter(b => b.status === 'draft').length     / autoPromoted.length
+  const demotedRate   = autoPromoted.filter(b => b.status === 'draft').length / autoPromoted.length
   const publishedRate = autoPromoted.filter(b => b.status === 'published').length / autoPromoted.length
-
   if (demotedRate > 0.3) {
-    const newMin = Math.min(95, minScore + 5)
     return {
-      headline:    `Tighten Tyr: ${(demotedRate * 100).toFixed(0)}% of auto-promoted briefs got demoted`,
-      description: `${(demotedRate * 100).toFixed(0)}% of briefs Tyr auto-promoted (≥${minScore}) ended up demoted back to 'draft' by you. Tyr is being too lenient.`,
+      headline:    `Tighten Tyr: ${(demotedRate * 100).toFixed(0)}% auto-promoted briefs demoted`,
+      description: `${(demotedRate * 100).toFixed(0)}% of briefs Tyr auto-promoted were manually demoted back to draft.`,
       currentConfig:   { minScore },
-      suggestedConfig: { minScore: newMin },
-      reasoning:       `Raising minScore to ${newMin} should reduce false-positives — fewer briefs auto-promoted, but those that pass should be higher quality.`,
-      sampleSize:      autoPromoted.length,
+      suggestedConfig: { minScore: Math.min(95, minScore + 5) },
+      reasoning:   `Tyr is too lenient — raising minScore reduces false-positives.`,
+      sampleSize:  autoPromoted.length,
     }
   }
-
   if (publishedRate > cfg.highConfidenceThresh && minScore > 70) {
-    const newMin = Math.max(70, minScore - 5)
     return {
-      headline:    `Loosen Tyr: ${(publishedRate * 100).toFixed(0)}% of auto-promoted briefs got published`,
-      description: `${(publishedRate * 100).toFixed(0)}% of Tyr's auto-promoted briefs went straight to publish without edits. Tyr could be more permissive.`,
+      headline:    `Loosen Tyr: ${(publishedRate * 100).toFixed(0)}% auto-promoted published`,
+      description: `${(publishedRate * 100).toFixed(0)}% of Tyr's auto-promoted briefs went to publish without edits.`,
       currentConfig:   { minScore },
-      suggestedConfig: { minScore: newMin },
-      reasoning:       `Very high publish-without-edit rate suggests Tyr is overly strict. Lowering to ${newMin} surfaces more candidates while maintaining quality.`,
-      sampleSize:      autoPromoted.length,
+      suggestedConfig: { minScore: Math.max(70, minScore - 5) },
+      reasoning:   `High publish-without-edit rate — Tyr can afford to be more permissive.`,
+      sampleSize:  autoPromoted.length,
     }
   }
-
   return null
 }
+
+// ── Main run ──────────────────────────────────────────────────────────────────
+
+export async function runVor(
+  ownerId: string,
+  siteSlug: string,
+  runId: string,
+  config: Partial<VorConfig> = {}
+): Promise<{ summary: string; actionsQueued: number }> {
+  const cfg = { ...VOR_DEFAULTS, ...config }
+  const db  = createServiceClient()
+  const warnings: string[] = []
+  let actionsQueued = 0
+
+  try {
+    // ── 1. Daily snapshot ─────────────────────────────────────────────────────
+    const snapshot = await captureDailySnapshot(db, ownerId)
+
+    // Persist as agent_finding so performance page can chart over time
+    await persistFinding(db, {
+      agentKey:    'vor',
+      ownerId,
+      runId,
+      siteSlug,
+      findingType: 'daily_snapshot',
+      subject:     `Daily snapshot — ${snapshot.date}`,
+      severity:    'info',
+      data:        snapshot as unknown as Record<string, unknown>,
+    })
+
+    // ── 2. Config tuning (secondary — only if runConfigTuning && enough data) ─
+    if (cfg.runConfigTuning) {
+      const sinceIso = new Date(Date.now() - cfg.configWindowDays * 24 * 60 * 60 * 1000).toISOString()
+      const { data: actions } = await db
+        .from('agent_actions')
+        .select('id, agent_key, action_type, priority, status, data, created_at')
+        .eq('owner_user_id', ownerId)
+        .gte('created_at', sinceIso)
+
+      const { data: agentRows } = await db
+        .from('agents')
+        .select('agent_key, config')
+        .eq('owner_user_id', ownerId)
+
+      const configByAgent = new Map<string, Record<string, unknown>>()
+      for (const a of agentRows ?? []) configByAgent.set(a.agent_key as string, (a.config ?? {}) as Record<string, unknown>)
+
+      type AgentSuggestion = { agent_key: string; suggestion: TuneSuggestion }
+      const suggestions: AgentSuggestion[] = []
+
+      const h = analyseHeimdall(actions ?? [], configByAgent.get('heimdall') ?? {}, cfg)
+      if (h) suggestions.push({ agent_key: 'heimdall', suggestion: h })
+      const l = analyseLoki(actions ?? [], configByAgent.get('loki') ?? {}, cfg)
+      if (l) suggestions.push({ agent_key: 'loki', suggestion: l })
+      const o = analyseOdin(actions ?? [], configByAgent.get('odin') ?? {}, cfg)
+      if (o) suggestions.push({ agent_key: 'odin', suggestion: o })
+      const t = await analyseTyr(db, ownerId, sinceIso, configByAgent.get('tyr') ?? {}, cfg)
+      if (t) suggestions.push({ agent_key: 'tyr', suggestion: t })
+
+      for (const { agent_key, suggestion } of suggestions) {
+        const { error: insertErr } = await db
+          .from('agent_actions')
+          .insert({
+            owner_user_id: ownerId,
+            agent_key:     'vor',
+            run_id:        runId,
+            site_slug:     siteSlug,
+            action_type:   'tune_config',
+            title:         `Tune ${capitalize(agent_key)} — ${suggestion.headline}`,
+            description:   suggestion.description,
+            priority:      'medium',
+            data: {
+              target_agent:     agent_key,
+              current_config:   suggestion.currentConfig,
+              suggested_config: suggestion.suggestedConfig,
+              reasoning:        suggestion.reasoning,
+              sample_size:      suggestion.sampleSize,
+            },
+          })
+        if (insertErr) warnings.push(`tune_config insert failed for ${agent_key}`)
+        else actionsQueued++
+      }
+    }
+
+    // ── 3. Build human-readable summary ──────────────────────────────────────
+    const s = snapshot
+    const summaryParts: string[] = [
+      `Daily snapshot ${s.date}:`,
+      `Briefs — ${s.brief_pipeline.published} published (${s.brief_pipeline.published_today} today), ${s.brief_pipeline.agent_generated} pending review.`,
+    ]
+    if (s.opportunities.total > 0) {
+      summaryParts.push(`Opportunities — ${s.opportunities.total} total (${s.opportunities.new} new, ${s.opportunities.brief_ready} brief-ready).`)
+    }
+    if (s.tyr_metrics.reviewed_week > 0) {
+      summaryParts.push(`Tyr (7d) — avg score ${s.tyr_metrics.avg_score ?? '—'}, ${s.tyr_metrics.passed} passed, ${s.tyr_metrics.failed} failed.`)
+    }
+    if (s.gsc) {
+      summaryParts.push(`GSC (${s.gsc.snapshot_date}) — ${s.gsc.total_clicks.toLocaleString()} clicks, ${s.gsc.total_impressions.toLocaleString()} impressions.`)
+    }
+    if (actionsQueued > 0) {
+      summaryParts.push(`Config tuning: ${actionsQueued} suggestion${actionsQueued > 1 ? 's' : ''} queued.`)
+    }
+    if (warnings.length) summaryParts.push(`⚠ ${warnings.join('; ')}`)
+
+    const summary = summaryParts.join(' ')
+    const status  = warnings.length ? 'partial' : 'success'
+
+    await _finishRun(db, runId, ownerId, status, summary, 1, actionsQueued, warnings)
+    return { summary, actionsQueued }
+
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    await _finishRun(db, runId, ownerId, 'error', msg, 0, 0, warnings, msg)
+    throw err
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1)
@@ -356,34 +486,27 @@ function capitalize(s: string): string {
 
 async function _finishRun(
   db: ReturnType<typeof createServiceClient>,
-  runId: string,
-  ownerId: string,
-  status: 'success' | 'error' | 'partial',
-  summary: string,
+  runId:         string,
+  ownerId:       string,
+  status:        'success' | 'error' | 'partial',
+  summary:       string,
   findingsCount: number,
   actionsQueued: number,
-  warnings: string[],
+  warnings:      string[],
   errorMessage?: string
 ) {
-  await db
-    .from('agent_runs')
-    .update({
-      status,
-      summary,
-      findings_count: findingsCount,
-      actions_queued: actionsQueued,
-      error_message:  errorMessage ?? (warnings.length ? warnings.join('; ') : null),
-      finished_at:    new Date().toISOString(),
-    })
-    .eq('id', runId)
+  await db.from('agent_runs').update({
+    status,
+    summary,
+    findings_count: findingsCount,
+    actions_queued: actionsQueued,
+    error_message:  errorMessage ?? (warnings.length ? warnings.join('; ') : null),
+    finished_at:    new Date().toISOString(),
+  }).eq('id', runId)
 
-  await db
-    .from('agents')
-    .update({
-      last_run_at:      new Date().toISOString(),
-      last_run_status:  status,
-      last_run_summary: summary,
-    })
-    .eq('owner_user_id', ownerId)
-    .eq('agent_key', 'vor')
+  await db.from('agents').update({
+    last_run_at:      new Date().toISOString(),
+    last_run_status:  status,
+    last_run_summary: summary,
+  }).eq('owner_user_id', ownerId).eq('agent_key', 'vor')
 }

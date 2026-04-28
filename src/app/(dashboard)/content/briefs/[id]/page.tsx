@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { notFound, redirect } from 'next/navigation'
 import BriefQualityReview, { type TyrBreakdown } from '@/components/agents/BriefQualityReview'
+import BriefActionBar from '@/components/agents/BriefActionBar'
 
 export const revalidate = 30
 
@@ -104,6 +105,14 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         </p>
       </div>
 
+      {/* Action bar — Tyr, Regenerate, Override, Publish */}
+      <BriefActionBar
+        briefId={id}
+        initialStatus={brief.status as string}
+        initialTyrStatus={brief.tyr_status as string | null}
+        initialTyrScore={brief.tyr_score as number | null}
+      />
+
       {/* Tyr quality review (auto-shown if reviewed) */}
       <BriefQualityReview
         score={brief.tyr_score as number | null}
@@ -188,7 +197,7 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
 
       {/* Footer info */}
       <p className="text-gray-600 text-xs text-center">
-        This is a read-only preview. To edit, return to the action item flow or approve regeneration.
+        Use the Actions panel above to run Tyr review, regenerate, or mark this brief as published.
       </p>
     </div>
   )
