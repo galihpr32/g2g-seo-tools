@@ -213,6 +213,14 @@ export default function AIAssistant() {
     setHydrated(true)
   }, [])
 
+  // Auto-resize textarea: grow with content, cap at ~160px (~8 lines)
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'                                     // shrink first
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px'     // then expand to content
+  }, [input])
+
   // Persist messages whenever they change
   useEffect(() => {
     if (!hydrated) return
@@ -243,6 +251,8 @@ export default function AIAssistant() {
     setInput('')
     setLoading(true)
     setError(null)
+    // Shrink textarea back to 1 row immediately after send
+    if (inputRef.current) inputRef.current.style.height = 'auto'
 
     try {
       const res  = await fetch('/api/ai/chat', {
@@ -449,8 +459,8 @@ export default function AIAssistant() {
                 onKeyDown={handleKeyDown}
                 placeholder="Ask about SEO, data, strategy…"
                 rows={1}
-                className="flex-1 bg-transparent text-sm text-white placeholder-gray-600 resize-none focus:outline-none max-h-28 overflow-y-auto"
-                style={{ lineHeight: '1.5' }}
+                className="flex-1 bg-transparent text-sm text-white placeholder-gray-600 resize-none focus:outline-none overflow-y-auto"
+                style={{ lineHeight: '1.5', minHeight: '24px', maxHeight: '160px' }}
               />
               <button
                 onClick={() => sendMessage()}
