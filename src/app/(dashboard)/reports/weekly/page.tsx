@@ -229,6 +229,196 @@ function ActionPlan({ raw }: { raw: string }) {
   )
 }
 
+// ── Action Punch List ─────────────────────────────────────────────────────────
+//
+// Compact, action-only summary at the top of the report. Replaces the
+// long-form AI Narrative as the FIRST thing the reader sees. The narrative
+// + Issues block + Agent Activity Summary still exist but moved below this.
+//
+// Sources:
+//   • aiIssues  — extract first 3 most pointed issues (already curated by Claude)
+//   • gsc.topDroppers — top page that lost the most clicks
+//   • semrush.topMoversDown — biggest keyword drop (if any)
+//   • actionItems.pending — outstanding count
+//   • agentInsights — Tyr failed briefs + Loki high-value gaps surface as
+//     direct call-to-action items
+//
+// Each item is one line, imperative voice, with an inline destination link
+// when relevant. No paragraphs. No prose. The reader should be able to
+// punch through this in 30 seconds.
+
+interface PunchItem {
+  emoji:    string
+  headline: string
+  subtext?: string
+  href?:    string
+  severity: 'critical' | 'warning' | 'info'
+}
+
+const PUNCH_STYLES: Record<PunchItem['severity'], string> = {
+  critical: 'bg-red-950/40 border-red-700/50 text-red-100',
+  warning:  'bg-amber-950/30 border-amber-700/40 text-amber-100',
+  info:     'bg-blue-950/30 border-blue-800/40 text-blue-100',
+}
+
+function buildPunchItems(d: ReportData): PunchItem[] {
+  const items: PunchItem[] = []
+
+  // Top dropper page (GSC)
+  if (d.gsc?.topDroppers && d.gsc.topDroppers.length > 0) {
+    const top = d.gsc.topDroppers[0]
+    if (top.delta < -10) {
+      items.push({
+        emoji:    '📉',
+        severity: top.delta < -100 ? 'critical' : 'warning',
+        headline: `Page lost ${Math.abs(top.delta).toLocaleString()} clicks: ${top.page.replace(/^https?:\/\/[^/]+/, '')}`,
+        subtext:  `Now ${top.clicks.toLocaleString()}/wk. Diagnose with Heimdall.`,
+        href:     '/gsc/ranking-drop',
+      })
+    }
+  }
+
+  // Tyr failed briefs (from agent_insights)
+  if (d.agentInsights) {
+    const insights = d.agentInsights as unknown as Record<string, unknown>
+    const tyrFailed = Number((insights.tyr as Record<string, unknown> | undefined)?.failed_briefs ?? 0)
+    if (tyrFailed > 0) {
+      items.push({
+        emoji:    '⚖️',
+        severity: tyrFailed >= 3 ? 'warning' : 'info',
+        headline: `Re-run regenerate for ${tyrFailed} Tyr-failed brief${tyrFailed > 1 ? 's' : ''}`,
+        subtext:  'Approve regenerate actions in the queue.',
+        href:     '/command-center',
+      })
+    }
+    const lokiHighGaps = Number((insights.loki as Record<string, unknown> | undefined)?.high_value_gaps ?? 0)
+    if (lokiHighGaps > 0) {
+      items.push({
+        emoji:    '🦊',
+        severity: 'info',
+        headline: `Approve ${lokiHighGaps} Loki gap${lokiHighGaps > 1 ? 's' : ''} ≥10K SV — auto-drafts via Bragi`,
+        href:     '/command-center',
+      })
+    }
+  }
+
+  // Pending action items
+  if (d.actionItems && d.actionItems.pending > 5) {
+    items.push({
+      emoji:    '✅',
+      severity: d.actionItems.pending > 20 ? 'warning' : 'info',
+      headline: `${d.actionItems.pending} action items still pending — assign or close`,
+      subtext:  d.actionItems.completedThisWeek
+        ? `Only ${d.actionItems.completedThisWeek} closed this week.`
+        : 'No items closed this week.',
+      href:     '/gsc/action-items',
+    })
+  }
+
+  // Top SEMrush dropper
+  if (d.semrush?.topMoversDown && d.semrush.topMoversDown.length > 0) {
+    const top = d.semrush.topMoversDown[0]
+    if (Math.abs(top.positionDiff) >= 5) {
+      items.push({
+        emoji:    '🔻',
+        severity: 'warning',
+        headline: `Keyword "${top.keyword}" dropped ${Math.abs(top.positionDiff)} positions to #${top.position}`,
+        subtext:  `${top.volume.toLocaleString()} monthly searches at risk.`,
+        href:     '/semrush/keywords',
+      })
+    }
+  }
+
+  // SEMrush instrumentation broken (zero across buckets)
+  if (d.semrush && d.semrush.totalKeywords === 0) {
+    items.push({
+      emoji:    '⚠️',
+      severity: 'critical',
+      headline: 'SEMrush keyword tracking returning zero — fix instrumentation',
+      subtext:  'No visibility into rank movements until this is fixed.',
+      href:     '/command-center/health',
+    })
+  }
+
+  // Revenue significant drop
+  if (d.ga4 && d.ga4.revenuePct != null && d.ga4.revenuePct <= -8) {
+    const totalRev = d.ga4.totalRevenue ?? 0
+    items.push({
+      emoji:    '💸',
+      severity: d.ga4.revenuePct <= -15 ? 'critical' : 'warning',
+      headline: `Revenue down ${Math.abs(d.ga4.revenuePct)}% week-over-week ($${(totalRev / 1000).toFixed(0)}K)`,
+      subtext:  'Check AOV compression / category mix — alert finance.',
+    })
+  }
+
+  // Pull AI-curated issues (first 3 punchiest) as fallback context
+  if (items.length < 4 && d.aiIssues) {
+    const bullets = d.aiIssues.split('\n')
+      .map(l => l.replace(/^[\s•\-*]+/, '').replace(/^\*\*(.+?)\*\*[\s—–-]*/, '').trim())
+      .filter(l => l.length > 20)
+      .slice(0, 4 - items.length)
+    for (const b of bullets) {
+      items.push({
+        emoji:    '⚠️',
+        severity: 'warning',
+        headline: b.length > 140 ? b.slice(0, 137) + '…' : b,
+      })
+    }
+  }
+
+  return items.slice(0, 6)
+}
+
+function ActionPunchList({ data }: { data: ReportData }) {
+  const items = buildPunchItems(data)
+  if (items.length === 0) {
+    return (
+      <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-base">✅</span>
+          <h3 className="text-sm font-semibold text-green-300 uppercase tracking-wider">All clear</h3>
+        </div>
+        <p className="text-sm text-gray-400">
+          No critical action items surfaced for this week. Detail breakdowns below.
+        </p>
+      </div>
+    )
+  }
+  return (
+    <div className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-700 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-base">🎯</span>
+          <h3 className="text-sm font-semibold text-white uppercase tracking-wider">This week — actionables</h3>
+          <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">{items.length}</span>
+        </div>
+        <p className="text-[10px] text-gray-600 uppercase tracking-wider">Read first · skim 30 sec</p>
+      </div>
+      <ol className="space-y-2">
+        {items.map((it, i) => (
+          <li key={i} className={`border rounded-lg px-3 py-2 ${PUNCH_STYLES[it.severity]}`}>
+            <div className="flex items-start gap-3">
+              <span className="text-base flex-shrink-0 leading-tight">{it.emoji}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium leading-snug">{it.headline}</p>
+                {it.subtext && <p className="text-xs opacity-75 mt-0.5">{it.subtext}</p>}
+              </div>
+              {it.href && (
+                <a
+                  href={it.href}
+                  className="text-[11px] font-semibold underline-offset-2 hover:underline whitespace-nowrap flex-shrink-0 mt-0.5"
+                >
+                  Go →
+                </a>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
   // Site-aware URL formatter — strips the site's origin from page URLs
@@ -513,35 +703,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 </div>
               )}
 
-              {/* ── AI Narrative ── */}
-              {report.ai_narrative && (
-                <div className="bg-gradient-to-br from-gray-900 to-gray-900/80 border border-gray-700 rounded-xl p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-base">✨</span>
-                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">AI Analysis</h3>
-                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">Claude</span>
-                  </div>
-                  <div className="space-y-3">
-                    {report.ai_narrative.split('\n\n').map((para, i) => (
-                      <p key={i} className="text-sm text-gray-300 leading-relaxed">{para}</p>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* ── Issues & Shortcomings ── */}
-              {d.aiIssues && (
-                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <span className="text-base">⚠️</span>
-                    <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-wider">Issues & Shortcomings</h3>
-                  </div>
-                  <IssuesList raw={d.aiIssues} />
-                </div>
-              )}
-
-              {/* ── Agent Activity (auto-hidden if no activity) ── */}
-              <AgentActivitySummary insights={d.agentInsights ?? null} />
+              {/* ── Action Punch List (TOP — read first, 30-sec skim) ── */}
+              <ActionPunchList data={d} />
 
               {/* ── Traffic + Keywords ── */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -802,6 +965,49 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                   </div>
                 )}
               </div>
+
+              {/* ─────────────────────────────────────────────────────────
+                  DETAILED ANALYSIS — moved BELOW the punch list at top.
+                  Read this section if you need full context, narrative,
+                  per-issue breakdown, or want the management/team plan.
+                  ───────────────────────────────────────────────────────── */}
+              <div className="border-t border-gray-800 pt-6 mt-2">
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-base">📖</span>
+                  <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Full analysis</h2>
+                  <span className="text-[10px] text-gray-600">— skip if the punch list above is enough</span>
+                </div>
+              </div>
+
+              {/* ── AI Narrative (moved from top) ── */}
+              {report.ai_narrative && (
+                <div className="bg-gradient-to-br from-gray-900 to-gray-900/80 border border-gray-700 rounded-xl p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-base">✨</span>
+                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">AI Analysis</h3>
+                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">Claude</span>
+                  </div>
+                  <div className="space-y-3">
+                    {report.ai_narrative.split('\n\n').map((para, i) => (
+                      <p key={i} className="text-sm text-gray-300 leading-relaxed">{para}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Issues & Shortcomings (moved from top) ── */}
+              {d.aiIssues && (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-6">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-base">⚠️</span>
+                    <h3 className="text-sm font-semibold text-amber-300 uppercase tracking-wider">Issues & Shortcomings</h3>
+                  </div>
+                  <IssuesList raw={d.aiIssues} />
+                </div>
+              )}
+
+              {/* ── Agent Activity (auto-hidden if no activity) ── */}
+              <AgentActivitySummary insights={d.agentInsights ?? null} />
 
               {/* ── Management Brief + Team Plan ── */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

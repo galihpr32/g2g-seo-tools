@@ -292,7 +292,37 @@ export async function runHermod(
     }
 
     if (skippedNoCandidates.length > 0) {
-      warnings.push(`No candidates for ${skippedNoCandidates.length} keyword(s); run a SERP snapshot job first`)
+      warnings.push(`No candidates for ${skippedNoCandidates.length} keyword(s); SERP snapshots missing`)
+
+      // Queue an actionable item so the user can fix this with one click.
+      // Previously this was a passive warning — now we surface it as a high-
+      // priority action linking directly to the SERP tracker with the
+      // missing keywords pre-filled. After the snapshot runs, Hermod will
+      // find candidates on its next scheduled run.
+      const missingPreview = skippedNoCandidates.slice(0, 5).map(k => `"${k}"`).join(', ')
+      const moreSuffix     = skippedNoCandidates.length > 5 ? ` +${skippedNoCandidates.length - 5} more` : ''
+      const trackerUrl     = `/competitive/serp-tracker?keywords=${encodeURIComponent(skippedNoCandidates.join(','))}`
+
+      await db.from('agent_actions').insert({
+        owner_user_id: ownerId,
+        agent_key:     'hermod',
+        run_id:        runId,
+        site_slug:     siteSlug,
+        action_type:   'add_action_item',
+        title:         `Hermod blocked: SERP snapshots missing for ${skippedNoCandidates.length} keyword${skippedNoCandidates.length > 1 ? 's' : ''}`,
+        description: [
+          `Hermod found ${gapActions.length} Loki gap${gapActions.length !== 1 ? 's' : ''} but couldn't pitch any prospects because the SERP top-10 hasn't been snapshotted for: ${missingPreview}${moreSuffix}.`,
+          `Approve this item to mark it as in-progress, then click the link below to run the snapshot. Hermod's next scheduled run (or manual trigger from Command Center) will pick up the prospects automatically.`,
+          `→ Run SERP snapshot: ${trackerUrl}`,
+        ].join(' '),
+        priority: 'high',
+        data: {
+          keywords:        skippedNoCandidates,
+          tracker_url:     trackerUrl,
+          action_type:     'serp_snapshot_needed',
+          source:          'hermod_blocked',
+        },
+      })
     }
 
     const summary = actionsQueued > 0

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 
@@ -53,10 +54,19 @@ function SovBar({ pct, domain }: { pct: number; domain: string }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function SerpTrackerPage() {
+  const searchParams = useSearchParams()
+  // Pre-fill keywords from `?keywords=foo,bar,baz` — used by Hermod's
+  // "SERP snapshots missing" action item link, so users land here with
+  // the missing keywords already in the input.
+  const initialKeywords = searchParams.get('keywords') ?? ''
+
   const [competitors, setCompetitors]         = useState<Competitor[]>([])
   const [trackedProducts, setTrackedProducts] = useState<TrackedProduct[]>([])
   const [countryCode, setCountryCode]         = useState('us')
-  const [customKeywords, setCustomKeywords]   = useState('')
+  const [customKeywords, setCustomKeywords]   = useState(
+    // Convert comma-separated to newline-separated (the textarea expects one keyword per line)
+    initialKeywords ? initialKeywords.split(',').map(k => k.trim()).filter(Boolean).join('\n') : ''
+  )
   const [selectedSource, setSource]           = useState<'custom' | 'products'>('custom')
   const [selectedProductId, setProductId]     = useState('')
   const [loading, setLoading]                 = useState(false)

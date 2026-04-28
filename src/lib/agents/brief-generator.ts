@@ -25,6 +25,15 @@ const BASE_BACKOFF_MS     = 800   // 800ms, 1.6s, 3.2s
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface PreviousTyrReview {
+  score?:       number | null
+  dimensions?:  Record<string, { score: number; comment: string }> | null
+  strengths?:   string[]
+  weaknesses?:  string[]
+  suggestions?: { priority: 'high' | 'medium' | 'low'; text: string }[]
+  reasoning?:   string
+}
+
 interface BriefInput {
   briefId:       string
   ownerId:       string
@@ -34,6 +43,13 @@ interface BriefInput {
   searchVolume?: number
   competitorUrl?: string | null
   notes?:        string | null
+  /**
+   * Tyr's full review of the previous draft, when this generation is a
+   * regenerate-after-failed-review. The prompt uses this to instruct the
+   * LLM to fix specific weaknesses + heed prioritised suggestions, rather
+   * than starting from a blank slate.
+   */
+  previousReview?: PreviousTyrReview | null
 }
 
 interface OutlineSection { heading: string; points: string[] }
@@ -335,6 +351,24 @@ function buildPrompt(input: BriefInput, kbBlock: string): string {
   const volStr     = input.searchVolume ? `${input.searchVolume.toLocaleString()} monthly searches` : 'unknown volume'
   const isCategory = input.briefType === 'category_page' || input.pageUrl.includes('/categories/')
 
+  // ── Tyr regenerate-feedback block ──
+  // When this is a regen of a brief that failed Tyr's review, inline Tyr's
+  // structured feedback (per-dim weakness comments + prioritised suggestions)
+  // so the LLM can specifically address what went wrong, instead of
+  // generating from scratch with the same blind spots.
+  const review = input.previousReview
+  const regenBlock = review ? buildRegenFeedbackBlock(review) : ''
+
+  const baseRequirements = `Quality requirements:
+
+- suggestedH1: keyword-rich, specific to the page, NOT generic ("Buy X" is fine; "Welcome to G2G" is not).
+- metaDescription: 150-160 chars, includes primary keyword and a clear CTA.
+- userIntent: 1-2 sentences describing what the user actually wants (not what we want to sell).
+- targetKeywords: primary keyword + 4-7 related long-tail variants and LSI terms (NOT just price/cheap/buy permutations — include intent-specific variants).
+- contentOutline: 4-6 H2 sections, each with 2-4 bullet points. The first section should NOT be a generic "What is X" intro — start with what the user came here for (price comparison, listings, trust signals).
+- faqSuggestions: 3-5 questions real users actually search (use "people also ask" style — pricing, safety, delivery time, refund policy).
+- Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.`
+
   return `You are an expert SEO content strategist for G2G.com, a peer-to-peer gaming marketplace.
 
 Create a structured SEO content brief for the following:
@@ -348,13 +382,76 @@ ${kbBlock}
 
 ${isCategory ? 'This is a game category page that sells in-game currency, items, accounts, or boosting services. The content must serve buyers (help them find what they want and trust the marketplace) AND search intent.' : ''}
 
-Call the submit_seo_brief tool with the structured brief. Quality requirements:
+${regenBlock}
 
-- suggestedH1: keyword-rich, specific to the page, NOT generic ("Buy X" is fine; "Welcome to G2G" is not).
-- metaDescription: 150-160 chars, includes primary keyword and a clear CTA.
-- userIntent: 1-2 sentences describing what the user actually wants (not what we want to sell).
-- targetKeywords: primary keyword + 4-7 related long-tail variants and LSI terms (NOT just price/cheap/buy permutations — include intent-specific variants).
-- contentOutline: 4-6 H2 sections, each with 2-4 bullet points. The first section should NOT be a generic "What is X" intro — start with what the user came here for (price comparison, listings, trust signals).
-- faqSuggestions: 3-5 questions real users actually search (use "people also ask" style — pricing, safety, delivery time, refund policy).
-- Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.`
+Call the submit_seo_brief tool with the structured brief. ${baseRequirements}`
+}
+
+/**
+ * Build the "previous Tyr review" block injected into the regen prompt.
+ *
+ * Critically, this is structured — we don't just paste a JSON dump. We
+ * surface the per-dimension scores < 7 (the failing ones) and the high/
+ * medium priority suggestions. The LLM has been observed to treat
+ * structured "what to fix" lists much more reliably than a freeform
+ * "previous reasoning" paragraph.
+ */
+function buildRegenFeedbackBlock(review: PreviousTyrReview): string {
+  const lines: string[] = [
+    '═══════════════════════════════════════════════════════════════════',
+    '⚠ THIS IS A REGENERATION — the previous draft FAILED quality review',
+    '═══════════════════════════════════════════════════════════════════',
+  ]
+  if (review.score != null) {
+    lines.push(`Previous overall score: ${review.score}/100`)
+  }
+  if (review.reasoning) {
+    lines.push(`Reviewer's overall verdict: ${review.reasoning}`)
+  }
+
+  // Per-dimension failures (score < 7 = clearly unfixed). Sort worst first.
+  if (review.dimensions) {
+    const failingDims = Object.entries(review.dimensions)
+      .filter(([, v]) => v && typeof v.score === 'number' && v.score < 7)
+      .sort(([, a], [, b]) => (a?.score ?? 0) - (b?.score ?? 0))
+
+    if (failingDims.length > 0) {
+      lines.push('')
+      lines.push('DIMENSIONS THAT FAILED (must be fixed in this regen):')
+      for (const [dim, v] of failingDims) {
+        const label = dim.replace(/_/g, ' ')
+        lines.push(`  • ${label} (${v.score}/10): ${v.comment ?? '—'}`)
+      }
+    }
+  }
+
+  if (review.weaknesses && review.weaknesses.length > 0) {
+    lines.push('')
+    lines.push('SPECIFIC WEAKNESSES IDENTIFIED (cite section/FAQ where relevant):')
+    for (const w of review.weaknesses.slice(0, 5)) lines.push(`  • ${w}`)
+  }
+
+  if (review.suggestions && review.suggestions.length > 0) {
+    lines.push('')
+    lines.push('PRIORITISED SUGGESTIONS (apply HIGH and MEDIUM, consider LOW):')
+    const sorted = [...review.suggestions].sort((a, b) => {
+      const order = { high: 0, medium: 1, low: 2 } as const
+      return (order[a.priority] ?? 3) - (order[b.priority] ?? 3)
+    })
+    for (const s of sorted.slice(0, 6)) {
+      lines.push(`  • [${s.priority.toUpperCase()}] ${s.text}`)
+    }
+  }
+
+  if (review.strengths && review.strengths.length > 0) {
+    lines.push('')
+    lines.push('PRESERVE these strengths from the previous draft:')
+    for (const s of review.strengths.slice(0, 3)) lines.push(`  • ${s}`)
+  }
+
+  lines.push('')
+  lines.push('When generating the new brief, treat the failing dimensions and HIGH/MEDIUM suggestions as MANDATORY fixes. Don\'t just rephrase — restructure the outline, FAQ, meta, and keyword strategy where the previous draft was weak.')
+  lines.push('═══════════════════════════════════════════════════════════════════')
+
+  return lines.join('\n')
 }

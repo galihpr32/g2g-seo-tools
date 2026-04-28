@@ -41,6 +41,10 @@ export async function runBragi(
       const searchVol = Number(handoffPayload.search_volume ?? 0)
       const context   = handoffPayload.context ? String(handoffPayload.context) : null
       const sourceAgent = handoffPayload.source_agent ? String(handoffPayload.source_agent) : null
+      // previous_review = full Tyr breakdown when source_agent='tyr' (regen flow).
+      // Carries strengths/weaknesses/suggestions/per-dim scores so brief-generator
+      // can address them in the regen prompt.
+      const previousReview = handoffPayload.previous_review ?? null
 
       const priority  = searchVol > 5000 ? 'high' : searchVol > 1000 ? 'medium' : 'low'
       const briefType = handoffPayload.brief_type ? String(handoffPayload.brief_type) : 'on_page'
@@ -74,6 +78,7 @@ export async function runBragi(
             source_agent:      sourceAgent,
             source:            'handoff',
             triggered_run_id:  runId,
+            previous_review:   previousReview,   // ← preserved for brief-generator
           },
         })
 

@@ -48,7 +48,10 @@ const navItems = [
     group: 'ON-PAGE',
     defaultOpen: false,
     items: [
-      { label: 'Content Studio',    href: '/content/studio',              icon: '✍️' },
+      { label: 'Writer Inbox',       href: '/content/writer-inbox',        icon: '✍️' },
+      { label: 'Editorial Calendar', href: '/content/calendar',           icon: '📅' },
+      { label: 'Content Studio',    href: '/content/studio',              icon: '📝' },
+      { label: 'Brief Library',     href: '/content/briefs',              icon: '📚' },
       { label: 'Product Content',   href: '/content/products',            icon: '📦' },
       { label: 'Knowledge Base',    href: '/knowledge-base',              icon: '🧠' },
       { label: 'Game Trends',       href: '/content/trends',              icon: '🎮' },
@@ -79,6 +82,7 @@ const navItems = [
       { label: 'Backlink Audit', href: '/reports/backlinks',     icon: '🔗' },
       { label: 'SERP Features',  href: '/reports/serp-features', icon: '⭐' },
       { label: 'Content ROI',    href: '/reports/content-roi',   icon: '💰' },
+      { label: 'Ranking Impact', href: '/reports/ranking-impact', icon: '📈' },
     ],
   },
 ]

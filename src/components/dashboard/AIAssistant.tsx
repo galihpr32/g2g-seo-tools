@@ -9,6 +9,18 @@ interface Message {
   id:      string
 }
 
+interface ConfirmPayload {
+  type:               string
+  agent:              string
+  category:           string
+  cost_warning:       boolean
+  cooldown_hours:     number
+  hours_since_last:   number | null
+  last_status:        string | null
+  last_ran:           string | null
+  confirmation_token: string
+}
+
 const QUICK_PROMPTS = [
   { label: '🎯 Keyword gaps',     prompt: 'Find me the top 10 keywords that competitors rank well for but G2G doesn\'t. Prioritize by search volume.' },
   { label: '📊 Top pages',        prompt: 'What are G2G\'s top performing pages right now and which ones should I focus on?' },
@@ -16,7 +28,28 @@ const QUICK_PROMPTS = [
   { label: '✅ What\'s pending?',  prompt: 'What are the most urgent SEO action items and what have the agents found recently?' },
 ]
 
-// Very basic markdown renderer — bold, inline code, line breaks, bullet lists
+// ── Confirmation payload parser ───────────────────────────────────────────────
+// Extracts <<<MIMIR_CONFIRM>>>...<<</MIMIR_CONFIRM>>> from assistant messages.
+// Returns { visibleText, payload } — payload is null if no marker found.
+function parseConfirmBlock(content: string): { visibleText: string; payload: ConfirmPayload | null } {
+  const OPEN  = '<<<MIMIR_CONFIRM>>>'
+  const CLOSE = '<<</MIMIR_CONFIRM>>>'
+  const start = content.indexOf(OPEN)
+  const end   = content.indexOf(CLOSE)
+  if (start === -1 || end === -1 || end <= start) {
+    return { visibleText: content, payload: null }
+  }
+  const jsonStr    = content.slice(start + OPEN.length, end).trim()
+  const visibleText = (content.slice(0, start) + content.slice(end + CLOSE.length)).trim()
+  try {
+    const payload = JSON.parse(jsonStr) as ConfirmPayload
+    return { visibleText, payload }
+  } catch {
+    return { visibleText, payload: null }
+  }
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────────────────
 function renderMarkdown(text: string) {
   const lines = text.split('\n')
   const elements: React.ReactNode[] = []
@@ -34,7 +67,6 @@ function renderMarkdown(text: string) {
   }
 
   function renderInline(s: string): React.ReactNode {
-    // Bold **text**
     const parts = s.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
     return parts.map((part, i) => {
       if (part.startsWith('**') && part.endsWith('**'))
@@ -77,6 +109,73 @@ function renderMarkdown(text: string) {
   return <>{elements}</>
 }
 
+// ── Confirmation card ─────────────────────────────────────────────────────────
+function ConfirmCard({
+  payload,
+  onConfirm,
+  onCancel,
+  disabled,
+}: {
+  payload:   ConfirmPayload
+  onConfirm: (token: string) => void
+  onCancel:  () => void
+  disabled:  boolean
+}) {
+  const agentLabel = payload.agent.charAt(0).toUpperCase() + payload.agent.slice(1)
+  const isAmber    = payload.cost_warning
+
+  const lastRunText = (() => {
+    if (!payload.last_ran) return 'Never run before — first run'
+    const h = payload.hours_since_last
+    const status = payload.last_status ?? 'unknown'
+    if (h === null) return `Last run: ${new Date(payload.last_ran).toLocaleString()} (${status})`
+    if (h < 1) return `Last run: ${Math.round(h * 60)}m ago (${status})`
+    return `Last run: ${h.toFixed(1)}h ago (${status})`
+  })()
+
+  return (
+    <div className={`mt-2 rounded-xl border p-3 text-xs ${
+      isAmber
+        ? 'border-amber-500/50 bg-amber-950/30'
+        : 'border-gray-700 bg-gray-900/50'
+    }`}>
+      <div className="flex items-start gap-2 mb-2">
+        <span className={`text-base leading-none ${isAmber ? 'text-amber-400' : 'text-gray-400'}`}>
+          {isAmber ? '⚠' : '🤖'}
+        </span>
+        <div className="flex-1">
+          <p className={`font-semibold text-sm ${isAmber ? 'text-amber-300' : 'text-gray-200'}`}>
+            Confirm: trigger {agentLabel}?
+          </p>
+          <p className="text-gray-400 mt-0.5">{lastRunText}</p>
+          {isAmber && (
+            <p className="text-amber-400/80 mt-0.5">
+              ⚠ Cost warning — within {payload.cooldown_hours}h cooldown.
+            </p>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => onConfirm(payload.confirmation_token)}
+          disabled={disabled}
+          className="flex-1 px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white font-medium transition disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+        >
+          Yes, trigger
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={disabled}
+          className="flex-1 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium transition disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 export default function AIAssistant() {
   const pathname = usePathname()
   const [open,     setOpen]     = useState(false)
@@ -84,6 +183,8 @@ export default function AIAssistant() {
   const [input,    setInput]    = useState('')
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
+  // Track which tokens have been acted on (to disable buttons after first click)
+  const [usedTokens, setUsedTokens] = useState<Set<string>>(new Set())
   const bottomRef  = useRef<HTMLDivElement>(null)
   const inputRef   = useRef<HTMLTextAreaElement>(null)
 
@@ -96,6 +197,10 @@ export default function AIAssistant() {
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 100)
   }, [open])
+
+  const appendMessage = useCallback((role: 'user' | 'assistant', content: string) => {
+    setMessages(prev => [...prev, { role, content, id: (Date.now() + Math.random()).toString() }])
+  }, [])
 
   const sendMessage = useCallback(async (text?: string) => {
     const content = (text ?? input).trim()
@@ -131,11 +236,42 @@ export default function AIAssistant() {
     }
   }, [input, messages, pathname, loading])
 
+  async function handleConfirm(token: string, agentLabel: string) {
+    setUsedTokens(prev => new Set([...prev, token]))
+    try {
+      const res  = await fetch('/api/ai/confirm-agent-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmation_token: token }),
+      })
+      const data = await res.json() as {
+        ok?: boolean; agent?: string; run_id?: string; summary?: string
+        actionsQueued?: number; error?: string
+      }
+      if (!res.ok || !data.ok) {
+        appendMessage('assistant', `✗ Could not trigger ${agentLabel}: ${data.error ?? 'Unknown error'}`)
+      } else {
+        const parts = [`✓ **${agentLabel}** triggered successfully.`]
+        if (data.run_id)        parts.push(`Run ID: \`${data.run_id}\``)
+        if (data.summary)       parts.push(data.summary)
+        if (data.actionsQueued) parts.push(`${data.actionsQueued} action${data.actionsQueued !== 1 ? 's' : ''} queued.`)
+        appendMessage('assistant', parts.join('\n'))
+      }
+    } catch (e) {
+      appendMessage('assistant', `✗ Network error triggering ${agentLabel}: ${String(e)}`)
+    }
+  }
+
+  function handleCancel(agentLabel: string, token: string) {
+    setUsedTokens(prev => new Set([...prev, token]))
+    appendMessage('assistant', `✗ Cancelled. No agent triggered. (${agentLabel} run skipped)`)
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
   }
 
-  function clearChat() { setMessages([]); setError(null) }
+  function clearChat() { setMessages([]); setError(null); setUsedTokens(new Set()) }
 
   return (
     <>
@@ -205,27 +341,42 @@ export default function AIAssistant() {
                 </div>
               </div>
             ) : (
-              messages.map(msg => (
-                <div key={msg.id} className={`flex gap-2.5 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                  <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold mt-0.5 ${
-                    msg.role === 'user'
-                      ? 'bg-gray-700 text-gray-300'
-                      : 'bg-red-600 text-white'
-                  }`}>
-                    {msg.role === 'user' ? 'U' : 'M'}
+              messages.map(msg => {
+                if (msg.role === 'user') {
+                  return (
+                    <div key={msg.id} className="flex gap-2.5 flex-row-reverse">
+                      <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold mt-0.5 bg-gray-700 text-gray-300">U</div>
+                      <div className="max-w-[85%] rounded-2xl px-3 py-2.5 bg-red-600/20 border border-red-600/30">
+                        <p className="text-gray-200 text-sm">{msg.content}</p>
+                      </div>
+                    </div>
+                  )
+                }
+
+                // Assistant message — may contain a MIMIR_CONFIRM block
+                const { visibleText, payload } = parseConfirmBlock(msg.content)
+                const agentLabel = payload
+                  ? payload.agent.charAt(0).toUpperCase() + payload.agent.slice(1)
+                  : ''
+                const isUsed = payload ? usedTokens.has(payload.confirmation_token) : false
+
+                return (
+                  <div key={msg.id} className="flex gap-2.5">
+                    <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold mt-0.5 bg-red-600 text-white">M</div>
+                    <div className="max-w-[85%] rounded-2xl px-3 py-2.5 bg-gray-900 border border-gray-800">
+                      {renderMarkdown(visibleText)}
+                      {payload && (
+                        <ConfirmCard
+                          payload={payload}
+                          disabled={isUsed}
+                          onConfirm={token => handleConfirm(token, agentLabel)}
+                          onCancel={() => handleCancel(agentLabel, payload.confirmation_token)}
+                        />
+                      )}
+                    </div>
                   </div>
-                  <div className={`max-w-[85%] rounded-2xl px-3 py-2.5 ${
-                    msg.role === 'user'
-                      ? 'bg-red-600/20 border border-red-600/30'
-                      : 'bg-gray-900 border border-gray-800'
-                  }`}>
-                    {msg.role === 'assistant'
-                      ? renderMarkdown(msg.content)
-                      : <p className="text-gray-200 text-sm">{msg.content}</p>
-                    }
-                  </div>
-                </div>
-              ))
+                )
+              })
             )}
 
             {/* Loading indicator */}

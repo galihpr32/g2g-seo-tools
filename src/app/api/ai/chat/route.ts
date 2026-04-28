@@ -107,11 +107,11 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_agent_insights',
-    description: 'Get recent run summaries and findings from the Norse AI agents: Heimdall (monitoring), Odin (trends), Loki (competitive analysis), Bragi (content writing), Hermod (outreach). Use when asked what agents found, their last activity, or pending agent actions.',
+    description: 'Get recent run summaries and findings from the Norse AI agents: Heimdall (monitoring), Odin (trends), Loki (competitive analysis), Bragi (content writing), Hermod (outreach), Saga (content briefs), Tyr (action review), Vor (audit). Use when asked what agents found, their last activity, or pending agent actions.',
     input_schema: {
       type: 'object' as const,
       properties: {
-        agent: { type: 'string', enum: ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'all'], description: 'Which agent to query (default: all)' },
+        agent: { type: 'string', enum: ['heimdall', 'odin', 'loki', 'bragi', 'hermod', 'saga', 'tyr', 'vor', 'all'], description: 'Which agent to query (default: all)' },
         limit: { type: 'number', description: 'Number of recent runs (default 5)' },
       },
     },
@@ -125,6 +125,21 @@ const TOOLS: Anthropic.Tool[] = [
         limit:      { type: 'number', description: 'Number of opportunities (default 10)' },
         min_volume: { type: 'number', description: 'Minimum search volume (default 100)' },
       },
+    },
+  },
+  {
+    name: 'propose_agent_run',
+    description: 'Propose triggering one of the 8 Norse SEO agents on the user\'s behalf. ALWAYS call this tool when the user asks to run, trigger, kick off, or start an agent — never skip it. Returns a confirmation_token and last-run metadata. You must embed the returned ui_directive in your reply between <<<MIMIR_CONFIRM>>> markers so the frontend can render Yes/No buttons.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        agent: {
+          type: 'string',
+          enum: ['heimdall', 'loki', 'odin', 'bragi', 'hermod', 'saga', 'tyr', 'vor'],
+          description: 'The agent to propose running',
+        },
+      },
+      required: ['agent'],
     },
   },
 ]
@@ -367,6 +382,7 @@ async function executeTool(
         const AGENT_NAMES: Record<string, string> = {
           heimdall: 'Heimdall (Monitoring)', odin: 'Odin (Trends)',
           loki: 'Loki (Competitive)', bragi: 'Bragi (Content)', hermod: 'Hermod (Outreach)',
+          saga: 'Saga (Content Briefs)', tyr: 'Tyr (Action Review)', vor: 'Vor (Audit)',
         }
 
         let result = `Recent agent activity:\n\n`
@@ -443,6 +459,98 @@ async function executeTool(
           ).join('\n\n')
       }
 
+      case 'propose_agent_run': {
+        const VALID_AGENTS = ['heimdall', 'loki', 'odin', 'bragi', 'hermod', 'saga', 'tyr', 'vor']
+        const agent = String(toolInput.agent ?? '').toLowerCase()
+
+        if (!VALID_AGENTS.includes(agent)) {
+          return JSON.stringify({
+            error:       true,
+            message:     `Unknown agent "${agent}". Valid agents: ${VALID_AGENTS.join(', ')}.`,
+            valid_agents: VALID_AGENTS,
+          })
+        }
+
+        // Agent category → cooldown hours (from §10.2)
+        const CATEGORY_MAP: Record<string, { category: string; cooldown_hours: number }> = {
+          heimdall: { category: 'detection',      cooldown_hours: 3   },
+          loki:     { category: 'detection',      cooldown_hours: 3   },
+          odin:     { category: 'detection',      cooldown_hours: 3   },
+          bragi:    { category: 'execution',      cooldown_hours: 1   },
+          hermod:   { category: 'execution',      cooldown_hours: 1   },
+          saga:     { category: 'execution',      cooldown_hours: 1   },
+          tyr:      { category: 'review_control', cooldown_hours: 0.5 },
+          vor:      { category: 'review_control', cooldown_hours: 0.5 },
+        }
+        const { category, cooldown_hours } = CATEGORY_MAP[agent]
+
+        // Fetch most recent run
+        const { data: lastRun } = await db
+          .from('agent_runs')
+          .select('id, started_at, finished_at, status, summary')
+          .eq('owner_user_id', ownerId)
+          .eq('agent_key', agent)
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        const isRunning = !!(lastRun?.status === 'running' && !lastRun.finished_at)
+
+        let hoursSinceLast: number | null = null
+        let withinCooldown = false
+        if (lastRun?.started_at) {
+          hoursSinceLast = (Date.now() - new Date(lastRun.started_at).getTime()) / 3_600_000
+          withinCooldown = hoursSinceLast < cooldown_hours
+        }
+
+        const costWarning = withinCooldown
+
+        // If already running — return early, no token
+        if (isRunning) {
+          return JSON.stringify({
+            agent,
+            category,
+            is_running:    true,
+            last_run:      lastRun,
+            cost_warning:  false,
+            cooldown_hours,
+            hours_since_last: hoursSinceLast,
+          })
+        }
+
+        // Store one-time confirmation token (5-min TTL)
+        const token = `mimir-trig-${crypto.randomUUID()}`
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+        await db.from('mimir_pending_triggers').insert({
+          token,
+          owner_user_id: ownerId,
+          agent_key:     agent,
+          expires_at:    expiresAt,
+        })
+
+        return JSON.stringify({
+          agent,
+          category,
+          is_running:    false,
+          last_run:      lastRun ?? null,
+          cost_warning:  costWarning,
+          cooldown_hours,
+          hours_since_last: hoursSinceLast !== null ? Math.round(hoursSinceLast * 10) / 10 : null,
+          confirmation_token: token,
+          ui_directive: {
+            type:               'confirm_agent_run',
+            agent,
+            category,
+            cost_warning:       costWarning,
+            cooldown_hours,
+            hours_since_last:   hoursSinceLast !== null ? Math.round(hoursSinceLast * 10) / 10 : null,
+            last_status:        lastRun?.status ?? null,
+            last_ran:           lastRun?.started_at ?? null,
+            confirmation_token: token,
+          },
+        })
+      }
+
       default:
         return `Unknown tool: ${toolName}`
     }
@@ -507,6 +615,31 @@ G2G WRITING RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 When suggesting content: follow G2G brand rules — mention GamerProtect, escrow, verified sellers, 200+ payment methods, ISO/IEC 27001:2013. Never mention competitors by name. Avoid: "immerse yourself", "embark", "dive into", "game-changing", "revolutionize", "leverage", "delve".
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TRIGGERING AGENT RUNS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You can propose triggering one of the 8 Norse SEO agents on the user's behalf:
+heimdall, loki, odin (detection — 3h cooldown), bragi, hermod, saga (execution — 1h cooldown), tyr, vor (review/control — 30min cooldown)
+
+**Workflow when user asks to run / trigger / kick off / start an agent:**
+1. ALWAYS call the \`propose_agent_run\` tool — never skip it or fabricate a token
+2. Check the result for \`is_running\`:
+   - If \`is_running: true\`: tell the user the agent is already running, do NOT emit a confirm marker
+   - Otherwise: compose a reply mentioning the last-run time and any cost warning
+3. ALWAYS embed the ENTIRE returned \`ui_directive\` object as JSON between the markers below — on its own line, at the very end of your reply:
+   <<<MIMIR_CONFIRM>>>{"type":"confirm_agent_run",...}<<</MIMIR_CONFIRM>>>
+4. Do NOT invent a confirmation_token — use only the one returned by the tool
+5. If cost_warning is true, warn the user that the agent ran recently and running again will incur extra API cost
+6. If last_ran is null, say "never run before — first run"
+
+**Example reply format (when not already running):**
+"Loki last ran 3.2h ago (success). Running again is within the 3h cooldown — there will be an additional API cost.
+
+Shall I trigger **Loki (Competitive Analysis)** now?
+
+<<<MIMIR_CONFIRM>>>{"type":"confirm_agent_run","agent":"loki","category":"detection","cost_warning":true,"cooldown_hours":3,"hours_since_last":3.2,"last_status":"completed","last_ran":"2024-01-01T09:00:00Z","confirmation_token":"mimir-trig-..."}<<</MIMIR_CONFIRM>>>"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TONE & FORMAT

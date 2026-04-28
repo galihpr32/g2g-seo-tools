@@ -136,6 +136,17 @@ export async function executeAction(
         competitor_url?: string
         context?: string
         source_action_id?: string
+        // previous_review present when this draft_brief came from a Tyr→Bragi
+        // regen handoff. Forwarded into brief-generator's prompt so the regen
+        // addresses Tyr's specific feedback dimension-by-dimension.
+        previous_review?: {
+          score?:       number | null
+          dimensions?:  Record<string, { score: number; comment: string }> | null
+          strengths?:   string[]
+          weaknesses?:  string[]
+          suggestions?: { priority: 'high' | 'medium' | 'low'; text: string }[]
+          reasoning?:   string
+        } | null
       }
 
       if (!data.page_url || !data.keyword) {
@@ -237,14 +248,15 @@ export async function executeAction(
       // partial success on the action.
       try {
         await generateAgentBrief({
-          briefId:       newBrief.id,
-          ownerId:       action.owner_user_id,
-          keyword:       data.keyword,
-          pageUrl:       data.page_url,
-          briefType:     data.brief_type ?? 'on_page',
-          searchVolume:  data.search_volume,
-          competitorUrl: data.competitor_url ?? null,
-          notes:         data.context ?? null,
+          briefId:        newBrief.id,
+          ownerId:        action.owner_user_id,
+          keyword:        data.keyword,
+          pageUrl:        data.page_url,
+          briefType:      data.brief_type ?? 'on_page',
+          searchVolume:   data.search_volume,
+          competitorUrl:  data.competitor_url ?? null,
+          notes:          data.context ?? null,
+          previousReview: data.previous_review ?? null,   // ← Tyr regen feedback loop
         })
       } catch (genErr) {
         // generateAgentBrief now handles its own retries internally, so a
@@ -525,18 +537,37 @@ export async function executeAction(
         throw new Error(`regenerate_brief: failed to create Bragi run: ${runErr?.message ?? 'unknown'}`)
       }
 
-      const redflagSummary = (data.tyr_breakdown as Record<string, unknown>)?.redflags
+      // Build a structured "previous review" payload from Tyr's full breakdown.
+      // This goes BEYOND the old behaviour (which only inlined top 3 redflags
+      // into a context string). Now the entire breakdown — per-dimension
+      // scores + comments, strengths, weaknesses, prioritised suggestions —
+      // is passed through to brief-generator's prompt so the regen can
+      // actually address Tyr's specific feedback dimension-by-dimension.
+      const breakdown = (data.tyr_breakdown ?? {}) as Record<string, unknown>
+      const previousReview = {
+        score:       data.tyr_score ?? null,
+        dimensions:  breakdown.dimensions   ?? null,
+        strengths:   Array.isArray(breakdown.strengths)   ? breakdown.strengths   : [],
+        weaknesses:  Array.isArray(breakdown.weaknesses)  ? breakdown.weaknesses
+                    : Array.isArray(breakdown.redflags)   ? breakdown.redflags    : [],
+        suggestions: Array.isArray(breakdown.suggestions) ? breakdown.suggestions : [],
+        reasoning:   typeof breakdown.reasoning === 'string' ? breakdown.reasoning : '',
+      }
+
       const refinedContext = [
-        `Re-draft requested by Tyr after brief failed quality review (score ${data.tyr_score}/100).`,
-        Array.isArray(redflagSummary) ? `Avoid these issues from the previous draft: ${redflagSummary.slice(0, 3).join('; ')}` : '',
+        `Re-draft requested by Tyr after brief failed quality review (score ${data.tyr_score ?? '?'}/100).`,
+        previousReview.weaknesses.length > 0
+          ? `Top weaknesses to fix: ${previousReview.weaknesses.slice(0, 3).join('; ')}`
+          : '',
       ].filter(Boolean).join(' ')
 
       runBragi(action.owner_user_id, action.site_slug, newRun.id, {
-        keyword:      data.keyword,
-        page_url:     data.page_url,
-        brief_type:   data.brief_type ?? 'on_page',
-        source_agent: 'tyr',
-        context:      refinedContext,
+        keyword:         data.keyword,
+        page_url:        data.page_url,
+        brief_type:      data.brief_type ?? 'on_page',
+        source_agent:    'tyr',
+        context:         refinedContext,
+        previous_review: previousReview,    // ← full structured review for brief-generator
       }).catch(err => console.error('[executor] regenerate_brief Bragi failed:', err))
 
       // Mark action executed
