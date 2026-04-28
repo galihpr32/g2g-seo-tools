@@ -78,14 +78,24 @@ export interface HeimdallConfig {
   minClicksDrop:  number      // minimum absolute click drop (default: 5)
   minPctDrop:     number      // minimum % drop, e.g. 20 = 20% (default: 20)
   fastPathEnabled?: boolean   // default true — enable run_agent handoff for critical drops
+  // URL scope filters
+  urlMustInclude?: string[]   // whitelist — page URL must contain at least one (default: ['/categories/'])
+  urlMustExclude?: string[]   // blacklist — page URL must not contain any (default: ['/offer/'])
+  filterRegionCodes?: boolean // strip pages with 2-letter country-code path segments like /sg/, /my/ (default: true)
 }
 
 export const HEIMDALL_DEFAULTS: HeimdallConfig = {
-  maxDropsPerDay:  10,
-  minClicksDrop:   5,
-  minPctDrop:      20,
-  fastPathEnabled: true,
+  maxDropsPerDay:    10,
+  minClicksDrop:     5,
+  minPctDrop:        20,
+  fastPathEnabled:   true,
+  urlMustInclude:    ['/categories/'],
+  urlMustExclude:    ['/offer/'],
+  filterRegionCodes: true,
 }
+
+// Region-code path-segment regex: matches /sg/, /my/, /us/, /ph/, etc.
+const REGION_CODE_RE = /\/[a-z]{2}\//i
 
 interface DropRow {
   page:           string
@@ -107,8 +117,20 @@ export async function runHeimdall(
   summary: string
   actionsQueued: number
 }> {
-  const { maxDropsPerDay, minClicksDrop, minPctDrop, fastPathEnabled } =
-    { ...HEIMDALL_DEFAULTS, ...config }
+  const {
+    maxDropsPerDay, minClicksDrop, minPctDrop, fastPathEnabled,
+    urlMustInclude   = HEIMDALL_DEFAULTS.urlMustInclude!,
+    urlMustExclude   = HEIMDALL_DEFAULTS.urlMustExclude!,
+    filterRegionCodes = HEIMDALL_DEFAULTS.filterRegionCodes,
+  } = { ...HEIMDALL_DEFAULTS, ...config }
+
+  // Build URL scope checker (applied per page before threshold filtering)
+  const isInScope = (url: string): boolean => {
+    if (urlMustInclude.length > 0 && !urlMustInclude.some(p => url.includes(p))) return false
+    if (urlMustExclude.length > 0 &&  urlMustExclude.some(p => url.includes(p))) return false
+    if (filterRegionCodes && REGION_CODE_RE.test(url)) return false
+    return true
+  }
   const db = createServiceClient()
   const warnings: string[] = []
 
@@ -175,17 +197,23 @@ export async function runHeimdall(
       return { summary, actionsQueued: 0 }
     }
 
-    // 3. Take the freshest row per page (drops is already DESC by date)
+    // 3. Take the freshest row per page (drops is already DESC by date).
+    //    Apply URL scope filter here — before any heavy processing.
     const latestByPage = new Map<string, DropRow>()
     const originalByNorm = new Map<string, string>()
+    let filteredOutCount = 0
     for (const d of drops as DropRow[]) {
       if (!d.page) continue
+      if (!isInScope(d.page)) { filteredOutCount++; continue }
       const norm = normalizeUrl(d.page)
       if (!norm) continue
       if (!latestByPage.has(norm)) {
         latestByPage.set(norm, d)
         originalByNorm.set(norm, d.page)
       }
+    }
+    if (filteredOutCount > 0) {
+      console.log(`[heimdall] Skipped ${filteredOutCount} out-of-scope pages (offer/region/non-categories)`)
     }
 
     interface SignificantDrop {
@@ -417,7 +445,8 @@ export async function runHeimdall(
     const cappedNote = significantDrops.length - existingPagesNorm.size > maxDropsPerDay
       ? ` (capped at ${maxDropsPerDay}/day)`
       : ''
-    const summaryBase = `Found ${significantDrops.length} drops. Filtered ${existingPagesNorm.size} already in progress. Queued ${actionsQueued} new actions${cappedNote}.`
+    const scopeNote = filteredOutCount > 0 ? ` Skipped ${filteredOutCount} out-of-scope pages (offer/region/non-categories).` : ''
+    const summaryBase = `Found ${significantDrops.length} drops.${scopeNote} Filtered ${existingPagesNorm.size} already in progress. Queued ${actionsQueued} new actions${cappedNote}.`
     const summary = warnings.length ? `${summaryBase} ⚠ ${warnings.join('; ')}` : summaryBase
     const status = warnings.length > 0 ? 'partial' : 'success'
 

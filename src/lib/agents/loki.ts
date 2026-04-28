@@ -24,6 +24,48 @@ import {
  * If gap analysis fails entirely, the run completes with status='partial'
  * and the error is recorded — not "success with 0 findings".
  */
+
+// ── Language filter ─────────────────────────────────────────────────────────
+// DataForSEO with language_code='en' still occasionally returns non-English
+// keywords for competitors that rank internationally. Reject them here.
+const NON_ENGLISH_MARKERS = new Set([
+  // Spanish / Portuguese
+  'compra','comprar','venta','vender','precio','gratis','barato','monedas',
+  'como','para','con','del','una','este','esto','eso','los','las','por','que',
+  // French
+  'acheter','vendre','achats','prix','gratuit',
+  // German
+  'kaufen','verkaufen','günstig','kostenlos',
+  // Italian
+  'comprare','vendere','gratuito',
+])
+
+function isEnglishKeyword(kw: string): boolean {
+  // Reject any keyword with non-ASCII / accented characters
+  if (/[^\x00-\x7F]/.test(kw)) return false
+  // Reject if any token is a known non-English marker
+  const tokens = kw.toLowerCase().split(/\s+/)
+  return !tokens.some(t => NON_ENGLISH_MARKERS.has(t))
+}
+
+// ── Near-duplicate detection ────────────────────────────────────────────────
+// "fortnite tracker" and "fortnite tracker 4" share all tokens of the shorter
+// keyword — treat the longer one as a near-duplicate and skip it.
+// Rule: if the token set of A is a subset of token set of B (or vice versa)
+//       they are near-duplicates. Keep the one already queued.
+function isNearDuplicate(candidate: string, existingKeywords: Set<string>): boolean {
+  const cTokens = candidate.toLowerCase().split(/\s+/).filter(Boolean)
+  const cSet    = new Set(cTokens)
+  for (const queued of existingKeywords) {
+    const qSet = new Set(queued.toLowerCase().split(/\s+/).filter(Boolean))
+    // candidate is a superset of an already-queued kw ("fortnite tracker 4" ⊃ "fortnite tracker")
+    const candidateIsSuperSet = [...qSet].every(t => cSet.has(t))
+    // candidate is a subset of an already-queued kw
+    const candidateIsSubSet   = [...cSet].every(t => qSet.has(t))
+    if (candidateIsSuperSet || candidateIsSubSet) return true
+  }
+  return false
+}
 export async function runLoki(
   ownerId: string,
   siteSlug: string,
@@ -89,6 +131,24 @@ export async function runLoki(
     let gapAnalysisFailed = false
     const competitorsToAnalyze = competitors.slice(0, 3)
 
+    // Pre-load already-pending/approved Loki keyword gap actions so we can
+    // skip redundant re-queues across multiple runs.
+    const { data: pendingLokiActions } = await db
+      .from('agent_actions')
+      .select('data')
+      .eq('owner_user_id', ownerId)
+      .eq('agent_key', 'loki')
+      .in('status', ['pending', 'approved'])
+
+    // Global keyword dedup set — grows during this run AND pre-seeded from DB.
+    // Used by: (a) cross-run dedup, (b) near-duplicate detection within run.
+    const allQueuedKeywords = new Set<string>(
+      (pendingLokiActions ?? [])
+        .map(a => String((a.data as Record<string, unknown>)?.keyword ?? '').toLowerCase())
+        .filter(Boolean)
+    )
+    const redundantSkipped  = { count: 0, keywords: [] as string[] }
+
     try {
       const ourKwsP    = getDomainRankedKeywords(ourDomain, LOCATION_CODE, LANGUAGE_CODE, FETCH_LIMIT)
       const compKwsP   = competitorsToAnalyze.map(c =>
@@ -130,14 +190,35 @@ export async function runLoki(
           const ourRanking = kw ? ourMap.get(kw) : undefined
           return (ck.position ?? 999) <= 10
             && (!ourRanking || (ourRanking.position ?? 999) > 20)
-            && kw && !isBranded(kw)
+            && kw
+            && !isBranded(kw)
+            && isEnglishKeyword(kw)
         })
 
         // Sort by SV — used both for queueing and findings persistence
         const sortedGaps = gaps.sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0))
 
-        // Queue top 3 gaps per competitor, sorted by search volume
-        const topGaps = sortedGaps.slice(0, 3)
+        // Queue top 3 gaps per competitor after applying cross-run + near-dup dedup.
+        // A keyword is skipped if:
+        //   (a) already pending/approved from a previous run, OR
+        //   (b) already queued this run AND is a near-duplicate of it
+        const topGaps: typeof sortedGaps = []
+        for (const g of sortedGaps) {
+          if (topGaps.length >= 3) break
+          const kw = g.keyword?.toLowerCase() ?? ''
+          if (!kw) continue
+          if (allQueuedKeywords.has(kw)) {
+            redundantSkipped.count++
+            redundantSkipped.keywords.push(kw)
+            continue
+          }
+          if (isNearDuplicate(kw, allQueuedKeywords)) {
+            redundantSkipped.count++
+            redundantSkipped.keywords.push(kw)
+            continue
+          }
+          topGaps.push(g)
+        }
         const topGapKeywords = new Set(topGaps.map(g => g.keyword?.toLowerCase() ?? ''))
 
         // Persist ALL discovered gaps (up to 50/competitor) as findings —
@@ -277,6 +358,8 @@ export async function runLoki(
             console.error('[loki] insert failed:', insertErr.message)
           } else {
             actionsQueued++
+            // Register in global set so near-dup check works within this run too
+            allQueuedKeywords.add((gap.keyword ?? '').toLowerCase())
             findings.push(`Gap: "${gap.keyword}" (${volume.toLocaleString()} vol, ${competitor.domain} #${gap.position})`)
           }
         }
@@ -447,7 +530,10 @@ export async function runLoki(
       console.warn('[loki] SOV analysis failed:', sovErr)
     }
 
-    const summaryBase = `Analyzed ${competitorsToAnalyze.length} competitor${competitorsToAnalyze.length !== 1 ? 's' : ''} via DataForSEO. Found ${findings.length} insight${findings.length !== 1 ? 's' : ''}. Queued ${actionsQueued} action${actionsQueued !== 1 ? 's' : ''}.`
+    const redundantNote = redundantSkipped.count > 0
+      ? ` Skipped ${redundantSkipped.count} redundant/near-duplicate keyword${redundantSkipped.count !== 1 ? 's' : ''} already in queue (${redundantSkipped.keywords.slice(0, 3).map(k => `"${k}"`).join(', ')}${redundantSkipped.keywords.length > 3 ? '…' : ''}).`
+      : ''
+    const summaryBase = `Analyzed ${competitorsToAnalyze.length} competitor${competitorsToAnalyze.length !== 1 ? 's' : ''} via DataForSEO. Found ${findings.length} insight${findings.length !== 1 ? 's' : ''}. Queued ${actionsQueued} action${actionsQueued !== 1 ? 's' : ''}.${redundantNote}`
     const summary = warnings.length ? `${summaryBase} ⚠ ${warnings.join('; ')}` : summaryBase
 
     // Status: partial if gap analysis blew up entirely (we yielded 0 from it)

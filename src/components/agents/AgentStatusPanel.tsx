@@ -20,6 +20,8 @@ interface PakRTConfig {
   maxDropsPerDay: number
   minClicksDrop: number
   minPctDrop: number
+  urlMustInclude: string    // comma-separated; stored as string in UI, array in backend
+  urlMustExclude: string    // comma-separated
 }
 
 const AGENT_NAMES: Record<string, string> = {
@@ -133,6 +135,8 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     maxDropsPerDay: 10,
     minClicksDrop: 5,
     minPctDrop: 20,
+    urlMustInclude: '/categories/',
+    urlMustExclude: '/offer/',
   })
   const [savingConfig, setSavingConfig] = useState(false)
   const [configSaved, setConfigSaved] = useState(false)
@@ -163,9 +167,19 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     try {
       const res = await fetch('/api/agents/heimdall/config')
       if (!res.ok) return
-      const data = await res.json() as { config: Partial<PakRTConfig> }
+      const data = await res.json() as { config: Record<string, unknown> }
       if (data.config && Object.keys(data.config).length > 0) {
-        setPakRTConfig(prev => ({ ...prev, ...data.config }))
+        // Convert stored arrays back to comma-separated strings for the UI
+        const inc = data.config.urlMustInclude
+        const exc = data.config.urlMustExclude
+        setPakRTConfig(prev => ({
+          ...prev,
+          maxDropsPerDay: typeof data.config.maxDropsPerDay === 'number' ? data.config.maxDropsPerDay : prev.maxDropsPerDay,
+          minClicksDrop:  typeof data.config.minClicksDrop  === 'number' ? data.config.minClicksDrop  : prev.minClicksDrop,
+          minPctDrop:     typeof data.config.minPctDrop     === 'number' ? data.config.minPctDrop     : prev.minPctDrop,
+          urlMustInclude: Array.isArray(inc) ? inc.join(', ') : typeof inc === 'string' ? inc : prev.urlMustInclude,
+          urlMustExclude: Array.isArray(exc) ? exc.join(', ') : typeof exc === 'string' ? exc : prev.urlMustExclude,
+        }))
       }
     } catch {
       // use defaults
@@ -275,13 +289,26 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
     await Promise.all(agents.map(key => handleRunAgent(key)))
   }
 
+  // Parse comma-separated pattern string → array of trimmed non-empty strings
+  const parsePatterns = (raw: string) =>
+    raw.split(',').map(s => s.trim()).filter(Boolean)
+
   const handleSavePakRTConfig = async () => {
     setSavingConfig(true)
     try {
       await fetch('/api/agents/heimdall/config', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: pakRTConfig }),
+        body: JSON.stringify({
+          config: {
+            maxDropsPerDay: pakRTConfig.maxDropsPerDay,
+            minClicksDrop:  pakRTConfig.minClicksDrop,
+            minPctDrop:     pakRTConfig.minPctDrop,
+            urlMustInclude: parsePatterns(pakRTConfig.urlMustInclude),
+            urlMustExclude: parsePatterns(pakRTConfig.urlMustExclude),
+            filterRegionCodes: true,
+          },
+        }),
       })
       setConfigSaved(true)
       setTimeout(() => setConfigSaved(false), 2000)
@@ -492,6 +519,36 @@ export default function AgentStatusPanel({ userId: _ }: AgentStatusPanelProps) {
                       className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
                     />
                     <p className="text-xs text-gray-600 mt-1">Skip if % drop is less than this</p>
+                  </div>
+                </div>
+
+                {/* URL scope filters */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4 pt-4 border-t border-gray-800">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Track only URLs containing
+                    </label>
+                    <input
+                      type="text"
+                      value={pakRTConfig.urlMustInclude}
+                      onChange={e => setPakRTConfig(p => ({ ...p, urlMustInclude: e.target.value }))}
+                      placeholder="/categories/"
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-600 mt-1">Comma-separated. Only pages matching any of these are tracked.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      Always skip URLs containing
+                    </label>
+                    <input
+                      type="text"
+                      value={pakRTConfig.urlMustExclude}
+                      onChange={e => setPakRTConfig(p => ({ ...p, urlMustExclude: e.target.value }))}
+                      placeholder="/offer/, /sg/"
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-600 mt-1">Comma-separated. Region codes (/sg/, /my/, etc.) are also auto-skipped.</p>
                   </div>
                 </div>
 
