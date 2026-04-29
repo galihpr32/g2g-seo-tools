@@ -1,4 +1,5 @@
 import { NextResponse }          from 'next/server'
+import { after }                 from 'next/server'
 import { createClient }          from '@/lib/supabase/server'
 import { createServiceClient }   from '@/lib/supabase/service'
 import { getEffectiveOwnerId }   from '@/lib/workspace'
@@ -44,6 +45,7 @@ interface Opportunity {
   target_url:       string | null
   output_type:      string | null
   status:           string
+  brief_id:         string | null
   heimdall_signals: SignalEntry[]
   loki_signals:     SignalEntry[]
   odin_signals:     SignalEntry[]
@@ -159,7 +161,7 @@ export async function POST(
     .from('seo_opportunities')
     .select(`
       id, owner_user_id, site_slug, topic, topic_slug, target_url,
-      output_type, status, total_sv,
+      output_type, status, brief_id, total_sv,
       heimdall_signals, loki_signals, odin_signals
     `)
     .eq('id', oppId)
@@ -173,7 +175,13 @@ export async function POST(
   const opportunity = opp as unknown as Opportunity
 
   // Guard: already has a brief in flight?
-  if (opportunity.status === 'brief_queued' || opportunity.status === 'brief_ready') {
+  // Only block if a brief actually exists — status alone isn't enough because
+  // the old Pipeline Journey approve would set status='brief_queued' without
+  // creating a brief row (leaving brief_id null). In that case we allow creation.
+  if (
+    (opportunity.status === 'brief_queued' || opportunity.status === 'brief_ready') &&
+    opportunity.brief_id
+  ) {
     return NextResponse.json({ error: 'Brief already queued for this opportunity' }, { status: 409 })
   }
 
@@ -248,27 +256,30 @@ export async function POST(
     })
     .eq('id', oppId)
 
-  // ── 6. Generate brief in the background (don't await — returns fast) ─────
-  // generateAgentBrief handles its own retries + sets brief status to
-  // 'agent_generated' on success or reverts to 'draft' on failure.
-  generateAgentBrief({
-    briefId,
-    ownerId:       effectiveOwnerId,
-    keyword,
-    pageUrl,
-    briefType,
-    searchVolume,
-    competitorUrl,
-    notes:         context,
-  }).then(() => {
-    // On generation success → promote opportunity to brief_ready
-    db.from('seo_opportunities')
-      .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
-      .eq('id', oppId)
-      .then(() => {})
-  }).catch(err => {
-    console.error('[queue-brief] generateAgentBrief failed:', err)
-    // Brief stays in 'draft' — user can open it manually
+  // ── 6. Generate brief in the background via after() ──────────────────────
+  // after() runs AFTER the response is sent, but is protected from Vercel's
+  // lambda freeze — ensuring the generation completes even on serverless.
+  after(async () => {
+    try {
+      await generateAgentBrief({
+        briefId,
+        ownerId:       effectiveOwnerId,
+        keyword,
+        pageUrl,
+        briefType,
+        searchVolume,
+        competitorUrl,
+        notes:         context,
+      })
+      // On generation success → promote opportunity to brief_ready
+      await db
+        .from('seo_opportunities')
+        .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
+        .eq('id', oppId)
+    } catch (err) {
+      console.error('[queue-brief] generateAgentBrief failed:', err)
+      // Brief stays in 'draft' — user can open it manually
+    }
   })
 
   return NextResponse.json({ briefId, keyword, pageUrl })

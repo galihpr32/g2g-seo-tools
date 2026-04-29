@@ -1,4 +1,4 @@
-import { NextResponse }         from 'next/server'
+import { NextResponse, after }  from 'next/server'
 import { createClient }         from '@/lib/supabase/server'
 import { createServiceClient }  from '@/lib/supabase/service'
 import { getEffectiveOwnerId }  from '@/lib/workspace'
@@ -192,26 +192,33 @@ export async function POST(request: Request) {
         .eq('id', oppId)
     }
 
-    // Fire generation in background — don't await
-    generateAgentBrief({
-      briefId,
-      ownerId,
-      keyword,
-      pageUrl,
-      briefType,
-      searchVolume:  opp.total_sv || undefined,
-      competitorUrl: competitorUrl ?? undefined,
-      notes,
-    })
-      .then(() => {
-        if (isFirst) {
-          db.from('seo_opportunities')
+    // Fire generation via after() — runs post-response, protected from Vercel freeze
+    const capturedBriefId    = briefId
+    const capturedOutputType = outputType
+    const capturedIsFirst    = isFirst
+    after(async () => {
+      try {
+        await generateAgentBrief({
+          briefId:       capturedBriefId,
+          ownerId,
+          keyword,
+          pageUrl,
+          briefType,
+          searchVolume:  opp.total_sv || undefined,
+          competitorUrl: competitorUrl ?? undefined,
+          notes,
+        })
+        if (capturedIsFirst) {
+          await db
+            .from('seo_opportunities')
             .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
             .eq('id', oppId)
-            .then(() => {})
         }
-      })
-      .catch(err => console.error(`[pipeline/approve] generation failed for ${outputType}:`, err))
+      } catch (err) {
+        console.error(`[pipeline/approve] generation failed for ${capturedOutputType}:`, err)
+        // Brief stays in 'draft' — user can retry from Brief Library
+      }
+    })
   }
 
   return NextResponse.json({ briefIds })
