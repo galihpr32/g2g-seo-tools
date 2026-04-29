@@ -649,11 +649,13 @@ interface Stats {
 }
 
 export default function PipelineJourneyPage() {
-  const [items,   setItems]   = useState<JourneyItem[]>([])
-  const [stats,   setStats]   = useState<Stats>({ total: 0, needsAction: 0, inProgress: 0, completed: 0 })
-  const [tab,     setTab]     = useState<TabFilter>('all')
-  const [loading, setLoading] = useState(true)
-  const [search,  setSearch]  = useState('')
+  const [items,        setItems]        = useState<JourneyItem[]>([])
+  const [stats,        setStats]        = useState<Stats>({ total: 0, needsAction: 0, inProgress: 0, completed: 0 })
+  const [tab,          setTab]          = useState<TabFilter>('all')
+  const [loading,      setLoading]      = useState(true)
+  const [search,       setSearch]       = useState('')
+  const [processing,   setProcessing]   = useState(false)
+  const [processMsg,   setProcessMsg]   = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -661,11 +663,40 @@ export default function PipelineJourneyPage() {
       const res  = await fetch(`/api/pipeline-journey?site=g2g&limit=60`)
       if (!res.ok) return
       const json = await res.json()
-      setItems(json.journey ?? [])
-      setStats(json.stats   ?? { total: 0, needsAction: 0, inProgress: 0, completed: 0 })
+      const journey: JourneyItem[] = json.journey ?? []
+      setItems(journey)
+      setStats(json.stats ?? { total: 0, needsAction: 0, inProgress: 0, completed: 0 })
+
+      // Auto-retry: if any items have briefs stuck in draft, call process-briefs silently
+      const hasStuck = journey.some(it =>
+        it.briefs.some(b => b.status === 'draft' || b.status === 'generating')
+      )
+      if (hasStuck) {
+        fetch('/api/cron/process-briefs').catch(() => {/* silent */})
+      }
     } catch { /* silent */ }
     finally { setLoading(false) }
   }, [])
+
+  // Manual "process stuck" trigger
+  async function processStuck() {
+    setProcessing(true)
+    setProcessMsg(null)
+    try {
+      const res  = await fetch('/api/cron/process-briefs')
+      const json = await res.json()
+      if (json.processed === 0) {
+        setProcessMsg('No stuck briefs found — all caught up!')
+      } else {
+        setProcessMsg(`Processing ${json.processed} brief${json.processed !== 1 ? 's' : ''}… refresh in ~30s`)
+        setTimeout(fetchData, 35_000) // auto-refresh after generation
+      }
+    } catch {
+      setProcessMsg('Failed to trigger — try again')
+    } finally {
+      setProcessing(false)
+    }
+  }
 
   useEffect(() => { fetchData() }, [fetchData])
 
@@ -753,7 +784,18 @@ export default function PipelineJourneyPage() {
         >
           ↻ Refresh
         </button>
+        <button
+          onClick={processStuck}
+          disabled={processing}
+          title="Re-trigger Bragi for any briefs stuck in draft state"
+          className="text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-500/30 bg-indigo-500/5 px-3 py-1.5 rounded-lg transition disabled:opacity-50"
+        >
+          {processing ? '⏳ Processing…' : '⚡ Process stuck'}
+        </button>
       </div>
+      {processMsg && (
+        <p className="text-xs text-gray-400 mb-3 px-1">{processMsg}</p>
+      )}
 
       {/* List */}
       {loading ? (

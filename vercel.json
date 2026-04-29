@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/process-briefs",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 3 * * *"
     }
   ]
 }

@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { createClient as createSupabase } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase/server'
+import { getEffectiveOwnerId } from '@/lib/workspace'
 import { generateAgentBrief } from '@/lib/agents/brief-generator'
 
 export const maxDuration = 60
@@ -7,14 +9,15 @@ export const maxDuration = 60
 /**
  * GET /api/cron/process-briefs
  *
- * Picks up any seo_content_briefs that are stuck in 'draft' status for
- * more than 3 minutes (i.e., after() failed or the Vercel lambda was killed
- * before Bragi could finish) and re-runs generation for them.
+ * Picks up any seo_content_briefs stuck in 'draft' status for more than
+ * 3 minutes and re-runs Bragi on them. Two auth modes:
  *
- * Runs one brief per invocation to stay within the 60s timeout.
- * Scheduled every 5 minutes via vercel.json cron.
+ *  1. Vercel cron — Authorization: Bearer CRON_SECRET  (service-level, all owners)
+ *  2. User session — normal cookie auth  (own briefs only)
  *
- * Also runs for the initial "draft" state where after() may not have fired.
+ * Runs max 2 briefs per invocation to stay within the 60s Vercel limit.
+ * Scheduled once a day at 3am via vercel.json as a safety net.
+ * Also callable manually from the Pipeline Journey UI to unstick briefs.
  */
 
 function isCronAuth(request: Request): boolean {
@@ -23,11 +26,18 @@ function isCronAuth(request: Request): boolean {
 }
 
 export async function GET(request: Request) {
-  if (!isCronAuth(request)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const isCron = isCronAuth(request)
+
+  // Accept either cron auth or user session
+  let ownerId: string | null = null
+  if (!isCron) {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    ownerId = await getEffectiveOwnerId(supabase, user.id)
   }
 
-  const db = createClient(
+  const db = createSupabase(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
@@ -36,13 +46,20 @@ export async function GET(request: Request) {
   // 'generating' means Bragi is currently running — skip those
   const stuckSince = new Date(Date.now() - 3 * 60 * 1000).toISOString()
 
-  const { data: stuck, error } = await db
+  let query = db
     .from('seo_content_briefs')
     .select('id, owner_user_id, page, primary_keyword, brief_type, notes')
     .eq('status', 'draft')
     .lt('updated_at', stuckSince)
     .order('updated_at', { ascending: true })
     .limit(2) // process max 2 per run to stay within 60s
+
+  // If user-triggered, only process their own briefs
+  if (ownerId) {
+    query = query.eq('owner_user_id', ownerId)
+  }
+
+  const { data: stuck, error } = await query
 
   if (error) {
     console.error('[process-briefs] DB error:', error)
