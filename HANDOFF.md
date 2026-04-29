@@ -788,5 +788,107 @@ follow-ups already on the backlog:
 
 ---
 
-_Last updated: §10 (Mimir agent-trigger spec) added for Sonnet to implement.
-Prior work: Phase A-F findings persistence + 4 follow-up fixes._
+## 11. Deferred by design — Huginn & Muninn reporting agents
+
+Two reporting agents to build **after 4–6 weeks of real pipeline data** exists in `agent_findings`, `brief_outcomes`, etc.
+
+- **Huginn** (Thought) = synthesises fresh pipeline signals weekly — what's moving, what's stalled, where to push
+- **Muninn** (Memory) = tracks cumulative KPIs and historical outcomes — did the briefs we approved actually improve rankings?
+
+Do NOT build these yet. The data foundation needs to mature first.
+
+---
+
+## 12. Multi-site isolation — OffGamers (NEW — full audit done 2026-04-29)
+
+**Context:** The app supports G2G + OffGamers via a site switcher. Architecture is designed for multi-site (`site_slug` column exists on most tables), but the implementation is incomplete. A full audit was done and revealed 26 critical issues where data is NOT isolated per site.
+
+**Golden rule for all OffGamers work:** Every API query on a table that has `site_slug` MUST include `.eq('site_slug', siteSlug)`. No exceptions. If the column doesn't exist on a table yet, add a migration first.
+
+**Tasks #19–28 in the task list cover everything. Open a dedicated chat for OffGamers work.**
+
+### 12.1 What's already site-aware ✅
+- `seo_opportunities` — all queries filter by `site_slug`
+- `weekly_reports` — filters by `site_slug`
+- `agent_actions` — filters by `site_slug`
+- `pipeline-journey` API — filters by `site_slug`
+- `getSiteUrlForSlug()` in `src/lib/agents/site-helpers.ts` — works for both sites
+- Agents (Heimdall, Loki, Odin, Hermod) accept `siteSlug` param
+
+### 12.2 Critical gaps to fix 🔴
+
+**Task #19 — Client-side site context hook**
+- `src/app/(dashboard)/command-center/pipeline/page.tsx` hardcodes `site=g2g` in fetch URL
+- Build `useSiteSlug()` hook reading from SiteSwitcher, inject into all client fetch calls
+
+**Task #20 — Remove all `?? 'g2g'` API defaults**
+- 16 routes still default to g2g if site param missing:
+  - `src/app/api/backlinks/audit/route.ts`
+  - `src/app/api/reports/weekly/route.ts`
+  - `src/app/api/reports/monthly/route.ts`
+  - `src/app/api/opportunities/route.ts`
+  - `src/app/api/serp-features/route.ts`
+  - `src/app/api/agents/actions/route.ts`
+  - `src/app/api/agents/[key]/run/route.ts`
+  - `src/app/api/pipeline-journey/route.ts`
+  - `src/app/api/pipeline-journey/approve/route.ts`
+  - `src/app/api/agents/aggregate/route.ts`
+  - `src/app/api/ai/confirm-agent-run/route.ts`
+
+**Task #21 — Outreach prospects isolation**
+- `outreach_prospects` table has no `site_slug` column → all 6 outreach routes mix data across sites
+- Need DB migration + filter in all routes under `src/app/api/outreach/`
+
+**Task #22 — Content briefs isolation**
+- `seo_content_briefs` may lack `site_slug` → all `/api/brief/*` routes filter by `owner_user_id` only
+- Routes: `/api/brief/generate`, `/api/brief/update`, `/api/brief/add-ideas`, `/api/brief/keywords`, `/api/brief/generate-draft`, `/api/content/briefs/[id]/*`
+
+**Task #23 — Agent data isolation**
+- `agent_findings`, `agent_runs`, `agent_actions` queries without `site_slug`:
+  - `src/app/api/agents/findings/route.ts`
+  - `src/app/api/agents/needs-attention/route.ts`
+  - `src/app/api/agents/insights/route.ts`
+  - `src/app/api/agents/performance/route.ts`
+  - `src/app/api/agents/status/route.ts`
+  - `src/app/api/system/health/route.ts`
+  - `src/app/api/ai/chat/route.ts` (Mimir — but note §0.1 restriction)
+
+**Task #24 — Action items + brief outcomes isolation**
+- `seo_action_items`, `brief_outcomes` routes missing site filter:
+  - `src/app/api/actions/route.ts`
+  - `src/app/api/actions/export/route.ts`
+  - `src/app/api/tools/url-analysis/route.ts`
+  - `src/app/api/brief-outcomes/route.ts`
+  - `src/app/api/dmca/scan/route.ts`
+
+**Task #25 — Fix cron jobs to iterate all sites**
+- `src/app/api/cron/agents-scheduler/route.ts` — `const siteSlug = 'g2g'` (hardcoded, not a default)
+- `src/app/api/cron/weekly-report-generator/route.ts`
+- `src/app/api/cron/monthly-report-generator/route.ts`
+- Fix: query `site_configs` table, iterate all active sites
+
+**Task #26 — Knowledge Base per site**
+- `knowledge_base_items` scoped to `owner_user_id` only — G2G and OffGamers share KB
+- Add `site_slug` column; update KB API routes + `loadKBBlock()` in `brief-generator.ts`
+- Note: `brand` category may remain shared; `category` and `platforms` must be per-site
+
+**Task #27 — Bragi prompt branding**
+- `src/lib/agents/brief-generator.ts` ~line 259: hardcoded `"Buy & Sell on G2G"` fallback
+- Replace with site-aware brand name from KB or site_configs
+
+**Task #28 — OffGamers site_config**
+- OffGamers needs row in `site_configs`: `gsc_property`, `semrush_project_id`, `dataforseo` settings, `default_country`, `default_language`
+- Coordinate with Galih for the correct OffGamers GSC property URL
+
+### 12.3 Recommended order of execution
+
+1. Task #28 — site_config first (prerequisite for everything)
+2. Task #19 — client-side hook (unblocks frontend testing)
+3. Task #20 — remove API defaults
+4. Tasks #21–24 — table-by-table isolation (can parallelize)
+5. Task #25 — cron jobs (lowest risk, do last)
+6. Tasks #26–27 — KB + Bragi (polish, do after core isolation works)
+
+---
+
+_Last updated: §11 Huginn/Muninn deferred, §12 OffGamers multi-site isolation audit (2026-04-29)._
