@@ -358,8 +358,9 @@ export async function startOnPageCrawl(target: string, maxCrawlPages = 100): Pro
       crawl_sub_domain: false,
       check_spell: false,
       enable_content_parsing: false,
-      load_resources: false,
-      enable_javascript: false,
+      load_resources: true,
+      enable_javascript: true,   // needed for JS-rendered sites like g2g.com
+      custom_js: '',
     },
   ])
   return data?.tasks?.[0]?.id ?? null
@@ -457,6 +458,42 @@ export async function getOnPageLinks(
     link_to:   i.link_to   ?? '',
     anchor:    i.anchor    ?? null,
     dofollow:  !(i.link_attribute ?? []).includes('nofollow'),
+  }))
+}
+
+// ─── On-Page: Pages with a specific issue ────────────────────────────────────
+// Returns pages that fail a specific on-page check (e.g. "no_h1_tag")
+// DFS check keys: no_title, no_description, no_h1_tag, duplicate_title,
+//   duplicate_description, no_image_alt, redirect_chain, large_page_size,
+//   is_https, broken_links, broken_resources
+export interface OnPageIssuePageItem {
+  url: string
+  status_code: number | null
+  onpage_score: number | null
+  title: string | null
+}
+
+export async function getOnPagePagesWithCheck(
+  taskId: string,
+  checkKey: string,  // e.g. "no_h1_tag"
+  limit = 100
+): Promise<OnPageIssuePageItem[]> {
+  const data = await dfsPost<any>('/on_page/pages', [{
+    id: taskId,
+    limit,
+    filters: [
+      ['resource_type', '=', 'html'],
+      'and',
+      [`checks.${checkKey}`, '=', true],
+    ],
+    order_by: ['onpage_score,asc'],
+  }])
+  const items: any[] = data?.tasks?.[0]?.result?.[0]?.items ?? []
+  return items.map(i => ({
+    url:          i.url ?? '',
+    status_code:  i.status_code ?? null,
+    onpage_score: i.onpage_score ?? null,
+    title:        i.meta?.title ?? null,
   }))
 }
 

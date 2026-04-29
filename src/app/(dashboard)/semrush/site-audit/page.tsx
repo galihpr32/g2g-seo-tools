@@ -3,6 +3,27 @@
 import { useState, useEffect, useCallback } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 
+// ── DFS check key map (matches server-side) ───────────────────────────────────
+const ISSUE_CHECK_KEYS: Record<string, string> = {
+  'Missing H1':               'no_h1_tag',
+  'Missing title tag':        'no_title',
+  'Missing meta description': 'no_description',
+  'Duplicate title tags':     'duplicate_title',
+  'Duplicate meta desc.':     'duplicate_description',
+  'Missing image alt text':   'no_image_alt',
+  'Redirect chains':          'redirect_chain',
+  'Large page size':          'large_page_size',
+  'Broken links':             'broken_links',
+  'Broken resources':         'broken_resources',
+}
+
+interface IssuePage {
+  url: string
+  status_code: number | null
+  onpage_score: number | null
+  title: string | null
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface OnPageSummary {
@@ -97,12 +118,33 @@ function ScoreRing({ score }: { score: number }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SiteAuditPage() {
-  const hasKey = !!process.env.NEXT_PUBLIC_DATAFORSEO_ENABLED !== false // always attempt
-
   const [task, setTask]         = useState<AuditTask | null | undefined>(undefined) // undefined = loading
   const [running, setRunning]   = useState(false)
   const [error, setError]       = useState<string | null>(null)
   const [polling, setPolling]   = useState(false)
+
+  // Drill-down state: which issue label is expanded, and its page results
+  const [expandedIssue, setExpandedIssue]     = useState<string | null>(null)
+  const [issuePages, setIssuePages]           = useState<IssuePage[]>([])
+  const [loadingIssue, setLoadingIssue]       = useState(false)
+
+  async function toggleIssue(label: string) {
+    if (expandedIssue === label) {
+      setExpandedIssue(null)
+      return
+    }
+    const checkKey = ISSUE_CHECK_KEYS[label]
+    if (!checkKey) return
+    setExpandedIssue(label)
+    setIssuePages([])
+    setLoadingIssue(true)
+    try {
+      const res = await fetch(`/api/site-audit/pages?check=${checkKey}`)
+      const { pages } = await res.json()
+      setIssuePages(pages ?? [])
+    } catch { /* silent */ }
+    finally { setLoadingIssue(false) }
+  }
 
   // Load latest task on mount
   useEffect(() => {
@@ -299,18 +341,65 @@ export default function SiteAuditPage() {
                   {['error', 'warning', 'notice'].flatMap(sev =>
                     issues.filter(i => i.severity === sev).map(issue => {
                       const c = SEV_COLORS[issue.severity]
+                      const canDrill = !!ISSUE_CHECK_KEYS[issue.label]
+                      const isOpen   = expandedIssue === issue.label
                       return (
-                        <div key={issue.label} className="flex items-start gap-3 bg-gray-800 rounded-lg px-4 py-3">
-                          <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${c.dot}`} />
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium text-white">{issue.label}</span>
-                              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${c.badge}`}>
-                                {issue.count}
-                              </span>
+                        <div key={issue.label} className="rounded-lg overflow-hidden">
+                          {/* Issue row */}
+                          <div
+                            onClick={() => canDrill && toggleIssue(issue.label)}
+                            className={`flex items-start gap-3 bg-gray-800 px-4 py-3 ${canDrill ? 'cursor-pointer hover:bg-gray-750 transition-colors' : ''}`}
+                          >
+                            <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${c.dot}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-white">{issue.label}</span>
+                                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${c.badge}`}>
+                                  {issue.count}
+                                </span>
+                              </div>
+                              <p className="text-xs text-gray-500 mt-0.5">{issue.description}</p>
                             </div>
-                            <p className="text-xs text-gray-500 mt-0.5">{issue.description}</p>
+                            {canDrill && (
+                              <span className="text-gray-500 text-xs mt-0.5 flex-shrink-0">
+                                {isOpen ? '▲ hide' : '▼ see pages'}
+                              </span>
+                            )}
                           </div>
+
+                          {/* Drill-down panel */}
+                          {isOpen && (
+                            <div className="bg-gray-850 border-t border-gray-700 px-4 py-3">
+                              {loadingIssue ? (
+                                <p className="text-xs text-gray-500 animate-pulse">Loading affected pages…</p>
+                              ) : issuePages.length === 0 ? (
+                                <p className="text-xs text-gray-500">No pages found (or audit data expired — re-run the audit).</p>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  {issuePages.map((p, idx) => (
+                                    <div key={idx} className="flex items-center gap-3">
+                                      <a
+                                        href={p.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-blue-400 hover:text-blue-300 truncate flex-1 font-mono"
+                                      >
+                                        {p.url.replace('https://', '').replace('http://', '')}
+                                      </a>
+                                      {p.status_code && p.status_code !== 200 && (
+                                        <span className="text-[10px] text-red-400 flex-shrink-0">{p.status_code}</span>
+                                      )}
+                                      {p.onpage_score != null && (
+                                        <span className="text-[10px] text-gray-500 flex-shrink-0">
+                                          score {Math.round(p.onpage_score)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )
                     })

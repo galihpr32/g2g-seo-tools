@@ -393,20 +393,30 @@ function BriefChips({ briefs }: { briefs: BriefSummary[] }) {
         {briefs.map(b => {
           const ot  = OUTPUT_TYPES.find(o => o.id === b.outputType)
           const { label: statusLabel, cls } = briefStatusLabel(b.status)
-          const isOpen = openId === b.briefId
+          const isOpen  = openId === b.briefId
           const isReady = b.status === 'agent_generated' || b.status === 'reviewed' || b.status === 'published'
           return (
-            <button
-              key={b.briefId}
-              onClick={() => setOpenId(isOpen ? null : b.briefId)}
-              title={isReady ? `Click to preview — ${ot?.label ?? b.briefType}` : `${ot?.label ?? b.briefType} · ${statusLabel}`}
-              className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border transition ${cls} ${isOpen ? 'ring-1 ring-indigo-500/50' : isReady ? 'hover:opacity-90 cursor-pointer' : 'cursor-default opacity-70'}`}
-            >
-              <span>{ot?.icon ?? '📄'}</span>
-              <span>{ot?.label ?? b.briefType}</span>
-              <span className="opacity-60">· {statusLabel}</span>
-              {isReady && <span className="opacity-40 text-[9px]">{isOpen ? '▲' : '▼'}</span>}
-            </button>
+            <div key={b.briefId} className="flex items-center gap-0.5">
+              {/* Main chip — click to expand inline panel */}
+              <button
+                onClick={() => isReady ? setOpenId(isOpen ? null : b.briefId) : undefined}
+                title={isReady ? `Click to preview — ${ot?.label ?? b.briefType}` : `${ot?.label ?? b.briefType} · ${statusLabel}`}
+                className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-l-lg border-y border-l transition ${cls} ${isOpen ? 'ring-1 ring-indigo-500/50' : isReady ? 'hover:opacity-90 cursor-pointer' : 'cursor-default opacity-70'}`}
+              >
+                <span>{ot?.icon ?? '📄'}</span>
+                <span>{ot?.label ?? b.briefType}</span>
+                <span className="opacity-60">· {statusLabel}</span>
+                {isReady && <span className="opacity-40 text-[9px]">{isOpen ? '▲' : '▼'}</span>}
+              </button>
+              {/* Direct open button — always visible, no panel needed */}
+              <Link
+                href={`/content/briefs/${b.briefId}`}
+                title="Open full brief"
+                className={`flex items-center justify-center text-[10px] px-1.5 py-1 rounded-r-lg border-y border-r transition hover:opacity-100 opacity-50 ${cls}`}
+              >
+                ↗
+              </Link>
+            </div>
           )
         })}
       </div>

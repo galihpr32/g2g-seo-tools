@@ -15,6 +15,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { slugify } from '@/lib/agents/site-helpers'
 import { logClaudeUsage } from '@/lib/api-logger'
+import { reviewSingleBrief } from '@/lib/agents/tyr'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -217,6 +218,17 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
       new_keywords:     parsed.targetKeywords.slice(1).map(k => ({ keyword: k, volume: null })),
     })
     .eq('id', input.briefId)
+
+  // ── Auto-run Tyr quality review immediately after Bragi generates ──────────
+  // No need for manual trigger — Tyr scores the brief and writes tyr_score +
+  // tyr_status back to the row. Errors are caught so a Tyr failure doesn't
+  // surface as a Bragi failure.
+  try {
+    await reviewSingleBrief(input.briefId, input.ownerId)
+  } catch (tyrErr) {
+    console.error('[brief-generator] Tyr auto-review failed (non-fatal):', tyrErr)
+    // Brief stays at agent_generated — user can re-run Tyr manually from Brief Library
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
