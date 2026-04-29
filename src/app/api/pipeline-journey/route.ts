@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
@@ -71,8 +71,9 @@ export async function GET(req: Request) {
   for (const b of allBriefs ?? []) {
     briefMap[b.id] = b
 
-    // Extract oppId from notes tag  "(uuid)"
-    const match = b.notes?.match(/\(([0-9a-f-]{36})\)\s*$/)
+    // Extract oppId from notes tag  "Queued from Opportunity: \"...\" (uuid)"
+    // Use specific prefix match so we don't accidentally pick up other UUIDs in notes.
+    const match = b.notes?.match(/Queued from Opportunity:.*\(([0-9a-f-]{36})\)/)
     const taggedOppId = match?.[1]
     if (taggedOppId && oppIds.has(taggedOppId)) {
       briefsByOpp[taggedOppId] ??= []
@@ -90,6 +91,38 @@ export async function GET(req: Request) {
         briefsByOpp[opp.id].unshift(b)   // legacy brief first
       }
     }
+  }
+
+  // ── 2.5 Auto-heal: if opp.status is stuck at 'brief_queued' but the primary
+  // brief is already agent_generated / reviewed / published, update opp status.
+  // This fixes cases where after() silently failed on Vercel Hobby.
+  // We mutate the opp objects in-place so the journey is built with healed data,
+  // then persist the fix to DB asynchronously post-response via after().
+  const toHeal: Array<{ id: string; ownerId: string; newStatus: string }> = []
+
+  for (const opp of opps) {
+    if (opp.status !== 'brief_queued') continue
+    const oppBriefs    = briefsByOpp[opp.id] ?? []
+    const primaryBrief = opp.brief_id ? briefMap[opp.brief_id] : oppBriefs[0]
+    if (!primaryBrief) continue
+    if (!['agent_generated', 'reviewed', 'published'].includes(primaryBrief.status)) continue
+
+    const newStatus = primaryBrief.status === 'published' ? 'published' : 'brief_ready'
+    // Mutate in-place so buildJourneyItem sees the corrected status
+    ;(opp as Record<string, unknown>).status = newStatus
+    toHeal.push({ id: opp.id, ownerId, newStatus })
+  }
+
+  if (toHeal.length > 0) {
+    after(async () => {
+      for (const { id, newStatus } of toHeal) {
+        await db
+          .from('seo_opportunities')
+          .update({ status: newStatus, updated_at: new Date().toISOString() })
+          .eq('id', id)
+          .eq('owner_user_id', ownerId)
+      }
+    })
   }
 
   // ── 3. Batch-fetch brief_outcomes (Vor data) for all fetched briefs ─────────
@@ -347,13 +380,18 @@ function buildStages(
       cta:     { label: 'View in Brief Library', href: '/content/briefs' },
     }
   } else {
-    const isGenerating = brief.status === 'generating'
-    const isFailed = brief.tyr_status === 'failed'
-    const isPassed = ['reviewed'].includes(brief.tyr_status ?? '')
+    const isGenerating   = brief.status === 'generating' || brief.status === 'draft'
+    const isFailed       = brief.tyr_status === 'failed'
+    const isAgentDone    = brief.status === 'agent_generated'
+    const isReviewed     = ['reviewed'].includes(brief.tyr_status ?? '') || brief.status === 'reviewed'
+    const isPublished    = brief.status === 'published'
     const briefStatus: PipelineStageInfo['status'] =
-      isGenerating       ? 'active'       :
-      isFailed           ? 'needs_action' :
-      isPassed           ? 'done'         : 'done'
+      isGenerating ? 'active'       :
+      isFailed     ? 'needs_action' :
+      'done'
+
+    const tyrStr = brief.tyr_score != null ? `Tyr ${brief.tyr_score}/100` : null
+    const wdStr  = brief.word_count_target ? `${brief.word_count_target} words` : null
 
     stageBrief = {
       status:  briefStatus,
@@ -361,7 +399,13 @@ function buildStages(
         ? 'Bragi is generating the brief…'
         : isFailed
           ? `Brief failed Tyr review (${brief.tyr_score ?? '?'}/100) — needs regeneration`
-          : `Brief ready · ${brief.word_count_target ? brief.word_count_target + ' words' : ''} · Tyr ${brief.tyr_score ?? '?'}/100`,
+          : isPublished
+            ? `Published · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`
+            : isReviewed
+              ? `Reviewed & ready · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`
+              : isAgentDone
+                ? `Brief generated · ${[wdStr, tyrStr ?? 'Tyr pending'].filter(Boolean).join(' · ')}`
+                : `Brief ready · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`,
       detail:  brief.primary_keyword ? `Target keyword: "${brief.primary_keyword}"` : null,
       agent:   'Bragi · Tyr',
       date:    brief.created_at,
@@ -373,8 +417,9 @@ function buildStages(
 
   // ── Stage 5: Execute (writer) ─────────────────────────────────────────────
   let stageExecute: PipelineStageInfo
-  const briefPublished = brief?.status === 'published'
-  const briefReviewed  = brief?.tyr_status === 'reviewed' && brief?.status !== 'published'
+  const briefPublished   = brief?.status === 'published'
+  const briefAgentDone   = brief?.status === 'agent_generated'
+  const briefReviewed    = (brief?.tyr_status === 'reviewed' || brief?.status === 'reviewed') && !briefPublished
 
   if (!brief || stageBrief.status === 'locked' || stageBrief.status === 'active') {
     stageExecute = { status: 'locked', summary: 'Waiting for approved brief', detail: null, agent: null, date: null }
@@ -391,6 +436,15 @@ function buildStages(
       status:  'needs_action',
       summary: 'Brief approved — ready to write',
       detail:  brief.target_publish_date ? `Target publish: ${brief.target_publish_date}` : 'No publish date set yet.',
+      agent:   null,
+      date:    null,
+      cta:     { label: 'Open in Writer Inbox', href: '/content/writer-inbox' },
+    }
+  } else if (briefAgentDone) {
+    stageExecute = {
+      status:  'needs_action',
+      summary: 'Brief ready — assign to writer',
+      detail:  'Review the brief, then assign a writer in Writer Inbox.',
       agent:   null,
       date:    null,
       cta:     { label: 'Open in Writer Inbox', href: '/content/writer-inbox' },

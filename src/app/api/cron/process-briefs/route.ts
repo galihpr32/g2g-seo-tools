@@ -42,14 +42,14 @@ export async function GET(request: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
 
-  // Find briefs stuck in 'draft' for more than 3 minutes
-  // 'generating' means Bragi is currently running — skip those
-  const stuckSince = new Date(Date.now() - 3 * 60 * 1000).toISOString()
+  // Find briefs stuck in 'draft' OR 'generating' for more than 5 minutes.
+  // 'draft' = after() never fired. 'generating' = Bragi started but crashed.
+  const stuckSince = new Date(Date.now() - 5 * 60 * 1000).toISOString()
 
   let query = db
     .from('seo_content_briefs')
     .select('id, owner_user_id, page, primary_keyword, brief_type, notes')
-    .eq('status', 'draft')
+    .in('status', ['draft', 'generating'])
     .lt('updated_at', stuckSince)
     .order('updated_at', { ascending: true })
     .limit(2) // process max 2 per run to stay within 60s
