@@ -97,15 +97,18 @@ function TriagePanel({
   triageStatus,
   oppBriefs,
   onApproved,
+  onDismissed,
 }: {
   oppId:        string
   triageStatus: PipelineStageInfo['status']
   oppBriefs:    BriefSummary[]
   onApproved:   () => void
+  onDismissed:  () => void
 }) {
   const [phase,         setPhase]         = useState<TriagePhase>('idle')
   const [selectedTypes, setSelectedTypes] = useState<Set<OutputTypeId>>(new Set())
   const [generating,    setGenerating]    = useState(false)
+  const [dismissing,    setDismissing]    = useState(false)
   const [error,         setError]         = useState<string | null>(null)
 
   // If already approved (status from server), show done immediately
@@ -124,6 +127,26 @@ function TriagePanel({
       else next.add(id)
       return next
     })
+  }
+
+  async function handleDismiss() {
+    setDismissing(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/opportunities', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ ids: [oppId], status: 'dismissed' }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error ?? 'Dismiss failed')
+      }
+      onDismissed()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong')
+      setDismissing(false)
+    }
   }
 
   async function handleGenerate() {
@@ -149,15 +172,25 @@ function TriagePanel({
     }
   }
 
-  // Phase: idle → show Approve button
+  // Phase: idle → show Approve + Dismiss buttons
   if (phase === 'idle') {
     return (
-      <button
-        onClick={() => setPhase('selecting')}
-        className="mt-2 text-[11px] px-3 py-1.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 hover:bg-amber-500/25 transition font-medium"
-      >
-        Approve
-      </button>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={() => setPhase('selecting')}
+          className="text-[11px] px-3 py-1.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 hover:bg-amber-500/25 transition font-medium"
+        >
+          Approve
+        </button>
+        <button
+          onClick={handleDismiss}
+          disabled={dismissing}
+          className="text-[11px] px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-500 hover:border-red-500/40 hover:text-red-400 hover:bg-red-500/10 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {dismissing ? 'Dismissing…' : 'Dismiss'}
+        </button>
+        {error && <p className="text-[11px] text-red-400">{error}</p>}
+      </div>
     )
   }
 
@@ -242,14 +275,15 @@ function BriefChips({ briefs }: { briefs: BriefSummary[] }) {
 // ── Stage row ─────────────────────────────────────────────────────────────────
 
 function StageRow({
-  stage, info, isLast, oppId, oppBriefs, onApproved,
+  stage, info, isLast, oppId, oppBriefs, onApproved, onDismissed,
 }: {
-  stage:      typeof STAGES[number]
-  info:       PipelineStageInfo
-  isLast:     boolean
-  oppId:      string
-  oppBriefs:  BriefSummary[]
-  onApproved: () => void
+  stage:       typeof STAGES[number]
+  info:        PipelineStageInfo
+  isLast:      boolean
+  oppId:       string
+  oppBriefs:   BriefSummary[]
+  onApproved:  () => void
+  onDismissed: () => void
 }) {
   const c       = COLOR[stage.color]
   const isLocked  = info.status === 'locked'
@@ -303,6 +337,7 @@ function StageRow({
             triageStatus={info.status}
             oppBriefs={oppBriefs}
             onApproved={onApproved}
+            onDismissed={onDismissed}
           />
         )}
 
@@ -407,6 +442,7 @@ function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void
               oppId={item.id}
               oppBriefs={item.briefs}
               onApproved={onRefresh}
+              onDismissed={onRefresh}
             />
           ))}
           <div className="flex items-center justify-end pt-1 pb-0.5">
