@@ -56,12 +56,14 @@ export async function GET(req: Request) {
     .from('seo_content_briefs')
     .select(`
       id, brief_type, status, tyr_status, tyr_score, primary_keyword,
-      word_count_target, target_publish_date, created_at, updated_at, notes
+      target_publish_date, created_at, updated_at, notes
     `)
     .eq('owner_user_id', ownerId)
     // No notes filter — we need ALL briefs in briefMap so opp.brief_id lookup
     // always works, even for briefs without tags (legacy or different-flow briefs).
     // The notes regex match below handles the opp-tagging grouping separately.
+    // NOTE: word_count_target removed — that column doesn't exist in DB and
+    // its presence here was breaking the entire query (failed silently to '0 briefs queued').
     .order('created_at', { ascending: true })
 
   if (briefsErr) console.error('[pipeline-journey] briefs fetch error:', briefsErr.message)
@@ -191,7 +193,7 @@ export async function GET(req: Request) {
 
 interface BriefRow {
   id: string; brief_type: string; status: string; tyr_status: string | null; tyr_score: number | null
-  primary_keyword: string | null; word_count_target: number | null
+  primary_keyword: string | null
   target_publish_date: string | null; created_at: string; updated_at: string
   notes: string | null
 }
@@ -393,7 +395,8 @@ function buildStages(
       'done'
 
     const tyrStr = brief.tyr_score != null ? `Tyr ${brief.tyr_score}/100` : null
-    const wdStr  = brief.word_count_target ? `${brief.word_count_target} words` : null
+    // word_count_target column doesn't exist in DB; placeholder kept null until migrated
+    const wdStr: string | null = null
 
     stageBrief = {
       status:  briefStatus,
