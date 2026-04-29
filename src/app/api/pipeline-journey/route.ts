@@ -59,7 +59,9 @@ export async function GET(req: Request) {
       word_count_target, target_publish_date, created_at, updated_at, notes
     `)
     .eq('owner_user_id', ownerId)
-    .not('notes', 'is', null)
+    // No notes filter — we need ALL briefs in briefMap so opp.brief_id lookup
+    // always works, even for briefs without tags (legacy or different-flow briefs).
+    // The notes regex match below handles the opp-tagging grouping separately.
     .order('created_at', { ascending: true })
 
   if (briefsErr) console.error('[pipeline-journey] briefs fetch error:', briefsErr.message)

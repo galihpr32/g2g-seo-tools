@@ -678,18 +678,43 @@ export default function PipelineJourneyPage() {
     finally { setLoading(false) }
   }, [])
 
-  // Manual "process stuck" trigger
+  // Manual "process stuck" trigger — loops until all stuck briefs are cleared
   async function processStuck() {
     setProcessing(true)
     setProcessMsg(null)
+
+    let totalProcessed = 0
+    let round = 0
+    const MAX_ROUNDS = 10 // safety cap (10 × 2 = 20 briefs max per session)
+
     try {
-      const res  = await fetch('/api/cron/process-briefs')
-      const json = await res.json()
-      if (json.processed === 0) {
+      while (round < MAX_ROUNDS) {
+        round++
+        const res  = await fetch('/api/cron/process-briefs')
+        const json = await res.json()
+
+        totalProcessed += json.processed ?? 0
+
+        if (json.processed === 0) break // nothing left
+
+        const remaining = json.remaining ?? 0
+        setProcessMsg(
+          remaining > 0
+            ? `✓ ${totalProcessed} done · ${remaining} remaining — processing next batch…`
+            : `✓ ${totalProcessed} brief${totalProcessed !== 1 ? 's' : ''} processed — all done!`
+        )
+
+        if (remaining === 0) break
+
+        // Wait 40s for Bragi to finish before picking up the next batch
+        await new Promise(r => setTimeout(r, 40_000))
+      }
+
+      if (totalProcessed === 0) {
         setProcessMsg('No stuck briefs found — all caught up!')
       } else {
-        setProcessMsg(`Processing ${json.processed} brief${json.processed !== 1 ? 's' : ''}… refresh in ~30s`)
-        setTimeout(fetchData, 35_000) // auto-refresh after generation
+        setProcessMsg(`✓ All done — ${totalProcessed} brief${totalProcessed !== 1 ? 's' : ''} processed. Refreshing…`)
+        setTimeout(fetchData, 3_000)
       }
     } catch {
       setProcessMsg('Failed to trigger — try again')

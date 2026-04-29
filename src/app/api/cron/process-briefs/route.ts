@@ -67,7 +67,7 @@ export async function GET(request: Request) {
   }
 
   if (!stuck?.length) {
-    return NextResponse.json({ processed: 0, message: 'No stuck briefs found' })
+    return NextResponse.json({ processed: 0, remaining: 0, message: 'No stuck briefs found' })
   }
 
   const results: { briefId: string; result: string }[] = []
@@ -84,7 +84,7 @@ export async function GET(request: Request) {
         notes:     brief.notes ?? undefined,
       })
 
-      // Update linked opportunity to brief_ready
+      // Update linked opportunity to brief_ready (via brief_id FK link)
       const { data: opps } = await db
         .from('seo_opportunities')
         .select('id, status')
@@ -92,7 +92,7 @@ export async function GET(request: Request) {
         .eq('owner_user_id', brief.owner_user_id)
         .limit(1)
 
-      if (opps?.[0] && opps[0].status !== 'brief_ready') {
+      if (opps?.[0] && !['brief_ready', 'published'].includes(opps[0].status)) {
         await db
           .from('seo_opportunities')
           .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
@@ -106,5 +106,15 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({ processed: results.length, results })
+  // Count remaining stuck briefs so the UI can decide whether to loop
+  let remainingQuery = db
+    .from('seo_content_briefs')
+    .select('id', { count: 'exact', head: true })
+    .in('status', ['draft', 'generating'])
+    .lt('updated_at', stuckSince)
+
+  if (ownerId) remainingQuery = remainingQuery.eq('owner_user_id', ownerId)
+  const { count: remaining } = await remainingQuery
+
+  return NextResponse.json({ processed: results.length, remaining: remaining ?? 0, results })
 }
