@@ -383,9 +383,20 @@ function BriefInlinePanel({ briefId, onClose }: { briefId: string; onClose: () =
 // ── Brief type chips ──────────────────────────────────────────────────────────
 
 function BriefChips({ briefs }: { briefs: BriefSummary[] }) {
-  const [openId, setOpenId] = useState<string | null>(null)
+  const [openId, setOpenId]         = useState<string | null>(null)
+  const [retrying, setRetrying]     = useState<string | null>(null)
+  const [retryDone, setRetryDone]   = useState<Set<string>>(new Set())
 
   if (!briefs.length) return null
+
+  async function handleRetry(briefId: string) {
+    setRetrying(briefId)
+    try {
+      await fetch(`/api/content/briefs/${briefId}/regenerate`, { method: 'POST' })
+      setRetryDone(prev => new Set([...prev, briefId]))
+    } catch { /* silent */ }
+    finally { setRetrying(null) }
+  }
 
   return (
     <div className="mt-2 space-y-1.5">
@@ -395,19 +406,32 @@ function BriefChips({ briefs }: { briefs: BriefSummary[] }) {
           const { label: statusLabel, cls } = briefStatusLabel(b.status)
           const isOpen  = openId === b.briefId
           const isReady = b.status === 'agent_generated' || b.status === 'reviewed' || b.status === 'published'
+          const isStuck = (b.status === 'draft' || b.status === 'generating') && !retryDone.has(b.briefId)
+          const isDoneRetrying = retryDone.has(b.briefId)
           return (
             <div key={b.briefId} className="flex items-center gap-0.5">
               {/* Main chip — click to expand inline panel */}
               <button
                 onClick={() => isReady ? setOpenId(isOpen ? null : b.briefId) : undefined}
                 title={isReady ? `Click to preview — ${ot?.label ?? b.briefType}` : `${ot?.label ?? b.briefType} · ${statusLabel}`}
-                className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-l-lg border-y border-l transition ${cls} ${isOpen ? 'ring-1 ring-indigo-500/50' : isReady ? 'hover:opacity-90 cursor-pointer' : 'cursor-default opacity-70'}`}
+                className={`flex items-center gap-1 text-[11px] px-2.5 py-1 ${isStuck ? 'rounded-l-lg' : 'rounded-l-lg'} border-y border-l transition ${cls} ${isOpen ? 'ring-1 ring-indigo-500/50' : isReady ? 'hover:opacity-90 cursor-pointer' : 'cursor-default opacity-70'}`}
               >
                 <span>{ot?.icon ?? '📄'}</span>
                 <span>{ot?.label ?? b.briefType}</span>
-                <span className="opacity-60">· {statusLabel}</span>
+                <span className="opacity-60">· {isDoneRetrying ? 'queued ✓' : statusLabel}</span>
                 {isReady && <span className="opacity-40 text-[9px]">{isOpen ? '▲' : '▼'}</span>}
               </button>
+              {/* Retry button for stuck briefs */}
+              {isStuck && (
+                <button
+                  onClick={() => handleRetry(b.briefId)}
+                  disabled={retrying === b.briefId}
+                  title="Brief generation may have timed out — click to retry"
+                  className={`flex items-center justify-center text-[10px] px-1.5 py-1 border-y transition ${cls} ${retrying === b.briefId ? 'opacity-40 cursor-not-allowed' : 'hover:opacity-100 opacity-70 cursor-pointer'}`}
+                >
+                  {retrying === b.briefId ? '…' : '⟳'}
+                </button>
+              )}
               {/* Direct open button — always visible, no panel needed */}
               <Link
                 href={`/content/briefs/${b.briefId}`}

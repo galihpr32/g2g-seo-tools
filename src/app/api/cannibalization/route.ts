@@ -68,6 +68,15 @@ function recommend(pages: { page: string; clicks: number; impressions: number; p
 //   days     lookback window (default 90)
 //   min_impr minimum impressions to surface a query (default 10)
 export async function GET(req: Request) {
+  try {
+    return await handleGET(req)
+  } catch (err) {
+    console.error('[cannibalization] Unhandled error:', err)
+    return NextResponse.json({ error: String(err) }, { status: 500 })
+  }
+}
+
+async function handleGET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -96,11 +105,11 @@ export async function GET(req: Request) {
 
   // ── 2. Pull GSC query+page data ─────────────────────────────────────────────
   // This gives us: for each (query, page) pair, clicks/impressions/ctr/position
-  const rows = await getSearchAnalytics(
+  const rows = (await getSearchAnalytics(
     auth, conn.site_url, startDate, endDate,
     ['query', 'page'],
     25000
-  )
+  )) ?? []
 
   // ── 3. Group by query, find queries with 2+ pages ───────────────────────────
   type PageEntry = { page: string; clicks: number; impressions: number; ctr: number; position: number }
@@ -218,11 +227,13 @@ export async function GET(req: Request) {
 
   const mapOverlaps: MapOverlap[] = []
   const seenPairs = new Set<string>()
+  // Cap at 800 clusters to prevent O(n²) timeout (800*799/2 ≈ 319K pairs max)
+  const cappedClusters = clusterTokens.slice(0, 800)
 
-  for (let i = 0; i < clusterTokens.length; i++) {
-    for (let j = i + 1; j < clusterTokens.length; j++) {
-      const a = clusterTokens[i]
-      const b = clusterTokens[j]
+  for (let i = 0; i < cappedClusters.length; i++) {
+    for (let j = i + 1; j < cappedClusters.length; j++) {
+      const a = cappedClusters[i]
+      const b = cappedClusters[j]
 
       const pairKey = [a.keyword, b.keyword].sort().join('|||')
       if (seenPairs.has(pairKey)) continue

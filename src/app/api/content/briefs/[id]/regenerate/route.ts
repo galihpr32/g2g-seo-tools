@@ -1,8 +1,10 @@
-import { NextResponse }        from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { createClient }        from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { generateAgentBrief }  from '@/lib/agents/brief-generator'
+
+export const maxDuration = 60
 
 /**
  * POST /api/content/briefs/[id]/regenerate
@@ -90,19 +92,38 @@ export async function POST(
     })
     .eq('id', id)
 
-  // ── Fire regeneration in background ─────────────────────────────────────
-  generateAgentBrief({
-    briefId:        id,
-    ownerId,
-    keyword,
-    pageUrl,
-    briefType,
-    searchVolume:   typeof brief.search_volume === 'number' ? brief.search_volume : undefined,
-    notes:          userNotes || null,
-    previousReview: previousReview as Parameters<typeof generateAgentBrief>[0]['previousReview'],
-  }).catch(err => {
-    console.error('[regenerate] generateAgentBrief failed:', err)
-    // Brief stays in 'draft' — user can retry
+  // ── Fire regeneration in background (after() keeps lambda alive on Vercel) ──
+  after(async () => {
+    try {
+      await generateAgentBrief({
+        briefId:        id,
+        ownerId,
+        keyword,
+        pageUrl,
+        briefType,
+        searchVolume:   typeof brief.search_volume === 'number' ? brief.search_volume : undefined,
+        notes:          userNotes || null,
+        previousReview: previousReview as Parameters<typeof generateAgentBrief>[0]['previousReview'],
+      })
+
+      // If brief is linked to an opportunity, mark it brief_ready
+      const { data: opps } = await db
+        .from('seo_opportunities')
+        .select('id, status')
+        .eq('brief_id', id)
+        .eq('owner_user_id', ownerId)
+        .limit(1)
+
+      if (opps?.[0] && opps[0].status !== 'brief_ready') {
+        await db
+          .from('seo_opportunities')
+          .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
+          .eq('id', opps[0].id)
+      }
+    } catch (err) {
+      console.error('[regenerate] generateAgentBrief failed:', err)
+      // Brief stays in 'draft' — user can retry again
+    }
   })
 
   return NextResponse.json({ ok: true, briefId: id })
