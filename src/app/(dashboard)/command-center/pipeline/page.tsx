@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import type { JourneyItem, PipelineStageInfo } from '@/app/api/pipeline-journey/route'
+import type { JourneyItem, PipelineStageInfo, BriefSummary } from '@/app/api/pipeline-journey/route'
 
 // ── Stage config ──────────────────────────────────────────────────────────────
 
@@ -19,21 +19,45 @@ const STAGES = [
 type StageColor = typeof STAGES[number]['color']
 
 const COLOR: Record<StageColor, { dot: string; badge: string; icon: string; text: string; border: string }> = {
-  blue:   { dot: 'bg-blue-500',   badge: 'bg-blue-500/15 text-blue-400 border-blue-500/30',   icon: 'bg-blue-500/20 border-blue-500/40 text-blue-400',   text: 'text-blue-400',   border: 'border-blue-500/40' },
+  blue:   { dot: 'bg-blue-500',   badge: 'bg-blue-500/15 text-blue-400 border-blue-500/30',       icon: 'bg-blue-500/20 border-blue-500/40 text-blue-400',   text: 'text-blue-400',   border: 'border-blue-500/40' },
   purple: { dot: 'bg-purple-500', badge: 'bg-purple-500/15 text-purple-400 border-purple-500/30', icon: 'bg-purple-500/20 border-purple-500/40 text-purple-400', text: 'text-purple-400', border: 'border-purple-500/40' },
-  amber:  { dot: 'bg-amber-500',  badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30',  icon: 'bg-amber-500/20 border-amber-500/40 text-amber-400',   text: 'text-amber-400',  border: 'border-amber-500/40' },
+  amber:  { dot: 'bg-amber-500',  badge: 'bg-amber-500/15 text-amber-400 border-amber-500/30',    icon: 'bg-amber-500/20 border-amber-500/40 text-amber-400',   text: 'text-amber-400',  border: 'border-amber-500/40' },
   indigo: { dot: 'bg-indigo-500', badge: 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30', icon: 'bg-indigo-500/20 border-indigo-500/40 text-indigo-400', text: 'text-indigo-400', border: 'border-indigo-500/40' },
-  green:  { dot: 'bg-emerald-500',badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',icon:'bg-emerald-500/20 border-emerald-500/40 text-emerald-400',text: 'text-emerald-400',border:'border-emerald-500/40'},
-  pink:   { dot: 'bg-pink-500',   badge: 'bg-pink-500/15 text-pink-400 border-pink-500/30',    icon: 'bg-pink-500/20 border-pink-500/40 text-pink-400',    text: 'text-pink-400',   border: 'border-pink-500/40' },
-  teal:   { dot: 'bg-teal-500',   badge: 'bg-teal-500/15 text-teal-400 border-teal-500/30',    icon: 'bg-teal-500/20 border-teal-500/40 text-teal-400',    text: 'text-teal-400',   border: 'border-teal-500/40' },
+  green:  { dot: 'bg-emerald-500',badge: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30', icon: 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400', text: 'text-emerald-400', border: 'border-emerald-500/40' },
+  pink:   { dot: 'bg-pink-500',   badge: 'bg-pink-500/15 text-pink-400 border-pink-500/30',       icon: 'bg-pink-500/20 border-pink-500/40 text-pink-400',    text: 'text-pink-400',   border: 'border-pink-500/40' },
+  teal:   { dot: 'bg-teal-500',   badge: 'bg-teal-500/15 text-teal-400 border-teal-500/30',       icon: 'bg-teal-500/20 border-teal-500/40 text-teal-400',    text: 'text-teal-400',   border: 'border-teal-500/40' },
 }
 
-// Status → icon + ring color
+// ── Output type config ────────────────────────────────────────────────────────
+
+const OUTPUT_TYPES = [
+  { id: 'new_page',          label: 'New Page',      icon: '📄', desc: 'Create a new category/landing page' },
+  { id: 'optimize_existing', label: 'Optimization',  icon: '✏️',  desc: 'Improve existing page to recapture rankings' },
+  { id: 'outreach',          label: 'Outreach',      icon: '🤝', desc: 'Link-building pitch to external sites' },
+  { id: 'blog_post',         label: 'Blog Post',     icon: '✍️',  desc: 'Guest article for gaming editorial publications' },
+] as const
+
+type OutputTypeId = typeof OUTPUT_TYPES[number]['id']
+
+function briefStatusLabel(status: string): { label: string; cls: string } {
+  if (status === 'generating' || status === 'draft')
+    return { label: 'generating…', cls: 'text-indigo-400 border-indigo-500/30 bg-indigo-500/10 animate-pulse' }
+  if (status === 'agent_generated')
+    return { label: 'ready', cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' }
+  if (status === 'reviewed')
+    return { label: 'reviewed', cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' }
+  if (status === 'published')
+    return { label: 'published', cls: 'text-teal-400 border-teal-500/30 bg-teal-500/10' }
+  return { label: status, cls: 'text-gray-400 border-gray-700 bg-gray-800' }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 function StageIcon({ status, stageColor }: { status: PipelineStageInfo['status']; stageColor: StageColor }) {
   const c = COLOR[stageColor]
   if (status === 'done')
     return (
-      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400`}>
+      <div className="w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400">
         ✓
       </div>
     )
@@ -49,7 +73,6 @@ function StageIcon({ status, stageColor }: { status: PipelineStageInfo['status']
         ●
       </div>
     )
-  // locked / skipped
   return (
     <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 bg-gray-800 border border-gray-700">
       <div className="w-1.5 h-1.5 rounded-full bg-gray-600" />
@@ -65,21 +88,174 @@ function timeAgo(iso: string): string {
   return `${Math.floor(s / 86400)}d ago`
 }
 
+// ── Triage panel (the interactive piece) ─────────────────────────────────────
+
+type TriagePhase = 'idle' | 'selecting' | 'generating' | 'done'
+
+function TriagePanel({
+  oppId,
+  triageStatus,
+  oppBriefs,
+  onApproved,
+}: {
+  oppId:        string
+  triageStatus: PipelineStageInfo['status']
+  oppBriefs:    BriefSummary[]
+  onApproved:   () => void
+}) {
+  const [phase,         setPhase]         = useState<TriagePhase>('idle')
+  const [selectedTypes, setSelectedTypes] = useState<Set<OutputTypeId>>(new Set())
+  const [generating,    setGenerating]    = useState(false)
+  const [error,         setError]         = useState<string | null>(null)
+
+  // If already approved (status from server), show done immediately
+  if (triageStatus === 'done') {
+    return (
+      <p className="text-xs text-gray-500 mt-1">
+        Approved — {oppBriefs.length} brief{oppBriefs.length !== 1 ? 's' : ''} queued
+      </p>
+    )
+  }
+
+  function toggleType(id: OutputTypeId) {
+    setSelectedTypes(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleGenerate() {
+    if (!selectedTypes.size) return
+    setGenerating(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/pipeline-journey/approve', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ oppId, outputTypes: Array.from(selectedTypes) }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        throw new Error(j.error ?? 'Approval failed')
+      }
+      setPhase('done')
+      onApproved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  // Phase: idle → show Approve button
+  if (phase === 'idle') {
+    return (
+      <button
+        onClick={() => setPhase('selecting')}
+        className="mt-2 text-[11px] px-3 py-1.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 hover:bg-amber-500/25 transition font-medium"
+      >
+        Approve
+      </button>
+    )
+  }
+
+  // Phase: selecting → type picker
+  return (
+    <div className="mt-2 space-y-2">
+      <p className="text-[11px] text-gray-500">Choose brief type(s) to generate:</p>
+
+      <div className="flex flex-wrap gap-1.5">
+        {OUTPUT_TYPES.map(ot => {
+          const sel = selectedTypes.has(ot.id)
+          return (
+            <button
+              key={ot.id}
+              onClick={() => toggleType(ot.id)}
+              title={ot.desc}
+              className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border transition ${
+                sel
+                  ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+              }`}
+            >
+              <span>{ot.icon}</span>
+              {ot.label}
+              {sel && <span className="text-indigo-400 text-[10px]">✓</span>}
+            </button>
+          )
+        })}
+      </div>
+
+      {error && <p className="text-[11px] text-red-400">{error}</p>}
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={handleGenerate}
+          disabled={!selectedTypes.size || generating}
+          className="text-[11px] px-3 py-1.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25 transition disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+        >
+          {generating
+            ? 'Queuing briefs…'
+            : `Generate ${selectedTypes.size || ''} brief${selectedTypes.size !== 1 ? 's' : ''}`}
+        </button>
+        <button
+          onClick={() => { setPhase('idle'); setSelectedTypes(new Set()) }}
+          disabled={generating}
+          className="text-[11px] text-gray-600 hover:text-gray-400 transition disabled:opacity-40"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Brief type chips ──────────────────────────────────────────────────────────
+
+function BriefChips({ briefs }: { briefs: BriefSummary[] }) {
+  if (!briefs.length) return null
+
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-2">
+      {briefs.map(b => {
+        const ot  = OUTPUT_TYPES.find(o => o.id === b.outputType)
+        const { label: statusLabel, cls } = briefStatusLabel(b.status)
+        return (
+          <Link
+            key={b.briefId}
+            href={`/content/briefs`}
+            className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border transition hover:opacity-80 ${cls}`}
+            title={`${ot?.label ?? b.briefType} · ${statusLabel}`}
+          >
+            <span>{ot?.icon ?? '📄'}</span>
+            <span>{ot?.label ?? b.briefType}</span>
+            <span className="opacity-60">· {statusLabel}</span>
+          </Link>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Stage row ─────────────────────────────────────────────────────────────────
 
 function StageRow({
-  stage, info, isLast, onApprove, oppId, approving,
+  stage, info, isLast, oppId, oppBriefs, onApproved,
 }: {
-  stage:     typeof STAGES[number]
-  info:      PipelineStageInfo
-  isLast:    boolean
-  onApprove: (id: string) => void
-  oppId:     string
-  approving: boolean
+  stage:      typeof STAGES[number]
+  info:       PipelineStageInfo
+  isLast:     boolean
+  oppId:      string
+  oppBriefs:  BriefSummary[]
+  onApproved: () => void
 }) {
-  const c = COLOR[stage.color]
+  const c       = COLOR[stage.color]
   const isLocked  = info.status === 'locked'
   const nameColor = isLocked ? 'text-gray-600' : info.status === 'done' ? 'text-emerald-400' : c.text
+  const isTriage  = stage.n === 3
+  const isBrief   = stage.n === 4
 
   return (
     <div className="flex items-stretch gap-0">
@@ -99,7 +275,7 @@ function StageRow({
             <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
               info.status === 'done'         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' :
               info.status === 'needs_action' ? 'bg-amber-500/10 text-amber-400 border-amber-500/25 animate-pulse' :
-              info.status === 'active'       ? `${c.badge} border` :
+              info.status === 'active'       ? `${c.badge}` :
               'text-gray-600 border-gray-800'
             }`}>
               {info.status === 'done' ? 'done' : info.status === 'needs_action' ? 'needs you' : info.status === 'active' ? 'running' : 'pending'}
@@ -120,25 +296,30 @@ function StageRow({
           <p className="text-[11px] text-gray-600 mt-0.5">{info.detail}</p>
         )}
 
-        {/* CTAs */}
-        {info.cta && !isLocked && (
+        {/* Triage: interactive approve panel */}
+        {isTriage && !isLocked && (
+          <TriagePanel
+            oppId={oppId}
+            triageStatus={info.status}
+            oppBriefs={oppBriefs}
+            onApproved={onApproved}
+          />
+        )}
+
+        {/* Brief: multi-type chips instead of single CTA */}
+        {isBrief && !isLocked && oppBriefs.length > 0 && (
+          <BriefChips briefs={oppBriefs} />
+        )}
+
+        {/* Other stages: standard CTA link */}
+        {!isTriage && !isBrief && info.cta && !isLocked && (
           <div className="flex items-center gap-2 mt-2">
-            {info.cta.action === 'approve' ? (
-              <button
-                onClick={() => onApprove(oppId)}
-                disabled={approving}
-                className="text-[11px] px-2.5 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25 transition disabled:opacity-50"
-              >
-                {approving ? 'Approving…' : info.cta.label}
-              </button>
-            ) : (
-              <Link
-                href={info.cta.href}
-                className="text-[11px] px-2.5 py-1 rounded bg-gray-800 border border-gray-700 text-gray-400 hover:text-white hover:bg-gray-700 transition"
-              >
-                {info.cta.label} →
-              </Link>
-            )}
+            <Link
+              href={info.cta.href}
+              className="text-[11px] px-2.5 py-1 rounded bg-gray-800 border border-gray-700 text-gray-400 hover:text-white hover:bg-gray-700 transition"
+            >
+              {info.cta.label} →
+            </Link>
           </div>
         )}
       </div>
@@ -148,29 +329,21 @@ function StageRow({
 
 // ── Opportunity card ──────────────────────────────────────────────────────────
 
-function OppCard({ item, onApprove }: { item: JourneyItem; onApprove: (id: string) => void }) {
-  const [expanded,  setExpanded]  = useState(false)
-  const [approving, setApproving] = useState(false)
+function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void }) {
+  const [expanded, setExpanded] = useState(false)
 
   const activeStage = STAGES[item.pipelineStage - 1] ?? STAGES[0]
   const c = COLOR[activeStage.color]
 
-  // Derive current stage chip
   const chipLabel =
-    item.isComplete    ? 'Complete' :
-    item.needsAction   ? 'Needs you' :
+    item.isComplete  ? 'Complete' :
+    item.needsAction ? 'Needs you' :
     activeStage.label
 
   const chipClass =
-    item.isComplete    ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' :
-    item.needsAction   ? 'bg-amber-500/15 text-amber-400 border-amber-500/30 animate-pulse' :
+    item.isComplete  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' :
+    item.needsAction ? 'bg-amber-500/15 text-amber-400 border-amber-500/30 animate-pulse' :
     c.badge
-
-  async function handleApprove(id: string) {
-    setApproving(true)
-    await onApprove(id)
-    setApproving(false)
-  }
 
   return (
     <div className={`bg-gray-900 border rounded-xl overflow-hidden transition-all ${
@@ -190,7 +363,9 @@ function OppCard({ item, onApprove }: { item: JourneyItem; onApprove: (id: strin
         onClick={() => setExpanded(p => !p)}
         className="w-full text-left px-4 py-3 flex items-center gap-3"
       >
-        <div className={`w-2 h-2 rounded-full flex-shrink-0 ${item.isComplete ? 'bg-emerald-500' : item.needsAction ? 'bg-amber-500' : c.dot}`} />
+        <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+          item.isComplete ? 'bg-emerald-500' : item.needsAction ? 'bg-amber-500' : c.dot
+        }`} />
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-white truncate">{item.topic}</p>
           <p className="text-[11px] text-gray-500 mt-0.5">
@@ -206,6 +381,11 @@ function OppCard({ item, onApprove }: { item: JourneyItem; onApprove: (id: strin
               'bg-red-500/10 text-red-400 border-red-500/25'
             }`}>
               Tyr {item.tyrScore}
+            </span>
+          )}
+          {item.briefs.length > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-indigo-500/10 text-indigo-400 border-indigo-500/25">
+              {item.briefs.length} brief{item.briefs.length !== 1 ? 's' : ''}
             </span>
           )}
           <span className={`text-[10px] px-1.5 py-0.5 rounded border ${chipClass}`}>
@@ -224,9 +404,9 @@ function OppCard({ item, onApprove }: { item: JourneyItem; onApprove: (id: strin
               stage={stage}
               info={item.stages[i]}
               isLast={i === STAGES.length - 1}
-              onApprove={handleApprove}
               oppId={item.id}
-              approving={approving}
+              oppBriefs={item.briefs}
+              onApproved={onRefresh}
             />
           ))}
           <div className="flex items-center justify-end pt-1 pb-0.5">
@@ -252,11 +432,11 @@ interface Stats {
 }
 
 export default function PipelineJourneyPage() {
-  const [items,     setItems]     = useState<JourneyItem[]>([])
-  const [stats,     setStats]     = useState<Stats>({ total: 0, needsAction: 0, inProgress: 0, completed: 0 })
-  const [tab,       setTab]       = useState<TabFilter>('all')
-  const [loading,   setLoading]   = useState(true)
-  const [search,    setSearch]    = useState('')
+  const [items,   setItems]   = useState<JourneyItem[]>([])
+  const [stats,   setStats]   = useState<Stats>({ total: 0, needsAction: 0, inProgress: 0, completed: 0 })
+  const [tab,     setTab]     = useState<TabFilter>('all')
+  const [loading, setLoading] = useState(true)
+  const [search,  setSearch]  = useState('')
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -272,21 +452,6 @@ export default function PipelineJourneyPage() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  async function handleApprove(oppId: string) {
-    await fetch('/api/opportunities', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: [oppId], status: 'brief_queued' }),
-    })
-    // Optimistically update
-    setItems(prev => prev.map(it =>
-      it.id === oppId
-        ? { ...it, oppStatus: 'brief_queued',
-            stages: it.stages.map((s, i) => i === 2 ? { ...s, status: 'done' as const, summary: 'Approved — queued for brief generation' } : s) }
-        : it
-    ))
-  }
-
   // Filter by tab + search
   const visible = items.filter(it => {
     const tabMatch =
@@ -297,7 +462,6 @@ export default function PipelineJourneyPage() {
 
     const q = search.trim().toLowerCase()
     const searchMatch = !q || it.topic.toLowerCase().includes(q)
-
     return tabMatch && searchMatch
   })
 
@@ -321,10 +485,10 @@ export default function PipelineJourneyPage() {
       {/* Stats strip */}
       <div className="grid grid-cols-4 gap-3 mb-6">
         {[
-          { label: 'Total',        value: stats.total,       color: 'text-white'         },
-          { label: 'Needs action', value: stats.needsAction, color: 'text-amber-400'     },
-          { label: 'In progress',  value: stats.inProgress,  color: 'text-blue-400'      },
-          { label: 'Completed',    value: stats.completed,   color: 'text-emerald-400'   },
+          { label: 'Total',        value: stats.total,       color: 'text-white'       },
+          { label: 'Needs action', value: stats.needsAction, color: 'text-amber-400'   },
+          { label: 'In progress',  value: stats.inProgress,  color: 'text-blue-400'    },
+          { label: 'Completed',    value: stats.completed,   color: 'text-emerald-400' },
         ].map(s => (
           <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
             <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
@@ -395,7 +559,7 @@ export default function PipelineJourneyPage() {
       ) : (
         <div className="space-y-2">
           {visible.map(item => (
-            <OppCard key={item.id} item={item} onApprove={handleApprove} />
+            <OppCard key={item.id} item={item} onRefresh={fetchData} />
           ))}
           {visible.length < items.length && (
             <p className="text-center text-xs text-gray-600 py-2">

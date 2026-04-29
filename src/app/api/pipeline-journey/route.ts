@@ -46,30 +46,58 @@ export async function GET(req: Request) {
   if (oppErr) return NextResponse.json({ error: oppErr.message }, { status: 500 })
   if (!opps?.length) return NextResponse.json({ journey: [], stats: buildStats([]) })
 
-  // ── 2. Batch-fetch briefs for opportunities that have one ─────────────────
-  const briefIds = opps.map(o => o.brief_id).filter(Boolean) as string[]
-  let briefMap: Record<string, BriefRow> = {}
+  // ── 2. Fetch ALL briefs for this owner — filter client-side by oppId tag ──
+  // Briefs queued via pipeline/approve include the tag:
+  //   "Queued from Opportunity: \"<topic>\" (<oppId>)"
+  // We match on the UUID in parentheses for a reliable reverse-lookup.
+  const oppIds = new Set(opps.map(o => o.id))
 
-  if (briefIds.length) {
-    const { data: briefs } = await db
-      .from('seo_content_briefs')
-      .select(`
-        id, status, tyr_status, tyr_score, keyword, word_count_target,
-        target_publish_date, created_at, updated_at, notes
-      `)
-      .in('id', briefIds)
-      .eq('owner_user_id', ownerId)
+  const { data: allBriefs } = await db
+    .from('seo_content_briefs')
+    .select(`
+      id, brief_type, status, tyr_status, tyr_score, keyword,
+      word_count_target, target_publish_date, created_at, updated_at, notes
+    `)
+    .eq('owner_user_id', ownerId)
+    .not('notes', 'is', null)
+    .order('created_at', { ascending: true })
 
-    for (const b of briefs ?? []) briefMap[b.id] = b
+  // Group briefs by the oppId they were spawned from
+  const briefsByOpp: Record<string, BriefRow[]> = {}
+  const briefMap:    Record<string, BriefRow>   = {}   // keyed by brief.id (for legacy brief_id lookup)
+
+  for (const b of allBriefs ?? []) {
+    briefMap[b.id] = b
+
+    // Extract oppId from notes tag  "(uuid)"
+    const match = b.notes?.match(/\(([0-9a-f-]{36})\)\s*$/)
+    const taggedOppId = match?.[1]
+    if (taggedOppId && oppIds.has(taggedOppId)) {
+      briefsByOpp[taggedOppId] ??= []
+      briefsByOpp[taggedOppId].push(b)
+    }
   }
 
-  // ── 3. Batch-fetch brief_outcomes (Vor data) for those briefs ─────────────
+  // Also include briefs linked via opp.brief_id (legacy path / queue-brief route)
+  for (const opp of opps) {
+    if (opp.brief_id && briefMap[opp.brief_id]) {
+      const b = briefMap[opp.brief_id]
+      const already = (briefsByOpp[opp.id] ?? []).some(x => x.id === b.id)
+      if (!already) {
+        briefsByOpp[opp.id] ??= []
+        briefsByOpp[opp.id].unshift(b)   // legacy brief first
+      }
+    }
+  }
+
+  // ── 3. Batch-fetch brief_outcomes (Vor data) for all fetched briefs ─────────
+  const allBriefIds = Object.keys(briefMap)
   let outcomesMap: Record<string, OutcomeRow[]> = {}
-  if (briefIds.length) {
+  if (allBriefIds.length) {
     const { data: outcomes } = await db
       .from('brief_outcomes')
       .select('brief_id, checkpoint, position_before, position_after, clicks_before, clicks_after, snapshot_date')
-      .in('brief_id', briefIds)
+      .in('brief_id', allBriefIds)
       .eq('owner_user_id', ownerId)
       .order('checkpoint', { ascending: true })
 
@@ -102,11 +130,13 @@ export async function GET(req: Request) {
 
   // ── 5. Enrich into journey objects ────────────────────────────────────────
   const journey: JourneyItem[] = opps.map(opp => {
-    const brief    = opp.brief_id ? briefMap[opp.brief_id]         : undefined
-    const outcomes = opp.brief_id ? outcomesMap[opp.brief_id] ?? [] : []
+    const oppBriefs = briefsByOpp[opp.id] ?? []
+    // Primary brief for stage derivation (first / linked via brief_id)
+    const brief     = opp.brief_id ? briefMap[opp.brief_id] : oppBriefs[0]
+    const outcomes  = brief ? outcomesMap[brief.id] ?? [] : []
     const prospects = prospectMap[opp.topic ?? ''] ?? []
 
-    return buildJourneyItem(opp, brief, outcomes, prospects)
+    return buildJourneyItem(opp, brief, outcomes, prospects, oppBriefs)
   })
 
   // Apply pipeline filter
@@ -123,10 +153,26 @@ export async function GET(req: Request) {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface BriefRow {
-  id: string; status: string; tyr_status: string | null; tyr_score: number | null
+  id: string; brief_type: string; status: string; tyr_status: string | null; tyr_score: number | null
   keyword: string | null; word_count_target: number | null
   target_publish_date: string | null; created_at: string; updated_at: string
   notes: string | null
+}
+
+export interface BriefSummary {
+  briefId:    string
+  briefType:  string   // 'category_page' | 'on_page' | 'outreach' | 'blog_post'
+  outputType: string   // 'new_page' | 'optimize_existing' | 'outreach' | 'blog_post'
+  status:     string
+  tyrScore:   number | null
+  createdAt:  string
+}
+
+function outputTypeFromBriefType(briefType: string): string {
+  if (briefType === 'on_page')   return 'optimize_existing'
+  if (briefType === 'outreach')  return 'outreach'
+  if (briefType === 'blog_post') return 'blog_post'
+  return 'new_page'
 }
 
 interface OutcomeRow {
@@ -171,15 +217,17 @@ export interface JourneyItem {
   needsAction:   boolean
   isComplete:    boolean
   stages:        PipelineStageInfo[]
+  briefs:        BriefSummary[]   // all briefs spawned from this opportunity
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
 
 function buildJourneyItem(
-  opp:       ReturnType<typeof Object.assign>,
-  brief:     BriefRow | undefined,
-  outcomes:  OutcomeRow[],
-  prospects: ProspectRow[],
+  opp:        ReturnType<typeof Object.assign>,
+  brief:      BriefRow | undefined,
+  outcomes:   OutcomeRow[],
+  prospects:  ProspectRow[],
+  allBriefs:  BriefRow[] = [],
 ): JourneyItem {
   const heimdallCount = Array.isArray(opp.heimdall_signals) ? opp.heimdall_signals.length : (opp.heimdall_signals ? 1 : 0)
   const lokiCount     = Array.isArray(opp.loki_signals)     ? opp.loki_signals.length     : (opp.loki_signals     ? 1 : 0)
@@ -194,6 +242,15 @@ function buildJourneyItem(
   const progressPct = Math.round((doneCount / stages.length) * 100)
   const needsAction = stages.some(s => s.status === 'needs_action')
   const isComplete  = stages.every(s => s.status === 'done' || s.status === 'skipped')
+
+  const briefs: BriefSummary[] = allBriefs.map(b => ({
+    briefId:    b.id,
+    briefType:  b.brief_type,
+    outputType: outputTypeFromBriefType(b.brief_type),
+    status:     b.status,
+    tyrScore:   b.tyr_score,
+    createdAt:  b.created_at,
+  }))
 
   return {
     id:            opp.id,
@@ -211,6 +268,7 @@ function buildJourneyItem(
     heimdallCount, lokiCount, odinCount,
     pipelineStage, progressPct, needsAction, isComplete,
     stages,
+    briefs,
   }
 }
 
@@ -267,7 +325,8 @@ function buildStages(
       : 'Review this opportunity and approve to generate a content brief, or dismiss if not relevant.',
     agent: null,
     date:  isApproved ? opp.updated_at : null,
-    cta:   !isApproved ? { label: 'Approve → Brief', href: '/command-center/opportunities', action: 'approve' } : undefined,
+    // CTA for triage is handled client-side — no server CTA needed
+    cta:   undefined,
   }
 
   // ── Stage 4: Brief (Bragi) ────────────────────────────────────────────────

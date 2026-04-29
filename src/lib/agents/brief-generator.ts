@@ -329,6 +329,26 @@ async function loadKBBlock(
       ].filter(Boolean).join('\n'))
     }
 
+    // Platforms KB — injected for blog_post briefs to provide
+    // writing rules for gaming editorial publications.
+    // All platform entries are included (user manages what's relevant).
+    const platformItems = kbItems.filter(i => i.category === 'platforms')
+    if (platformItems.length) {
+      const platformBlocks = platformItems.map(i => {
+        const d = i.data as Record<string, unknown>
+        const lines = [
+          `Platform: ${i.name}`,
+          d.tone       ? `Tone: ${d.tone}`               : null,
+          d.format     ? `Format: ${d.format}`           : null,
+          d.guidelines ? `Guidelines: ${d.guidelines}`   : null,
+          d.examples   ? `Examples: ${d.examples}`       : null,
+          d.notes      ? `Notes: ${d.notes}`             : null,
+        ].filter(Boolean)
+        return lines.join('\n')
+      }).join('\n\n')
+      parts.push(`PLATFORM GUIDELINES (for external blog post):\n${platformBlocks}`)
+    }
+
     return parts.length ? `\n---\n${parts.join('\n\n')}\n---\n` : ''
   } catch (e) {
     console.warn('[brief-generator] KB load failed:', e)

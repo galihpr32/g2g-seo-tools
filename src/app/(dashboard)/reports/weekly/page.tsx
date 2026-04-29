@@ -231,14 +231,9 @@ function ActionPlan({ raw }: { raw: string }) {
 
 // ── Action Punch List ─────────────────────────────────────────────────────────
 //
-// Compact, action-only summary at the top of the report. Replaces the
-// long-form AI Narrative as the FIRST thing the reader sees. The narrative
-// + Issues block + Agent Activity Summary still exist but moved below this.
-//
-// Sources:
-//   • aiIssues  — extract first 3 most pointed issues (already curated by Claude)
-//   • gsc.topDroppers — top page that lost the most clicks
-//   • semrush.topMoversDown — biggest keyword drop (if any)
+// Top-of-report team brief — AI-generated analysis + actionable plan.
+// Shows aiTeamPlan (or ai_action_plan fallback) so the team sees WHAT TO DO,
+// not raw data alerts. Raw data is visible in the detail sections below.
 //   • actionItems.pending — outstanding count
 //   • agentInsights — Tyr failed briefs + Loki high-value gaps surface as
 //     direct call-to-action items
@@ -247,170 +242,91 @@ function ActionPlan({ raw }: { raw: string }) {
 // when relevant. No paragraphs. No prose. The reader should be able to
 // punch through this in 30 seconds.
 
-interface PunchItem {
-  emoji:    string
-  headline: string
-  subtext?: string
-  href?:    string
-  severity: 'critical' | 'warning' | 'info'
+// Parses AI team plan text into structured action items.
+// Handles numbered lists ("1. **Title** — detail") and plain bullet lines.
+function parseTeamPlanItems(raw: string): { title: string; detail: string }[] {
+  return raw
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.length > 10)
+    .map(line => {
+      // "1. **Title** — detail" or "1. **Title**: detail"
+      const numbered = line.match(/^\d+\.\s+\*\*(.+?)\*\*\s*[–—:\-]\s*(.+)/)
+      if (numbered) return { title: numbered[1], detail: numbered[2] }
+      // "**Title** — detail"
+      const bolded = line.match(/^\*\*(.+?)\*\*\s*[–—:\-]\s*(.+)/)
+      if (bolded) return { title: bolded[1], detail: bolded[2] }
+      // Plain numbered: "1. Some text"
+      const plain = line.match(/^\d+\.\s+(.+)/)
+      if (plain) {
+        const text = plain[1].replace(/\*\*/g, '')
+        const dash = text.indexOf(' — ')
+        if (dash > 0) return { title: text.slice(0, dash), detail: text.slice(dash + 3) }
+        return { title: text, detail: '' }
+      }
+      // Bullet
+      if (line.startsWith('•') || line.startsWith('-') || line.startsWith('*')) {
+        return { title: line.replace(/^[•\-*]\s*/, '').replace(/\*\*/g, ''), detail: '' }
+      }
+      return null
+    })
+    .filter((x): x is { title: string; detail: string } => x !== null)
+    .slice(0, 8)
 }
 
-const PUNCH_STYLES: Record<PunchItem['severity'], string> = {
-  critical: 'bg-red-950/40 border-red-700/50 text-red-100',
-  warning:  'bg-amber-950/30 border-amber-700/40 text-amber-100',
-  info:     'bg-blue-950/30 border-blue-800/40 text-blue-100',
-}
+function ActionPunchList({ data, aiActionPlan }: { data: ReportData; aiActionPlan?: string }) {
+  // Priority: data.aiTeamPlan → report.ai_action_plan → data.aiIssues → nothing
+  const raw = data.aiTeamPlan ?? aiActionPlan ?? data.aiIssues ?? ''
 
-function buildPunchItems(d: ReportData): PunchItem[] {
-  const items: PunchItem[] = []
-
-  // Top dropper page (GSC)
-  if (d.gsc?.topDroppers && d.gsc.topDroppers.length > 0) {
-    const top = d.gsc.topDroppers[0]
-    if (top.delta < -10) {
-      items.push({
-        emoji:    '📉',
-        severity: top.delta < -100 ? 'critical' : 'warning',
-        headline: `Page lost ${Math.abs(top.delta).toLocaleString()} clicks: ${top.page.replace(/^https?:\/\/[^/]+/, '')}`,
-        subtext:  `Now ${top.clicks.toLocaleString()}/wk. Diagnose with Heimdall.`,
-        href:     '/gsc/ranking-drop',
-      })
-    }
-  }
-
-  // Tyr failed briefs (from agent_insights)
-  if (d.agentInsights) {
-    const insights = d.agentInsights as unknown as Record<string, unknown>
-    const tyrFailed = Number((insights.tyr as Record<string, unknown> | undefined)?.failed_briefs ?? 0)
-    if (tyrFailed > 0) {
-      items.push({
-        emoji:    '⚖️',
-        severity: tyrFailed >= 3 ? 'warning' : 'info',
-        headline: `Re-run regenerate for ${tyrFailed} Tyr-failed brief${tyrFailed > 1 ? 's' : ''}`,
-        subtext:  'Approve regenerate actions in the queue.',
-        href:     '/command-center',
-      })
-    }
-    const lokiHighGaps = Number((insights.loki as Record<string, unknown> | undefined)?.high_value_gaps ?? 0)
-    if (lokiHighGaps > 0) {
-      items.push({
-        emoji:    '🦊',
-        severity: 'info',
-        headline: `Approve ${lokiHighGaps} Loki gap${lokiHighGaps > 1 ? 's' : ''} ≥10K SV — auto-drafts via Bragi`,
-        href:     '/command-center',
-      })
-    }
-  }
-
-  // Pending action items
-  if (d.actionItems && d.actionItems.pending > 5) {
-    items.push({
-      emoji:    '✅',
-      severity: d.actionItems.pending > 20 ? 'warning' : 'info',
-      headline: `${d.actionItems.pending} action items still pending — assign or close`,
-      subtext:  d.actionItems.completedThisWeek
-        ? `Only ${d.actionItems.completedThisWeek} closed this week.`
-        : 'No items closed this week.',
-      href:     '/gsc/action-items',
-    })
-  }
-
-  // Top SEMrush dropper
-  if (d.semrush?.topMoversDown && d.semrush.topMoversDown.length > 0) {
-    const top = d.semrush.topMoversDown[0]
-    if (Math.abs(top.positionDiff) >= 5) {
-      items.push({
-        emoji:    '🔻',
-        severity: 'warning',
-        headline: `Keyword "${top.keyword}" dropped ${Math.abs(top.positionDiff)} positions to #${top.position}`,
-        subtext:  `${top.volume.toLocaleString()} monthly searches at risk.`,
-        href:     '/semrush/keywords',
-      })
-    }
-  }
-
-  // SEMrush instrumentation broken (zero across buckets)
-  if (d.semrush && d.semrush.totalKeywords === 0) {
-    items.push({
-      emoji:    '⚠️',
-      severity: 'critical',
-      headline: 'SEMrush keyword tracking returning zero — fix instrumentation',
-      subtext:  'No visibility into rank movements until this is fixed.',
-      href:     '/command-center/health',
-    })
-  }
-
-  // Revenue significant drop
-  if (d.ga4 && d.ga4.revenuePct != null && d.ga4.revenuePct <= -8) {
-    const totalRev = d.ga4.totalRevenue ?? 0
-    items.push({
-      emoji:    '💸',
-      severity: d.ga4.revenuePct <= -15 ? 'critical' : 'warning',
-      headline: `Revenue down ${Math.abs(d.ga4.revenuePct)}% week-over-week ($${(totalRev / 1000).toFixed(0)}K)`,
-      subtext:  'Check AOV compression / category mix — alert finance.',
-    })
-  }
-
-  // Pull AI-curated issues (first 3 punchiest) as fallback context
-  if (items.length < 4 && d.aiIssues) {
-    const bullets = d.aiIssues.split('\n')
-      .map(l => l.replace(/^[\s•\-*]+/, '').replace(/^\*\*(.+?)\*\*[\s—–-]*/, '').trim())
-      .filter(l => l.length > 20)
-      .slice(0, 4 - items.length)
-    for (const b of bullets) {
-      items.push({
-        emoji:    '⚠️',
-        severity: 'warning',
-        headline: b.length > 140 ? b.slice(0, 137) + '…' : b,
-      })
-    }
-  }
-
-  return items.slice(0, 6)
-}
-
-function ActionPunchList({ data }: { data: ReportData }) {
-  const items = buildPunchItems(data)
-  if (items.length === 0) {
+  if (!raw.trim()) {
     return (
-      <div className="bg-green-500/5 border border-green-500/20 rounded-xl p-5">
+      <div className="bg-gray-900/60 border border-gray-800 border-dashed rounded-xl p-5">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-base">✅</span>
-          <h3 className="text-sm font-semibold text-green-300 uppercase tracking-wider">All clear</h3>
+          <span className="text-base">📋</span>
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Team brief</h3>
         </div>
-        <p className="text-sm text-gray-400">
-          No critical action items surfaced for this week. Detail breakdowns below.
+        <p className="text-sm text-gray-500">
+          Generate a report to get your AI-written team action plan for this week.
         </p>
       </div>
     )
   }
+
+  const items = parseTeamPlanItems(raw)
+
+  // If parsing yielded nothing (unexpected format), render raw text
+  if (!items.length) {
+    return (
+      <div className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-700 rounded-xl p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-base">📋</span>
+          <h3 className="text-sm font-semibold text-white uppercase tracking-wider">This week — team brief</h3>
+          <span className="text-[10px] text-gray-600 uppercase tracking-wider ml-auto">AI analysis</span>
+        </div>
+        <p className="text-sm text-gray-300 whitespace-pre-line leading-relaxed">{raw}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-700 rounded-xl p-5">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
         <div className="flex items-center gap-2">
-          <span className="text-base">🎯</span>
-          <h3 className="text-sm font-semibold text-white uppercase tracking-wider">This week — actionables</h3>
-          <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">{items.length}</span>
+          <span className="text-base">📋</span>
+          <h3 className="text-sm font-semibold text-white uppercase tracking-wider">This week — team brief</h3>
+          <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">{items.length} tasks</span>
         </div>
-        <p className="text-[10px] text-gray-600 uppercase tracking-wider">Read first · skim 30 sec</p>
+        <p className="text-[10px] text-gray-600 uppercase tracking-wider">AI-written · assign to team</p>
       </div>
-      <ol className="space-y-2">
+      <ol className="space-y-3">
         {items.map((it, i) => (
-          <li key={i} className={`border rounded-lg px-3 py-2 ${PUNCH_STYLES[it.severity]}`}>
-            <div className="flex items-start gap-3">
-              <span className="text-base flex-shrink-0 leading-tight">{it.emoji}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium leading-snug">{it.headline}</p>
-                {it.subtext && <p className="text-xs opacity-75 mt-0.5">{it.subtext}</p>}
-              </div>
-              {it.href && (
-                <a
-                  href={it.href}
-                  className="text-[11px] font-semibold underline-offset-2 hover:underline whitespace-nowrap flex-shrink-0 mt-0.5"
-                >
-                  Go →
-                </a>
-              )}
+          <li key={i} className="flex gap-3">
+            <span className="flex-shrink-0 w-6 h-6 rounded-full bg-red-700/80 text-white text-xs font-bold flex items-center justify-center mt-0.5">
+              {i + 1}
+            </span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-white leading-snug">{it.title}</p>
+              {it.detail && <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{it.detail}</p>}
             </div>
           </li>
         ))}
@@ -703,8 +619,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 </div>
               )}
 
-              {/* ── Action Punch List (TOP — read first, 30-sec skim) ── */}
-              <ActionPunchList data={d} />
+              {/* ── Team Brief (TOP — AI-written action plan) ── */}
+              <ActionPunchList data={d} aiActionPlan={report.ai_action_plan} />
 
               {/* ── Traffic + Keywords ── */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
