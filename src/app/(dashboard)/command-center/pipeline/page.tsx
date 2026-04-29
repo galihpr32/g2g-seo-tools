@@ -493,7 +493,7 @@ function StageRow({
               info.status === 'active'       ? `${c.badge}` :
               'text-gray-600 border-gray-800'
             }`}>
-              {info.status === 'done' ? 'done' : info.status === 'needs_action' ? 'needs you' : info.status === 'active' ? 'running' : 'pending'}
+              {info.status === 'done' ? 'done' : info.status === 'needs_action' ? 'need action' : info.status === 'active' ? 'running' : 'pending'}
             </span>
           )}
           {info.agent && !isLocked && (
@@ -553,7 +553,7 @@ function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void
 
   const chipLabel =
     item.isComplete  ? 'Complete' :
-    item.needsAction ? 'Needs you' :
+    item.needsAction ? 'Need Action' :
     activeStage.label
 
   const chipClass =
@@ -678,46 +678,58 @@ export default function PipelineJourneyPage() {
     finally { setLoading(false) }
   }, [])
 
-  // Manual "process stuck" trigger — loops until all stuck briefs are cleared
+  // Manual "process stuck" trigger — loops until all stuck briefs are cleared.
+  // process-briefs handles 1 brief per invocation (within Hobby's 60s limit).
+  // We don't sleep blindly: each invocation already takes ~25-40s while Bragi
+  // runs, so we just kick off the next one immediately and let the next call
+  // race the previous one (process-briefs query filter prevents double-processing).
   async function processStuck() {
     setProcessing(true)
-    setProcessMsg(null)
+    setProcessMsg('Starting…')
 
     let totalProcessed = 0
     let round = 0
-    const MAX_ROUNDS = 10 // safety cap (10 × 2 = 20 briefs max per session)
+    const MAX_ROUNDS = 25 // safety cap — typically 7-10 briefs at once is plenty
 
     try {
       while (round < MAX_ROUNDS) {
         round++
+        setProcessMsg(`Processing brief ${round}…`)
+
         const res  = await fetch('/api/cron/process-briefs')
         const json = await res.json()
-
         totalProcessed += json.processed ?? 0
-
-        if (json.processed === 0) break // nothing left
-
         const remaining = json.remaining ?? 0
+
+        if (json.processed === 0 && remaining === 0) break
+
         setProcessMsg(
-          remaining > 0
-            ? `✓ ${totalProcessed} done · ${remaining} remaining — processing next batch…`
-            : `✓ ${totalProcessed} brief${totalProcessed !== 1 ? 's' : ''} processed — all done!`
+          totalProcessed > 0
+            ? `✓ ${totalProcessed} done · ${remaining} remaining…`
+            : `Working on it… ${remaining} remaining`
         )
+
+        // Refresh the UI mid-loop so the user can watch briefs flip status live
+        if (totalProcessed > 0 && totalProcessed % 2 === 0) {
+          fetchData()
+        }
 
         if (remaining === 0) break
 
-        // Wait 40s for Bragi to finish before picking up the next batch
-        await new Promise(r => setTimeout(r, 40_000))
+        // Brief pause before next invocation — process-briefs is synchronous
+        // (it awaits Bragi+Tyr) so by the time the previous call returns, the
+        // brief is already done. 2s is just a small buffer.
+        await new Promise(r => setTimeout(r, 2_000))
       }
 
       if (totalProcessed === 0) {
-        setProcessMsg('No stuck briefs found — all caught up!')
+        setProcessMsg('No stuck briefs — all caught up!')
       } else {
-        setProcessMsg(`✓ All done — ${totalProcessed} brief${totalProcessed !== 1 ? 's' : ''} processed. Refreshing…`)
-        setTimeout(fetchData, 3_000)
+        setProcessMsg(`✓ ${totalProcessed} brief${totalProcessed !== 1 ? 's' : ''} processed. Refreshing…`)
+        setTimeout(fetchData, 1_500)
       }
     } catch {
-      setProcessMsg('Failed to trigger — try again')
+      setProcessMsg('Failed to trigger — check console & retry')
     } finally {
       setProcessing(false)
     }

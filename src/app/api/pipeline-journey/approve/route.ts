@@ -5,6 +5,11 @@ import { getEffectiveOwnerId }  from '@/lib/workspace'
 import { generateAgentBrief }   from '@/lib/agents/brief-generator'
 import { getSiteUrlForSlug, buildCategoryUrl } from '@/lib/agents/site-helpers'
 
+// Hobby plan max is 60s. Approve does INSERT briefs (fast) + fires generateAgentBrief
+// for the FIRST brief in after() (~25-40s for Bragi+Tyr). Subsequent briefs are left
+// in 'draft' for process-briefs to pick up — keeps the 60s window safe.
+export const maxDuration = 60
+
 /**
  * POST /api/pipeline-journey/approve
  *
@@ -146,6 +151,11 @@ export async function POST(request: Request) {
 
   // ── Create one brief per selected type ────────────────────────────────────
   const briefIds: Record<string, string> = {}
+  const insertErrors: Array<{ outputType: string; error: string }> = []
+  let firstBriefId: string | null = null
+  let firstBriefPageUrl: string = basePageUrl
+  let firstBriefType: string = 'category_page'
+  let firstBriefNotes: string = ''
 
   for (const outputType of validTypes) {
     const briefType = briefTypeFromOutputType(outputType)
@@ -176,7 +186,11 @@ export async function POST(request: Request) {
       .single()
 
     if (insertErr || !newBrief) {
-      console.error(`[pipeline/approve] insert failed for ${outputType}:`, insertErr)
+      // Capture the actual DB error so the client can show it (and so it lands
+      // in Vercel logs in a structured way, not just console noise).
+      const errMsg = insertErr?.message ?? 'Unknown insert error'
+      console.error(`[pipeline/approve] insert failed for ${outputType}:`, JSON.stringify(insertErr))
+      insertErrors.push({ outputType, error: errMsg })
       continue
     }
 
@@ -184,42 +198,63 @@ export async function POST(request: Request) {
     const briefId = newBrief.id
     const isFirst = outputType === validTypes[0]
 
-    // Link primary brief to opp
+    // Link primary brief to opp — capture the result so silent failures aren't silent.
     if (isFirst) {
-      await db
+      const { error: linkErr } = await db
         .from('seo_opportunities')
         .update({ brief_id: briefId, updated_at: new Date().toISOString() })
         .eq('id', oppId)
-    }
+        .select('id')   // forces the call to actually return something + surface RLS errors
+        .single()
 
-    // Fire generation via after() — runs post-response, protected from Vercel freeze
-    const capturedBriefId    = briefId
-    const capturedOutputType = outputType
-    const capturedIsFirst    = isFirst
+      if (linkErr) {
+        console.error(`[pipeline/approve] failed to link brief_id on opp ${oppId}:`, JSON.stringify(linkErr))
+      }
+
+      firstBriefId      = briefId
+      firstBriefPageUrl = pageUrl
+      firstBriefType    = briefType
+      firstBriefNotes   = notes
+    }
+    // Subsequent briefs (#2, #3 in multi-type approves) are LEFT in 'draft'.
+    // process-briefs will pick them up on the next polling tick. We don't fire
+    // after() for them here because the 60s budget barely fits ONE generateAgentBrief.
+  }
+
+  // Fire generation for the FIRST brief only — runs post-response.
+  // Subsequent briefs flow through process-briefs (one per invocation, 60s budget).
+  if (firstBriefId) {
+    const capturedBriefId    = firstBriefId
+    const capturedPageUrl    = firstBriefPageUrl
+    const capturedBriefType  = firstBriefType
+    const capturedNotes      = firstBriefNotes
     after(async () => {
       try {
         await generateAgentBrief({
           briefId:       capturedBriefId,
           ownerId,
           keyword,
-          pageUrl,
-          briefType,
+          pageUrl:       capturedPageUrl,
+          briefType:     capturedBriefType,
           searchVolume:  opp.total_sv || undefined,
           competitorUrl: competitorUrl ?? undefined,
-          notes,
+          notes:         capturedNotes,
         })
-        if (capturedIsFirst) {
-          await db
-            .from('seo_opportunities')
-            .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
-            .eq('id', oppId)
-        }
+        await db
+          .from('seo_opportunities')
+          .update({ status: 'brief_ready', updated_at: new Date().toISOString() })
+          .eq('id', oppId)
       } catch (err) {
-        console.error(`[pipeline/approve] generation failed for ${capturedOutputType}:`, err)
-        // Brief stays in 'draft' — user can retry from Brief Library
+        console.error(`[pipeline/approve] generation failed for primary brief ${capturedBriefId}:`, err)
+        // Brief stays in 'draft' — process-briefs will retry on next tick.
       }
     })
   }
 
-  return NextResponse.json({ briefIds })
+  // Return any insert errors so the UI can show why a type failed.
+  // 200 OK because the request succeeded structurally; partial failures in body.
+  return NextResponse.json({
+    briefIds,
+    insertErrors: insertErrors.length ? insertErrors : undefined,
+  })
 }

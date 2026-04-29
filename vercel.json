@@ -7,10 +7,6 @@
     {
       "path": "/api/cron/game-trends-refresh",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/cron/process-briefs",
-      "schedule": "0 3 * * *"
     }
   ]
 }
