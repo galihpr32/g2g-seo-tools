@@ -891,4 +891,148 @@ Do NOT build these yet. The data foundation needs to mature first.
 
 ---
 
-_Last updated: §11 Huginn/Muninn deferred, §12 OffGamers multi-site isolation audit (2026-04-29)._
+---
+
+## 13. Pipeline Journey — unresolved bugs (as of 2026-04-29, needs Opus)
+
+All 6 opportunities the user approved are stuck at `brief_queued`. Multiple fix attempts by Sonnet did not resolve the core issue. Opus should debug from scratch.
+
+### 13.1 The stuck opportunities (confirmed in prod DB)
+
+| Topic | Status | Notes |
+|---|---|---|
+| Carx Street Accounts | brief_queued | New Page |
+| Hero Siege Ruby | brief_queued | New Page |
+| Kingshot Accounts | brief_queued | New Page |
+| Rise Of Civilizations Account | brief_queued | New Page |
+| Rocket League Item | brief_queued | New Page + Optimise Existing + Outreach |
+| Marvel Rivals Accounts | brief_queued | Optimise Existing |
+
+### 13.2 Root cause (confirmed)
+
+`after()` from `next/server` is **silently dropping background work on Vercel Hobby**. The approve flow is:
+
+```
+POST /api/pipeline-journey/approve
+  → INSERT seo_content_briefs (status='draft') ✅ synchronous, works
+  → UPDATE seo_opportunities SET brief_id=X ✅ synchronous, works
+  → after(async () => { generateAgentBrief(...) }) ❌ NEVER RUNS on Hobby
+```
+
+So all 6 opportunities have:
+- `opp.status = 'brief_queued'` ✅
+- `opp.brief_id = <uuid>` ✅ (confirmed by schema — FK exists)
+- `brief.status = 'draft'` — Bragi never started
+
+### 13.3 Attempted fixes (Sonnet — all applied, none resolved)
+
+**Fix A: process-briefs cron + manual button**
+- `src/app/api/cron/process-briefs/route.ts` — NEW file
+- Picks up briefs in `['draft', 'generating']` older than 5min
+- Calls `generateAgentBrief()` synchronously (NOT via `after()`)
+- `export const maxDuration = 60` — up to 60s per invocation
+- Limit: 2 briefs per run (safety for 60s timeout)
+- Scheduled in `vercel.json`: `0 3 * * *` (once a day — Hobby plan limit)
+- "⚡ Process stuck" button in Pipeline Journey page calls this manually
+- **Result: user clicked it, no change** — unclear why (timeout? Bragi failing? stale query?)
+
+**Fix B: pipeline-journey auto-loop**
+- `processStuck()` in `pipeline/page.tsx` now loops: calls process-briefs, waits 40s, calls again until `remaining === 0`
+- `process-briefs/route.ts` now returns `{ processed, remaining }` count
+- **Result: not yet verified** (user tried before this fix was pushed)
+
+**Fix C: auto-heal opp status in pipeline-journey GET**
+- After loading briefs, if `opp.status === 'brief_queued'` and primary brief is `agent_generated`/`reviewed`/`published`, mutate opp status in-memory + `after()` to persist
+- **Problem: does NOT help when briefs are stuck in `draft`** — auto-heal only fires when brief is actually done
+
+**Fix D: removed `.not('notes', 'is', null)` filter on briefs query**
+- Suspected that `briefMap[opp.brief_id]` was returning `undefined` because the filter was excluding valid briefs
+- Removed in `pipeline-journey/route.ts`
+- **Result: not yet confirmed** — user couldn't see a difference (display still shows "0 briefs queued")
+
+**Fix E: improved notes regex**
+- Changed from `\(([0-9a-f-]{36})\)\s*$` to `Queued from Opportunity:.*\(([0-9a-f-]{36})\)`
+- More specific, won't miss if notes format has changed
+
+### 13.4 What Opus needs to investigate
+
+**Priority 1: Why is process-briefs not working?**
+
+Check these specific things in prod:
+1. Is `generateAgentBrief` throwing? Add better error logging or check Vercel function logs.
+2. Are the briefs actually in `draft`/`generating` status and `updated_at` > 5min ago? The query filters `lt('updated_at', stuckSince)` where stuckSince = 5min ago. If the user clicked the approve button recently, briefs might be < 5min old.
+3. Is the 60s `maxDuration` being hit? `generateAgentBrief` calls Claude API — if it takes > 30s per brief, 2 briefs = 60s timeout.
+4. Does Vercel Hobby even support `maxDuration = 60`? Hobby limit may be lower (10s for API routes, 60s only for Edge or Pro).
+
+**Priority 2: Why does pipeline show "0 briefs queued" when briefs exist?**
+
+The pipeline-journey route fetches briefs and links them to opps via two paths:
+1. Notes regex: `b.notes?.match(/Queued from Opportunity:.*\(([0-9a-f-]{36})\)/)` → `briefsByOpp[taggedOppId]`
+2. Legacy: `opp.brief_id → briefMap[opp.brief_id]` → also added to `briefsByOpp[opp.id]`
+
+If BOTH paths fail, `briefsByOpp[opp.id]` is empty → "0 briefs queued". Possible reasons:
+- `opp.brief_id` is null (the UPDATE in approve route failed silently)
+- Brief's notes DON'T contain the tag (somehow the insert failed but was retried without notes?)
+- Some other filter is excluding the brief
+
+**Diagnosis query to run in Supabase:**
+```sql
+-- Check if briefs exist for these opps
+SELECT o.id, o.status, o.brief_id, b.id as brief_id_in_briefs, b.status as brief_status, 
+       b.notes IS NOT NULL as has_notes,
+       b.notes LIKE '%Queued from Opportunity%' as has_tag
+FROM seo_opportunities o
+LEFT JOIN seo_content_briefs b ON b.id = o.brief_id
+WHERE o.status = 'brief_queued'
+ORDER BY o.updated_at DESC;
+```
+
+This will reveal if:
+- `brief_id` is null → approve route's UPDATE failed
+- brief exists but has no notes → INSERT had notes issue
+- brief exists + has notes but tag is missing → notes format was different
+
+**Priority 3: Combined output types not working**
+
+User approved "Carx Street Accounts" with New Page + Optimise Existing, but only sees one brief type (or zero). The approve route loops over `validTypes` and creates one brief per type. Verify:
+1. Was the POST body actually sent with both types? Check browser network tab for the approve request payload.
+2. Did both INSERTs succeed? Query: `SELECT brief_type, status FROM seo_content_briefs WHERE notes LIKE '%<opp_id>%'`
+
+### 13.5 Files changed by Sonnet (to review/revert if needed)
+
+```
+src/app/api/cron/process-briefs/route.ts        NEW — process stuck briefs
+src/app/api/pipeline-journey/route.ts           MODIFIED — auto-heal, regex, filter removal
+src/app/(dashboard)/command-center/pipeline/page.tsx  MODIFIED — process stuck auto-loop
+vercel.json                                     MODIFIED — added process-briefs cron
+```
+
+Key changes in `pipeline-journey/route.ts`:
+- `import { NextResponse, after }` (added `after`)
+- Removed `.not('notes', 'is', null)` from briefs query
+- Changed notes regex to more specific form
+- Added auto-heal block (lines ~96–126)
+- Improved stage 4 brief status labels
+- Improved stage 5 execute: `agent_generated` now shows `needs_action` instead of `active`
+
+### 13.6 Recommended Opus approach
+
+1. **Run the Supabase diagnostic query first** (§13.4) — understand actual DB state
+2. **Check Vercel function logs** for process-briefs route — did it run? Did it error?
+3. **Fix the root cause**: either make `generateAgentBrief` reliably run without `after()`, OR implement a proper background job approach
+4. **Consider**: calling `generateAgentBrief` directly in the approve endpoint (synchronously, with `maxDuration = 60`), accepting that the approve HTTP call is slow but reliable. Remove `after()` entirely.
+5. **Verify** the brief visibility fix (notes filter removal) by checking if briefs now appear in pipeline stage 4 after your changes.
+
+### 13.7 Brief status lifecycle (for reference)
+
+```
+draft         → after() fires → generating → agent_generated → reviewed → published
+                                 ↑                 ↓
+                           (if crash)        (Tyr scores)
+                                 ↑
+                           process-briefs picks up 'draft' or 'generating' > 5min old
+```
+
+The `after()` problem means we never leave `draft`. The 5min threshold in process-briefs means freshly-created briefs (< 5min) won't be retried immediately.
+
+_Last updated: §13 Pipeline Journey bugs (Sonnet session 2026-04-29)._
