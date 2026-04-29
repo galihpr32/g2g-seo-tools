@@ -293,6 +293,37 @@ psql "$DATABASE_URL" -f supabase/migrations/add_brief_outcomes.sql
    daily breakdown missing). Per-action cost ("this Tyr review cost
    $0.0023"). Source: `api_usage_logs` × `anthropic-pricing.ts`.
 
+### Deferred by design — revisit after 4-6 weeks of pipeline data
+
+> **Context (Galih, 2026-04-29):** The current weekly/monthly reports were built before
+> the full 7-agent pipeline existed. They should be refactored once the pipeline has
+> been running long enough to have meaningful data (≥ 4-6 weeks). Don't rush this —
+> a pretty report with empty data is worthless.
+
+**Huginn & Muninn — future reporting agents (do NOT build yet):**
+
+Norse mythology: Odin's two ravens — Huginn (Thought) scouts the world, Muninn (Memory)
+remembers everything they saw. In our pipeline:
+- **Huginn** = actively synthesises fresh pipeline signals (pulls from all 7 agent outputs
+  + GSC + GA4, composes a narrative, highlights what changed this week)
+- **Muninn** = remembers and tracks historical outcomes (knows what we shipped, what
+  ranked, what we promised; provides the longitudinal view)
+
+These two agents replace the current static weekly/monthly report pages with a
+fully data-driven synthesis. Only worth building after the pipeline (Heimdall → Vor)
+has 1-2 months of real data in `agent_findings`, `agent_runs`, `brief_outcomes`, etc.
+
+Build order when ready:
+1. Refine `/reports/weekly` and `/reports/monthly` pages to pull from `agent_findings`
+   (Vor outcomes, Heimdall drops recovered, Bragi briefs published, Hermod links acquired)
+2. Build Huginn as a synthesis agent (weekly run, pulls all pipeline data, outputs
+   a structured `WeeklyNarrative` with sections + action callouts)
+3. Build Muninn as a memory agent (tracks cumulative KPIs, YoY/MoM deltas,
+   content investment vs. traffic return)
+4. Huginn + Muninn together power the report pages instead of the current manual queries
+
+---
+
 ### Lower priority / cleanup
 
 7. **Apply ActionPunchList to monthly report.** Different `ReportData` shape

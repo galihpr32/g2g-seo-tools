@@ -43,10 +43,16 @@ function formatTimeAgo(iso: string): string {
   return `${Math.floor(s / 86400)}d ago`
 }
 
+const LS_KEY = 'needs_attention_cleared_at'
+
 export default function NeedsAttentionWidget() {
-  const [data, setData]   = useState<ApiResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [data,       setData]       = useState<ApiResponse | null>(null)
+  const [loading,    setLoading]    = useState(true)
+  const [expanded,   setExpanded]   = useState<Set<string>>(new Set())
+  const [clearedAt,  setClearedAt]  = useState<number>(() => {
+    if (typeof window === 'undefined') return 0
+    return parseInt(localStorage.getItem(LS_KEY) ?? '0', 10)
+  })
 
   const fetchData = async () => {
     try {
@@ -62,15 +68,27 @@ export default function NeedsAttentionWidget() {
 
   useEffect(() => {
     fetchData()
-    const iv = setInterval(fetchData, 60_000)  // refresh every minute
+    const iv = setInterval(fetchData, 60_000)
     return () => clearInterval(iv)
   }, [])
 
-  if (loading && !data) return null   // silent first-load
-  if (!data || data.total === 0) return null   // hide entirely when nothing's wrong
+  function handleClear() {
+    const now = Date.now()
+    localStorage.setItem(LS_KEY, String(now))
+    setClearedAt(now)
+  }
 
-  const partialCount = data.items.filter(i => i.status === 'partial').length
-  const errorCount   = data.items.filter(i => i.status === 'error').length
+  if (loading && !data) return null
+  if (!data || data.total === 0) return null
+
+  // Filter out items that predate the last clear action
+  const visibleItems = data.items.filter(
+    item => new Date(item.startedAt).getTime() > clearedAt
+  )
+  if (visibleItems.length === 0) return null
+
+  const partialCount = visibleItems.filter(i => i.status === 'partial').length
+  const errorCount   = visibleItems.filter(i => i.status === 'error').length
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => {
@@ -97,17 +115,26 @@ export default function NeedsAttentionWidget() {
             </p>
           </div>
         </div>
-        <a
-          href="/command-center/logs?status=partial"
-          className="text-xs text-amber-300/80 hover:text-amber-200 transition"
-        >
-          View all logs →
-        </a>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleClear}
+            className="text-xs text-gray-500 hover:text-gray-300 transition"
+            title="Dismiss all current notifications"
+          >
+            Clear logs
+          </button>
+          <a
+            href="/command-center/logs?status=partial"
+            className="text-xs text-amber-300/80 hover:text-amber-200 transition"
+          >
+            View all →
+          </a>
+        </div>
       </div>
 
       {/* Items */}
       <div className="divide-y divide-amber-900/30">
-        {data.items.slice(0, 5).map(item => {
+        {visibleItems.slice(0, 5).map(item => {
           const isExpanded = expanded.has(item.runId)
           const isError    = item.status === 'error'
           const headerColor = isError ? 'text-red-300' : 'text-amber-200'
@@ -183,12 +210,12 @@ export default function NeedsAttentionWidget() {
           )
         })}
 
-        {data.items.length > 5 && (
+        {visibleItems.length > 5 && (
           <a
             href="/command-center/logs?status=partial"
             className="block px-5 py-2.5 text-center text-xs text-amber-300/80 hover:text-amber-200 hover:bg-amber-900/10 transition"
           >
-            +{data.items.length - 5} more — view all
+            +{visibleItems.length - 5} more — view all
           </a>
         )}
       </div>

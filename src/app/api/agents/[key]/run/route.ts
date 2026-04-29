@@ -99,9 +99,11 @@ export async function POST(
     } else if (key === 'vor') {
       const vorConfig: Partial<VorConfig> = {
         windowDays:           typeof savedConfig.windowDays === 'number'           ? savedConfig.windowDays           : VOR_DEFAULTS.windowDays,
+        configWindowDays:     typeof savedConfig.configWindowDays === 'number'     ? savedConfig.configWindowDays     : VOR_DEFAULTS.configWindowDays,
         minSampleSize:        typeof savedConfig.minSampleSize === 'number'        ? savedConfig.minSampleSize        : VOR_DEFAULTS.minSampleSize,
         approvalRateThresh:   typeof savedConfig.approvalRateThresh === 'number'   ? savedConfig.approvalRateThresh   : VOR_DEFAULTS.approvalRateThresh,
         highConfidenceThresh: typeof savedConfig.highConfidenceThresh === 'number' ? savedConfig.highConfidenceThresh : VOR_DEFAULTS.highConfidenceThresh,
+        runConfigTuning:      typeof savedConfig.runConfigTuning === 'boolean'     ? savedConfig.runConfigTuning      : VOR_DEFAULTS.runConfigTuning,
       }
       result = await runVor(effectiveOwnerId, siteSlug, dispatchRunId, vorConfig)
     } else if (key === 'saga') {

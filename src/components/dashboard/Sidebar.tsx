@@ -12,7 +12,8 @@ const navItems = [
     defaultOpen: true,
     items: [
       { label: 'Dashboard',       href: '/dashboard',                      icon: '▦'  },
-      { label: 'Opportunities',   href: '/command-center/opportunities',   icon: '🎯' },
+      { label: 'Opportunities',    href: '/command-center/opportunities',   icon: '🎯' },
+      { label: 'Pipeline Journey', href: '/command-center/pipeline',       icon: '🗺️' },
       { label: 'Command Center',  href: '/command-center',                 icon: '🤖' },
       { label: 'Action Items',    href: '/gsc/action-items',               icon: '✅' },
       { label: 'Notifications',   href: '/notifications',                  icon: '🔔' },
@@ -158,13 +159,11 @@ function TourLauncher() {
       {/* Main button */}
       <button
         onClick={() => setOpen(prev => !prev)}
-        className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm text-gray-500 hover:text-gray-300 hover:bg-gray-800/60 transition"
+        className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm text-indigo-400 hover:text-indigo-200 hover:bg-indigo-900/30 border border-indigo-800/40 hover:border-indigo-600/50 transition"
       >
-        <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <span className="flex-1 text-left">Restart tour</span>
-        <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <span className="text-base leading-none flex-shrink-0">🧭</span>
+        <span className="flex-1 text-left font-medium">Wizard Guide</span>
+        <svg className={`w-3 h-3 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
@@ -267,7 +266,7 @@ export default function Sidebar() {
   const siteAwarePaths = ['/reports/weekly']
 
   return (
-    <aside className="w-60 min-h-screen bg-gray-900 border-r border-gray-800 flex flex-col">
+    <aside className="w-60 h-screen sticky top-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">
       {/* Brand */}
       <div className="px-5 pt-5 pb-3 border-b border-gray-800">
         <div className="flex items-center gap-2.5 mb-3">
@@ -357,8 +356,8 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {/* Sign out + Tour */}
-      <div className="px-3 py-4 border-t border-gray-800 space-y-1">
+      {/* Wizard + Sign out — always pinned at bottom */}
+      <div className="px-3 py-3 border-t border-gray-800 space-y-1 flex-shrink-0">
         {/* Tour launcher — click main button OR pick a role directly */}
         <TourLauncher />
         <button

@@ -135,9 +135,11 @@ export async function GET(request: Request) {
       } else if (key === 'vor') {
         const vorConfig: Partial<VorConfig> = {
           windowDays:           typeof config.windowDays === 'number'           ? config.windowDays           : VOR_DEFAULTS.windowDays,
+          configWindowDays:     typeof config.configWindowDays === 'number'     ? config.configWindowDays     : VOR_DEFAULTS.configWindowDays,
           minSampleSize:        typeof config.minSampleSize === 'number'        ? config.minSampleSize        : VOR_DEFAULTS.minSampleSize,
           approvalRateThresh:   typeof config.approvalRateThresh === 'number'   ? config.approvalRateThresh   : VOR_DEFAULTS.approvalRateThresh,
           highConfidenceThresh: typeof config.highConfidenceThresh === 'number' ? config.highConfidenceThresh : VOR_DEFAULTS.highConfidenceThresh,
+          runConfigTuning:      typeof config.runConfigTuning === 'boolean'     ? config.runConfigTuning      : VOR_DEFAULTS.runConfigTuning,
         }
         result = await runVor(ownerId, siteSlug, runId, vorConfig)
       } else if (key === 'saga') {

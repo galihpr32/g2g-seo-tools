@@ -144,7 +144,7 @@ const TOOLS: Anthropic.Tool[] = [
     input_schema: {
       type: 'object' as const,
       properties: {
-        status: { type: 'string', enum: ['new', 'triaged', 'brief_queued', 'brief_ready', 'dismissed', 'all'], description: 'Filter by status (default: all active)' },
+        status: { type: 'string', enum: ['new', 'in_review', 'brief_queued', 'brief_ready', 'dismissed', 'all'], description: 'Filter by status (default: all active)' },
         limit:  { type: 'number', description: 'Number of opportunities to return (default 10)' },
       },
     },
@@ -384,9 +384,9 @@ async function executeTool(
           .order('live_date', { ascending: false })
           .limit(limit)
 
-        if (status !== 'all') query.eq('link_status', status)
+        const filteredQuery = status !== 'all' ? query.eq('link_status', status) : query
 
-        const { data } = await query
+        const { data } = await filteredQuery
         if (!data?.length) return `No backlinks found${status !== 'all' ? ` with status "${status}"` : ''}.`
 
         const active  = data.filter(b => b.link_status === 'active').length
@@ -544,13 +544,11 @@ async function executeTool(
           .order('total_sv', { ascending: false })
           .limit(limit)
 
-        if (status !== 'all') {
-          query.eq('status', status)
-        } else {
-          query.not('status', 'eq', 'dismissed')
-        }
+        const oppsQuery = status !== 'all'
+          ? query.eq('status', status)
+          : query.not('status', 'eq', 'dismissed')
 
-        const { data: opps } = await query
+        const { data: opps } = await oppsQuery
 
         if (!opps?.length) {
           return status === 'all'
@@ -560,7 +558,7 @@ async function executeTool(
 
         const statusEmoji: Record<string, string> = {
           new:          '🆕',
-          triaged:      '👁',
+          in_review:    '👁',
           brief_queued: '⏳',
           brief_ready:  '✅',
           dismissed:    '❌',

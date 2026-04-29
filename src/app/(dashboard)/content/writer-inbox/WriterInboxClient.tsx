@@ -25,13 +25,12 @@ interface Brief {
   updated_at:          string | null
 }
 
-// Writer-visible lifecycle (no agent jargon)
 type WriterStatus = 'ready' | 'in_progress' | 'published'
 
 function writerStatus(b: Brief): WriterStatus {
   if (b.status === 'published') return 'published'
   if (b.status === 'draft')     return 'in_progress'
-  return 'ready'  // 'reviewed' — SEO approved, ready to write
+  return 'ready'
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -54,7 +53,6 @@ function timeAgo(iso: string | null): string {
 
 function estimateWordCount(outline: unknown): number {
   const sections = Array.isArray(outline) ? outline as OutlineSection[] : []
-  // ~200 words per section heading + ~80 per bullet point
   return sections.reduce((acc, s) => acc + 200 + (s.points?.length ?? 0) * 80, 0)
 }
 
@@ -72,16 +70,15 @@ function keywordList(kws: unknown): string[] {
   return (kws as KeywordItem[]).map(k => k.keyword ?? '').filter(Boolean).slice(0, 6)
 }
 
-// Urgency: overdue > due-soon > high-score > default
 function urgencyScore(b: Brief): number {
   let score = 0
   if (b.target_publish_date) {
     const daysUntil = (new Date(b.target_publish_date).getTime() - Date.now()) / 86400000
-    if (daysUntil < 0)  score += 1000  // overdue
+    if (daysUntil < 0)       score += 1000
     else if (daysUntil < 3)  score += 500
     else if (daysUntil < 7)  score += 200
   }
-  if (b.tyr_score != null) score += b.tyr_score  // higher quality = higher priority
+  if (b.tyr_score != null) score += b.tyr_score
   return score
 }
 
@@ -158,24 +155,33 @@ function OutlinePreview({ outline, expanded }: { outline: unknown; expanded: boo
 
 function BriefCard({
   brief,
+  selected,
+  onSelect,
   onMarkPublished,
   onMarkInProgress,
+  onDelete,
   busy,
+  deleting,
 }: {
-  brief: Brief
-  onMarkPublished: (id: string) => Promise<void>
-  onMarkInProgress: (id: string) => Promise<void>
-  busy: string | null
+  brief:             Brief
+  selected:          boolean
+  onSelect:          (id: string, val: boolean) => void
+  onMarkPublished:   (id: string) => Promise<void>
+  onMarkInProgress:  (id: string) => Promise<void>
+  onDelete:          (id: string) => Promise<void>
+  busy:              string | null
+  deleting:          Set<string>
 }) {
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied]     = useState(false)
-  const ws = writerStatus(brief)
-  const headings = outlineHeadings(brief.content_outline)
-  const faqs     = faqCount(brief.faq_suggestions)
-  const keywords = keywordList(brief.new_keywords)
-  const wordEst  = estimateWordCount(brief.content_outline)
-  const path     = pathOnly(brief.page)
-  const editorUrl = `/content/briefs/${brief.id}`
+  const ws         = writerStatus(brief)
+  const headings   = outlineHeadings(brief.content_outline)
+  const faqs       = faqCount(brief.faq_suggestions)
+  const keywords   = keywordList(brief.new_keywords)
+  const wordEst    = estimateWordCount(brief.content_outline)
+  const path       = pathOnly(brief.page)
+  const editorUrl  = `/content/briefs/${brief.id}`
+  const isDeleting = deleting.has(brief.id)
 
   async function handleCopy() {
     const kws = keywordList(brief.new_keywords)
@@ -198,7 +204,6 @@ function BriefCard({
       }
     }
     if (brief.notes) parts.push(`\n---\n*Note: ${brief.notes}*`)
-
     try {
       await navigator.clipboard.writeText(parts.filter(Boolean).join('\n'))
       setCopied(true)
@@ -208,6 +213,8 @@ function BriefCard({
 
   return (
     <div className={`rounded-2xl border transition-all ${
+      isDeleting ? 'opacity-40 pointer-events-none' :
+      selected ? 'border-red-600/60 bg-red-950/10' :
       ws === 'ready'       ? 'bg-gray-900 border-blue-800/40 hover:border-blue-600/60' :
       ws === 'in_progress' ? 'bg-gray-900 border-amber-800/40 hover:border-amber-600/60' :
                              'bg-gray-900/50 border-gray-800'
@@ -216,13 +223,32 @@ function BriefCard({
         {/* Top row */}
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Checkbox */}
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={e => onSelect(brief.id, e.target.checked)}
+              onClick={e => e.stopPropagation()}
+              className="w-3.5 h-3.5 accent-red-600 cursor-pointer flex-shrink-0"
+            />
             <StatusPill status={ws} />
             <DueDateBadge date={brief.target_publish_date} />
             {brief.brief_type && (
               <span className="text-[10px] text-gray-600 capitalize">{brief.brief_type.replace(/_/g, ' ')}</span>
             )}
           </div>
-          <span className="text-[10px] text-gray-600">Updated {timeAgo(brief.updated_at)}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-gray-600">Updated {timeAgo(brief.updated_at)}</span>
+            {/* Individual delete */}
+            <button
+              onClick={() => onDelete(brief.id)}
+              disabled={isDeleting || busy === brief.id}
+              className="text-gray-600 hover:text-red-400 transition disabled:opacity-30 px-1 text-sm"
+              title="Delete brief"
+            >
+              🗑
+            </button>
+          </div>
         </div>
 
         {/* Title */}
@@ -316,10 +342,13 @@ function BriefCard({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WriterInboxClient({ initialBriefs }: { initialBriefs: Brief[] }) {
-  const [briefs, setBriefs] = useState<Brief[]>(initialBriefs)
-  const [filter, setFilter] = useState<'all' | 'ready' | 'in_progress' | 'published'>('all')
-  const [search, setSearch] = useState('')
-  const [busy,   setBusy]   = useState<string | null>(null)
+  const [briefs,   setBriefs]   = useState<Brief[]>(initialBriefs)
+  const [filter,   setFilter]   = useState<'all' | 'ready' | 'in_progress' | 'published'>('all')
+  const [search,   setSearch]   = useState('')
+  const [busy,     setBusy]     = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [deleting, setDeleting] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   // Sorted: urgency desc, then ready→in_progress→published
   const sorted = useMemo(() => {
@@ -365,8 +394,66 @@ export default function WriterInboxClient({ initialBriefs }: { initialBriefs: Br
     }
   }, [])
 
-  const handleMarkPublished   = useCallback((id: string) => patchBrief(id, { status: 'published' }), [patchBrief])
-  const handleMarkInProgress  = useCallback((id: string) => patchBrief(id, { status: 'draft' }), [patchBrief])
+  // ── Delete single ──────────────────────────────────────────────────────────
+  const handleDelete = useCallback(async (id: string) => {
+    if (!confirm('Delete this brief? This cannot be undone.')) return
+    setDeleting(prev => new Set(prev).add(id))
+    try {
+      await fetch(`/api/content/briefs/${id}`, { method: 'DELETE' })
+      setBriefs(prev => prev.filter(b => b.id !== id))
+      setSelected(prev => { const n = new Set(prev); n.delete(id); return n })
+    } finally {
+      setDeleting(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
+  }, [])
+
+  // ── Bulk delete ────────────────────────────────────────────────────────────
+  const handleBulkDelete = useCallback(async () => {
+    if (selected.size === 0) return
+    if (!confirm(`Delete ${selected.size} brief${selected.size !== 1 ? 's' : ''}? This cannot be undone.`)) return
+    setBulkBusy(true)
+    const ids = [...selected]
+    try {
+      await Promise.all(ids.map(id =>
+        fetch(`/api/content/briefs/${id}`, { method: 'DELETE' })
+      ))
+      setBriefs(prev => prev.filter(b => !ids.includes(b.id)))
+      setSelected(new Set())
+    } finally {
+      setBulkBusy(false)
+    }
+  }, [selected])
+
+  // ── Selection helpers ──────────────────────────────────────────────────────
+  const handleSelect = useCallback((id: string, val: boolean) => {
+    setSelected(prev => {
+      const n = new Set(prev)
+      if (val) n.add(id)
+      else n.delete(id)
+      return n
+    })
+  }, [])
+
+  const allVisibleSelected = filtered.length > 0 && filtered.every(b => selected.has(b.id))
+
+  function toggleSelectAll() {
+    if (allVisibleSelected) {
+      setSelected(prev => {
+        const n = new Set(prev)
+        filtered.forEach(b => n.delete(b.id))
+        return n
+      })
+    } else {
+      setSelected(prev => {
+        const n = new Set(prev)
+        filtered.forEach(b => n.add(b.id))
+        return n
+      })
+    }
+  }
+
+  const handleMarkPublished  = useCallback((id: string) => patchBrief(id, { status: 'published' }), [patchBrief])
+  const handleMarkInProgress = useCallback((id: string) => patchBrief(id, { status: 'draft' }), [patchBrief])
 
   return (
     <div className="p-6 max-w-4xl space-y-6">
@@ -394,8 +481,19 @@ export default function WriterInboxClient({ initialBriefs }: { initialBriefs: Br
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters + bulk bar */}
       <div className="flex items-center gap-3 flex-wrap">
+        {/* Select all checkbox */}
+        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={allVisibleSelected}
+            onChange={toggleSelectAll}
+            className="w-3.5 h-3.5 accent-red-600 cursor-pointer"
+          />
+          <span className="text-xs text-gray-500">All</span>
+        </label>
+
         <div className="flex border border-gray-700 rounded-lg overflow-hidden text-sm">
           {([
             ['all',         `All (${counts.ready + counts.in_progress + counts.published})`],
@@ -412,6 +510,7 @@ export default function WriterInboxClient({ initialBriefs }: { initialBriefs: Br
             </button>
           ))}
         </div>
+
         <input
           type="text"
           value={search}
@@ -419,6 +518,26 @@ export default function WriterInboxClient({ initialBriefs }: { initialBriefs: Br
           placeholder="Search keyword or page…"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none w-52"
         />
+
+        {/* Bulk action bar — slides in when items are selected */}
+        {selected.size > 0 && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs text-gray-400">{selected.size} selected</span>
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkBusy}
+              className="px-3 py-1.5 text-xs bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white rounded-lg transition flex items-center gap-1.5"
+            >
+              {bulkBusy ? '⏳ Deleting…' : `🗑 Delete ${selected.size}`}
+            </button>
+            <button
+              onClick={() => setSelected(new Set())}
+              className="text-xs text-gray-500 hover:text-gray-300 transition px-1"
+            >
+              Clear
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Brief cards */}
@@ -444,9 +563,13 @@ export default function WriterInboxClient({ initialBriefs }: { initialBriefs: Br
             <BriefCard
               key={b.id}
               brief={b}
+              selected={selected.has(b.id)}
+              onSelect={handleSelect}
               onMarkPublished={handleMarkPublished}
               onMarkInProgress={handleMarkInProgress}
+              onDelete={handleDelete}
               busy={busy}
+              deleting={deleting}
             />
           ))}
         </div>
