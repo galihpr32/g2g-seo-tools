@@ -4,6 +4,38 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 
 /**
+ * GET /api/content/briefs/[id]
+ *
+ * Fetch a single brief's full content. Used by the Pipeline Journey inline
+ * viewer so the user doesn't need to navigate away to read the brief.
+ */
+export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+
+  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
+
+  const { data: brief, error } = await db
+    .from('seo_content_briefs')
+    .select(`
+      id, page, brief_type, primary_keyword, status,
+      tyr_score, tyr_status,
+      content_outline, content_draft, faq_suggestions, new_keywords,
+      notes, created_at, updated_at
+    `)
+    .eq('id', id)
+    .eq('owner_user_id', ownerId)
+    .single()
+
+  if (error || !brief) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  return NextResponse.json({ brief })
+}
+
+/**
  * PATCH /api/content/briefs/[id]
  *
  * Lightweight brief update endpoint — currently used by the Brief Library

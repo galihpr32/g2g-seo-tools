@@ -165,6 +165,7 @@ export interface BriefSummary {
   outputType: string   // 'new_page' | 'optimize_existing' | 'outreach' | 'blog_post'
   status:     string
   tyrScore:   number | null
+  keyword:    string | null
   createdAt:  string
 }
 
@@ -249,6 +250,7 @@ function buildJourneyItem(
     outputType: outputTypeFromBriefType(b.brief_type),
     status:     b.status,
     tyrScore:   b.tyr_score,
+    keyword:    b.keyword,
     createdAt:  b.created_at,
   }))
 

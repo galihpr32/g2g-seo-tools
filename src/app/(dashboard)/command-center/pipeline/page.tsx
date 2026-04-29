@@ -245,29 +245,176 @@ function TriagePanel({
   )
 }
 
+// ── Brief inline viewer ───────────────────────────────────────────────────────
+
+interface BriefDetail {
+  id: string
+  primary_keyword: string | null
+  status: string | null
+  tyr_score: number | null
+  tyr_status: string | null
+  content_outline: { heading?: string; points?: string[] }[] | null
+  content_draft: string | null
+  faq_suggestions: { question?: string; suggested_answer?: string }[] | null
+  new_keywords: { keyword?: string; volume?: number | null }[] | null
+  notes: string | null
+}
+
+function BriefInlinePanel({ briefId, onClose }: { briefId: string; onClose: () => void }) {
+  const [brief, setBrief] = useState<BriefDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    setLoading(true)
+    setErr(null)
+    fetch(`/api/content/briefs/${briefId}`)
+      .then(r => r.json())
+      .then(j => { if (j.brief) setBrief(j.brief); else setErr('Failed to load brief') })
+      .catch(() => setErr('Network error'))
+      .finally(() => setLoading(false))
+  }, [briefId])
+
+  const outline = Array.isArray(brief?.content_outline) ? brief!.content_outline : []
+  const faqs    = Array.isArray(brief?.faq_suggestions) ? brief!.faq_suggestions : []
+  const newKws  = Array.isArray(brief?.new_keywords) ? brief!.new_keywords : []
+
+  return (
+    <div className="mt-2 border border-indigo-500/30 rounded-lg bg-gray-950 overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 bg-gray-900/60">
+        <span className="text-xs font-semibold text-indigo-300 truncate">
+          {brief?.primary_keyword ? `"${brief.primary_keyword}"` : 'Brief'}
+        </span>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Link
+            href={`/content/briefs/${briefId}`}
+            className="text-[10px] text-blue-400 hover:text-blue-300 transition px-2 py-0.5 rounded border border-blue-500/30 bg-blue-500/10"
+          >
+            Open full →
+          </Link>
+          <button onClick={onClose} className="text-gray-600 hover:text-gray-400 text-xs leading-none">✕</button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="px-3 py-2.5 max-h-72 overflow-y-auto space-y-3 text-[11px]">
+        {loading && (
+          <p className="text-gray-500 animate-pulse py-4 text-center">Loading brief…</p>
+        )}
+        {err && <p className="text-red-400">{err}</p>}
+
+        {brief && !loading && (
+          <>
+            {/* Status row */}
+            {brief.tyr_score != null && (
+              <p className="text-gray-500">
+                Tyr score: <span className={`font-semibold ${brief.tyr_score >= 70 ? 'text-emerald-400' : brief.tyr_score >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
+                  {brief.tyr_score}/100
+                </span>
+              </p>
+            )}
+
+            {/* Content outline */}
+            {outline.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Content outline</p>
+                <ol className="space-y-1.5">
+                  {outline.map((s, i) => (
+                    <li key={i}>
+                      <p className="text-white font-medium">{s.heading ?? `Section ${i + 1}`}</p>
+                      {s.points && s.points.length > 0 && (
+                        <ul className="mt-0.5 space-y-0.5 pl-3">
+                          {s.points.slice(0, 4).map((pt, j) => (
+                            <li key={j} className="text-gray-400 before:content-['·'] before:mr-1 before:text-gray-600">{pt}</li>
+                          ))}
+                          {s.points.length > 4 && (
+                            <li className="text-gray-600">+{s.points.length - 4} more points</li>
+                          )}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
+            {/* FAQs preview */}
+            {faqs.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">FAQs ({faqs.length})</p>
+                <ul className="space-y-1">
+                  {faqs.slice(0, 3).map((f, i) => (
+                    <li key={i} className="text-gray-400">{f.question}</li>
+                  ))}
+                  {faqs.length > 3 && <li className="text-gray-600">+{faqs.length - 3} more…</li>}
+                </ul>
+              </div>
+            )}
+
+            {/* Target keywords */}
+            {newKws.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Target keywords</p>
+                <div className="flex flex-wrap gap-1">
+                  {newKws.slice(0, 8).map((k, i) => (
+                    <span key={i} className="px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-300">
+                      {k.keyword}{k.volume ? ` (${k.volume.toLocaleString()})` : ''}
+                    </span>
+                  ))}
+                  {newKws.length > 8 && <span className="text-gray-600">+{newKws.length - 8}</span>}
+                </div>
+              </div>
+            )}
+
+            {/* No content yet */}
+            {outline.length === 0 && faqs.length === 0 && newKws.length === 0 && (
+              <p className="text-gray-600 py-3 text-center">
+                {brief.status === 'draft' ? 'Bragi is still generating this brief…' : 'No content yet'}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Brief type chips ──────────────────────────────────────────────────────────
 
 function BriefChips({ briefs }: { briefs: BriefSummary[] }) {
+  const [openId, setOpenId] = useState<string | null>(null)
+
   if (!briefs.length) return null
 
   return (
-    <div className="flex flex-wrap gap-1.5 mt-2">
-      {briefs.map(b => {
-        const ot  = OUTPUT_TYPES.find(o => o.id === b.outputType)
-        const { label: statusLabel, cls } = briefStatusLabel(b.status)
-        return (
-          <Link
-            key={b.briefId}
-            href={`/content/briefs`}
-            className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border transition hover:opacity-80 ${cls}`}
-            title={`${ot?.label ?? b.briefType} · ${statusLabel}`}
-          >
-            <span>{ot?.icon ?? '📄'}</span>
-            <span>{ot?.label ?? b.briefType}</span>
-            <span className="opacity-60">· {statusLabel}</span>
-          </Link>
-        )
-      })}
+    <div className="mt-2 space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {briefs.map(b => {
+          const ot  = OUTPUT_TYPES.find(o => o.id === b.outputType)
+          const { label: statusLabel, cls } = briefStatusLabel(b.status)
+          const isOpen = openId === b.briefId
+          const isReady = b.status === 'agent_generated' || b.status === 'reviewed' || b.status === 'published'
+          return (
+            <button
+              key={b.briefId}
+              onClick={() => setOpenId(isOpen ? null : b.briefId)}
+              title={isReady ? `Click to preview — ${ot?.label ?? b.briefType}` : `${ot?.label ?? b.briefType} · ${statusLabel}`}
+              className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border transition ${cls} ${isOpen ? 'ring-1 ring-indigo-500/50' : isReady ? 'hover:opacity-90 cursor-pointer' : 'cursor-default opacity-70'}`}
+            >
+              <span>{ot?.icon ?? '📄'}</span>
+              <span>{ot?.label ?? b.briefType}</span>
+              <span className="opacity-60">· {statusLabel}</span>
+              {isReady && <span className="opacity-40 text-[9px]">{isOpen ? '▲' : '▼'}</span>}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Inline brief viewer */}
+      {openId && (
+        <BriefInlinePanel briefId={openId} onClose={() => setOpenId(null)} />
+      )}
     </div>
   )
 }
