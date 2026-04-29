@@ -52,15 +52,17 @@ export async function GET(req: Request) {
   // We match on the UUID in parentheses for a reliable reverse-lookup.
   const oppIds = new Set(opps.map(o => o.id))
 
-  const { data: allBriefs } = await db
+  const { data: allBriefs, error: briefsErr } = await db
     .from('seo_content_briefs')
     .select(`
-      id, brief_type, status, tyr_status, tyr_score, keyword,
+      id, brief_type, status, tyr_status, tyr_score, primary_keyword,
       word_count_target, target_publish_date, created_at, updated_at, notes
     `)
     .eq('owner_user_id', ownerId)
     .not('notes', 'is', null)
     .order('created_at', { ascending: true })
+
+  if (briefsErr) console.error('[pipeline-journey] briefs fetch error:', briefsErr.message)
 
   // Group briefs by the oppId they were spawned from
   const briefsByOpp: Record<string, BriefRow[]> = {}
@@ -154,7 +156,7 @@ export async function GET(req: Request) {
 
 interface BriefRow {
   id: string; brief_type: string; status: string; tyr_status: string | null; tyr_score: number | null
-  keyword: string | null; word_count_target: number | null
+  primary_keyword: string | null; word_count_target: number | null
   target_publish_date: string | null; created_at: string; updated_at: string
   notes: string | null
 }
@@ -250,7 +252,7 @@ function buildJourneyItem(
     outputType: outputTypeFromBriefType(b.brief_type),
     status:     b.status,
     tyrScore:   b.tyr_score,
-    keyword:    b.keyword,
+    keyword:    b.primary_keyword,
     createdAt:  b.created_at,
   }))
 
@@ -360,7 +362,7 @@ function buildStages(
         : isFailed
           ? `Brief failed Tyr review (${brief.tyr_score ?? '?'}/100) — needs regeneration`
           : `Brief ready · ${brief.word_count_target ? brief.word_count_target + ' words' : ''} · Tyr ${brief.tyr_score ?? '?'}/100`,
-      detail:  brief.keyword ? `Target keyword: "${brief.keyword}"` : null,
+      detail:  brief.primary_keyword ? `Target keyword: "${brief.primary_keyword}"` : null,
       agent:   'Bragi · Tyr',
       date:    brief.created_at,
       cta:     isFailed
