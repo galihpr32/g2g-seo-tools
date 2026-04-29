@@ -108,7 +108,7 @@ async function handleGET(req: Request) {
   const rows = (await getSearchAnalytics(
     auth, conn.site_url, startDate, endDate,
     ['query', 'page'],
-    25000
+    10000   // 25k rows can timeout; 10k is enough for cannibalization detection
   )) ?? []
 
   // ── 3. Group by query, find queries with 2+ pages ───────────────────────────
