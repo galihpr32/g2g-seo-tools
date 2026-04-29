@@ -617,6 +617,32 @@ export async function DELETE(req: Request) {
   return NextResponse.json({ ok: true })
 }
 
+// ── PATCH /api/reports/weekly — update task_checks ───────────────────────────
+// Body: { id: string; taskChecks: Record<string, 'todo' | 'in_progress' | 'done'> }
+export async function PATCH(req: Request) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const db = createServiceClient()
+
+  const body = await req.json().catch(() => ({})) as { id?: string; taskChecks?: Record<string, string> }
+  if (!body.id) return NextResponse.json({ error: 'id required' }, { status: 400 })
+  if (!body.taskChecks || typeof body.taskChecks !== 'object') {
+    return NextResponse.json({ error: 'taskChecks required' }, { status: 400 })
+  }
+
+  const { error } = await db
+    .from('weekly_reports')
+    .update({ task_checks: body.taskChecks })
+    .eq('id', body.id)
+    .eq('owner_user_id', ownerId)
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ ok: true })
+}
+
 // ── AI Prompt ─────────────────────────────────────────────────────────────────
 function buildNarrativePrompt(d: {
   siteName: string

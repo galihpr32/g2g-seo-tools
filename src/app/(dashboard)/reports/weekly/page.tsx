@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
 
@@ -100,6 +100,7 @@ interface WeeklyReport {
   report_data: ReportData
   ai_narrative: string
   ai_action_plan: string
+  task_checks?: Record<string, 'todo' | 'in_progress' | 'done'>
 }
 
 interface ReportSummary {
@@ -274,9 +275,58 @@ function parseTeamPlanItems(raw: string): { title: string; detail: string }[] {
     .slice(0, 8)
 }
 
-function ActionPunchList({ data, aiActionPlan }: { data: ReportData; aiActionPlan?: string }) {
+type TaskStatus = 'todo' | 'in_progress' | 'done'
+
+const STATUS_CYCLE: TaskStatus[] = ['todo', 'in_progress', 'done']
+const STATUS_CONFIG: Record<TaskStatus, { label: string; circle: string; text: string; badge: string }> = {
+  todo:        { label: 'To do',       circle: 'bg-gray-700 text-gray-300',   text: 'text-white',        badge: '' },
+  in_progress: { label: 'In progress', circle: 'bg-amber-500/80 text-white',  text: 'text-amber-200',    badge: 'bg-amber-500/15 text-amber-400' },
+  done:        { label: 'Done',        circle: 'bg-green-600 text-white',      text: 'text-gray-500 line-through', badge: 'bg-green-500/15 text-green-400' },
+}
+
+function ActionPunchList({
+  data,
+  aiActionPlan,
+  reportId,
+  initialChecks,
+}: {
+  data: ReportData
+  aiActionPlan?: string
+  reportId?: string
+  initialChecks?: Record<string, TaskStatus>
+}) {
   // Priority: data.aiTeamPlan → report.ai_action_plan → data.aiIssues → nothing
   const raw = data.aiTeamPlan ?? aiActionPlan ?? data.aiIssues ?? ''
+
+  // Persistent task checks (keyed by string index "0", "1", …)
+  const [checks, setChecks] = useState<Record<string, TaskStatus>>(initialChecks ?? {})
+  // Debounce ref for saving to server
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Sync initialChecks when a new report is selected
+  useEffect(() => { setChecks(initialChecks ?? {}) }, [reportId])
+
+  function getStatus(i: number): TaskStatus { return checks[String(i)] ?? 'todo' }
+
+  function cycleStatus(i: number) {
+    const current  = getStatus(i)
+    const nextIdx  = (STATUS_CYCLE.indexOf(current) + 1) % STATUS_CYCLE.length
+    const next     = STATUS_CYCLE[nextIdx]
+    const updated  = { ...checks, [String(i)]: next }
+    setChecks(updated)
+
+    // Debounced persist — fire 600ms after last click
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    if (reportId) {
+      saveTimer.current = setTimeout(() => {
+        fetch('/api/reports/weekly', {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ id: reportId, taskChecks: updated }),
+        }).catch(() => {/* silent — next load will re-fetch from DB */})
+      }, 600)
+    }
+  }
 
   if (!raw.trim()) {
     return (
@@ -293,6 +343,7 @@ function ActionPunchList({ data, aiActionPlan }: { data: ReportData; aiActionPla
   }
 
   const items = parseTeamPlanItems(raw)
+  const doneCount = items.filter((_, i) => getStatus(i) === 'done').length
 
   // If parsing yielded nothing (unexpected format), render raw text
   if (!items.length) {
@@ -315,22 +366,50 @@ function ActionPunchList({ data, aiActionPlan }: { data: ReportData; aiActionPla
           <span className="text-base">📋</span>
           <h3 className="text-sm font-semibold text-white uppercase tracking-wider">This week — team brief</h3>
           <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">{items.length} tasks</span>
-        </div>
-        <p className="text-[10px] text-gray-600 uppercase tracking-wider">AI-written · assign to team</p>
-      </div>
-      <ol className="space-y-3">
-        {items.map((it, i) => (
-          <li key={i} className="flex gap-3">
-            <span className="flex-shrink-0 w-6 h-6 rounded-full bg-red-700/80 text-white text-xs font-bold flex items-center justify-center mt-0.5">
-              {i + 1}
+          {doneCount > 0 && (
+            <span className="text-[10px] bg-green-500/15 text-green-400 px-2 py-0.5 rounded-full">
+              {doneCount}/{items.length} done
             </span>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-white leading-snug">{it.title}</p>
-              {it.detail && <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{it.detail}</p>}
-            </div>
-          </li>
-        ))}
+          )}
+        </div>
+        <p className="text-[10px] text-gray-600 uppercase tracking-wider">AI-written · click status to update</p>
+      </div>
+      <ol className="space-y-2">
+        {items.map((it, i) => {
+          const status = getStatus(i)
+          const cfg    = STATUS_CONFIG[status]
+          return (
+            <li key={i} className={`flex gap-3 items-start rounded-lg px-3 py-2.5 transition-colors ${status === 'done' ? 'bg-gray-800/30' : 'hover:bg-gray-800/20'}`}>
+              {/* Number circle — click to cycle status */}
+              <button
+                onClick={() => cycleStatus(i)}
+                title={`Status: ${cfg.label} — click to change`}
+                className={`flex-shrink-0 w-6 h-6 rounded-full text-xs font-bold flex items-center justify-center mt-0.5 transition-all cursor-pointer ${cfg.circle}`}
+              >
+                {status === 'done' ? '✓' : i + 1}
+              </button>
+              {/* Content */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className={`text-sm font-semibold leading-snug transition-colors ${cfg.text}`}>{it.title}</p>
+                  {/* Status badge */}
+                  {status !== 'todo' && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cfg.badge}`}>
+                      {cfg.label}
+                    </span>
+                  )}
+                </div>
+                {it.detail && (
+                  <p className={`text-xs mt-0.5 leading-relaxed transition-colors ${status === 'done' ? 'text-gray-600' : 'text-gray-400'}`}>
+                    {it.detail}
+                  </p>
+                )}
+              </div>
+            </li>
+          )
+        })}
       </ol>
+      <p className="text-[10px] text-gray-700 mt-3">Tip: click the number circle to mark as In progress → Done</p>
     </div>
   )
 }
@@ -620,7 +699,12 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
               )}
 
               {/* ── Team Brief (TOP — AI-written action plan) ── */}
-              <ActionPunchList data={d} aiActionPlan={report.ai_action_plan} />
+              <ActionPunchList
+                data={d}
+                aiActionPlan={report.ai_action_plan}
+                reportId={report.id}
+                initialChecks={report.task_checks ?? {}}
+              />
 
               {/* ── Traffic + Keywords ── */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
