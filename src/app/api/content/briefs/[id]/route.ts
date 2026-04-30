@@ -59,9 +59,11 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     status?: string
     target_publish_date?: string | null
     notes?: string
+    assigned_to?: string | null
   } | null
   if (!body) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
+  const nowIso = new Date().toISOString()
   const update: Record<string, unknown> = {}
 
   if (body.status) {
@@ -69,6 +71,13 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       return NextResponse.json({ error: `status must be one of ${[...ALLOWED_STATUSES].join(', ')}` }, { status: 400 })
     }
     update.status = body.status
+
+    // When the user transitions a brief to 'published', capture WHO did it.
+    // published_at + published_by feed /team-performance reporting.
+    if (body.status === 'published') {
+      update.published_by = user.id
+      update.published_at = nowIso
+    }
   }
 
   // Allow setting or clearing target_publish_date (null clears it)
@@ -77,6 +86,12 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       return NextResponse.json({ error: 'target_publish_date must be YYYY-MM-DD or null' }, { status: 400 })
     }
     update.target_publish_date = body.target_publish_date ?? null
+  }
+
+  // Writer assignment — pass null to unassign, uuid to assign.
+  if ('assigned_to' in body) {
+    update.assigned_to = body.assigned_to ?? null
+    update.assigned_at = body.assigned_to ? nowIso : null
   }
 
   if (typeof body.notes === 'string') {

@@ -2,7 +2,41 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import type { JourneyItem, PipelineStageInfo, BriefSummary } from '@/app/api/pipeline-journey/route'
+import type { JourneyItem, PipelineStageInfo, BriefSummary, Actor } from '@/app/api/pipeline-journey/route'
+
+// ── Actor avatar (consistent with /team-performance pattern) ──────────────────
+
+function actorInitials(email: string): string {
+  const parts = email.split('@')[0].split(/[._-]/).filter(Boolean)
+  return parts.slice(0, 2).map(p => p[0]?.toUpperCase() ?? '').join('') || (email[0]?.toUpperCase() ?? '?')
+}
+
+function actorColor(email: string): string {
+  const colors = ['bg-indigo-600', 'bg-purple-600', 'bg-pink-600', 'bg-rose-600', 'bg-orange-600', 'bg-teal-600', 'bg-cyan-600', 'bg-blue-600']
+  let hash = 0
+  for (const ch of email) hash = (hash * 31 + ch.charCodeAt(0)) % colors.length
+  return colors[hash]
+}
+
+function actorDisplayName(email: string): string {
+  // "galih.priambodo@g2g.com" → "Galih"
+  const local = email.split('@')[0].split(/[._-]/)[0] ?? email
+  return local.charAt(0).toUpperCase() + local.slice(1)
+}
+
+function ActorBadge({ actor }: { actor: Actor }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-gray-400">
+      <span
+        className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-[8px] font-semibold text-white ${actorColor(actor.email)}`}
+        title={actor.email}
+      >
+        {actorInitials(actor.email)}
+      </span>
+      <span>{actorDisplayName(actor.email)}</span>
+    </span>
+  )
+}
 
 // ── Stage config ──────────────────────────────────────────────────────────────
 
@@ -509,6 +543,11 @@ function StageRow({
         )}
         {info.detail && !isLocked && (
           <p className="text-[11px] text-gray-600 mt-0.5">{info.detail}</p>
+        )}
+        {info.actor && !isLocked && (
+          <div className="mt-1">
+            <ActorBadge actor={info.actor} />
+          </div>
         )}
 
         {/* Triage: interactive approve panel */}

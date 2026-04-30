@@ -28,6 +28,7 @@ import { slugify } from '@/lib/agents/site-helpers'
 export interface AggregatorResult {
   opportunitiesCreated: number
   opportunitiesUpdated: number
+  opportunitiesSkipped: number   // skipped by dedup window (already worked recently)
   signalsProcessed:     number
   summary:              string
 }
@@ -50,6 +51,19 @@ interface OpportunityRow {
   signal_count:     number
   total_sv:         number
   status:           string
+  updated_at:       string
+}
+
+// ── Dedup window config ──────────────────────────────────────────────────────
+// Controls how long an opp's last status protects it from re-detection. After
+// this window, fresh signals can re-create the opp (re-rank-drop / re-trend).
+const DEDUP_WINDOW_DAYS = {
+  published:  30,   // already shipped → don't surface for 30d (gives time to measure)
+  dismissed:  7,    // user said no → respect that for a week, then can re-surface
+}
+
+function daysSince(iso: string): number {
+  return (Date.now() - new Date(iso).getTime()) / 86_400_000
 }
 
 // ── Topic slug derivation ────────────────────────────────────────────────────
@@ -128,7 +142,7 @@ export async function runSagaAggregator(
   }>
 
   if (rawActions.length === 0) {
-    return { opportunitiesCreated: 0, opportunitiesUpdated: 0, signalsProcessed: 0, summary: 'No recent signals to aggregate.' }
+    return { opportunitiesCreated: 0, opportunitiesUpdated: 0, opportunitiesSkipped: 0, signalsProcessed: 0, summary: 'No recent signals to aggregate.' }
   }
 
   // ── 2. Derive topic_slug per action and group ─────────────────────────────
@@ -204,13 +218,13 @@ export async function runSagaAggregator(
   }
 
   if (groups.size === 0) {
-    return { opportunitiesCreated: 0, opportunitiesUpdated: 0, signalsProcessed: rawActions.length, summary: 'Signals processed but no valid topics derived.' }
+    return { opportunitiesCreated: 0, opportunitiesUpdated: 0, opportunitiesSkipped: 0, signalsProcessed: rawActions.length, summary: 'Signals processed but no valid topics derived.' }
   }
 
   // ── 3. Fetch existing opportunities to merge into ─────────────────────────
   const { data: existingRows } = await db
     .from('seo_opportunities')
-    .select('id, topic_slug, target_url, heimdall_signals, loki_signals, odin_signals, signal_count, total_sv, status')
+    .select('id, topic_slug, target_url, heimdall_signals, loki_signals, odin_signals, signal_count, total_sv, status, updated_at')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
     .in('topic_slug', Array.from(groups.keys()))
@@ -222,10 +236,35 @@ export async function runSagaAggregator(
   // ── 4. Upsert each group ──────────────────────────────────────────────────
   let opportunitiesCreated = 0
   let opportunitiesUpdated = 0
+  let opportunitiesSkipped = 0   // dedup
   const now = new Date().toISOString()
 
   for (const [topicSlug, group] of groups.entries()) {
-    const existing = existingBySlug.get(topicSlug)
+    let existing = existingBySlug.get(topicSlug)
+
+    // ── Dedup window ─────────────────────────────────────────────────────
+    // If the topic was recently 'published' or 'dismissed', skip merging /
+    // recreating. After the window, fresh signals are allowed to re-detect
+    // by treating the existing row as if it didn't exist (creates a new opp).
+    if (existing) {
+      const ageDays = daysSince(existing.updated_at)
+      if (existing.status === 'published' && ageDays < DEDUP_WINDOW_DAYS.published) {
+        console.log(`[saga/aggregator] dedup skip: ${topicSlug} published ${ageDays.toFixed(1)}d ago`)
+        opportunitiesSkipped++
+        continue
+      }
+      if (existing.status === 'dismissed' && ageDays < DEDUP_WINDOW_DAYS.dismissed) {
+        console.log(`[saga/aggregator] dedup skip: ${topicSlug} dismissed ${ageDays.toFixed(1)}d ago`)
+        opportunitiesSkipped++
+        continue
+      }
+      // Past the window — re-detect by creating a NEW opp. We clear `existing`
+      // so the merge branch falls through to the insert branch below.
+      if (existing.status === 'published' || existing.status === 'dismissed') {
+        console.log(`[saga/aggregator] dedup expired: ${topicSlug} (${existing.status}, ${ageDays.toFixed(1)}d) — re-detecting as new opp`)
+        existing = undefined
+      }
+    }
 
     if (existing) {
       // Merge — preserve existing signals, append only new ones
@@ -285,12 +324,14 @@ export async function runSagaAggregator(
   const parts = [
     opportunitiesCreated > 0 ? `${opportunitiesCreated} new opportunit${opportunitiesCreated === 1 ? 'y' : 'ies'}` : null,
     opportunitiesUpdated > 0 ? `${opportunitiesUpdated} updated` : null,
+    opportunitiesSkipped > 0 ? `${opportunitiesSkipped} skipped (recent work)` : null,
     `from ${rawActions.length} signals across ${groups.size} topics`,
   ].filter(Boolean)
 
   return {
     opportunitiesCreated,
     opportunitiesUpdated,
+    opportunitiesSkipped,
     signalsProcessed: rawActions.length,
     summary: parts.join(' · ') || 'Nothing new to aggregate.',
   }

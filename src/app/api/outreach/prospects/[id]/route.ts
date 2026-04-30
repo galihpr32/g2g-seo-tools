@@ -18,9 +18,26 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     'anchor_text', 'published_url', 'published_date', 'notes', 'follow_up_date',
   ]
 
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  const nowIso = new Date().toISOString()
+  const updates: Record<string, unknown> = { updated_at: nowIso }
   for (const key of allowed) {
     if (key in body) updates[key] = body[key]
+  }
+
+  // First time someone touches a prospect (status moves off 'new'), record
+  // them as the claimer for /team-performance reporting. We don't overwrite
+  // claimed_by once set — first-toucher gets credit for the work.
+  if (body.status && body.status !== 'new') {
+    const { data: existing } = await db
+      .from('outreach_prospects')
+      .select('claimed_by')
+      .eq('id', id)
+      .eq('owner_user_id', ownerId)
+      .single()
+    if (existing && !existing.claimed_by) {
+      updates.claimed_by = user.id
+      updates.claimed_at = nowIso
+    }
   }
 
   const { data, error } = await db

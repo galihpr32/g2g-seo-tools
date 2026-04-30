@@ -34,7 +34,8 @@ export async function GET(req: Request) {
       id, topic, topic_slug, target_url, status, output_type,
       signal_count, total_sv, created_at, updated_at, last_signal_at,
       brief_id, tyr_score, tyr_status,
-      heimdall_signals, loki_signals, odin_signals
+      heimdall_signals, loki_signals, odin_signals,
+      approved_by, approved_at, dismissed_by, dismissed_at
     `)
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
@@ -56,7 +57,8 @@ export async function GET(req: Request) {
     .from('seo_content_briefs')
     .select(`
       id, brief_type, status, tyr_status, tyr_score, primary_keyword,
-      target_publish_date, created_at, updated_at, notes
+      target_publish_date, created_at, updated_at, notes,
+      published_by, published_at, assigned_to, assigned_at
     `)
     .eq('owner_user_id', ownerId)
     // No notes filter — we need ALL briefs in briefMap so opp.brief_id lookup
@@ -154,7 +156,7 @@ export async function GET(req: Request) {
   if (keywords.length) {
     const { data: prospects } = await db
       .from('outreach_prospects')
-      .select('id, domain, source_keyword, status, created_at')
+      .select('id, domain, source_keyword, status, created_at, claimed_by, claimed_at')
       .eq('owner_user_id', ownerId)
       .in('source_keyword', keywords)
       .order('created_at', { ascending: false })
@@ -167,6 +169,50 @@ export async function GET(req: Request) {
     }
   }
 
+  // ── 4b. Resolve actor (user) info — collect every uuid we need to display ─
+  // We pull from workspace_members (member_email) joined back via member_user_id.
+  // Owner's own email comes from auth.users.
+  const actorIds = new Set<string>()
+  for (const o of opps) {
+    if (o.approved_by)  actorIds.add(o.approved_by)
+    if (o.dismissed_by) actorIds.add(o.dismissed_by)
+  }
+  for (const b of allBriefs ?? []) {
+    if (b.published_by) actorIds.add(b.published_by)
+    if (b.assigned_to)  actorIds.add(b.assigned_to)
+  }
+  for (const list of Object.values(prospectMap)) {
+    for (const p of list) {
+      if (p.claimed_by) actorIds.add(p.claimed_by)
+    }
+  }
+
+  const actorMap: Record<string, Actor> = {}
+  if (actorIds.size > 0) {
+    // Lookup via workspace_members for non-owner team members
+    const { data: members } = await db
+      .from('workspace_members')
+      .select('member_user_id, member_email')
+      .eq('owner_user_id', ownerId)
+      .in('member_user_id', Array.from(actorIds))
+    for (const m of members ?? []) {
+      if (m.member_user_id) {
+        actorMap[m.member_user_id] = { userId: m.member_user_id, email: m.member_email }
+      }
+    }
+    // Lookup the owner themselves (auth.users) if their id is in actorIds.
+    const missingIds = Array.from(actorIds).filter(id => !actorMap[id])
+    if (missingIds.length > 0) {
+      // service_role can read auth.users via the admin endpoint
+      for (const id of missingIds) {
+        const { data: authUser } = await db.auth.admin.getUserById(id)
+        if (authUser?.user?.email) {
+          actorMap[id] = { userId: id, email: authUser.user.email }
+        }
+      }
+    }
+  }
+
   // ── 5. Enrich into journey objects ────────────────────────────────────────
   const journey: JourneyItem[] = opps.map(opp => {
     const oppBriefs = briefsByOpp[opp.id] ?? []
@@ -175,7 +221,7 @@ export async function GET(req: Request) {
     const outcomes  = brief ? outcomesMap[brief.id] ?? [] : []
     const prospects = prospectMap[opp.topic ?? ''] ?? []
 
-    return buildJourneyItem(opp, brief, outcomes, prospects, oppBriefs)
+    return buildJourneyItem(opp, brief, outcomes, prospects, oppBriefs, actorMap)
   })
 
   // Apply pipeline filter
@@ -196,6 +242,13 @@ interface BriefRow {
   primary_keyword: string | null
   target_publish_date: string | null; created_at: string; updated_at: string
   notes: string | null
+  published_by: string | null; published_at: string | null
+  assigned_to:  string | null; assigned_at:  string | null
+}
+
+export interface Actor {
+  userId: string
+  email:  string
 }
 
 export interface BriefSummary {
@@ -224,6 +277,7 @@ interface OutcomeRow {
 interface ProspectRow {
   id: string; domain: string; source_keyword: string | null
   status: string; created_at: string
+  claimed_by: string | null; claimed_at: string | null
 }
 
 export interface PipelineStageInfo {
@@ -233,6 +287,7 @@ export interface PipelineStageInfo {
   agent:   string | null
   date:    string | null
   cta?:    { label: string; href: string; action?: string }
+  actor?:  Actor | null    // who did this stage's user-action (Triage approve / Brief publish / Outreach claim)
 }
 
 export interface JourneyItem {
@@ -268,12 +323,13 @@ function buildJourneyItem(
   outcomes:   OutcomeRow[],
   prospects:  ProspectRow[],
   allBriefs:  BriefRow[] = [],
+  actorMap:   Record<string, Actor> = {},
 ): JourneyItem {
   const heimdallCount = Array.isArray(opp.heimdall_signals) ? opp.heimdall_signals.length : (opp.heimdall_signals ? 1 : 0)
   const lokiCount     = Array.isArray(opp.loki_signals)     ? opp.loki_signals.length     : (opp.loki_signals     ? 1 : 0)
   const odinCount     = Array.isArray(opp.odin_signals)     ? opp.odin_signals.length     : (opp.odin_signals     ? 1 : 0)
 
-  const stages = buildStages(opp, brief, outcomes, prospects, { heimdallCount, lokiCount, odinCount })
+  const stages = buildStages(opp, brief, outcomes, prospects, { heimdallCount, lokiCount, odinCount }, actorMap)
 
   // Active stage = first non-done stage
   const activeIdx = stages.findIndex(s => s.status !== 'done' && s.status !== 'skipped')
@@ -319,6 +375,7 @@ function buildStages(
   outcomes:  OutcomeRow[],
   prospects: ProspectRow[],
   counts:    { heimdallCount: number; lokiCount: number; odinCount: number },
+  actorMap:  Record<string, Actor> = {},
 ): PipelineStageInfo[] {
   const { heimdallCount, lokiCount, odinCount } = counts
   const totalSignals = heimdallCount + lokiCount + odinCount
@@ -365,9 +422,10 @@ function buildStages(
       ? null
       : 'Review this opportunity and approve to generate a content brief, or dismiss if not relevant.',
     agent: null,
-    date:  isApproved ? opp.updated_at : null,
+    date:  isApproved ? (opp.approved_at ?? opp.updated_at) : null,
     // CTA for triage is handled client-side — no server CTA needed
     cta:   undefined,
+    actor: opp.approved_by ? actorMap[opp.approved_by] ?? null : null,
   }
 
   // ── Stage 4: Brief (Bragi) ────────────────────────────────────────────────
@@ -417,6 +475,12 @@ function buildStages(
       cta:     isFailed
         ? { label: 'Approve regeneration', href: '/command-center', action: 'regenerate' }
         : { label: 'View brief', href: `/content/briefs` },
+      // Show writer assigned (or publisher if already done) — fall back to assigned_to
+      actor:   brief.published_by
+        ? actorMap[brief.published_by] ?? null
+        : brief.assigned_to
+          ? actorMap[brief.assigned_to] ?? null
+          : null,
     }
   }
 
@@ -434,7 +498,8 @@ function buildStages(
       summary: 'Article published',
       detail:  null,
       agent:   'Writer',
-      date:    brief.updated_at,
+      date:    brief.published_at ?? brief.updated_at,
+      actor:   brief.published_by ? actorMap[brief.published_by] ?? null : null,
     }
   } else if (briefReviewed) {
     stageExecute = {
@@ -485,6 +550,10 @@ function buildStages(
       contacted ? `${contacted} contacted` : null,
     ].filter(Boolean).join(' · ') || `${prospects.length} prospects found`
 
+    // Surface the most recent claimer (whoever last touched a prospect for this topic)
+    const claimedProspect = prospects.find(p => p.claimed_by)
+    const claimerActor = claimedProspect?.claimed_by ? actorMap[claimedProspect.claimed_by] ?? null : null
+
     stageOutreach = {
       status:  accepted > 0 ? 'done' : 'needs_action',
       summary: statusLine,
@@ -492,6 +561,7 @@ function buildStages(
       agent:   'Hermod',
       date:    prospects[0]?.created_at ?? null,
       cta:     { label: 'View outreach', href: '/outreach' },
+      actor:   claimerActor,
     }
   }
 

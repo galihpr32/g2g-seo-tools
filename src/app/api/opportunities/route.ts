@@ -83,9 +83,20 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: `Invalid status "${body.status}"` }, { status: 400 })
   }
 
-  const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  const nowIso = new Date().toISOString()
+  const update: Record<string, unknown> = { updated_at: nowIso }
   if (body.status)      update.status      = body.status
   if (body.output_type !== undefined) update.output_type = body.output_type
+
+  // Capture actor on dismiss/approve transitions for audit + reporting.
+  if (body.status === 'dismissed') {
+    update.dismissed_by = user.id
+    update.dismissed_at = nowIso
+  }
+  if (body.status === 'brief_queued') {
+    update.approved_by = user.id
+    update.approved_at = nowIso
+  }
 
   const { error } = await db
     .from('seo_opportunities')

@@ -140,12 +140,17 @@ export async function POST(request: Request) {
   const baseCtx       = buildBaseContext(opp as unknown as { topic: string; heimdall_signals: HSignal[]; loki_signals: LSignal[]; odin_signals: OSignal[] })
 
   // ── Mark opp brief_queued with first output type ──────────────────────────
+  // Capture WHO approved (user.id, not workspace owner) for team-performance
+  // reporting and per-stage UI attribution.
+  const nowIso = new Date().toISOString()
   await db
     .from('seo_opportunities')
     .update({
-      status:      'brief_queued',
-      output_type: validTypes[0],
-      updated_at:  new Date().toISOString(),
+      status:       'brief_queued',
+      output_type:  validTypes[0],
+      updated_at:   nowIso,
+      approved_by:  user.id,
+      approved_at:  nowIso,
     })
     .eq('id', oppId)
 

@@ -121,7 +121,7 @@ export default async function TeamPerformancePage() {
   // ── Fetch all action items + briefs in parallel ─────────────────────────────
   const staleThreshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const [itemsRes, briefsRes, membersRes] = await Promise.all([
+  const [itemsRes, briefsRes, membersRes, pipelineOppsRes, pipelinePublishedRes, pipelineProspectsRes] = await Promise.all([
     supabase
       .from('seo_action_items')
       .select('id, page, action_type, status, assigned_to, created_at, completed_at, snapshot_date')
@@ -136,9 +136,30 @@ export default async function TeamPerformancePage() {
     // Get team member list for display names
     supabase
       .from('workspace_members')
-      .select('member_email, role, status')
+      .select('member_user_id, member_email, role, status')
       .eq('owner_user_id', ownerId)
       .eq('status', 'active'),
+
+    // ── Pipeline Activity: opps approved / dismissed by user ────────────────
+    supabase
+      .from('seo_opportunities')
+      .select('approved_by, approved_at, dismissed_by, dismissed_at')
+      .eq('owner_user_id', ownerId)
+      .or('approved_by.not.is.null,dismissed_by.not.is.null'),
+
+    // Briefs published by user
+    supabase
+      .from('seo_content_briefs')
+      .select('published_by, published_at')
+      .eq('owner_user_id', ownerId)
+      .not('published_by', 'is', null),
+
+    // Outreach prospects claimed by user
+    supabase
+      .from('outreach_prospects')
+      .select('claimed_by, claimed_at')
+      .eq('owner_user_id', ownerId)
+      .not('claimed_by', 'is', null),
   ])
 
   const items   = (itemsRes.data   ?? []) as RawItem[]
@@ -249,6 +270,66 @@ export default async function TeamPerformancePage() {
   // Member role map for badges
   const roleMap = new Map(members.map(m => [m.member_email, m.role as string]))
 
+  // ── Pipeline Activity: aggregate per-user counts in 4 time windows ───────
+  // Map user_id → email (workspace_members + owner self-lookup if needed)
+  const userIdToEmail = new Map<string, string>()
+  for (const m of members) {
+    if (m.member_user_id && m.member_email) userIdToEmail.set(m.member_user_id, m.member_email)
+  }
+  // Owner themselves is the current user — include them
+  if (user.email) userIdToEmail.set(user.id, user.email)
+
+  type PipelineCounts = { today: number; week: number; month: number; all: number }
+  const emptyCounts = (): PipelineCounts => ({ today: 0, week: 0, month: 0, all: 0 })
+
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+  const week30dAgo   = new Date(Date.now() - 30 * 86_400_000)
+  const week7dAgo    = new Date(Date.now() -  7 * 86_400_000)
+
+  function bumpCounts(target: PipelineCounts, ts: string | null) {
+    if (!ts) return
+    const d = new Date(ts)
+    target.all++
+    if (d >= week30dAgo)  target.month++
+    if (d >= week7dAgo)   target.week++
+    if (d >= startOfToday) target.today++
+  }
+
+  const pipelineByUser = new Map<string, {
+    approved: PipelineCounts; dismissed: PipelineCounts;
+    published: PipelineCounts; claimed: PipelineCounts;
+  }>()
+
+  function getEntry(userId: string) {
+    let e = pipelineByUser.get(userId)
+    if (!e) {
+      e = { approved: emptyCounts(), dismissed: emptyCounts(), published: emptyCounts(), claimed: emptyCounts() }
+      pipelineByUser.set(userId, e)
+    }
+    return e
+  }
+
+  for (const o of pipelineOppsRes.data ?? []) {
+    if (o.approved_by)  bumpCounts(getEntry(o.approved_by).approved,   o.approved_at)
+    if (o.dismissed_by) bumpCounts(getEntry(o.dismissed_by).dismissed, o.dismissed_at)
+  }
+  for (const b of pipelinePublishedRes.data ?? []) {
+    if (b.published_by) bumpCounts(getEntry(b.published_by).published, b.published_at)
+  }
+  for (const p of pipelineProspectsRes.data ?? []) {
+    if (p.claimed_by)   bumpCounts(getEntry(p.claimed_by).claimed,     p.claimed_at)
+  }
+
+  // Convert to sorted array (by total all-time activity desc)
+  const pipelineRows = Array.from(pipelineByUser.entries())
+    .map(([uid, c]) => ({
+      userId: uid,
+      email:  userIdToEmail.get(uid) ?? `(unknown user ${uid.slice(0, 8)})`,
+      ...c,
+      totalAll: c.approved.all + c.dismissed.all + c.published.all + c.claimed.all,
+    }))
+    .sort((a, b) => b.totalAll - a.totalAll)
+
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="p-8 max-w-6xl">
@@ -295,6 +376,89 @@ export default async function TeamPerformancePage() {
           <span><span className="text-yellow-300 font-medium">{unassignedAll.length}</span> unassigned</span>
           <span><span className="text-gray-300 font-medium">{stats.length}</span> active assignees</span>
         </div>
+      </div>
+
+      {/* ── Pipeline Activity (Triage approve / Brief publish / Outreach claim) ── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold text-white">🚦 Pipeline Activity</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Who's pushing work through the pipeline — approved, published, or claimed for outreach.</p>
+          </div>
+          <span className="text-[10px] text-gray-600 uppercase tracking-wide">today · 7d · 30d · all</span>
+        </div>
+        {pipelineRows.length === 0 ? (
+          <p className="text-sm text-gray-500 py-4">No pipeline activity yet. Approve an opportunity in <Link href="/command-center/pipeline" className="text-indigo-400 hover:text-indigo-300">Pipeline Journey</Link> to start tracking.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-800">
+                  <th className="py-2 pr-4 font-normal">Member</th>
+                  <th className="py-2 px-2 font-normal text-center">Approved</th>
+                  <th className="py-2 px-2 font-normal text-center">Dismissed</th>
+                  <th className="py-2 px-2 font-normal text-center">Published</th>
+                  <th className="py-2 px-2 font-normal text-center">Claimed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pipelineRows.map(r => (
+                  <tr key={r.userId} className="border-b border-gray-800/50 last:border-b-0 hover:bg-gray-800/30">
+                    <td className="py-2 pr-4">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-[9px] font-semibold text-white ${avatarColor(r.email)}`}>
+                          {initials(r.email)}
+                        </span>
+                        <div className="flex flex-col">
+                          <span className="text-gray-200">{r.email}</span>
+                          {roleMap.get(r.email) && (
+                            <span className="text-[9px] text-gray-600 uppercase tracking-wide">{roleMap.get(r.email)}</span>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span className="text-gray-400">{r.approved.today}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.approved.week}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.approved.month}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-emerald-400 font-semibold">{r.approved.all}</span>
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span className="text-gray-400">{r.dismissed.today}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.dismissed.week}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.dismissed.month}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-300 font-semibold">{r.dismissed.all}</span>
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span className="text-gray-400">{r.published.today}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.published.week}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.published.month}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-blue-400 font-semibold">{r.published.all}</span>
+                    </td>
+                    <td className="py-2 px-2 text-center">
+                      <span className="text-gray-400">{r.claimed.today}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.claimed.week}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-gray-400">{r.claimed.month}</span>
+                      <span className="text-gray-700 mx-0.5">·</span>
+                      <span className="text-pink-400 font-semibold">{r.claimed.all}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* ── Per-assignee table ────────────────────────────────────────── */}
