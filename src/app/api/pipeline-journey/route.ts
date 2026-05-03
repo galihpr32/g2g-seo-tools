@@ -58,7 +58,8 @@ export async function GET(req: Request) {
     .select(`
       id, brief_type, status, tyr_status, tyr_score, primary_keyword,
       target_publish_date, created_at, updated_at, notes,
-      published_by, published_at, assigned_to, assigned_at
+      published_by, published_at, assigned_to, assigned_at,
+      claude_review_status, claude_review_score, claude_reviewed_at
     `)
     .eq('owner_user_id', ownerId)
     // No notes filter — we need ALL briefs in briefMap so opp.brief_id lookup
@@ -128,6 +129,30 @@ export async function GET(req: Request) {
           .eq('id', id)
           .eq('owner_user_id', ownerId)
       }
+    })
+  }
+
+  // ── 2.6 Auto-promote stale Claude reviews ─────────────────────────────────
+  // Briefs at tyr_status='reviewed' AND claude_review_status='pending' for >24h
+  // get auto-promoted to 'skipped' so they don't block writers indefinitely if
+  // the Cowork-scheduled Claude reviewer is offline. Same auto-heal pattern.
+  const claudeStaleCutoff = Date.now() - 24 * 60 * 60 * 1000
+  const briefsToSkip: string[] = []
+  for (const b of allBriefs ?? []) {
+    if (b.tyr_status !== 'reviewed') continue
+    if (b.claude_review_status !== 'pending') continue
+    if (new Date(b.updated_at).getTime() >= claudeStaleCutoff) continue
+    briefsToSkip.push(b.id)
+    // Mutate in-place so downstream stage logic sees the promoted state.
+    ;(b as { claude_review_status: string }).claude_review_status = 'skipped'
+  }
+  if (briefsToSkip.length > 0) {
+    after(async () => {
+      await db
+        .from('seo_content_briefs')
+        .update({ claude_review_status: 'skipped', claude_reviewed_at: new Date().toISOString() })
+        .in('id', briefsToSkip)
+        .eq('owner_user_id', ownerId)
     })
   }
 
@@ -244,6 +269,9 @@ interface BriefRow {
   notes: string | null
   published_by: string | null; published_at: string | null
   assigned_to:  string | null; assigned_at:  string | null
+  claude_review_status: 'pending' | 'passed' | 'failed' | 'skipped' | null
+  claude_review_score:  number | null
+  claude_reviewed_at:   string | null
 }
 
 export interface Actor {
@@ -445,14 +473,23 @@ function buildStages(
     const isGenerating   = brief.status === 'generating' || brief.status === 'draft'
     const isFailed       = brief.tyr_status === 'failed'
     const isAgentDone    = brief.status === 'agent_generated'
-    const isReviewed     = ['reviewed'].includes(brief.tyr_status ?? '') || brief.status === 'reviewed'
+    const tyrPassed      = brief.tyr_status === 'reviewed' || brief.status === 'reviewed'
+    const claudePending  = brief.claude_review_status === 'pending'
+    const claudeFailed   = brief.claude_review_status === 'failed'
+    // Brief is "ready to write" only AFTER both Tyr passes AND Claude either
+    // passes or skips (24h timeout auto-promotes 'pending' → 'skipped').
+    const isReviewed     = tyrPassed && (brief.claude_review_status === 'passed' || brief.claude_review_status === 'skipped')
+    const isClaudeReviewing = tyrPassed && claudePending
     const isPublished    = brief.status === 'published'
     const briefStatus: PipelineStageInfo['status'] =
-      isGenerating ? 'active'       :
-      isFailed     ? 'needs_action' :
+      isGenerating       ? 'active'       :
+      isFailed           ? 'needs_action' :
+      claudeFailed       ? 'needs_action' :
+      isClaudeReviewing  ? 'active'       :
       'done'
 
-    const tyrStr = brief.tyr_score != null ? `Tyr ${brief.tyr_score}/100` : null
+    const tyrStr    = brief.tyr_score != null ? `Tyr ${brief.tyr_score}/100` : null
+    const claudeStr = brief.claude_review_score != null ? `Claude ${brief.claude_review_score}/100` : null
     // word_count_target column doesn't exist in DB; placeholder kept null until migrated
     const wdStr: string | null = null
 
@@ -462,17 +499,21 @@ function buildStages(
         ? 'Bragi is generating the brief…'
         : isFailed
           ? `Brief failed Tyr review (${brief.tyr_score ?? '?'}/100) — needs regeneration`
-          : isPublished
-            ? `Published · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`
-            : isReviewed
-              ? `Reviewed & ready · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`
-              : isAgentDone
-                ? `Brief generated · ${[wdStr, tyrStr ?? 'Tyr pending'].filter(Boolean).join(' · ')}`
-                : `Brief ready · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`,
+          : claudeFailed
+            ? `Claude flagged issues (${brief.claude_review_score ?? '?'}/100) — see notes & regenerate`
+            : isClaudeReviewing
+              ? `Tyr passed (${brief.tyr_score ?? '?'}/100) · awaiting independent review…`
+              : isPublished
+                ? `Published · ${[wdStr, tyrStr, claudeStr].filter(Boolean).join(' · ')}`
+                : isReviewed
+                  ? `Reviewed & ready · ${[wdStr, tyrStr, claudeStr].filter(Boolean).join(' · ')}`
+                  : isAgentDone
+                    ? `Brief generated · ${[wdStr, tyrStr ?? 'Tyr pending'].filter(Boolean).join(' · ')}`
+                    : `Brief ready · ${[wdStr, tyrStr].filter(Boolean).join(' · ')}`,
       detail:  brief.primary_keyword ? `Target keyword: "${brief.primary_keyword}"` : null,
-      agent:   'Bragi · Tyr',
+      agent:   isClaudeReviewing ? 'Bragi · Tyr · Claude' : 'Bragi · Tyr',
       date:    brief.created_at,
-      cta:     isFailed
+      cta:     isFailed || claudeFailed
         ? { label: 'Approve regeneration', href: '/command-center', action: 'regenerate' }
         : { label: 'View brief', href: `/content/briefs` },
       // Show writer assigned (or publisher if already done) — fall back to assigned_to
@@ -488,7 +529,11 @@ function buildStages(
   let stageExecute: PipelineStageInfo
   const briefPublished   = brief?.status === 'published'
   const briefAgentDone   = brief?.status === 'agent_generated'
-  const briefReviewed    = (brief?.tyr_status === 'reviewed' || brief?.status === 'reviewed') && !briefPublished
+  // Reviewed = Tyr passed AND Claude either passed or skipped (24h timeout fallback).
+  // While Claude review is pending, writers shouldn't see this brief yet.
+  const briefTyrPassed   = brief?.tyr_status === 'reviewed' || brief?.status === 'reviewed'
+  const briefClaudeOk    = brief?.claude_review_status === 'passed' || brief?.claude_review_status === 'skipped'
+  const briefReviewed    = briefTyrPassed && briefClaudeOk && !briefPublished
 
   if (!brief || stageBrief.status === 'locked' || stageBrief.status === 'active') {
     stageExecute = { status: 'locked', summary: 'Waiting for approved brief', detail: null, agent: null, date: null }

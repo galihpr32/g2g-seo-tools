@@ -26,7 +26,7 @@ export default async function WriterInboxPage() {
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
-  const { data: briefs, error } = await db
+  const { data: rawBriefs, error } = await db
     .from('seo_content_briefs')
     .select(`
       id,
@@ -42,12 +42,28 @@ export default async function WriterInboxPage() {
       notes,
       target_publish_date,
       created_at,
-      updated_at
+      updated_at,
+      tyr_status,
+      claude_review_status
     `)
     .eq('owner_user_id', effectiveOwnerId)
     .in('status', ['reviewed', 'draft', 'published'])
     .order('updated_at', { ascending: false, nullsFirst: false })
     .limit(300)
+
+  // Filter: hide 'reviewed' briefs that are still awaiting Claude independent
+  // review. Writer should only see briefs that are truly actionable. Once
+  // claude_review_status is 'passed' or 'skipped' (24h timeout fallback), the
+  // brief becomes visible. 'failed' briefs go back to regen flow, not writers.
+  const briefs = (rawBriefs ?? []).filter(b => {
+    if (b.status === 'draft' || b.status === 'published') return true   // legacy / done — always show
+    if (b.status === 'reviewed') {
+      // Block if Tyr passed but Claude still pending or failed
+      if (b.claude_review_status === 'pending') return false
+      if (b.claude_review_status === 'failed')  return false
+    }
+    return true
+  })
 
   if (error) {
     return (
@@ -58,5 +74,5 @@ export default async function WriterInboxPage() {
     )
   }
 
-  return <WriterInboxClient initialBriefs={briefs ?? []} />
+  return <WriterInboxClient initialBriefs={briefs} />
 }
