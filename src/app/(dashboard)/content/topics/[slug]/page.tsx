@@ -64,6 +64,15 @@ interface Lifecycle {
   has_outreach: boolean; has_outcomes: boolean
 }
 
+interface TopicMetrics {
+  time_to_content_days: number | null
+  first_published_at:   string | null
+  oldest_detected_at:   string | null
+  cost_usd_total:       number
+  cost_call_count:      number
+  cost_by_endpoint:     Array<{ endpoint: string; calls: number; usd: number }>
+}
+
 interface TopicData {
   slug: string; topic: string
   opps: Opp[]; primary_opp: Opp
@@ -75,6 +84,7 @@ interface TopicData {
   ai_snapshots: AiSnapshot[]
   actor_map: Record<string, string>
   lifecycle: Lifecycle
+  metrics?: TopicMetrics
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -191,7 +201,7 @@ export default function TopicDetailPage() {
     )
   }
 
-  const { topic, primary_opp, opps, briefs, outcomes, prospects, clusters, maps, agent_runs, ai_snapshots, actor_map, lifecycle } = data
+  const { topic, primary_opp, opps, briefs, outcomes, prospects, clusters, maps, agent_runs, ai_snapshots, actor_map, lifecycle, metrics } = data
   const publishedBrief = briefs.find(b => b.status === 'published')
   const latestSnapshot = ai_snapshots.length > 0 ? ai_snapshots[ai_snapshots.length - 1] : null
 
@@ -229,8 +239,72 @@ export default function TopicDetailPage() {
         </div>
       </div>
 
+      {/* KPI strip — time-to-content + cost (forward-only data) */}
+      {metrics && (metrics.time_to_content_days !== null || metrics.cost_usd_total > 0) && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Time to content</p>
+            <p className="text-2xl font-bold text-white">
+              {metrics.time_to_content_days !== null
+                ? <>{metrics.time_to_content_days}<span className="text-sm text-gray-600 font-normal ml-1">day{metrics.time_to_content_days !== 1 ? 's' : ''}</span></>
+                : <span className="text-sm text-gray-500 font-normal">not yet published</span>}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">detect → publish</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">AI cost</p>
+            <p className="text-2xl font-bold text-white">
+              ${metrics.cost_usd_total.toFixed(2)}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">{metrics.cost_call_count} Claude call{metrics.cost_call_count !== 1 ? 's' : ''}</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Briefs</p>
+            <p className="text-2xl font-bold text-white">
+              {briefs.length}
+              {publishedBrief && <span className="text-sm text-emerald-400 font-normal ml-1">· {briefs.filter(b => b.status === 'published').length} live</span>}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">{briefs.filter(b => b.status === 'reviewed').length} ready to write</p>
+          </div>
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Backlinks</p>
+            <p className="text-2xl font-bold text-white">
+              {prospects.filter(p => p.status === 'accepted' || p.status === 'published').length}
+              <span className="text-sm text-gray-600 font-normal ml-1">/ {prospects.length}</span>
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">accepted / total prospects</p>
+          </div>
+        </div>
+      )}
+
       {/* Lifecycle progress */}
       <StageProgress lifecycle={lifecycle} />
+
+      {/* ── Cost breakdown — small section, only if cost data exists ───── */}
+      {metrics && metrics.cost_usd_total > 0 && metrics.cost_by_endpoint.length > 1 && (
+        <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
+          <h2 className="text-sm font-semibold text-white mb-3">💰 Cost breakdown</h2>
+          <div className="space-y-1.5">
+            {metrics.cost_by_endpoint.map(c => {
+              const pct = (c.usd / metrics.cost_usd_total) * 100
+              return (
+                <div key={c.endpoint} className="flex items-center gap-3 text-xs">
+                  <span className="text-gray-400 font-mono w-32 truncate">{c.endpoint}</span>
+                  <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                    <div className="h-full bg-amber-500/60 rounded-full" style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className="text-gray-300 w-16 text-right tabular-nums">${c.usd.toFixed(3)}</span>
+                  <span className="text-gray-600 w-12 text-right">{c.calls} call{c.calls !== 1 ? 's' : ''}</span>
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-[10px] text-gray-600 mt-3">
+            Forward-only: rows logged before brief_id-in-metadata convention won&apos;t appear.
+            Excludes external API calls (DataForSEO, SEMrush) — track separately in /tools/api-costs.
+          </p>
+        </section>
+      )}
 
       {/* ── Section: Briefs ─────────────────────────────────────── */}
       {briefs.length > 0 && (

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { costForCall } from '@/lib/anthropic-pricing'
 
 export const maxDuration = 30
 
@@ -169,6 +170,61 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   const publishedBriefs = briefs.filter(b => b.status === 'published')
   const reviewedBriefs  = briefs.filter(b => b.status === 'reviewed' || b.tyr_status === 'reviewed')
 
+  // ── 8b. Cost per topic — sum Claude usage across briefs linked to this topic
+  // Aggregates api_usage_logs WHERE metadata->>'brief_id' IN (...) and converts
+  // input/output tokens to USD via anthropic-pricing.ts.
+  // Forward-only: rows logged before brief_id was added in metadata won't show.
+  let totalCostUsd     = 0
+  let costCallCount    = 0
+  const costByEndpoint: Record<string, { calls: number; usd: number }> = {}
+
+  if (briefIds.length > 0) {
+    // Supabase doesn't have a great "metadata->>X IN (array)" so we fetch by
+    // narrow time window + filter in memory. Briefs are typically <30 days old.
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString()
+    const { data: usageRows } = await db
+      .from('api_usage_logs')
+      .select('api_name, endpoint, metadata, created_at')
+      .eq('owner_user_id', ownerId)
+      .eq('api_name', 'claude')
+      .gte('created_at', ninetyDaysAgo)
+      .limit(2000)
+
+    for (const r of (usageRows ?? []) as Array<{ api_name: string; endpoint: string; metadata: Record<string, unknown> }>) {
+      const briefIdInMeta = r.metadata?.brief_id as string | undefined
+      if (!briefIdInMeta || !briefIds.includes(briefIdInMeta)) continue
+
+      const model    = String(r.metadata?.model ?? 'claude-haiku-4-5')
+      const inTok    = Number(r.metadata?.input_tokens  ?? 0)
+      const outTok   = Number(r.metadata?.output_tokens ?? 0)
+      const usd      = costForCall(model, inTok, outTok)
+
+      totalCostUsd += usd
+      costCallCount++
+      const key = r.endpoint || 'unknown'
+      if (!costByEndpoint[key]) costByEndpoint[key] = { calls: 0, usd: 0 }
+      costByEndpoint[key].calls++
+      costByEndpoint[key].usd += usd
+    }
+  }
+
+  // ── 8c. Time-to-content metric ──────────────────────────────────────────
+  // Days from oldest opp.created_at to first publish event (brief.published_at
+  // or opportunity.status='published'). Null if not yet published.
+  const oldestOppCreated = opps.reduce<string | null>((min, o) => {
+    if (!min) return o.created_at
+    return new Date(o.created_at) < new Date(min) ? o.created_at : min
+  }, null)
+
+  const firstPublishedAt = briefs
+    .filter(b => b.status === 'published' && b.published_at)
+    .map(b => b.published_at!)
+    .sort()[0] ?? null
+
+  const timeToContentDays = (oldestOppCreated && firstPublishedAt)
+    ? Math.max(0, Math.round((new Date(firstPublishedAt).getTime() - new Date(oldestOppCreated).getTime()) / 86400000))
+    : null
+
   const lifecycle = {
     detected:   opps.length > 0,
     aggregated: !!primaryOpp.topic_slug,
@@ -194,5 +250,15 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
     ai_snapshots: aiSnapshots ?? [],
     actor_map:    actorMap,
     lifecycle,
+    metrics: {
+      time_to_content_days: timeToContentDays,
+      first_published_at:   firstPublishedAt,
+      oldest_detected_at:   oldestOppCreated,
+      cost_usd_total:       Number(totalCostUsd.toFixed(4)),
+      cost_call_count:      costCallCount,
+      cost_by_endpoint:     Object.entries(costByEndpoint)
+        .map(([endpoint, v]) => ({ endpoint, calls: v.calls, usd: Number(v.usd.toFixed(4)) }))
+        .sort((a, b) => b.usd - a.usd),
+    },
   })
 }
