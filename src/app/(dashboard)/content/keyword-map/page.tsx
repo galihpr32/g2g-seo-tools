@@ -2,6 +2,18 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragStartEvent,
+  type DragEndEvent,
+  useDraggable,
+  useDroppable,
+  closestCenter,
+} from '@dnd-kit/core'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import SagaProposalsPanel from '@/components/agents/SagaProposalsPanel'
 
@@ -499,13 +511,67 @@ function AddKeywordModal({ mapId, allMaps, onClose, onAdded, prefillKeyword, pre
 }
 
 // ── TreeView ──────────────────────────────────────────────────────────────────
-function TreeView({ clusters, allMaps, activeMapId, onStatusChange, onMoveRequest, onDeleteRequest }: {
+// ── DroppableGroup: cluster_group container that accepts dropped keywords ───
+function DroppableGroup({ id, children, isOver }: { id: string; children: React.ReactNode; isOver: boolean }) {
+  const { setNodeRef } = useDroppable({ id })
+  return (
+    <div
+      ref={setNodeRef}
+      className={`bg-gray-900 border rounded-xl overflow-hidden transition ${
+        isOver ? 'border-purple-500 ring-2 ring-purple-500/30' : 'border-gray-800'
+      }`}
+    >
+      {children}
+    </div>
+  )
+}
+
+// ── DraggableClusterRow: ClusterRow wrapped with drag handle ────────────────
+function DraggableClusterRow({
+  cluster, onStatusChange, onMoveRequest, onDeleteRequest,
+}: {
+  cluster: Cluster
+  onStatusChange: (id: string, status: string) => void
+  onMoveRequest: (c: Cluster) => void
+  onDeleteRequest: (id: string) => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id:   cluster.id,
+    data: { cluster },
+  })
+
+  const style = transform
+    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, opacity: isDragging ? 0.4 : 1, zIndex: isDragging ? 50 : 1 }
+    : { opacity: isDragging ? 0.4 : 1 }
+
+  return (
+    <div ref={setNodeRef} style={style} className="relative">
+      {/* Drag handle ::: at start of row */}
+      <div className="absolute left-1 top-1/2 -translate-y-1/2 z-10 text-gray-700 hover:text-gray-400 cursor-grab active:cursor-grabbing select-none px-1"
+           {...attributes} {...listeners}
+           title="Drag to move between groups">
+        ≡
+      </div>
+      <div className="pl-6">
+        <ClusterRow
+          cluster={cluster}
+          onStatusChange={onStatusChange}
+          onMoveRequest={onMoveRequest}
+          onDeleteRequest={onDeleteRequest}
+        />
+      </div>
+    </div>
+  )
+}
+
+function TreeView({ clusters, allMaps, activeMapId, onStatusChange, onMoveRequest, onDeleteRequest, onClusterGroupChange }: {
   clusters: Cluster[]
   allMaps: KeywordMap[]
   activeMapId: string
   onStatusChange: (clusterId: string, status: string) => void
   onMoveRequest: (cluster: Cluster) => void
   onDeleteRequest: (clusterId: string) => void
+  onClusterGroupChange: (clusterId: string, newGroup: string) => Promise<void>
 }) {
   // Group clusters by cluster_group
   const grouped = clusters.reduce<Record<string, Cluster[]>>((acc, c) => {
@@ -519,7 +585,48 @@ function TreeView({ clusters, allMaps, activeMapId, onStatusChange, onMoveReques
   const pillar   = clusters.find(c => c.is_pillar)
   const groupKeys = Object.keys(grouped).filter(k => k !== 'Pillar')
 
+  // Always include 'General' as a drop target even if empty (so users can move to it)
+  if (!groupKeys.includes('General')) groupKeys.push('General')
+
+  // DnD state
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
+  const [overGroupId,  setOverGroupId]  = useState<string | null>(null)
+
+  function handleDragStart(e: DragStartEvent) {
+    setActiveDragId(String(e.active.id))
+  }
+
+  function handleDragOver(e: { over?: { id: string | number } | null }) {
+    setOverGroupId(e.over ? String(e.over.id) : null)
+  }
+
+  function handleDragEnd(e: DragEndEvent) {
+    setActiveDragId(null)
+    setOverGroupId(null)
+    if (!e.over) return
+
+    const cluster = clusters.find(c => c.id === e.active.id)
+    if (!cluster) return
+
+    const targetGroup = String(e.over.id).replace(/^group:/, '')
+    const currentGroup = cluster.cluster_group ?? 'General'
+
+    if (targetGroup === currentGroup) return  // no-op
+
+    onClusterGroupChange(cluster.id, targetGroup)
+  }
+
+  const draggedCluster = activeDragId ? clusters.find(c => c.id === activeDragId) : null
+
   return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragEnd={handleDragEnd}
+    >
     <div className="space-y-4">
       {/* Pillar card */}
       {pillar && (
@@ -558,18 +665,20 @@ function TreeView({ clusters, allMaps, activeMapId, onStatusChange, onMoveReques
         </div>
       )}
 
-      {/* Cluster groups */}
+      {/* Cluster groups — droppable containers, draggable rows */}
       {groupKeys.map(groupName => {
         const items = (grouped[groupName] ?? []).sort((a, b) => a.priority_order - b.priority_order)
+        const dropId = `group:${groupName}`
+        const isOver = overGroupId === dropId
         return (
-          <div key={groupName} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <DroppableGroup key={groupName} id={dropId} isOver={isOver}>
             <div className="px-4 py-2.5 bg-gray-800/50 border-b border-gray-800 flex items-center justify-between">
               <span className="text-gray-300 text-xs font-semibold">{groupName}</span>
-              <span className="text-gray-600 text-xs">{items.length} keyword{items.length !== 1 ? 's' : ''}</span>
+              <span className="text-gray-600 text-xs">{items.length} keyword{items.length !== 1 ? 's' : ''}{isOver ? ' · drop here' : ''}</span>
             </div>
-            <div className="divide-y divide-gray-800/60">
+            <div className="divide-y divide-gray-800/60 min-h-[60px]">
               {items.map(c => (
-                <ClusterRow
+                <DraggableClusterRow
                   key={c.id}
                   cluster={c}
                   onStatusChange={onStatusChange}
@@ -577,8 +686,11 @@ function TreeView({ clusters, allMaps, activeMapId, onStatusChange, onMoveReques
                   onDeleteRequest={onDeleteRequest}
                 />
               ))}
+              {items.length === 0 && (
+                <p className="text-gray-700 text-xs text-center py-4 italic">drop keywords here</p>
+              )}
             </div>
-          </div>
+          </DroppableGroup>
         )
       })}
 
@@ -590,6 +702,20 @@ function TreeView({ clusters, allMaps, activeMapId, onStatusChange, onMoveReques
         </div>
       )}
     </div>
+
+    {/* Drag overlay — shows the row being dragged following the cursor */}
+    <DragOverlay>
+      {draggedCluster ? (
+        <div className="bg-gray-900 border border-purple-500 rounded-lg px-3 py-2 shadow-2xl text-sm text-white max-w-md">
+          <span className="text-purple-400 mr-2">≡</span>
+          {draggedCluster.keyword}
+          {draggedCluster.search_volume != null && (
+            <span className="text-gray-500 text-xs ml-2">{volFmt(draggedCluster.search_volume)} vol</span>
+          )}
+        </div>
+      ) : null}
+    </DragOverlay>
+    </DndContext>
   )
 }
 
@@ -850,6 +976,31 @@ export default function KeywordMapPage() {
   const [loadingClusters, setLoadingClusters] = useState(false)
   const [viewMode, setViewMode]   = useState<'tree' | 'table'>('tree')
 
+  // Top-level tab — Inbox (Saga proposals) / Clusters (existing maps) / Gaps (orphan keywords).
+  // URL persists via ?tab=X so deep-links (e.g. from Slack notifications) land on the right tab.
+  const tabParam = (searchParams.get('tab') as 'inbox' | 'clusters' | 'gaps' | null) ?? null
+  const [activeTab, setActiveTab] = useState<'inbox' | 'clusters' | 'gaps'>(tabParam ?? 'clusters')
+
+  // Saga proposals counter for Inbox tab badge — populated by SagaProposalsPanel via callback below
+  const [proposalCount, setProposalCount] = useState<number | null>(null)
+
+  // Orphan keywords (Gaps tab) — fetched lazily when tab is opened
+  interface Orphan {
+    opp_id:              string
+    topic:               string
+    topic_slug:          string | null
+    total_sv:            number | null
+    signal_count:        number | null
+    status:              string
+    output_type:         string | null
+    updated_at:          string
+    suggested_map_id:    string | null
+    suggested_map_topic: string | null
+  }
+  const [orphans, setOrphans]               = useState<Orphan[]>([])
+  const [orphansLoading, setOrphansLoading] = useState(false)
+  const [assignTarget, setAssignTarget]     = useState<{ keyword: string; volume: number | null; mapId: string | null } | null>(null)
+
   // Modals
   const [showCreateMap, setShowCreateMap]     = useState(false)
   const [showAddKeyword, setShowAddKeyword]   = useState(false)
@@ -897,6 +1048,18 @@ export default function KeywordMapPage() {
       .finally(() => setLoadingClusters(false))
   }, [activeMapId])
 
+  // Lazy-fetch orphan keywords when user opens Gaps tab. Re-fetch each tab open
+  // because new opportunities may have been created or existing ones claimed.
+  useEffect(() => {
+    if (activeTab !== 'gaps') return
+    setOrphansLoading(true)
+    fetch('/api/keyword-maps/orphans?site=g2g')
+      .then(r => r.json())
+      .then(data => setOrphans(data.orphans ?? []))
+      .catch(() => setOrphans([]))
+      .finally(() => setOrphansLoading(false))
+  }, [activeTab])
+
   // Active map object
   const activeMap = maps.find(m => m.id === activeMapId)
 
@@ -932,6 +1095,29 @@ export default function KeywordMapPage() {
       body: JSON.stringify({ cluster_id: clusterId, status }),
     })
   }, [activeMapId])
+
+  // Drag-drop handler: move cluster to a new cluster_group within same map.
+  // Optimistic update — rollback on API failure.
+  const handleClusterGroupChange = useCallback(async (clusterId: string, newGroup: string) => {
+    if (!activeMapId) return
+    const original = clusters.find(c => c.id === clusterId)
+    if (!original) return
+
+    // Optimistic update
+    setClusters(prev => prev.map(c => c.id === clusterId ? { ...c, cluster_group: newGroup } : c))
+
+    try {
+      const res = await fetch(`/api/keyword-maps/${activeMapId}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ cluster_id: clusterId, cluster_group: newGroup }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch {
+      // Rollback
+      setClusters(prev => prev.map(c => c.id === clusterId ? { ...c, cluster_group: original.cluster_group } : c))
+    }
+  }, [activeMapId, clusters])
 
   const handleClusterMoved = useCallback((clusterId: string, newMapId: string) => {
     setClusters(prev => prev.filter(c => c.id !== clusterId))
@@ -1097,46 +1283,154 @@ export default function KeywordMapPage() {
           </div>
         )}
 
+        {/* ── Top-level tab nav (Saga redesign G.2) ───────────────────────── */}
+        <div className="px-6 pt-3 bg-gray-950">
+          <div className="flex gap-1 border-b border-gray-800">
+            {([
+              { key: 'inbox',    label: '📥 Inbox',    badge: proposalCount },
+              { key: 'clusters', label: '📚 Clusters', badge: maps.length },
+              { key: 'gaps',     label: '🕳️  Gaps',    badge: orphans.length || null },
+            ] as const).map(t => (
+              <button
+                key={t.key}
+                onClick={() => {
+                  setActiveTab(t.key)
+                  // Sync URL so refresh keeps tab + sharable links work
+                  const url = new URL(window.location.href)
+                  url.searchParams.set('tab', t.key)
+                  window.history.replaceState({}, '', url.toString())
+                }}
+                className={`px-4 py-2 text-sm font-medium transition border-b-2 -mb-px ${
+                  activeTab === t.key
+                    ? 'text-white border-purple-500'
+                    : 'text-gray-500 border-transparent hover:text-gray-300'
+                }`}
+              >
+                {t.label}
+                {t.badge != null && t.badge > 0 && (
+                  <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full ${
+                    activeTab === t.key
+                      ? 'bg-purple-500/20 text-purple-300'
+                      : 'bg-gray-800 text-gray-500'
+                  }`}>
+                    {t.badge}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {/* Saga universe-curation proposals — surfaces what Saga wants
-              to add/archive/flag, regardless of approval state. Collapsible
-              so it doesn't dominate the view. */}
-          <SagaProposalsPanel limit={150} />
+          {/* ── Inbox tab — Saga proposals (action queue) ─────────────────── */}
+          {activeTab === 'inbox' && (
+            <SagaProposalsPanel limit={150} onCountChange={setProposalCount} />
+          )}
 
-          {!activeMapId ? (
-            /* Empty state */
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <div className="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center text-3xl mb-4">🗺️</div>
-              <h3 className="text-white font-semibold mb-2">Topic Cluster Hub</h3>
-              <p className="text-gray-500 text-sm max-w-md mb-6">
-                Organize all your keywords into topic maps. AI groups related keywords into pillar + cluster structure, sorted by difficulty so you can build topical authority strategically.
+          {/* ── Clusters tab — existing map list + cluster tree/table view ── */}
+          {activeTab === 'clusters' && (
+            !activeMapId ? (
+              /* Empty state */
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <div className="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center text-3xl mb-4">🗺️</div>
+                <h3 className="text-white font-semibold mb-2">Topic Cluster Hub</h3>
+                <p className="text-gray-500 text-sm max-w-md mb-6">
+                  Organize all your keywords into topic maps. AI groups related keywords into pillar + cluster structure, sorted by difficulty so you can build topical authority strategically.
+                </p>
+                <button
+                  onClick={() => setShowCreateMap(true)}
+                  className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-6 py-2.5 rounded-xl transition"
+                >✨ Create First Map</button>
+              </div>
+            ) : loadingClusters ? (
+              <div className="flex items-center justify-center h-40">
+                <div className="w-6 h-6 border-2 border-gray-700 border-t-red-500 rounded-full animate-spin" />
+              </div>
+            ) : viewMode === 'tree' ? (
+              <TreeView
+                clusters={clusters}
+                allMaps={maps}
+                activeMapId={activeMapId}
+                onStatusChange={handleStatusChange}
+                onMoveRequest={setMoveCluster}
+                onDeleteRequest={handleDeleteCluster}
+                onClusterGroupChange={handleClusterGroupChange}
+              />
+            ) : (
+              <TableView
+                clusters={clusters}
+                onStatusChange={handleStatusChange}
+                onMoveRequest={setMoveCluster}
+                onDeleteRequest={handleDeleteCluster}
+              />
+            )
+          )}
+
+          {/* ── Gaps tab — orphan keywords (Saga G.4) ─────────────────────── */}
+          {activeTab === 'gaps' && (
+            <div>
+              {/* Intro / explainer */}
+              <p className="text-[11px] text-gray-500 mb-3 leading-relaxed">
+                Keywords detected by agents (Heimdall / Loki / Odin) and aggregated into opportunities,
+                but not yet assigned to a cluster. Click &ldquo;Assign to cluster&rdquo; to add them to a map.
               </p>
-              <button
-                onClick={() => setShowCreateMap(true)}
-                className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-6 py-2.5 rounded-xl transition"
-              >✨ Create First Map</button>
+
+              {orphansLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-6 h-6 border-2 border-gray-700 border-t-purple-500 rounded-full animate-spin" />
+                </div>
+              ) : orphans.length === 0 ? (
+                <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
+                  <div className="w-12 h-12 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-2xl mb-3 mx-auto">✓</div>
+                  <p className="text-white font-semibold mb-1">No orphan keywords</p>
+                  <p className="text-gray-500 text-xs">Every opportunity is assigned to a cluster.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs text-gray-400">
+                      <span className="text-white font-semibold">{orphans.length}</span> orphan keyword{orphans.length !== 1 ? 's' : ''}
+                      <span className="text-gray-600 ml-2">· sorted by search volume</span>
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    {orphans.map(o => (
+                      <div key={o.opp_id} className="bg-gray-900 border border-gray-800 rounded-xl p-3 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                            <span className="text-sm text-white font-medium truncate">{o.topic}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-400">
+                              {o.status.replace('_', ' ')}
+                            </span>
+                            {o.suggested_map_topic && (
+                              <span className="text-[10px] text-purple-400">
+                                → suggest: {o.suggested_map_topic}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-500">
+                            {o.total_sv ? `${o.total_sv.toLocaleString()} SV` : 'no SV'}
+                            {o.signal_count != null && <span className="ml-2">· {o.signal_count} signal{o.signal_count !== 1 ? 's' : ''}</span>}
+                            {o.output_type && <span className="ml-2">· {o.output_type.replace('_', ' ')}</span>}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setAssignTarget({
+                            keyword:  o.topic,
+                            volume:   o.total_sv,
+                            mapId:    o.suggested_map_id,
+                          })}
+                          className="text-xs bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-600/40 px-3 py-1.5 rounded-lg transition flex-shrink-0"
+                        >
+                          Assign to cluster →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-          ) : loadingClusters ? (
-            <div className="flex items-center justify-center h-40">
-              <div className="w-6 h-6 border-2 border-gray-700 border-t-red-500 rounded-full animate-spin" />
-            </div>
-          ) : viewMode === 'tree' ? (
-            <TreeView
-              clusters={clusters}
-              allMaps={maps}
-              activeMapId={activeMapId}
-              onStatusChange={handleStatusChange}
-              onMoveRequest={setMoveCluster}
-              onDeleteRequest={handleDeleteCluster}
-            />
-          ) : (
-            <TableView
-              clusters={clusters}
-              onStatusChange={handleStatusChange}
-              onMoveRequest={setMoveCluster}
-              onDeleteRequest={handleDeleteCluster}
-            />
           )}
         </div>
       </div>
@@ -1168,6 +1462,32 @@ export default function KeywordMapPage() {
           allMaps={maps}
           onClose={() => setMoveCluster(null)}
           onMoved={handleClusterMoved}
+        />
+      )}
+
+      {/* Gaps tab — assign orphan to cluster (reuses AddKeywordModal) */}
+      {assignTarget && (
+        <AddKeywordModal
+          mapId={assignTarget.mapId ?? activeMapId ?? maps[0]?.id ?? null}
+          allMaps={maps}
+          prefillKeyword={assignTarget.keyword}
+          prefillVolume={assignTarget.volume}
+          onClose={() => setAssignTarget(null)}
+          onAdded={(cluster) => {
+            // Remove the orphan from the list — it's no longer orphan
+            setOrphans(prev => prev.filter(o => o.topic.toLowerCase() !== cluster.keyword.toLowerCase()))
+            // Update map count
+            setMaps(prev => prev.map(m => {
+              if (m.id !== cluster.map_id) return m
+              const count = m.keyword_map_clusters?.[0]?.count ?? 0
+              return { ...m, keyword_map_clusters: [{ count: count + 1 }] }
+            }))
+            // If we're assigning to the active map, also add cluster to view
+            if (cluster.map_id === activeMapId) {
+              setClusters(prev => [...prev, cluster])
+            }
+            setAssignTarget(null)
+          }}
         />
       )}
     </div>

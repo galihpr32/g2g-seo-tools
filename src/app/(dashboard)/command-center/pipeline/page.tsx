@@ -665,7 +665,13 @@ function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void
               onDismissed={onRefresh}
             />
           ))}
-          <div className="flex items-center justify-end pt-1 pb-0.5">
+          <div className="flex items-center justify-end gap-3 pt-1 pb-0.5">
+            <Link
+              href={`/content/topics/${encodeURIComponent(item.topicSlug ?? item.id)}`}
+              className="text-[11px] text-purple-400 hover:text-purple-300 transition"
+            >
+              View topic detail →
+            </Link>
             <Link
               href={`/command-center/opportunities`}
               className="text-[11px] text-blue-400 hover:text-blue-300 transition"

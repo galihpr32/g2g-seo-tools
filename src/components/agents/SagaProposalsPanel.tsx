@@ -70,7 +70,13 @@ function timeAgo(iso: string): string {
   return d < 7 ? `${d}d ago` : new Date(iso).toLocaleDateString()
 }
 
-export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) {
+export default function SagaProposalsPanel({
+  limit = 100,
+  onCountChange,
+}: {
+  limit?: number
+  onCountChange?: (count: number) => void
+}) {
   const [findings, setFindings] = useState<Finding[]>([])
   const [loading, setLoading]   = useState(true)
   const [error, setError]       = useState<string | null>(null)
@@ -103,6 +109,12 @@ export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) 
       f.finding_type === 'coverage_gap'
     )
   )
+
+  // Surface count to parent (for tab badge in keyword-map page).
+  // useEffect ensures state update during render doesn't trigger warnings.
+  useEffect(() => {
+    onCountChange?.(proposalFindings.length)
+  }, [proposalFindings.length, onCountChange])
 
   const filtered = tab === 'all'
     ? proposalFindings
