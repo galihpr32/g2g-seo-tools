@@ -146,7 +146,32 @@
 
 > "Tim baca ini sambil ngopi pagi, langsung tau prioritas hari ini. Gak perlu meeting."
 
-### Demo 5 (kalau cepat): Other features (1 min)
+### Demo 5: Closed-loop competitor → pipeline ⭐ (2 min) — wow moment
+
+**Buka:** `/competitive/serp-tracker`
+
+> "Ini contoh integrasi end-to-end yang baru deploy. Saya search keyword 'diablo 4 items', lihat hasil SERP — 10 domain ranking. Sekarang saya bisa multi-select."
+
+**Klik 3 checkbox di domain yang menarik** (misal kinguin, fanatical, gameflip):
+
+> "Saya pilih 3 domain yang belum ada di list kompetitor saya. Klik 'Add as competitors' — *click*. Toast nyala: 3 added. Sekarang ada CTA 'Run keyword gap →'."
+
+**Klik CTA**:
+
+> "Lompat ke Keyword Gap Finder dengan 3 kompetitor barusan pre-selected. Default sekarang fetch 10 keyword aja — hemat SEMrush quota. Klik Run analysis."
+
+**Tunggu ~10 detik analysis** (atau klik existing snapshot kalau ada):
+
+> "Hasilnya: gaps yang G2G belum rank tapi kompetitor rank. Lihat banner ungu — '[N] gaps auto-pushed to Pipeline'. Itu hybrid threshold: gap dengan SV ≥ 1000 otomatis dikirim ke pipeline. Saya juga bisa multi-select gap manual + 'Send to Pipeline' untuk push gap dengan SV lebih kecil tapi strategis."
+
+**Switch ke Pipeline Journey**:
+
+> "Saga aggregator pickup tiap 30 menit. Cek di sini — opp baru masuk dari workflow tadi. Closed loop tertutup: SERP discovery → competitor list → gap analysis → pipeline → brief → publish."
+
+**Tagline:**
+> "Itu yang saya maksud 'one platform' — dulu setiap stage di tool berbeda dengan copy-paste manual. Sekarang 4 klik, automated."
+
+### Demo 6 (kalau masih ada waktu): Other features (1 min)
 
 **Quick mention, jangan demo full** — show sidebar:
 - Brief Library — semua brief
