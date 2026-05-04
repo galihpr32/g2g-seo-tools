@@ -117,30 +117,62 @@ export async function GET(request: Request) {
       })
     }
 
-    // Bulk upsert (ON CONFLICT on the unique constraint = update existing snapshot)
+    // ── Dedupe within batch ────────────────────────────────────────────────
+    // Bing sometimes returns multiple rows that collapse to the same composite
+    // key (e.g. when we flatten device/country segments to ''). Postgres rejects
+    // an upsert batch where ON CONFLICT target matches the same row twice.
+    // Aggregate duplicates: sum clicks + impressions, take max avg_position.
+    const dedupMap = new Map<string, Record<string, unknown>>()
+    for (const row of rows) {
+      const key = `${row.owner_user_id}|${row.site_slug}|${row.snapshot_date}|${row.query}|${row.page}|${row.device}|${row.country}`
+      const existing = dedupMap.get(key)
+      if (!existing) {
+        dedupMap.set(key, row)
+      } else {
+        // Aggregate: sum metrics, recompute CTR, take max position (lower = better, but max as fallback)
+        const newClicks      = (existing.clicks      as number) + (row.clicks      as number)
+        const newImpressions = (existing.impressions as number) + (row.impressions as number)
+        existing.clicks      = newClicks
+        existing.impressions = newImpressions
+        existing.ctr         = newImpressions > 0 ? newClicks / newImpressions : 0
+        // Position: keep the one with more impressions (more reliable signal)
+        if ((row.impressions as number) > ((existing as { impressions: number }).impressions ?? 0) / 2) {
+          existing.avg_position = row.avg_position ?? existing.avg_position
+        }
+      }
+    }
+    const dedupedRows = Array.from(dedupMap.values())
+
+    // Bulk upsert (ON CONFLICT on the unique index = update existing snapshot)
     let inserted = 0
-    if (rows.length > 0) {
+    if (dedupedRows.length > 0) {
       const { error } = await db
         .from('bing_search_data')
-        .upsert(rows, {
+        .upsert(dedupedRows, {
           onConflict: 'owner_user_id,site_slug,snapshot_date,query,page,device,country',
           ignoreDuplicates: false,
         })
 
       if (error) {
         console.error('[bing-daily] upsert failed:', error)
-        return NextResponse.json({ ok: false, error: error.message }, { status: 500 })
+        return NextResponse.json({
+          ok: false,
+          error: error.message,
+          rows_attempted: dedupedRows.length,
+          rows_before_dedup: rows.length,
+        }, { status: 500 })
       }
-      inserted = rows.length
+      inserted = dedupedRows.length
     }
 
     return NextResponse.json({
-      ok:             true,
-      snapshot_date:  today,
-      site_slug:      siteSlug,
-      synced_queries: queryStats.length,
-      synced_pages:   pageStats.length,
-      total_rows:     inserted,
+      ok:                 true,
+      snapshot_date:      today,
+      site_slug:          siteSlug,
+      synced_queries:     queryStats.length,
+      synced_pages:       pageStats.length,
+      rows_before_dedup:  rows.length,
+      total_rows:         inserted,
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
