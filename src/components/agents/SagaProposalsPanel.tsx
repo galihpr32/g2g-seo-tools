@@ -29,10 +29,35 @@ interface Finding {
   observed_at:  string
 }
 
-const TYPE_META: Record<ProposalType, { emoji: string; label: string; color: string }> = {
-  cluster_proposal:  { emoji: '🧵', label: 'Cluster',     color: 'border-purple-700/40 bg-purple-900/20' },
-  archive_candidate: { emoji: '📦', label: 'Archive',     color: 'border-gray-700/40 bg-gray-800/40' },
-  coverage_gap:      { emoji: '🚧', label: 'Coverage gap', color: 'border-amber-700/40 bg-amber-900/20' },
+// Action-typed labels — clearer than severity (HIGH/MEDIUM/LOW didn't tell user
+// what to DO, just confidence). Now each finding type maps to a verb.
+const TYPE_META: Record<ProposalType, { emoji: string; label: string; verb: string; color: string }> = {
+  cluster_proposal:  { emoji: '🧵', label: 'Cluster',      verb: 'Add to cluster',  color: 'border-purple-700/40 bg-purple-900/20' },
+  archive_candidate: { emoji: '📦', label: 'Archive',      verb: 'Archive cluster',  color: 'border-gray-700/40 bg-gray-800/40' },
+  coverage_gap:      { emoji: '🚧', label: 'Coverage gap', verb: 'Fill gap',        color: 'border-amber-700/40 bg-amber-900/20' },
+}
+
+// Severity → confidence percent display (more meaningful than HIGH/MEDIUM/LOW)
+function severityToConfidence(sev: Finding['severity']): { pct: number; label: string } {
+  if (sev === 'high')   return { pct: 85, label: 'high confidence' }
+  if (sev === 'medium') return { pct: 65, label: 'medium confidence' }
+  if (sev === 'low')    return { pct: 45, label: 'low confidence' }
+  return { pct: 50, label: 'info' }
+}
+
+// Dedupe duplicate findings by signature: same type + subject + target_topic
+// (Saga sometimes emits the same proposal twice across runs)
+function dedupeFindings(findings: Finding[]): Finding[] {
+  const seen = new Set<string>()
+  const out: Finding[] = []
+  for (const f of findings) {
+    const d = f.data as { target_topic?: string; cluster_name?: string } | null
+    const sig = `${f.finding_type}|${f.subject ?? ''}|${d?.target_topic ?? d?.cluster_name ?? ''}`
+    if (seen.has(sig)) continue
+    seen.add(sig)
+    out.push(f)
+  }
+  return out
 }
 
 function timeAgo(iso: string): string {
@@ -71,10 +96,12 @@ export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) 
     return () => { cancelled = true }
   }, [limit])
 
-  const proposalFindings = findings.filter(f =>
-    f.finding_type === 'cluster_proposal' ||
-    f.finding_type === 'archive_candidate' ||
-    f.finding_type === 'coverage_gap'
+  const proposalFindings = dedupeFindings(
+    findings.filter(f =>
+      f.finding_type === 'cluster_proposal' ||
+      f.finding_type === 'archive_candidate' ||
+      f.finding_type === 'coverage_gap'
+    )
   )
 
   const filtered = tab === 'all'
@@ -133,6 +160,12 @@ export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) 
 
       {!collapsed && (
         <div className="px-5 pb-5">
+          {/* Microcopy — explain what user is looking at */}
+          <p className="text-[11px] text-gray-500 mb-3 leading-relaxed">
+            Saga monitors detected signals + your content + competitor data and proposes how to organize them into clusters.
+            Approve a proposal in <a href="/command-center" className="text-blue-400 hover:underline">Command Center</a> to apply.
+          </p>
+
           {/* Tabs */}
           <div className="flex gap-1 mb-4 border-b border-gray-800">
             {([
@@ -180,7 +213,7 @@ export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) 
                     <span className="text-lg flex-shrink-0">{meta.emoji}</span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                        <span className="text-[10px] uppercase tracking-wider text-gray-500">{meta.label}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-900/60 border border-gray-700 text-gray-300 font-medium">{meta.verb}</span>
                         <span className="text-white text-sm font-medium">{f.subject}</span>
                         {d.target_topic && (
                           <>
@@ -188,13 +221,14 @@ export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) 
                             <span className="text-purple-300 text-xs">{d.target_topic}</span>
                           </>
                         )}
-                        {f.severity && (
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-medium ${
-                            f.severity === 'high'   ? 'bg-red-900/40 text-red-300' :
-                            f.severity === 'medium' ? 'bg-amber-900/40 text-amber-300' :
-                                                      'bg-blue-900/40 text-blue-300'
-                          }`}>{f.severity}</span>
-                        )}
+                        {f.severity && (() => {
+                          const conf = severityToConfidence(f.severity)
+                          return (
+                            <span className="text-[10px] text-gray-500" title={conf.label}>
+                              {conf.pct}% confidence
+                            </span>
+                          )
+                        })()}
                       </div>
                       {d.reasoning && (
                         <p className="text-gray-400 text-xs leading-relaxed">{d.reasoning}</p>
@@ -225,7 +259,15 @@ export default function SagaProposalsPanel({ limit = 100 }: { limit?: number }) 
                           </p>
                         </div>
                       )}
-                      <p className="text-[10px] text-gray-600 mt-1">{timeAgo(f.observed_at)}</p>
+                      <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-gray-800/50">
+                        <p className="text-[10px] text-gray-600">{timeAgo(f.observed_at)}</p>
+                        <a
+                          href="/command-center"
+                          className="text-[10px] text-blue-400 hover:text-blue-300 transition px-2 py-0.5 rounded border border-blue-500/30 bg-blue-500/5"
+                        >
+                          Review & approve →
+                        </a>
+                      </div>
                     </div>
                   </div>
                 </div>
