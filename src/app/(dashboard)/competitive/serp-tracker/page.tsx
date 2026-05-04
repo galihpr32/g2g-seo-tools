@@ -78,6 +78,62 @@ export default function SerpTrackerPage() {
   const [expandedKw, setExpandedKw]           = useState<string | null>(null)
   const [activeView, setActiveView]           = useState<'sov' | 'serp'>('sov')
 
+  // Multi-select state — domains user wants to add to Competitor List in bulk.
+  // Excludes G2G + already-tracked competitors (they get auto-skipped server-side).
+  const [selectedDomains, setSelectedDomains]   = useState<Set<string>>(new Set())
+  const [bulkAdding, setBulkAdding]             = useState(false)
+  const [bulkResult, setBulkResult]             = useState<{ added: number; skipped: number; lastDomains: string[] } | null>(null)
+
+  function toggleSelectDomain(domain: string) {
+    const norm = normalizeDomain(domain)
+    setSelectedDomains(prev => {
+      const next = new Set(prev)
+      if (next.has(norm)) next.delete(norm)
+      else next.add(norm)
+      return next
+    })
+  }
+
+  function clearSelection() {
+    setSelectedDomains(new Set())
+  }
+
+  async function bulkAddSelected() {
+    if (selectedDomains.size === 0) return
+    setBulkAdding(true)
+    setBulkResult(null)
+    try {
+      const payload = {
+        competitors: Array.from(selectedDomains).map(domain => ({ domain })),
+      }
+      const res = await fetch('/api/competitors/bulk', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setBulkResult({ added: 0, skipped: 0, lastDomains: [] })
+        alert(`Failed: ${data.error ?? 'Unknown error'}`)
+      } else {
+        setBulkResult({
+          added:       data.summary?.added_count   ?? 0,
+          skipped:     data.summary?.skipped_count ?? 0,
+          lastDomains: Array.from(selectedDomains),
+        })
+        // Refresh competitors list so newly added show as "in list" highlighted
+        const compRes = await fetch('/api/competitors')
+        if (compRes.ok) {
+          const { competitors } = await compRes.json()
+          setCompetitors(competitors.filter((c: Competitor) => c.active))
+        }
+        clearSelection()
+      }
+    } finally {
+      setBulkAdding(false)
+    }
+  }
+
   // Load competitors + tracked products + today's existing snapshots
   useEffect(() => {
     async function init() {
@@ -363,6 +419,50 @@ export default function SerpTrackerPage() {
           {/* SERP Breakdown view */}
           {activeView === 'serp' && (
             <div className="space-y-2">
+              {/* Multi-select action bar — appears when user has selections */}
+              {selectedDomains.size > 0 && (
+                <div className="sticky top-2 z-10 bg-purple-500/10 border border-purple-500/40 rounded-xl px-4 py-2.5 flex items-center justify-between mb-3 backdrop-blur">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm text-purple-300 font-medium">
+                      {selectedDomains.size} domain{selectedDomains.size !== 1 ? 's' : ''} selected
+                    </span>
+                    <button onClick={clearSelection} className="text-[11px] text-gray-400 hover:text-gray-200 transition">
+                      Clear
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={bulkAddSelected}
+                      disabled={bulkAdding}
+                      className="text-xs bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-medium px-3 py-1.5 rounded-lg transition"
+                    >
+                      {bulkAdding ? '⏳ Adding…' : `+ Add as competitors`}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Result toast — shown after bulk add */}
+              {bulkResult && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-2.5 mb-3 flex items-center justify-between">
+                  <div className="text-xs text-emerald-300">
+                    ✓ <span className="font-semibold">{bulkResult.added} added</span>
+                    {bulkResult.skipped > 0 && <span className="text-gray-400"> · {bulkResult.skipped} already in list</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {bulkResult.added > 0 && bulkResult.lastDomains.length > 0 && (
+                      <a
+                        href={`/competitive/keyword-gap?competitors=${encodeURIComponent(bulkResult.lastDomains.join(','))}`}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 transition border border-blue-500/30 bg-blue-500/10 px-2.5 py-1 rounded-lg"
+                      >
+                        Run keyword gap →
+                      </a>
+                    )}
+                    <button onClick={() => setBulkResult(null)} className="text-gray-500 hover:text-gray-300 text-xs">✕</button>
+                  </div>
+                </div>
+              )}
+
               {snapshots.map(snap => {
                 const isExpanded = expandedKw === snap.keyword
                 const g2gResult  = snap.results.find(r => normalizeDomain(r.domain) === G2G_DOMAIN)
@@ -392,6 +492,7 @@ export default function SerpTrackerPage() {
                         <table className="w-full text-xs">
                           <thead>
                             <tr className="border-b border-gray-800">
+                              <th className="text-left text-gray-500 font-medium py-1.5 w-6"></th>
                               <th className="text-left text-gray-500 font-medium py-1.5 w-8">#</th>
                               <th className="text-left text-gray-500 font-medium py-1.5">Domain</th>
                               <th className="text-left text-gray-500 font-medium py-1.5">Title / URL</th>
@@ -399,10 +500,25 @@ export default function SerpTrackerPage() {
                           </thead>
                           <tbody>
                             {snap.results.map((r, i) => {
-                              const isG2G_   = normalizeDomain(r.domain) === G2G_DOMAIN
-                              const isComp   = trackedDomains.has(normalizeDomain(r.domain)) && !isG2G_
+                              const normDom  = normalizeDomain(r.domain)
+                              const isG2G_   = normDom === G2G_DOMAIN
+                              const isComp   = trackedDomains.has(normDom) && !isG2G_
+                              // Disable checkbox for G2G itself + already-tracked competitors.
+                              // Both would be no-ops server-side anyway.
+                              const canSelect = !isG2G_ && !isComp
+                              const isSelected = selectedDomains.has(normDom)
                               return (
-                                <tr key={i} className={`border-b border-gray-800/50 ${isG2G_ ? 'bg-red-500/5' : isComp ? 'bg-blue-500/5' : ''}`}>
+                                <tr key={i} className={`border-b border-gray-800/50 ${isG2G_ ? 'bg-red-500/5' : isComp ? 'bg-blue-500/5' : isSelected ? 'bg-purple-500/5' : ''}`}>
+                                  <td className="py-2 w-6">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      disabled={!canSelect}
+                                      onChange={() => toggleSelectDomain(r.domain)}
+                                      title={!canSelect ? (isG2G_ ? 'This is G2G' : 'Already in competitor list') : 'Select to add as competitor'}
+                                      className="w-3.5 h-3.5 rounded bg-gray-800 border-gray-700 text-purple-600 focus:ring-1 focus:ring-purple-500 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                                    />
+                                  </td>
                                   <td className="py-2 w-8">
                                     <PosBadge pos={r.position} domain={r.domain} />
                                   </td>
@@ -410,6 +526,7 @@ export default function SerpTrackerPage() {
                                     <div className="flex items-center gap-1.5">
                                       <img src={`https://www.google.com/s2/favicons?sz=16&domain_url=${r.domain}`} alt="" className="w-3.5 h-3.5" />
                                       <span className={`font-medium ${isG2G_ ? 'text-red-400' : isComp ? 'text-blue-400' : 'text-gray-300'}`}>{r.domain}</span>
+                                      {isComp && <span className="text-[9px] text-blue-500/60 ml-1">in list</span>}
                                     </div>
                                   </td>
                                   <td className="py-2">

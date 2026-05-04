@@ -60,8 +60,13 @@ export async function POST(req: Request) {
     competitor_domains: rawDomains,
     location_code = 2840,
     language_code = 'en',
-    limit = 500,
+    // Default lowered from 500 → 10 to conserve SEMrush API quota.
+    // UI lets user opt up via slider (10 / 25 / 50 / 100 / 250).
+    // 250 is the upper cap — beyond that, recommend running multiple targeted
+    // queries instead of one massive scan.
+    limit: rawLimit = 10,
   } = body
+  const limit = Math.min(Math.max(Number(rawLimit) || 10, 1), 250)
 
   // Support both single and multi-domain (max 4 competitors)
   const competitorDomains: string[] = (
@@ -208,6 +213,84 @@ export async function POST(req: Request) {
       winning: winning.length,
     }
 
+    // ── Hybrid threshold: auto-push high-SV gaps into pipeline ──────────────
+    // Gaps with SV >= AUTO_PUSH_SV_THRESHOLD become agent_actions (loki-style)
+    // so Saga aggregator picks them up and creates opportunities. Lower-SV gaps
+    // remain analysis-only (visible in UI, but not in pipeline).
+    //
+    // Caller can override via body.auto_push_to_pipeline: false (e.g. for an
+    // exploratory scan they don't want to flood pipeline with).
+    const autoPushEnabled = body.auto_push_to_pipeline !== false  // default true
+    const AUTO_PUSH_SV_THRESHOLD = Number(body.auto_push_threshold) || 1000
+    let autoPushedCount = 0
+    let autoPushSkippedExisting = 0
+
+    if (autoPushEnabled && gaps.length > 0) {
+      const eligibleGaps = gaps.filter(g => (g.searchVolume ?? 0) >= AUTO_PUSH_SV_THRESHOLD)
+
+      if (eligibleGaps.length > 0) {
+        // Skip-list: keywords that already have a pending/approved loki action in
+        // last 14d (avoid double-emit when running gap analysis multiple times).
+        const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
+        const { data: recentActions } = await db
+          .from('agent_actions')
+          .select('data')
+          .eq('owner_user_id', ownerId)
+          .eq('agent_key', 'loki')
+          .gte('created_at', fourteenDaysAgo)
+          .limit(500)
+
+        const skipKeywords = new Set<string>()
+        for (const a of recentActions ?? []) {
+          const kw = (a.data as { keyword?: string } | null)?.keyword
+          if (kw) skipKeywords.add(kw.toLowerCase())
+        }
+
+        // Synthetic run_id so these can be traced back to the manual UI flow
+        const syntheticRunId = `manual-kgap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+        const rowsToInsert = eligibleGaps
+          .filter(g => !skipKeywords.has((g.keyword ?? '').toLowerCase()))
+          .slice(0, 30)   // safety cap — never push more than 30 at once
+          .map(g => {
+            const bestComp = g.competitors[0]   // already sorted by best position
+            const ourPos   = g.g2g_position
+            return {
+              owner_user_id: ownerId,
+              agent_key:     'loki',           // mirror Loki's emit shape so Saga picks it up
+              run_id:        syntheticRunId,
+              site_slug:     'g2g',            // TODO: multi-site once site context plumbed through
+              action_type:   'add_action_item',
+              title:         `Keyword gap: "${g.keyword}" — ${bestComp?.domain ?? 'competitor'} #${bestComp?.position ?? '?'} (manual scan)`,
+              description:   `Manual keyword-gap scan flagged this gap. ${bestComp?.domain ?? 'Competitor'} ranks #${bestComp?.position ?? '?'} for "${g.keyword}" (${(g.searchVolume ?? 0).toLocaleString()} SV). ${ourPos ? `We rank #${ourPos}.` : `We don't rank in top 30.`}`,
+              priority:      (g.searchVolume ?? 0) >= 5000 ? 'high' : 'medium',
+              data: {
+                keyword:             g.keyword,
+                competitor_domain:   bestComp?.domain ?? null,
+                competitor_url:      bestComp?.url ?? null,
+                competitor_position: bestComp?.position ?? null,
+                our_position:        ourPos ?? null,
+                search_volume:       g.searchVolume ?? 0,
+                cpc:                 g.cpc ?? 0,
+                action_type:         ourPos && ourPos < 50 ? 'on_page' : 'new_page',
+                source:              'manual_keyword_gap_scan',
+              },
+            }
+          })
+
+        autoPushSkippedExisting = eligibleGaps.length - rowsToInsert.length
+
+        if (rowsToInsert.length > 0) {
+          const { error: insErr } = await db.from('agent_actions').insert(rowsToInsert)
+          if (insErr) {
+            console.error('[keyword-gap] auto-push insert failed:', insErr)
+          } else {
+            autoPushedCount = rowsToInsert.length
+          }
+        }
+      }
+    }
+
     return NextResponse.json({
       competitor_domains: competitorDomains,
       competitor_domain:  competitorDomains[0],  // primary (backward compat)
@@ -222,6 +305,12 @@ export async function POST(req: Request) {
       gaps:    gaps.slice(0, 200),
       behind:  behind.slice(0, 200),
       winning: winning.slice(0, 100),
+      pipeline_push: {
+        enabled:           autoPushEnabled,
+        threshold_sv:      AUTO_PUSH_SV_THRESHOLD,
+        pushed_count:      autoPushedCount,
+        skipped_existing:  autoPushSkippedExisting,
+      },
     })
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 })

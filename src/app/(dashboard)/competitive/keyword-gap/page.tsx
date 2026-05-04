@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import { IntentBadge, type Intent } from '@/components/ui/IntentBadge'
@@ -54,6 +55,12 @@ interface GapResult {
   gaps: GapRow[]
   behind: GapRow[]
   winning: GapRow[]
+  pipeline_push?: {
+    enabled:           boolean
+    threshold_sv:      number
+    pushed_count:      number
+    skipped_existing:  number
+  }
 }
 
 interface Exclusion { id: string; pattern: string; match_type: string; source: string; source_domain: string | null }
@@ -689,11 +696,18 @@ function GapTable({ rows, tab, competitorDomains, selected, onToggle, onToggleAl
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function KeywordGapPage() {
+  const searchParams = useSearchParams()
   const [competitors, setCompetitors]             = useState<Competitor[]>([])
   const [trackedProducts, setTrackedProducts]     = useState<TrackedProduct[]>([])
-  const [selectedDomains, setSelectedDomains]     = useState<string[]>([])   // multi-select
+  const [selectedDomains, setSelectedDomains]     = useState<string[]>([])   // multi-select for competitors
+
+  // Manual "Send to Pipeline" — uses existing `selected` set; pushes gap rows
+  // into pipeline manually, overriding the SV threshold gate (so user can opt
+  // in low-SV but strategically interesting gaps).
+  const [sendingToPipeline, setSendingToPipeline] = useState(false)
+  const [sendResult, setSendResult]               = useState<{ pushed: number; skipped: number } | null>(null)
   const [database, setDatabase]                   = useState('us')
-  const [limit, setLimit]                         = useState('500')
+  const [limit, setLimit]                         = useState('10')
   // Exclusions
   const [exclusions, setExclusions]               = useState<Exclusion[]>([])
   const [showExclusions, setShowExclusions]       = useState(false)
@@ -734,7 +748,16 @@ export default function KeywordGapPage() {
           const { competitors } = await compRes.json()
           const active: Competitor[] = competitors.filter((c: Competitor) => c.active)
           setCompetitors(active)
-          if (active.length > 0) setSelectedDomains([active[0].domain])
+          // Prefill from ?competitors=domain1,domain2 query (used by SERP page's
+          // "Run keyword gap →" CTA after bulk-add). Falls back to first active.
+          const prefill = (searchParams.get('competitors') ?? '')
+            .split(',').map(d => d.trim().toLowerCase()).filter(Boolean)
+          const matchPrefill = prefill.filter(d => active.some(c => c.domain.toLowerCase() === d)).slice(0, 3)
+          if (matchPrefill.length > 0) {
+            setSelectedDomains(matchPrefill)
+          } else if (active.length > 0) {
+            setSelectedDomains([active[0].domain])
+          }
         }
         if (prodRes.ok) {
           const { products } = await prodRes.json()
@@ -1097,15 +1120,26 @@ export default function KeywordGapPage() {
             </select>
           </div>
 
-          {/* Keywords to fetch */}
+          {/* Keywords to fetch — default 10, expandable up to 250.
+              Cost estimate per option: 1 unit per keyword per competitor in DataForSEO. */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Keywords to fetch</label>
+            <label className="block text-xs text-gray-400 mb-1.5">
+              Keywords to fetch
+              <span className="ml-1 text-gray-600">
+                · ~{parseInt(limit) * Math.max(selectedDomains.length, 1)} API units
+              </span>
+            </label>
             <select value={limit} onChange={e => setLimit(e.target.value)}
               className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500">
-              <option value="200">Top 200</option>
-              <option value="500">Top 500</option>
-              <option value="1000">Top 1,000</option>
+              <option value="10">Top 10 (cheap, recommended)</option>
+              <option value="25">Top 25</option>
+              <option value="50">Top 50</option>
+              <option value="100">Top 100</option>
+              <option value="250">Top 250 (heavy quota)</option>
             </select>
+            {parseInt(limit) >= 100 && (
+              <p className="text-[11px] text-amber-400 mt-1">⚠ Heavy SEMrush usage — pakai untuk deep scan saja</p>
+            )}
           </div>
 
           <button onClick={runAnalysis} disabled={loading || selectedDomains.length === 0}
@@ -1305,6 +1339,32 @@ export default function KeywordGapPage() {
             )}
           </div>
 
+          {/* Auto-push to Pipeline status — surfaces hybrid threshold result */}
+          {result.pipeline_push && result.pipeline_push.enabled && (result.pipeline_push.pushed_count > 0 || result.summary.gaps > 0) && (
+            <div className="bg-purple-500/10 border border-purple-500/30 rounded-xl p-3 mb-4 flex items-center justify-between">
+              <div className="text-xs text-purple-200">
+                {result.pipeline_push.pushed_count > 0 ? (
+                  <>
+                    🚦 <span className="font-semibold">{result.pipeline_push.pushed_count} gaps auto-pushed to Pipeline</span>
+                    <span className="text-gray-400"> (SV ≥ {result.pipeline_push.threshold_sv.toLocaleString()})</span>
+                    {result.pipeline_push.skipped_existing > 0 && (
+                      <span className="text-gray-500"> · {result.pipeline_push.skipped_existing} already in pipeline</span>
+                    )}
+                    <span className="text-gray-500 ml-2">— Saga aggregator picks up in next 30min cycle</span>
+                  </>
+                ) : (
+                  <>
+                    🚦 <span className="text-gray-400">No gaps met auto-push threshold (SV ≥ {result.pipeline_push.threshold_sv.toLocaleString()})</span>
+                    <span className="text-gray-500 ml-1">— select gaps below + "Send to Pipeline" to push manually</span>
+                  </>
+                )}
+              </div>
+              <a href="/command-center/pipeline" className="text-[11px] text-blue-400 hover:text-blue-300 transition border border-blue-500/30 bg-blue-500/10 px-2.5 py-1 rounded-lg">
+                View Pipeline →
+              </a>
+            </div>
+          )}
+
           {/* ── Visual analysis: Venn + Position Distribution ─────────────────── */}
           {(result.venn?.length > 0 || result.position_distribution) && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
@@ -1425,7 +1485,54 @@ export default function KeywordGapPage() {
               <span className="text-orange-300 text-xs">({selectedRows.filter(r => r.g2g_url === null).length})</span>
             </button>
           )}
+          <button
+            disabled={sendingToPipeline}
+            onClick={async () => {
+              if (!result || selectedRows.length === 0) return
+              setSendingToPipeline(true)
+              setSendResult(null)
+              try {
+                const gaps = selectedRows.slice(0, 30).map(r => ({
+                  keyword:              r.keyword,
+                  competitor_domain:    r.competitors[0]?.domain ?? result.competitor_domain,
+                  competitor_url:       r.competitors[0]?.url ?? null,
+                  competitor_position:  r.competitors[0]?.position ?? undefined,
+                  our_position:         r.g2g_position,
+                  search_volume:        r.searchVolume,
+                  cpc:                  r.cpc,
+                }))
+                const res = await fetch('/api/competitive/keyword-gap/send-to-pipeline', {
+                  method:  'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body:    JSON.stringify({ gaps }),
+                })
+                const data = await res.json()
+                if (res.ok) {
+                  setSendResult({ pushed: data.pushed ?? 0, skipped: data.skipped_existing ?? 0 })
+                  setSelected(new Set())
+                } else {
+                  alert(`Failed: ${data.error ?? 'Unknown error'}`)
+                }
+              } finally {
+                setSendingToPipeline(false)
+              }
+            }}
+            className="bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm font-semibold px-4 py-1.5 rounded-lg transition flex items-center gap-1.5">
+            {sendingToPipeline ? '⏳ Sending…' : '🚦 Send to Pipeline'}
+          </button>
           <button onClick={() => setSelected(new Set())} className="text-gray-400 hover:text-white text-sm transition">✕</button>
+        </div>
+      )}
+
+      {/* Send-to-pipeline result toast */}
+      {sendResult && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 bg-emerald-500/15 border border-emerald-500/40 rounded-xl px-4 py-2.5 flex items-center gap-3 shadow-xl">
+          <span className="text-xs text-emerald-300">
+            ✓ <span className="font-semibold">{sendResult.pushed} pushed to Pipeline</span>
+            {sendResult.skipped > 0 && <span className="text-gray-400"> · {sendResult.skipped} already exist</span>}
+            <span className="text-gray-500 ml-2">— Saga aggregator will pick up next 30min</span>
+          </span>
+          <button onClick={() => setSendResult(null)} className="text-gray-500 hover:text-gray-300 text-xs">✕</button>
         </div>
       )}
     </div>

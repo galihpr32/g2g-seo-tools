@@ -36,7 +36,19 @@ interface AnalysisResult {
     hasH1:         boolean
     hasCanonical:  boolean
     robotsIndexed: boolean
+    hasStructuredData?: boolean
+    hasHreflang?:       boolean
+    ogComplete?:        boolean
   }
+  // ── Phase D: FireCrawl-derived enrichments ──────────────────────────────────
+  structuredData?: { count: number; types: string[]; raw: string[] }
+  hreflang?:       { count: number; languages: string[] }
+  ogCompleteness?: {
+    has_title: boolean; has_description: boolean; has_image: boolean
+    has_url:   boolean; has_type: boolean
+  }
+  analyzed_with?: 'firecrawl' | 'fallback'
+  firecrawl_content_word_count?: number | null
 }
 
 // ── Score badge ───────────────────────────────────────────────────────────────
@@ -226,7 +238,7 @@ export default function PageAnalyzerPage() {
                   )}
                   <div className="flex gap-6 pt-2 border-t border-gray-800">
                     <div>
-                      <p className="text-xs text-gray-500">Word Count</p>
+                      <p className="text-xs text-gray-500">Word Count {result.analyzed_with === 'firecrawl' && <span className="text-purple-400 text-[10px]">(content-only)</span>}</p>
                       <p className="text-white font-semibold text-lg">{result.wordCount.toLocaleString()}</p>
                     </div>
                     <div>
@@ -242,6 +254,90 @@ export default function PageAnalyzerPage() {
                       <p className="text-white font-semibold text-lg">{result.images.total}</p>
                     </div>
                   </div>
+
+                  {/* ── Phase D: Advanced SEO signals (FireCrawl + raw HTML scan) ─ */}
+                  {(result.structuredData || result.hreflang || result.ogCompleteness) && (
+                    <div className="pt-4 mt-2 border-t border-gray-800 space-y-3">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider">Advanced signals</p>
+
+                      {/* Structured data (Schema.org) */}
+                      {result.structuredData && (
+                        <div className="flex items-start gap-3 bg-gray-800/40 border border-gray-800 rounded-lg p-3">
+                          <span className={result.structuredData.count > 0 ? 'text-emerald-400' : 'text-gray-600'}>
+                            {result.structuredData.count > 0 ? '✓' : '○'}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-white">
+                              Structured Data (JSON-LD) ·{' '}
+                              <span className={result.structuredData.count > 0 ? 'text-emerald-400' : 'text-gray-500'}>
+                                {result.structuredData.count} block{result.structuredData.count !== 1 ? 's' : ''}
+                              </span>
+                            </p>
+                            {result.structuredData.types.length > 0 && (
+                              <p className="text-[11px] text-gray-400 mt-0.5">
+                                Schema types: {result.structuredData.types.slice(0, 8).join(', ')}
+                                {result.structuredData.types.length > 8 && ` +${result.structuredData.types.length - 8}`}
+                              </p>
+                            )}
+                            {result.structuredData.count === 0 && (
+                              <p className="text-[11px] text-gray-500 mt-0.5">No JSON-LD found — missing rich snippets opportunity.</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Hreflang */}
+                      {result.hreflang && (
+                        <div className="flex items-start gap-3 bg-gray-800/40 border border-gray-800 rounded-lg p-3">
+                          <span className={result.hreflang.count > 0 ? 'text-emerald-400' : 'text-gray-600'}>
+                            {result.hreflang.count > 0 ? '✓' : '○'}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-white">
+                              Hreflang (international SEO) ·{' '}
+                              <span className={result.hreflang.count > 0 ? 'text-emerald-400' : 'text-gray-500'}>
+                                {result.hreflang.count} language{result.hreflang.count !== 1 ? 's' : ''}
+                              </span>
+                            </p>
+                            {result.hreflang.languages.length > 0 && (
+                              <p className="text-[11px] text-gray-400 mt-0.5">
+                                {result.hreflang.languages.slice(0, 12).join(', ')}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Open Graph completeness */}
+                      {result.ogCompleteness && (
+                        <div className="flex items-start gap-3 bg-gray-800/40 border border-gray-800 rounded-lg p-3">
+                          <span className={result.scores.ogComplete ? 'text-emerald-400' : 'text-amber-400'}>
+                            {result.scores.ogComplete ? '✓' : '⚠'}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-white">Open Graph (social sharing)</p>
+                            <p className="text-[11px] text-gray-400 mt-0.5">
+                              {(['title', 'description', 'image', 'url', 'type'] as const).map(k => (
+                                <span key={k} className={`mr-2 ${result.ogCompleteness![`has_${k}` as keyof typeof result.ogCompleteness] ? 'text-emerald-400' : 'text-gray-600'}`}>
+                                  {result.ogCompleteness![`has_${k}` as keyof typeof result.ogCompleteness] ? '✓' : '✗'} {k}
+                                </span>
+                              ))}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Tech meta */}
+                      {result.analyzed_with && (
+                        <p className="text-[10px] text-gray-600 italic pt-1">
+                          Analyzed with: {result.analyzed_with === 'firecrawl' ? '🔥 FireCrawl (clean content extraction)' : 'Raw HTML fallback'}
+                          {result.firecrawl_content_word_count && result.analyzed_with === 'firecrawl' && (
+                            <span> · main content {result.firecrawl_content_word_count.toLocaleString()} words</span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

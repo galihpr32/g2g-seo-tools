@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { smartScrape } from '@/lib/firecrawl/client'
 
-export const maxDuration = 20
+export const maxDuration = 30
 
 // ── HTML parsing helpers ──────────────────────────────────────────────────────
 function extractTag(html: string, tag: string): string {
@@ -94,6 +95,66 @@ function extractRobots(html: string): string {
   return extractMeta(html, 'robots') || extractMeta(html, 'googlebot') || 'index, follow'
 }
 
+// ── Structured data detection (JSON-LD) ───────────────────────────────────────
+// Modern SEO heavily relies on structured data. Extract Schema.org @type values
+// to give user a quick summary of what schemas the page declares.
+function extractStructuredData(html: string): { count: number; types: string[]; raw: string[] } {
+  const blocks: string[] = []
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html)) !== null) {
+    blocks.push(m[1].trim())
+  }
+
+  const types = new Set<string>()
+  for (const block of blocks) {
+    try {
+      const json = JSON.parse(block)
+      // Schema can be a single object, array, or have @graph
+      const items = Array.isArray(json) ? json
+                  : json['@graph'] ? json['@graph']
+                  : [json]
+      for (const item of items) {
+        if (item && typeof item === 'object' && '@type' in item) {
+          const t = item['@type']
+          if (Array.isArray(t)) t.forEach((x: string) => types.add(x))
+          else if (typeof t === 'string') types.add(t)
+        }
+      }
+    } catch { /* malformed JSON-LD */ }
+  }
+
+  return {
+    count: blocks.length,
+    types: Array.from(types),
+    raw:   blocks.slice(0, 3),   // cap to first 3 for response size
+  }
+}
+
+// ── Hreflang detection (international SEO) ────────────────────────────────────
+function extractHreflang(html: string): { count: number; languages: string[] } {
+  const re = /<link[^>]+rel=["']alternate["'][^>]+hreflang=["']([^"']+)["']/gi
+  const langs = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html)) !== null) {
+    langs.add(m[1].trim().toLowerCase())
+  }
+  return { count: langs.size, languages: Array.from(langs).slice(0, 20) }
+}
+
+// ── Open Graph completeness check ─────────────────────────────────────────────
+function extractOgCompleteness(html: string): {
+  has_title: boolean; has_description: boolean; has_image: boolean; has_url: boolean; has_type: boolean
+} {
+  return {
+    has_title:       !!extractMeta(html, 'og:title'),
+    has_description: !!extractMeta(html, 'og:description'),
+    has_image:       !!extractMeta(html, 'og:image'),
+    has_url:         !!extractMeta(html, 'og:url'),
+    has_type:        !!extractMeta(html, 'og:type'),
+  }
+}
+
 // POST /api/competitive/analyze — analyze on-page SEO signals for a URL
 export async function POST(req: Request) {
   const supabase = await createClient()
@@ -115,20 +176,29 @@ export async function POST(req: Request) {
   }
 
   try {
-    const res = await fetch(normalized, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; G2G-SEO-Bot/1.0)' },
-      signal: AbortSignal.timeout(12_000),
-    })
-    if (!res.ok) {
-      return NextResponse.json({ error: `Fetch failed: HTTP ${res.status}` }, { status: 422 })
+    // Two parallel fetches:
+    //   1. Raw HTML — for meta tags, structured data, hreflang (FireCrawl
+    //      strips <head> details we want to inspect)
+    //   2. FireCrawl smartScrape — clean main-content extraction for accurate
+    //      keyword analysis (no nav/footer pollution, handles JS-rendered)
+    const [rawRes, firecrawlData] = await Promise.all([
+      fetch(normalized, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; G2G-SEO-Bot/1.0)' },
+        signal:  AbortSignal.timeout(12_000),
+      }).catch(() => null),
+      smartScrape(normalized).catch(() => null),
+    ])
+
+    if (!rawRes || !rawRes.ok) {
+      return NextResponse.json({ error: `Fetch failed: ${rawRes ? `HTTP ${rawRes.status}` : 'network error'}` }, { status: 422 })
     }
 
-    const contentType = res.headers.get('content-type') ?? ''
+    const contentType = rawRes.headers.get('content-type') ?? ''
     if (!contentType.includes('text/html')) {
       return NextResponse.json({ error: 'URL does not return HTML' }, { status: 422 })
     }
 
-    const html = await res.text()
+    const html = await rawRes.text()
 
     // Extract head section for efficiency
     const headMatch = html.match(/<head[\s\S]*?<\/head>/i)
@@ -148,8 +218,27 @@ export async function POST(req: Request) {
 
     const { internal, external } = extractLinks(html, normalized)
     const images   = extractImages(html)
-    const wordCount = countWords(html)
-    const keywords  = topKeywords(html)
+    const structuredData = extractStructuredData(html)
+    const hreflang       = extractHreflang(html)
+    const ogComplete     = extractOgCompleteness(html)
+
+    // Word count & keywords: prefer FireCrawl's clean main content if available.
+    // FireCrawl strips nav/footer/ads → much more accurate keyword density.
+    let wordCount: number
+    let keywords:  { word: string; count: number }[]
+    let usedFirecrawl = false
+
+    if (firecrawlData?.markdown && firecrawlData.markdown.length > 200) {
+      // FireCrawl gave us clean content. Use it for keyword analysis.
+      usedFirecrawl = true
+      const cleanText = firecrawlData.markdown
+      wordCount = cleanText.split(/\s+/).filter(Boolean).length
+      keywords  = topKeywords(cleanText)   // topKeywords also strips HTML, safe to feed markdown
+    } else {
+      // Fallback: HTML-based parsing (legacy behaviour)
+      wordCount = countWords(html)
+      keywords  = topKeywords(html)
+    }
 
     return NextResponse.json({
       url: normalized,
@@ -172,6 +261,14 @@ export async function POST(req: Request) {
         externalSample: external.slice(0, 10),
       },
       images,
+      // ── New fields surfaced by FireCrawl integration ──────────────────────
+      structuredData,
+      hreflang,
+      ogCompleteness:    ogComplete,
+      analyzed_with:     usedFirecrawl ? 'firecrawl' : 'fallback',
+      firecrawl_content_word_count: firecrawlData?.markdown
+        ? firecrawlData.markdown.split(/\s+/).filter(Boolean).length
+        : null,
       scores: {
         hasTitle:      !!title,
         titleLength:   title.length,
@@ -180,6 +277,9 @@ export async function POST(req: Request) {
         hasH1:         h1s.length > 0,
         hasCanonical:  !!canonical,
         robotsIndexed: !robots.includes('noindex'),
+        hasStructuredData: structuredData.count > 0,
+        hasHreflang:       hreflang.count > 0,
+        ogComplete:        ogComplete.has_title && ogComplete.has_description && ogComplete.has_image,
       },
     })
   } catch (e) {

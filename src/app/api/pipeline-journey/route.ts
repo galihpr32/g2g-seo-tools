@@ -553,7 +553,9 @@ function buildStages(
       detail:  brief.target_publish_date ? `Target publish: ${brief.target_publish_date}` : 'No publish date set yet.',
       agent:   null,
       date:    null,
-      cta:     { label: 'Open in Writer Inbox', href: '/content/writer-inbox' },
+      // Direct link to this specific brief's detail page (writer needs the
+      // brief content, not the inbox list).
+      cta:     { label: 'Open brief →', href: `/content/briefs/${brief.id}` },
     }
   } else if (briefAgentDone) {
     stageExecute = {
@@ -562,7 +564,7 @@ function buildStages(
       detail:  'Review the brief, then assign a writer in Writer Inbox.',
       agent:   null,
       date:    null,
-      cta:     { label: 'Open in Writer Inbox', href: '/content/writer-inbox' },
+      cta:     { label: 'Open brief →', href: `/content/briefs/${brief.id}` },
     }
   } else {
     stageExecute = {
@@ -571,7 +573,7 @@ function buildStages(
       detail:  null,
       agent:   null,
       date:    null,
-      cta:     { label: 'Open in Writer Inbox', href: '/content/writer-inbox' },
+      cta:     { label: 'Open brief →', href: `/content/briefs/${brief.id}` },
     }
   }
 
