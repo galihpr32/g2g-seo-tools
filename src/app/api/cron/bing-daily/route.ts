@@ -47,17 +47,26 @@ export async function GET(request: Request) {
 
   try {
     // Fetch query + page stats in parallel
-    const [queryStats, pageStats] = await Promise.all([
+    const [queryRes, pageRes] = await Promise.all([
       getQueryStats(),
       getPageStats(),
     ])
 
+    const queryStats = queryRes.data
+    const pageStats  = pageRes.data
+
     if (queryStats.length === 0 && pageStats.length === 0) {
       return NextResponse.json({
         ok: false,
-        message: 'No data returned from Bing — check API key + site verification',
+        message: 'No data returned from Bing — check debug field for actual API response',
         synced_queries: 0,
         synced_pages:   0,
+        debug: {
+          query_stats_call: queryRes.debug,
+          page_stats_call:  pageRes.debug,
+          site_url_used:    siteUrl,
+          hint: 'Check that site_url_used exactly matches the verified site URL in Bing Webmaster Tools (with/without www, with/without trailing slash, http vs https). API key validity also surfaces here as HTTP 401.',
+        },
       })
     }
 
