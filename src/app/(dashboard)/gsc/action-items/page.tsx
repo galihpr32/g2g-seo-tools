@@ -8,8 +8,14 @@ export const revalidate = 60
 export default async function ActionItemsPage({
   searchParams,
 }: {
-  searchParams: { page?: string; limit?: string; from?: string; to?: string }
+  // Next.js 16+ — searchParams is async (Promise). Reading sync (e.g.
+  // `searchParams.page`) silently returns undefined, which is why "Page 2"
+  // appeared broken: navigate() pushed ?page=2 but the server kept rendering
+  // page=1 because searchParams.page was never read.
+  searchParams: Promise<{ page?: string; limit?: string; from?: string; to?: string }>
 }) {
+  const params = await searchParams
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -21,11 +27,11 @@ export default async function ActionItemsPage({
   const siteUrl = conn?.site_url
 
   // ── Pagination + date params ──────────────────────────────────────────────
-  const limit  = Math.min(Math.max(parseInt(searchParams.limit ?? '20'), 1), 100)
-  const page   = Math.max(parseInt(searchParams.page ?? '1'), 1)
+  const limit  = Math.min(Math.max(parseInt(params.limit ?? '20'), 1), 100)
+  const page   = Math.max(parseInt(params.page ?? '1'), 1)
   const offset = (page - 1) * limit
-  const from   = searchParams.from ?? null   // ISO date string, e.g. "2025-01-01"
-  const to     = searchParams.to   ?? null   // ISO date string, e.g. "2025-03-31"
+  const from   = params.from ?? null   // ISO date string, e.g. "2025-01-01"
+  const to     = params.to   ?? null   // ISO date string, e.g. "2025-03-31"
 
   // ── Query with pagination + optional date range ───────────────────────────
   let totalCount = 0

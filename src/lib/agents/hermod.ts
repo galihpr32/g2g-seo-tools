@@ -235,7 +235,12 @@ export async function runHermod(
       }))
       await persistFindingsBulk(db, discoveredFindings)
 
-      // 5. Top 2 candidates per keyword, personalised by Claude
+      // 5. Top 2 candidates per keyword, personalised by Claude.
+      // Master pitch lookup (one per keyword, reused across both candidates).
+      const masterPitch = await loadMasterPitch(db, ownerId, keyword).catch(err => {
+        warnings.push(`master pitch lookup failed for "${keyword}": ${err instanceof Error ? err.message : String(err)}`)
+        return null
+      })
       for (const candidate of candidateDomains.slice(0, 2)) {
         if (actionsQueued >= 8) break
         skipDomains.add(candidate.domain)
@@ -249,6 +254,7 @@ export async function runHermod(
           targetPage,
           searchVolume,
           ourDomain,
+          masterPitch:   masterPitch ?? undefined,
         }, db, ownerId).catch(err => {
           warnings.push(`LLM pitch failed for ${candidate.domain}: ${err instanceof Error ? err.message : String(err)}`)
           return buildFallbackAngle(keyword, candidate.domain, targetPage, searchVolume)
@@ -343,6 +349,25 @@ export async function runHermod(
 
 // ── LLM-personalised pitch ────────────────────────────────────────────────────
 
+/**
+ * Distilled "master pitch" pulled from an approved outreach brief in
+ * seo_content_briefs. When present, Hermod feeds it to Claude so per-prospect
+ * emails inherit consistent value-prop framing, talking points, anchor
+ * variations, and objection-handling — instead of each Hermod call inventing
+ * its own messaging from scratch.
+ *
+ * Loaded by `loadMasterPitch()` below; passed into `buildPersonalisedAngle()`.
+ * Falls back to undefined when no matching outreach brief exists.
+ */
+interface MasterPitch {
+  briefId:        string
+  valueProp:      string         // 1-paragraph excerpt
+  talkingPoints:  string[]       // 5-7 G2G facts
+  anchorOptions:  string[]       // brand/generic/topical anchors
+  objections:     { question: string; answer: string }[]   // top 3
+  emailSkeleton?: string         // optional — full email template (markdown)
+}
+
 interface AngleInput {
   keyword:       string
   domain:        string
@@ -352,8 +377,79 @@ interface AngleInput {
   targetPage:    string
   searchVolume:  number
   ourDomain:     string
+  masterPitch?:  MasterPitch     // optional — flows into the LLM prompt when present
 }
 interface OutreachAngle { topic: string; pitch: string; email: string }
+
+/**
+ * Look up an approved outreach brief whose primary_keyword matches the gap
+ * keyword. Distills it into a MasterPitch so Hermod can keep all personalised
+ * emails on-message with the writer-approved campaign template.
+ *
+ * Match strategy (ordered):
+ *   1. Exact keyword match (lower-cased)
+ *   2. Substring match either direction
+ * Returns null if nothing usable found.
+ */
+async function loadMasterPitch(
+  db:       ReturnType<typeof createServiceClient>,
+  ownerId:  string,
+  keyword:  string,
+): Promise<MasterPitch | null> {
+  const { data: briefs } = await db
+    .from('seo_content_briefs')
+    .select('id, primary_keyword, content_outline, faq_suggestions, new_keywords, final_content, status')
+    .eq('owner_user_id', ownerId)
+    .eq('brief_type',    'outreach')
+    .in('status',        ['agent_generated', 'reviewed', 'published'])
+    .order('updated_at', { ascending: false })
+    .limit(20)
+
+  if (!briefs?.length) return null
+
+  const kwLower = keyword.toLowerCase().trim()
+  const matched = briefs.find(b => {
+    const pk = String(b.primary_keyword ?? '').toLowerCase().trim()
+    return pk && (pk === kwLower || pk.includes(kwLower) || kwLower.includes(pk))
+  })
+  if (!matched) return null
+
+  // Distill the brief's stored fields into prompt-ready strings.
+  const outlineRaw = (matched.content_outline ?? []) as Array<{ heading?: string; points?: string[] }>
+  const talkingPoints = outlineRaw
+    .flatMap(s => s.points ?? [])
+    .filter(p => typeof p === 'string')
+    .slice(0, 7)
+
+  const faqRaw = (matched.faq_suggestions ?? []) as Array<{ question?: string; suggested_answer?: string }>
+  const objections = faqRaw
+    .filter(o => o.question && o.suggested_answer)
+    .slice(0, 3)
+    .map(o => ({ question: String(o.question), answer: String(o.suggested_answer) }))
+
+  const anchorRaw = (matched.new_keywords ?? []) as Array<{ keyword?: string }>
+  const anchorOptions = anchorRaw
+    .map(a => a.keyword ?? '')
+    .filter(Boolean)
+    .slice(0, 8)
+
+  // Pull value-prop sentence from the content_draft header if present.
+  const draft = String(matched.final_content ?? '')
+  const valuePropMatch = draft.match(/\*\*Value proposition:\*\*\s*([^\n]+)/)
+                      ?? draft.match(/^([^\n]+\.)/)
+  const valueProp = valuePropMatch?.[1]?.trim() ?? ''
+
+  if (!talkingPoints.length && !valueProp && !anchorOptions.length) return null
+
+  return {
+    briefId:        matched.id,
+    valueProp,
+    talkingPoints,
+    anchorOptions,
+    objections,
+    emailSkeleton:  draft || undefined,
+  }
+}
 
 const angleTool: Anthropic.Tool = {
   name: 'submit_outreach_angle',
@@ -374,6 +470,39 @@ async function buildPersonalisedAngle(
   db?:      ReturnType<typeof createServiceClient>,
   ownerId?: string,
 ): Promise<OutreachAngle> {
+  // When a master pitch is available (writer-approved outreach brief for this
+  // keyword), inline its talking points + anchor list + objection scripts so
+  // every Hermod email stays on-message with the campaign template. Without
+  // it, Hermod falls back to the original from-scratch path.
+  const masterBlock = input.masterPitch ? (() => {
+    const lines: string[] = [
+      '',
+      '═══ MASTER PITCH (writer-approved campaign template) ═══',
+      'Use this as your reference for tone, value framing, and acceptable anchor text.',
+      'Do NOT copy verbatim — personalise to this specific prospect — but DO stay consistent with these key messages:',
+    ]
+    if (input.masterPitch.valueProp) {
+      lines.push('', 'VALUE PROPOSITION:', input.masterPitch.valueProp)
+    }
+    if (input.masterPitch.talkingPoints.length) {
+      lines.push('', 'KEY TALKING POINTS (weave 1-2 in naturally, do not list all):')
+      for (const tp of input.masterPitch.talkingPoints.slice(0, 5)) lines.push(`  • ${tp}`)
+    }
+    if (input.masterPitch.anchorOptions.length) {
+      lines.push('', 'APPROVED ANCHOR TEXT VARIATIONS (pick ONE for the link mention — vary across prospects):')
+      for (const a of input.masterPitch.anchorOptions.slice(0, 6)) lines.push(`  • "${a}"`)
+    }
+    if (input.masterPitch.objections.length) {
+      lines.push('', 'IF THE PROSPECT MIGHT OBJECT, anticipate it lightly in the email:')
+      for (const o of input.masterPitch.objections.slice(0, 2)) {
+        lines.push(`  • Likely concern: ${o.question}`)
+        lines.push(`    Soft response: ${o.answer}`)
+      }
+    }
+    lines.push('═══════════════════════════════════════════════════════', '')
+    return lines.join('\n')
+  })() : ''
+
   const prompt = `You are writing a B2B outreach email for G2G.com (${input.ourDomain}), a peer-to-peer gaming marketplace.
 
 Outreach context:
@@ -382,12 +511,13 @@ Outreach context:
 ${input.rankingTitle ? `- Specific ranking page title: "${input.rankingTitle}"` : ''}
 ${input.rankingUrl ? `- Specific ranking URL: ${input.rankingUrl}` : ''}
 - Our target page we want them to link to: ${input.targetPage}
-
+${masterBlock}
 Write a NON-SPAMMY outreach email that:
 - Opens with a specific reference to their ranking content (use the title/URL above) — NEVER generic ("I came across your site").
 - States a concrete value exchange (resource link, partnership, expert quote, data) — NOT just "please link to us".
 - Ends with a soft, low-pressure ask. No fake compliments. No emoji.
 - 3-5 short paragraphs, plain text only.
+${input.masterPitch ? '- Stay on-message with the master pitch above (talking points + value prop) but DO NOT just paste them — personalise.\n- Pick ONE approved anchor text from the list when mentioning the resource link.' : ''}
 
 Call the submit_outreach_angle tool.`
 

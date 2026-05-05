@@ -33,15 +33,91 @@ export async function POST(req: Request) {
     target_keywords:      string[]
     image_urls?:          string[]
     custom_instructions?: string
+    // Tema 3 — KB integration. When set, the brand context + matched
+    // category context + selected platform's house rules are loaded from
+    // knowledge_base_items and injected into the prompt.
+    platform_id?:         string | null
   }
 
   const {
     draft_id, topic, game_name, content_type, tone, language,
     target_audience, word_count, target_keywords, image_urls = [],
-    custom_instructions,
+    custom_instructions, platform_id,
   } = body
 
   if (!topic) return NextResponse.json({ error: 'Missing topic' }, { status: 400 })
+
+  // ── Load KB context (brand + matched category + selected platform) ────────
+  // Mirrors the KB injection pattern in lib/agents/brief-generator.ts so
+  // Content Studio output is consistent with Bragi briefs.
+  interface KBItemRow { id: string; category: string; name: string; data: Record<string, unknown> }
+  const { data: kbRows } = await db
+    .from('knowledge_base_items')
+    .select('id, category, name, data')
+    .eq('owner_user_id', ownerId)
+
+  const kbItems: KBItemRow[] = (kbRows ?? []) as KBItemRow[]
+  const brand    = kbItems.find(i => i.category === 'brand')
+  const usps     = kbItems.filter(i => i.category === 'usp')
+  const platform = platform_id ? kbItems.find(i => i.category === 'platform' && i.id === platform_id) : null
+
+  // Best-effort category match: token overlap between topic and category names.
+  const topicTokens = topic.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 3)
+  const matchedCategory = (() => {
+    const candidates = kbItems.filter(i => i.category === 'category')
+    let best: { item: KBItemRow; score: number } | null = null
+    for (const c of candidates) {
+      const nameTokens = c.name.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length >= 3)
+      const overlap    = nameTokens.filter(t => topicTokens.includes(t)).length
+      if (overlap >= 1 && (!best || overlap > best.score)) best = { item: c, score: overlap }
+    }
+    return best?.item ?? null
+  })()
+
+  const kbBlocks: string[] = []
+  if (brand?.data) {
+    const b = brand.data as { tone?: string; audience?: string; dos?: string[]; donts?: string[] }
+    const lines = [
+      'BRAND CONTEXT:',
+      b.tone     ? `Tone: ${b.tone}`         : '',
+      b.audience ? `Audience: ${b.audience}` : '',
+      b.dos?.length   ? `DOs: ${b.dos.join('; ')}`     : '',
+      b.donts?.length ? `DON'Ts: ${b.donts.join('; ')}` : '',
+    ].filter(Boolean)
+    if (lines.length > 1) kbBlocks.push(lines.join('\n'))
+  }
+  if (matchedCategory?.data) {
+    const c = matchedCategory.data as { description?: string; angle?: string }
+    const lines = [
+      `CATEGORY CONTEXT — ${matchedCategory.name}:`,
+      c.description ? `Description: ${c.description}` : '',
+      c.angle       ? `Content angle: ${c.angle}`     : '',
+    ].filter(Boolean)
+    if (lines.length > 1) kbBlocks.push(lines.join('\n'))
+  }
+  if (usps.length) {
+    const lines = [
+      'UNIQUE SELLING POINTS (mention naturally where they fit):',
+      ...usps.map(u => {
+        const d = u.data as { description?: string }
+        return `- ${u.name}${d.description ? `: ${d.description}` : ''}`
+      }),
+    ]
+    kbBlocks.push(lines.join('\n'))
+  }
+  if (platform?.data) {
+    const p = platform.data as { tone?: string; format?: string; guidelines?: string; examples?: string; notes?: string }
+    const lines = [
+      `PLATFORM TARGET — ${platform.name} (apply these house rules):`,
+      p.tone       ? `Tone: ${p.tone}`             : '',
+      p.format     ? `Format: ${p.format}`         : '',
+      p.guidelines ? `Guidelines: ${p.guidelines}` : '',
+      p.examples   ? `Examples: ${p.examples}`     : '',
+      p.notes      ? `Notes: ${p.notes}`           : '',
+    ].filter(Boolean)
+    if (lines.length > 1) kbBlocks.push(lines.join('\n'))
+  }
+  const kbBlock = kbBlocks.length ? `\n---\n${kbBlocks.join('\n\n')}\n---\n` : ''
 
   // ── Content type config ────────────────────────────────────────────────────
   const typeDescriptions: Record<string, string> = {
@@ -79,7 +155,7 @@ REQUIREMENTS:
 - Target keywords to naturally include: ${target_keywords.length > 0 ? target_keywords.join(', ') : 'none specified'}
 ${imageSection}
 ${custom_instructions ? `\nAdditional instructions from the writer:\n${custom_instructions}\n` : ''}
-
+${kbBlock}
 SEO RULES:
 - Use the primary keyword (first in the list) in: the H1 title, first paragraph, at least one H2, and meta title
 - Distribute secondary keywords naturally throughout

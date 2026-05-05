@@ -26,6 +26,22 @@ interface Draft {
   updated_at:   string
 }
 
+// Platform entries from Knowledge Base — shape mirrors KB platform tab
+// (tone, format, guidelines, examples, notes). Used to pick the publication
+// target for a piece of content; backend uses the picked platform's data
+// to instruct Bragi/Claude on house rules (e.g. Reddit = no shilling).
+interface KBPlatform {
+  id:    string
+  name:  string
+  data:  {
+    tone?:        string
+    format?:      string
+    guidelines?:  string
+    examples?:    string
+    notes?:       string
+  }
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 const CONTENT_TYPES = [
   { value: 'blog_post',     label: 'Blog Post',       icon: '📝', desc: 'Long-form article for content marketing' },
@@ -116,6 +132,12 @@ function ContentStudioInner() {
   const [contentType,    setContentType] = useState('blog_post')
   const [wordCount,      setWordCount]   = useState(1000)
   const [language,       setLanguage]    = useState('en')
+  // Optional publication target (KB-driven). When set, Bragi gets the
+  // platform's house rules in its system prompt so output respects tone +
+  // format constraints of that destination (e.g. Reddit, Steam Community,
+  // Discord, internal G2G blog).
+  const [platformId,     setPlatformId]  = useState<string>('')      // '' = no platform context
+  const [platforms,      setPlatforms]   = useState<KBPlatform[]>([])
 
   // Step 4: Style
   const [tone,           setTone]        = useState('informative')
@@ -173,6 +195,20 @@ function ContentStudioInner() {
       .catch(() => {})
   }, [])
 
+  // ── Load KB platforms (for platform selector in Step 2) ───────────────────
+  // Same KB endpoint used by /knowledge-base — filter to category='platform'
+  // (singular, matching how KB UI persists). If no platforms configured, the
+  // selector simply hides itself.
+  useEffect(() => {
+    fetch('/api/knowledge-base')
+      .then(r => r.json())
+      .then(d => {
+        const items = (d.items ?? []) as Array<{ id: string; category: string; name: string; data: KBPlatform['data'] }>
+        setPlatforms(items.filter(i => i.category === 'platform').map(i => ({ id: i.id, name: i.name, data: i.data ?? {} })))
+      })
+      .catch(() => {})
+  }, [])
+
   // ── Generate content ───────────────────────────────────────────────────────
   async function generate() {
     setGenerating(true); setGenError(null); setGenerated(null)
@@ -191,6 +227,7 @@ function ContentStudioInner() {
           target_keywords:     targetKeywords,
           image_urls:          imageUrls,
           custom_instructions: customInstr || null,
+          platform_id:         platformId || null,
         }),
       })
       const data = await res.json()
@@ -506,6 +543,53 @@ function ContentStudioInner() {
               ))}
             </div>
           </div>
+
+          {/* Platform selector — sourced from KB (category='platform').
+              Only renders when at least one platform is configured. Defaults
+              to "no platform context" so generation behaves as before. */}
+          {platforms.length > 0 && (
+            <div>
+              <label className="block text-sm font-semibold text-white mb-2">
+                Publication target <span className="text-gray-500 font-normal text-xs">(optional)</span>
+              </label>
+              <p className="text-[11px] text-gray-500 mb-2">
+                Pick a platform to apply its house rules (tone, format, guidelines) to the generation prompt.
+                Manage platforms in <a href="/knowledge-base" className="text-red-400 hover:text-red-300 underline">Knowledge Base → Platforms</a>.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlatformId('')}
+                  className={`text-xs px-3 py-2 rounded-lg border transition ${
+                    platformId === ''
+                      ? 'bg-red-500/15 border-red-500/40 text-white'
+                      : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'
+                  }`}
+                >
+                  None
+                </button>
+                {platforms.map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setPlatformId(p.id)}
+                    title={[
+                      p.data.tone        && `Tone: ${p.data.tone}`,
+                      p.data.format      && `Format: ${p.data.format}`,
+                      p.data.guidelines  && `Guidelines: ${p.data.guidelines.slice(0, 200)}${p.data.guidelines.length > 200 ? '…' : ''}`,
+                    ].filter(Boolean).join('\n') || p.name}
+                    className={`text-xs px-3 py-2 rounded-lg border transition ${
+                      platformId === p.id
+                        ? 'bg-red-500/15 border-red-500/40 text-white'
+                        : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'
+                    }`}
+                  >
+                    📡 {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
