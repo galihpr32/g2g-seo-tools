@@ -1,8 +1,32 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
-import type { JourneyItem, PipelineStageInfo, BriefSummary, Actor } from '@/app/api/pipeline-journey/route'
+import type { JourneyItem, PipelineStageInfo, BriefSummary, Actor, SignalReason } from '@/app/api/pipeline-journey/route'
+
+// ── Agent badge styling for "Why this opp" reasons ────────────────────────────
+const AGENT_STYLE: Record<SignalReason['agent'], { label: string; cls: string; emoji: string }> = {
+  heimdall: { label: 'Heimdall', emoji: '🦅', cls: 'bg-blue-500/10 border-blue-500/25 text-blue-300'    },
+  loki:     { label: 'Loki',     emoji: '🦊', cls: 'bg-orange-500/10 border-orange-500/25 text-orange-300' },
+  odin:     { label: 'Odin',     emoji: '⚡', cls: 'bg-purple-500/10 border-purple-500/25 text-purple-300' },
+}
+
+function ReasonRow({ reason }: { reason: SignalReason }) {
+  const s = AGENT_STYLE[reason.agent]
+  return (
+    <div className="flex items-start gap-2 text-[11px] leading-snug">
+      <span className={`shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-mono ${s.cls}`}>
+        {s.emoji} {s.label}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-gray-300 truncate">{reason.headline}</p>
+        {reason.detail && (
+          <p className="text-gray-500 text-[10px] truncate">{reason.detail}</p>
+        )}
+      </div>
+    </div>
+  )
+}
 
 // ── Actor avatar (consistent with /team-performance pattern) ──────────────────
 
@@ -650,6 +674,62 @@ function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void
         </div>
       </button>
 
+      {/* "Why this opp" — surface top reasoning so writers don't have to expand
+          the card to understand what triggered it. Always visible (max 3 rows
+          to keep the card scannable). Includes assignee / approver chips. */}
+      {(item.signalReasons.length > 0 || item.assignedTo || item.approvedBy || item.outputType) && (
+        <div className="px-4 pb-3 pt-1 border-t border-gray-800/60 space-y-1.5 bg-gray-950/40">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
+              {item.outputType && (() => {
+                const ot = OUTPUT_TYPES.find(t => t.id === item.outputType)
+                return (
+                  <span
+                    className="text-[10px] text-gray-500 uppercase tracking-wider cursor-help"
+                    title={ot?.desc ?? `Output type: ${item.outputType}`}
+                  >
+                    {ot?.icon ?? '•'} {ot?.label ?? item.outputType}
+                  </span>
+                )
+              })()}
+              {item.droppedClicks != null && item.droppedClicks > 0 && (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded border bg-red-500/10 border-red-500/25 text-red-300"
+                  title="Total clicks dropped vs prior 28-day GSC window — sum across all Heimdall signals on this opp"
+                >
+                  -{item.droppedClicks.toLocaleString()} clicks/wk
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {item.approvedBy && (
+                <span className="inline-flex items-center gap-1 text-[10px] text-gray-500" title={`Approved by ${item.approvedBy.email}`}>
+                  approved by <ActorBadge actor={item.approvedBy} />
+                </span>
+              )}
+              {item.assignedTo && (
+                <span className="inline-flex items-center gap-1 text-[10px] text-gray-500" title={`Assigned to ${item.assignedTo.email}`}>
+                  assigned <ActorBadge actor={item.assignedTo} />
+                </span>
+              )}
+            </div>
+          </div>
+
+          {item.signalReasons.length > 0 && (
+            <div className="space-y-1">
+              {item.signalReasons.slice(0, 3).map((r, i) => (
+                <ReasonRow key={i} reason={r} />
+              ))}
+              {item.signalReasons.length > 3 && (
+                <p className="text-[10px] text-gray-600 italic pl-1">
+                  +{item.signalReasons.length - 3} more reasons (click ▸ to expand)
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Expanded pipeline */}
       {expanded && (
         <div className="border-t border-gray-800 px-4 py-2">
@@ -698,9 +778,15 @@ export default function PipelineJourneyPage() {
   const [stats,        setStats]        = useState<Stats>({ total: 0, needsAction: 0, inProgress: 0, completed: 0 })
   const [tab,          setTab]          = useState<TabFilter>('all')
   const [loading,      setLoading]      = useState(true)
+  const [lastFetched,  setLastFetched]  = useState<Date | null>(null)
   const [search,       setSearch]       = useState('')
   const [processing,   setProcessing]   = useState(false)
   const [processMsg,   setProcessMsg]   = useState<string | null>(null)
+  // Tema 1.2 controls
+  const [filterAgent,    setFilterAgent]    = useState<'all' | 'heimdall' | 'loki' | 'odin'>('all')
+  const [filterOutput,   setFilterOutput]   = useState<'all' | OutputTypeId>('all')
+  const [filterAssignee, setFilterAssignee] = useState<string>('all')   // 'all' | 'unassigned' | userId
+  const [sortBy,         setSortBy]         = useState<'updated' | 'clicks' | 'sv' | 'created'>('updated')
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -711,6 +797,7 @@ export default function PipelineJourneyPage() {
       const journey: JourneyItem[] = json.journey ?? []
       setItems(journey)
       setStats(json.stats ?? { total: 0, needsAction: 0, inProgress: 0, completed: 0 })
+      setLastFetched(new Date())
 
       // Auto-retry: if any items have briefs stuck in draft, call process-briefs silently
       const hasStuck = journey.some(it =>
@@ -782,18 +869,75 @@ export default function PipelineJourneyPage() {
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  // Filter by tab + search
-  const visible = items.filter(it => {
-    const tabMatch =
-      tab === 'all'          ? true :
-      tab === 'needs_action' ? it.needsAction :
-      tab === 'in_progress'  ? (!it.needsAction && !it.isComplete) :
-      tab === 'completed'    ? it.isComplete : true
+  // Build the unique-assignee dropdown from current data so writers can
+  // filter to their own queue. "Unassigned" is always present; "all" is the
+  // default. We dedupe by userId because the same email could appear via
+  // both opp.approved_by and brief.assigned_to paths.
+  const assigneeOptions = useMemo(() => {
+    const map = new Map<string, Actor>()
+    for (const it of items) {
+      if (it.assignedTo) map.set(it.assignedTo.userId, it.assignedTo)
+      if (it.approvedBy) map.set(it.approvedBy.userId, it.approvedBy)
+    }
+    return Array.from(map.values())
+      .sort((a, b) => a.email.localeCompare(b.email))
+  }, [items])
 
+  // Filter + sort pipeline
+  const visible = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const searchMatch = !q || it.topic.toLowerCase().includes(q)
-    return tabMatch && searchMatch
-  })
+
+    const filtered = items.filter(it => {
+      // Tab
+      const tabMatch =
+        tab === 'all'          ? true :
+        tab === 'needs_action' ? it.needsAction :
+        tab === 'in_progress'  ? (!it.needsAction && !it.isComplete) :
+        tab === 'completed'    ? it.isComplete : true
+      if (!tabMatch) return false
+
+      // Search
+      if (q && !it.topic.toLowerCase().includes(q)) return false
+
+      // Agent filter — opp must have ≥1 signal from the chosen agent
+      if (filterAgent !== 'all') {
+        const has =
+          filterAgent === 'heimdall' ? it.heimdallCount > 0 :
+          filterAgent === 'loki'     ? it.lokiCount     > 0 :
+          filterAgent === 'odin'     ? it.odinCount     > 0 : true
+        if (!has) return false
+      }
+
+      // Output type filter
+      if (filterOutput !== 'all' && it.outputType !== filterOutput) return false
+
+      // Assignee filter
+      if (filterAssignee === 'unassigned') {
+        if (it.assignedTo || it.approvedBy) return false
+      } else if (filterAssignee !== 'all') {
+        const matches = it.assignedTo?.userId === filterAssignee
+                     || it.approvedBy?.userId === filterAssignee
+        if (!matches) return false
+      }
+
+      return true
+    })
+
+    // Sort
+    return [...filtered].sort((a, b) => {
+      switch (sortBy) {
+        case 'clicks':
+          return (b.droppedClicks ?? 0) - (a.droppedClicks ?? 0)
+        case 'sv':
+          return (b.totalSv ?? 0) - (a.totalSv ?? 0)
+        case 'created':
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        case 'updated':
+        default:
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      }
+    })
+  }, [items, tab, search, filterAgent, filterOutput, filterAssignee, sortBy])
 
   const tabs: { id: TabFilter; label: string; count: number }[] = [
     { id: 'all',          label: 'All',          count: stats.total },
@@ -806,7 +950,15 @@ export default function PipelineJourneyPage() {
     <div className="p-6 max-w-4xl">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-white">Pipeline Journey</h1>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h1 className="text-xl font-bold text-white">Pipeline Journey</h1>
+          <span
+            className="text-[10px] uppercase tracking-wider text-gray-500 border border-gray-800 rounded px-1.5 py-0.5"
+            title="The Pipeline Journey is the writer-facing view: each opportunity rendered as a row with its 7-stage progress. Use this to see what needs your action and the lifecycle of approved work. The Command Center is the ops/admin view: agent runs, health, raw signals, queue management."
+          >
+            ⓘ vs Command Center
+          </span>
+        </div>
         <p className="text-sm text-gray-400 mt-1">
           Track every opportunity from detection through to measurable ranking impact.
         </p>
@@ -877,6 +1029,74 @@ export default function PipelineJourneyPage() {
       </div>
       {processMsg && (
         <p className="text-xs text-gray-400 mb-3 px-1">{processMsg}</p>
+      )}
+
+      {/* Filter / sort row — Tema 1.2 */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap text-xs">
+        <span className="text-gray-500 mr-1">Filter:</span>
+        <select
+          value={filterAgent}
+          onChange={e => setFilterAgent(e.target.value as typeof filterAgent)}
+          className="bg-gray-900 border border-gray-800 rounded-md px-2 py-1 text-white focus:outline-none focus:border-gray-600"
+          title="Filter by which detection agent surfaced this opp"
+        >
+          <option value="all">All agents</option>
+          <option value="heimdall">🦅 Heimdall (rank drops)</option>
+          <option value="loki">🦊 Loki (competitor gaps)</option>
+          <option value="odin">⚡ Odin (trending games)</option>
+        </select>
+        <select
+          value={filterOutput}
+          onChange={e => setFilterOutput(e.target.value as typeof filterOutput)}
+          className="bg-gray-900 border border-gray-800 rounded-md px-2 py-1 text-white focus:outline-none focus:border-gray-600"
+          title="Filter by triage decision (output type)"
+        >
+          <option value="all">All output types</option>
+          {OUTPUT_TYPES.map(t => (
+            <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+          ))}
+        </select>
+        <select
+          value={filterAssignee}
+          onChange={e => setFilterAssignee(e.target.value)}
+          className="bg-gray-900 border border-gray-800 rounded-md px-2 py-1 text-white focus:outline-none focus:border-gray-600"
+          title="Filter by who's working on this opp"
+        >
+          <option value="all">All assignees</option>
+          <option value="unassigned">Unassigned</option>
+          {assigneeOptions.map(a => (
+            <option key={a.userId} value={a.userId}>{actorDisplayName(a.email)}</option>
+          ))}
+        </select>
+
+        <span className="text-gray-700">·</span>
+        <span className="text-gray-500 mr-1">Sort:</span>
+        <select
+          value={sortBy}
+          onChange={e => setSortBy(e.target.value as typeof sortBy)}
+          className="bg-gray-900 border border-gray-800 rounded-md px-2 py-1 text-white focus:outline-none focus:border-gray-600"
+        >
+          <option value="updated">Last updated</option>
+          <option value="created">Newest first</option>
+          <option value="clicks">Highest dropped clicks</option>
+          <option value="sv">Highest search volume</option>
+        </select>
+
+        {(filterAgent !== 'all' || filterOutput !== 'all' || filterAssignee !== 'all' || sortBy !== 'updated') && (
+          <button
+            onClick={() => { setFilterAgent('all'); setFilterOutput('all'); setFilterAssignee('all'); setSortBy('updated') }}
+            className="ml-auto text-gray-500 hover:text-red-400 transition"
+          >
+            ✕ Clear filters
+          </button>
+        )}
+      </div>
+
+      {/* Last refreshed indicator — Tema 1.4 */}
+      {lastFetched && (
+        <p className="text-[10px] text-gray-600 mb-2 px-1">
+          Last refreshed {timeAgo(lastFetched.toISOString())} · Daily auto-refresh runs at 7am WIB via daily-briefing cron
+        </p>
       )}
 
       {/* List */}

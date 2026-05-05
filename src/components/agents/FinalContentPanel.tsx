@@ -34,6 +34,10 @@ interface FinalContentPanelProps {
   initialTranslations:      Record<string, string>
   initialStatus:            string
   initialTyrStatus:         string | null
+  // Outreach briefs render a different "Outreach Pitch" header + don't show
+  // CMS HTML modes (emails are pasted into Gmail, not a CMS). Pass the
+  // brief_type so the panel can switch behaviours.
+  briefType?:               string
 }
 
 export default function FinalContentPanel({
@@ -44,7 +48,9 @@ export default function FinalContentPanel({
   initialTranslations,
   initialStatus,
   initialTyrStatus,
+  briefType,
 }: FinalContentPanelProps) {
+  const isOutreach = briefType === 'outreach'
   const [content,        setContent]        = useState(initialFinalContent ?? '')
   const [generatedAt,    setGeneratedAt]    = useState(initialGeneratedAt)
   const [editedAt,       setEditedAt]       = useState(initialEditedAt)
@@ -210,6 +216,19 @@ export default function FinalContentPanel({
   // ── Render ──
 
   if (!hasContent && !isAssembling) {
+    // Outreach briefs auto-stamp final_content during generation, so the
+    // empty state here means generation hasn't run yet (or failed). Show a
+    // neutral hint instead of the SEO assembly CTA.
+    if (isOutreach) {
+      return (
+        <section className="bg-amber-900/10 border border-amber-700/30 rounded-xl p-6 mb-5">
+          <h2 className="text-white font-semibold text-base mb-1">📨 Outreach Pitch</h2>
+          <p className="text-amber-300 text-sm">
+            No outreach pitch yet. Bragi auto-stamps the email skeleton when this brief is generated — try clicking <strong>Regenerate</strong> in the action bar.
+          </p>
+        </section>
+      )
+    }
     return (
       <section className="bg-gradient-to-br from-purple-900/20 to-indigo-900/20 border border-purple-700/30 rounded-xl p-6 mb-5">
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -256,7 +275,9 @@ export default function FinalContentPanel({
       {/* Header row: title + lang switcher + actions */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 flex-wrap">
-          <h2 className="text-white font-semibold text-base">📝 Final Content</h2>
+          <h2 className="text-white font-semibold text-base">
+            {isOutreach ? '📨 Outreach Pitch' : '📝 Final Content'}
+          </h2>
           <span className="text-xs text-gray-500 font-mono">{wordCount} words</span>
           {generatedAt && (
             <span className="text-xs text-gray-500">Assembled {new Date(generatedAt).toLocaleString('id-ID')}</span>
@@ -310,8 +331,8 @@ export default function FinalContentPanel({
             </>
           )}
 
-          {/* Re-assemble (overwrites the EN body) */}
-          {!isEditing && hasContent && activeLang === 'en' && !isPublished && (
+          {/* Re-assemble (SEO only — outreach has no assembly step). */}
+          {!isEditing && !isOutreach && hasContent && activeLang === 'en' && !isPublished && (
             <button
               onClick={handleAssemble}
               disabled={isAssembling}
@@ -364,7 +385,12 @@ export default function FinalContentPanel({
       {!isEditing && (
         <div className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-3">
           <div className="inline-flex rounded-lg overflow-hidden border border-gray-700 text-xs">
-            {(['preview', 'markdown', 'html'] as const).map(m => (
+            {/* Outreach hides HTML mode — emails go to Gmail, not a CMS, so the
+                CMS-class HTML wrappers don't apply. Markdown + Preview only. */}
+            {(isOutreach
+              ? (['preview', 'markdown'] as const)
+              : (['preview', 'markdown', 'html'] as const)
+            ).map(m => (
               <button
                 key={m}
                 onClick={() => setViewMode(m)}
@@ -379,21 +405,23 @@ export default function FinalContentPanel({
             ))}
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => handleCopy('html')}
-              disabled={!htmlBody}
-              className="px-2.5 py-1 text-xs rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 transition disabled:opacity-40"
-              title="Copy CMS-ready HTML to clipboard"
-            >
-              📋 Copy HTML
-            </button>
+            {!isOutreach && (
+              <button
+                onClick={() => handleCopy('html')}
+                disabled={!htmlBody}
+                className="px-2.5 py-1 text-xs rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 transition disabled:opacity-40"
+                title="Copy CMS-ready HTML to clipboard"
+              >
+                📋 Copy HTML
+              </button>
+            )}
             <button
               onClick={() => handleCopy('markdown')}
               disabled={!visibleBody}
               className="px-2.5 py-1 text-xs rounded-md bg-blue-500/10 border border-blue-500/30 text-blue-300 hover:bg-blue-500/20 transition disabled:opacity-40"
-              title="Copy markdown to clipboard"
+              title={isOutreach ? 'Copy email markdown — paste into Gmail compose' : 'Copy markdown to clipboard'}
             >
-              📋 Copy MD
+              📋 {isOutreach ? 'Copy Email' : 'Copy MD'}
             </button>
           </div>
         </div>

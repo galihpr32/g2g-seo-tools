@@ -66,6 +66,9 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     assigned_to?: string | null
     final_content?: string             // inline-edit the assembled article body
     final_content_translations?: Record<string, string>  // inline-edit a specific lang translation
+    // For outreach briefs, new_keywords[] stores anchor text variations.
+    // Writers tweak this list directly from the brief detail page.
+    new_keywords?: Array<{ keyword: string; volume?: number | null }>
   } | null
   if (!body) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
@@ -120,6 +123,22 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   if (typeof body.final_content === 'string') {
     update.final_content          = body.final_content.slice(0, 100_000)
     update.final_content_edited_at = nowIso
+  }
+
+  // Outreach: update the anchor-text list. Sanitise to enforce shape +
+  // dedupe + cap at 20 entries to prevent abuse.
+  if (Array.isArray(body.new_keywords)) {
+    const cleaned: Array<{ keyword: string; volume: number | null }> = []
+    const seen = new Set<string>()
+    for (const item of body.new_keywords.slice(0, 20)) {
+      const kw = String(item?.keyword ?? '').trim().slice(0, 200)
+      if (!kw) continue
+      const norm = kw.toLowerCase()
+      if (seen.has(norm)) continue
+      seen.add(norm)
+      cleaned.push({ keyword: kw, volume: typeof item?.volume === 'number' ? item.volume : null })
+    }
+    update.new_keywords = cleaned
   }
 
   // Inline-edit a specific translation. Body shape: { final_content_translations: { id: '...' } }

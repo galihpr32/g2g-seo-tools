@@ -318,12 +318,25 @@ export interface PipelineStageInfo {
   actor?:  Actor | null    // who did this stage's user-action (Triage approve / Brief publish / Outreach claim)
 }
 
+// One human-readable line per signal — the writer-facing "why approve this".
+// Examples:
+//   • Heimdall: -38% clicks (-512), pos #4 → #11, /categories/arc-raiders-accounts
+//   • Loki: 1,200 SV, lootbar.gg ranks #3, we're not in top 50
+//   • Odin: 2,400 SV trending, players +43% over 2 weeks
+export interface SignalReason {
+  agent:    'heimdall' | 'loki' | 'odin'
+  headline: string                  // 1-line summary
+  detail:   string | null           // optional sub-line
+  metric:   number | null           // primary numeric (clicks_drop / sv / trend_score) for sorting
+}
+
 export interface JourneyItem {
   id:            string
   topic:         string
   topicSlug:     string | null
   targetUrl:     string | null
   oppStatus:     string
+  outputType:    string | null      // new_page | optimize_existing | outreach | blog_post
   signalCount:   number
   totalSv:       number | null
   createdAt:     string
@@ -334,6 +347,12 @@ export interface JourneyItem {
   heimdallCount: number
   lokiCount:     number
   odinCount:     number
+  // Reasoning surface (writer-facing) — top 2-3 reasons per agent.
+  // Empty array if no signals from that agent.
+  signalReasons: SignalReason[]
+  // Aggregated metric used for "Sort by clicks" — sum of Heimdall clicks_drop
+  // across all signals on this opp. Null when there are no Heimdall signals.
+  droppedClicks: number | null
   // Derived
   pipelineStage: number   // 1-7, current active stage
   progressPct:   number   // 0-100
@@ -341,6 +360,107 @@ export interface JourneyItem {
   isComplete:    boolean
   stages:        PipelineStageInfo[]
   briefs:        BriefSummary[]   // all briefs spawned from this opportunity
+  // Assignee tracking — pulled from briefs.assigned_to / opp.approved_by
+  assignedTo:    Actor | null
+  approvedBy:    Actor | null
+}
+
+// ─── Signal reasoning extractors ──────────────────────────────────────────────
+// Pull human-readable "why approve" lines out of the raw signal payloads each
+// agent persists. Each helper returns at most `topN` entries, sorted by
+// strongest signal first (biggest click drop / highest SV / highest trend).
+
+interface HeimdallSignal {
+  page?:            string
+  clicks_prev?:     number
+  clicks_now?:      number
+  clicks_drop?:     number
+  clicks_drop_pct?: number
+  position_prev?:   number
+  position_now?:    number
+  position_diff?:   number
+}
+
+interface LokiSignal {
+  keyword?:             string
+  competitor_domain?:   string
+  competitor_position?: number
+  our_position?:        number | null
+  search_volume?:       number
+}
+
+interface OdinSignal {
+  game_name?:        string
+  search_volume?:    number
+  trend_score?:      number
+  players_2weeks?:   number
+  trend_basis?:      string
+}
+
+function extractHeimdallReasons(raw: unknown, topN = 2): SignalReason[] {
+  if (!Array.isArray(raw)) return []
+  const sorted = (raw as HeimdallSignal[])
+    .filter(s => typeof s?.clicks_drop_pct === 'number')
+    .sort((a, b) => Math.abs(b.clicks_drop_pct ?? 0) - Math.abs(a.clicks_drop_pct ?? 0))
+    .slice(0, topN)
+  return sorted.map(s => {
+    const dropPct  = s.clicks_drop_pct ?? 0
+    const dropAbs  = s.clicks_drop ?? 0
+    const posShift = s.position_prev != null && s.position_now != null
+      ? `pos #${Math.round(s.position_prev)} → #${Math.round(s.position_now)}`
+      : null
+    const headline = `-${Math.abs(dropPct).toFixed(0)}% clicks${dropAbs ? ` (-${Math.abs(dropAbs).toLocaleString()})` : ''}`
+    const detail   = [s.page, posShift].filter(Boolean).join(' · ') || null
+    return {
+      agent:    'heimdall' as const,
+      headline,
+      detail,
+      metric:   Math.abs(dropAbs),
+    }
+  })
+}
+
+function extractLokiReasons(raw: unknown, topN = 2): SignalReason[] {
+  if (!Array.isArray(raw)) return []
+  const sorted = (raw as LokiSignal[])
+    .filter(s => s?.keyword)
+    .sort((a, b) => (b.search_volume ?? 0) - (a.search_volume ?? 0))
+    .slice(0, topN)
+  return sorted.map(s => {
+    const sv     = s.search_volume ?? 0
+    const ourPos = s.our_position == null ? 'not in top 50' : `we rank #${s.our_position}`
+    const headline = `"${s.keyword}" — ${sv.toLocaleString()} SV gap`
+    const detail   = `${s.competitor_domain ?? 'competitor'} #${s.competitor_position ?? '?'} · ${ourPos}`
+    return {
+      agent:  'loki' as const,
+      headline,
+      detail,
+      metric: sv,
+    }
+  })
+}
+
+function extractOdinReasons(raw: unknown, topN = 2): SignalReason[] {
+  if (!Array.isArray(raw)) return []
+  const sorted = (raw as OdinSignal[])
+    .filter(s => s?.game_name)
+    .sort((a, b) => (b.trend_score ?? b.search_volume ?? 0) - (a.trend_score ?? a.search_volume ?? 0))
+    .slice(0, topN)
+  return sorted.map(s => {
+    const sv       = s.search_volume ?? 0
+    const players  = s.players_2weeks
+    const headline = `${s.game_name} trending — ${sv.toLocaleString()} SV`
+    const detail   = [
+      players ? `${players.toLocaleString()} active players` : null,
+      s.trend_basis ? `via ${s.trend_basis}` : null,
+    ].filter(Boolean).join(' · ') || null
+    return {
+      agent:  'odin' as const,
+      headline,
+      detail,
+      metric: sv,
+    }
+  })
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
@@ -377,12 +497,34 @@ function buildJourneyItem(
     createdAt:  b.created_at,
   }))
 
+  // Reasoning: 2 strongest signals per agent, ordered Heimdall → Loki → Odin
+  // (Heimdall surfaces existing-page recovery — usually the highest-impact
+  // recovery signal, so it leads.)
+  const signalReasons: SignalReason[] = [
+    ...extractHeimdallReasons(opp.heimdall_signals),
+    ...extractLokiReasons(opp.loki_signals),
+    ...extractOdinReasons(opp.odin_signals),
+  ]
+
+  // Total Heimdall click-drop across all signals on this opp — used for
+  // "Sort by clicks" in the Approval Queue.
+  const droppedClicks = Array.isArray(opp.heimdall_signals)
+    ? (opp.heimdall_signals as HeimdallSignal[])
+        .reduce((sum, s) => sum + Math.abs(s?.clicks_drop ?? 0), 0)
+    : null
+
+  // Resolve assignee + approver actors (already loaded by caller in actorMap)
+  const assignedToId = allBriefs.find(b => b.assigned_to)?.assigned_to ?? null
+  const assignedTo   = assignedToId ? (actorMap[assignedToId] ?? null) : null
+  const approvedBy   = opp.approved_by ? (actorMap[opp.approved_by] ?? null) : null
+
   return {
     id:            opp.id,
     topic:         opp.topic ?? '(untitled)',
     topicSlug:     opp.topic_slug,
     targetUrl:     opp.target_url,
     oppStatus:     opp.status,
+    outputType:    opp.output_type ?? null,
     signalCount:   opp.signal_count ?? 0,
     totalSv:       opp.total_sv,
     createdAt:     opp.created_at,
@@ -391,9 +533,13 @@ function buildJourneyItem(
     tyrScore:      opp.tyr_score,
     tyrStatus:     opp.tyr_status,
     heimdallCount, lokiCount, odinCount,
+    signalReasons,
+    droppedClicks: droppedClicks && droppedClicks > 0 ? droppedClicks : null,
     pipelineStage, progressPct, needsAction, isComplete,
     stages,
     briefs,
+    assignedTo,
+    approvedBy,
   }
 }
 

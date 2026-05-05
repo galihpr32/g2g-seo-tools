@@ -120,6 +120,12 @@ const briefTool: Anthropic.Tool = {
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function generateAgentBrief(input: BriefInput): Promise<void> {
+  // Outreach briefs need a fundamentally different output (link-building pitch
+  // template, NOT an SEO content brief). Delegate to the dedicated path.
+  if (input.briefType === 'outreach') {
+    return generateOutreachBrief(input)
+  }
+
   const db = createServiceClient()
 
   // Mark as generating
@@ -723,4 +729,294 @@ ${draftHeader ? `\nFor reference, the meta description and user intent already a
 
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
   return { ok: false, reason }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OUTREACH brief generator
+//
+// Triggered when the user approves an opportunity with output_type='outreach'.
+// Produces a MASTER PITCH TEMPLATE for link-building campaigns, NOT an SEO
+// content brief. Hermod consumes this template later to personalise per-prospect
+// emails (Hermod adds {{prospect_name}} / {{prospect_site}} fills).
+//
+// Field re-use in seo_content_briefs (one table, brief_type drives interpretation):
+//   content_outline    → talking points (one section "Key Selling Points")
+//   faq_suggestions    → objections + rebuttals (same shape, different label)
+//   new_keywords       → anchor text variations (volume always null)
+//   final_content      → email skeleton (subject + body + follow-up)
+//   content_draft      → 1-line value proposition for header summary
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface OutreachBrief {
+  valueProposition:  string
+  talkingPoints:     string[]
+  anchorTextOptions: string[]
+  emailSubjects:     string[]
+  emailBody:         string
+  followUpEmail:     string
+  objections:        { question: string; suggested_answer: string }[]
+}
+
+const outreachTool: Anthropic.Tool = {
+  name: 'submit_outreach_brief',
+  description: 'Submit the structured link-building outreach pitch template.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      valueProposition: {
+        type: 'string',
+        description: '1 paragraph (50-80 words). Why a gaming blogger / Discord mod / YouTuber should care about linking to G2G for this topic. Lead with value to THEIR audience, not what G2G wants.',
+      },
+      talkingPoints: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '5-7 concrete G2G facts that make the pitch credible. Examples: "ISO/IEC 27001:2013 certified", "GamerProtect escrow on every transaction", "200+ payment methods including local options", "24/7 support team". One fact per item, no fluff.',
+      },
+      anchorTextOptions: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '5-8 natural anchor text variations. Mix: 2-3 branded ("G2G", "G2G marketplace"), 2-3 generic ("verified marketplace", "trusted seller platform"), 2-3 topical (mention the keyword naturally). AVOID exact-match keyword stuffing — Google penalises that.',
+      },
+      emailSubjects: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '3-5 cold-email subject line variants. Under 50 chars. Conversational, NOT salesy. Personalize with {{prospect_site}} or {{topic}} placeholder where natural.',
+      },
+      emailBody: {
+        type: 'string',
+        description: 'Cold email body markdown. Use placeholders: {{prospect_name}}, {{prospect_site}}, {{topic}}. Structure: brief intro acknowledging their content (1-2 sentences) + value to their audience (1-2 sentences) + soft ask (resource share OR guest post offer) + closing. Max 150 words. Tone: friendly peer, not marketer.',
+      },
+      followUpEmail: {
+        type: 'string',
+        description: 'Follow-up email for non-responders after 5-7 days. ~80 words. Reference original lightly. Different angle — additional data point, alternative ask, or polite check-in. Same placeholders allowed.',
+      },
+      objections: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            question:         { type: 'string', description: 'Common objection or pushback.' },
+            suggested_answer: { type: 'string', description: 'Honest, helpful response. Goal: keep conversation alive without overselling.' },
+          },
+          required: ['question', 'suggested_answer'],
+        },
+        description: '3-5 likely prospect objections with response scripts. Examples: "We don\'t do paid placements" → "Totally fine — this is a free resource, no payment expected.". "Not relevant to our audience" → polite reasoning + offer to send something more aligned.',
+      },
+    },
+    required: ['valueProposition', 'talkingPoints', 'anchorTextOptions', 'emailSubjects', 'emailBody', 'followUpEmail', 'objections'],
+  },
+}
+
+function buildOutreachPrompt(input: BriefInput, kbBlock: string): string {
+  const review = input.previousReview
+  const regenBlock = review ? buildRegenFeedbackBlock(review) : ''
+
+  return `You are creating a LINK-BUILDING OUTREACH brief for G2G — a leading gaming marketplace selling in-game accounts, currencies, gift cards, top-ups (Robux, V-Bucks, etc.).
+
+PAGE THAT NEEDS BACKLINKS
+- Page URL: ${input.pageUrl}
+- Topic: "${input.keyword}"
+- Why we want links: ${input.notes ?? 'Drive referral traffic + improve domain authority for this commercial keyword.'}
+
+YOUR TASK
+Produce a MASTER PITCH TEMPLATE the outreach team will reuse across many prospects. Hermod (an automated outreach agent) personalises this per-prospect later by filling {{prospect_name}}, {{prospect_site}}, {{topic}} placeholders.
+
+⚠ THIS IS NOT A CONTENT BRIEF.
+Do NOT generate H1, meta description, content outline, sub-intent coverage, FAQ, heading structure, or article body.
+DO generate ONLY the 7 fields the submit_outreach_brief tool requires.
+
+PROSPECT TYPE (who we're pitching)
+- Gaming bloggers covering ${input.keyword}'s game/genre
+- Discord community moderators (relevant servers)
+- YouTubers / streamers covering the niche
+- Forum or wiki maintainers
+- Resource curators (e.g. "Best [game] sites" listicles)
+
+VOICE GUIDELINES
+- Sound like a fellow gamer reaching out to peer, NOT a marketer.
+- No exclamation marks. No "I hope this finds you well". No "I wanted to reach out".
+- Open with something specific to THEIR content (placeholder for personalisation).
+- Soft ask, never aggressive close. ALWAYS leave the door open if they decline.
+- Honesty: don't oversell. If they say not interested, accept gracefully.
+
+${kbBlock}
+
+${regenBlock}
+
+Use the submit_outreach_brief tool. Return all 7 fields. No preamble.`
+}
+
+function validateOutreachBrief(raw: Record<string, unknown>): OutreachBrief {
+  const arr = (v: unknown) => Array.isArray(v) ? v : []
+  const str = (v: unknown) => typeof v === 'string' ? v : ''
+
+  const vp = str(raw.valueProposition).trim()
+  if (vp.length < 30) throw new Error(`outreach valueProposition too short (${vp.length} chars)`)
+
+  const talkingPoints = arr(raw.talkingPoints).map(p => str(p)).filter(Boolean).slice(0, 10)
+  if (talkingPoints.length < 3) throw new Error(`outreach needs ≥3 talking points (got ${talkingPoints.length})`)
+
+  const anchorTextOptions = arr(raw.anchorTextOptions).map(a => str(a).trim()).filter(Boolean).slice(0, 12)
+  if (anchorTextOptions.length < 3) throw new Error(`outreach needs ≥3 anchor variations`)
+
+  const emailSubjects = arr(raw.emailSubjects).map(s => str(s).trim()).filter(Boolean).slice(0, 6)
+  if (emailSubjects.length < 2) throw new Error(`outreach needs ≥2 subject variants`)
+
+  const emailBody     = str(raw.emailBody).trim()
+  const followUpEmail = str(raw.followUpEmail).trim()
+  if (emailBody.length     < 100) throw new Error(`outreach emailBody too short`)
+  if (followUpEmail.length < 50)  throw new Error(`outreach followUpEmail too short`)
+
+  const objections = arr(raw.objections).map(o => {
+    const ob = o as Record<string, unknown>
+    return { question: str(ob.question), suggested_answer: str(ob.suggested_answer) }
+  }).filter(o => o.question && o.suggested_answer).slice(0, 6)
+
+  return {
+    valueProposition: vp,
+    talkingPoints,
+    anchorTextOptions,
+    emailSubjects,
+    emailBody,
+    followUpEmail,
+    objections,
+  }
+}
+
+/**
+ * Render the outreach brief into the writer-facing email skeleton stored in
+ * final_content. This is what FinalContentPanel surfaces as the "ready to
+ * paste into Gmail" markdown. Hermod also reads this when personalising.
+ */
+function renderOutreachEmailSkeleton(o: OutreachBrief): string {
+  const subjects = o.emailSubjects.map((s, i) => `${i + 1}. ${s}`).join('\n')
+  const anchors  = o.anchorTextOptions.map(a => `- ${a}`).join('\n')
+
+  return [
+    `# Outreach Pitch Templates`,
+    ``,
+    `**Value proposition:** ${o.valueProposition}`,
+    ``,
+    `## Subject Line Options`,
+    ``,
+    subjects,
+    ``,
+    `## Cold Email Body`,
+    ``,
+    `_Placeholders: {{prospect_name}}, {{prospect_site}}, {{topic}} — Hermod fills these per-prospect._`,
+    ``,
+    o.emailBody,
+    ``,
+    `## Follow-up (5-7 days after no reply)`,
+    ``,
+    o.followUpEmail,
+    ``,
+    `## Anchor Text Options`,
+    ``,
+    anchors,
+    ``,
+    `_Pick variety per prospect — never use the same anchor twice in a campaign. Branded > generic > topical, never exact-match._`,
+  ].join('\n')
+}
+
+export async function generateOutreachBrief(input: BriefInput): Promise<void> {
+  const db = createServiceClient()
+
+  // Mark as generating
+  await db
+    .from('seo_content_briefs')
+    .update({ status: 'generating' })
+    .eq('id', input.briefId)
+
+  let lastErr: unknown = null
+  let parsed: OutreachBrief | null = null
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword)
+      const prompt  = buildOutreachPrompt(input, kbBlock)
+
+      const response = await anthropic.messages.create({
+        model:       MODEL,
+        max_tokens:  MAX_TOKENS,
+        tools:       [outreachTool],
+        tool_choice: { type: 'tool', name: 'submit_outreach_brief' },
+        messages:    [{ role: 'user', content: prompt }],
+      })
+
+      logClaudeUsage(db, input.ownerId, {
+        model:       MODEL,
+        endpoint:    'outreach_brief',
+        triggeredBy: 'agent_bragi',
+        usage:       response.usage,
+        extra:       { brief_id: input.briefId, attempt },
+      })
+
+      const toolUse = response.content.find(b => b.type === 'tool_use')
+      if (!toolUse || toolUse.type !== 'tool_use') {
+        throw new Error(`Claude did not call submit_outreach_brief (stop_reason=${response.stop_reason})`)
+      }
+
+      parsed = validateOutreachBrief(toolUse.input as Record<string, unknown>)
+      break
+    } catch (err) {
+      lastErr = err
+      console.warn(`[outreach-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err instanceof Error ? err.message : err)
+      if (attempt < MAX_ATTEMPTS) await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
+    }
+  }
+
+  if (!parsed) {
+    const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
+    console.error('[outreach-generator] all retries failed:', reason)
+    await db
+      .from('seo_content_briefs')
+      .update({
+        status: 'draft',
+        notes:  appendNote(input.notes ?? '', `[outreach-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
+      })
+      .eq('id', input.briefId)
+    return
+  }
+
+  // ── Persist using shared seo_content_briefs columns (semantic re-use) ─────
+  const outlineJson = [{
+    heading: 'Key Selling Points (Bragi-generated for outreach pitch)',
+    points:  parsed.talkingPoints,
+  }]
+  const newKeywordsJson = parsed.anchorTextOptions.map(a => ({ keyword: a, volume: null }))
+  const draftHeader     = `# Outreach Brief — ${input.keyword}\n\n**Value proposition:** ${parsed.valueProposition}\n\n_Hermod uses this brief to personalise per-prospect emails. The full email skeleton lives in Final Content below._`
+
+  await db
+    .from('seo_content_briefs')
+    .update({
+      status:           'agent_generated',
+      content_outline:  outlineJson,
+      content_draft:    draftHeader,
+      faq_suggestions:  parsed.objections,                 // same shape: { question, suggested_answer }
+      new_keywords:     newKeywordsJson,                   // anchor text re-uses keyword shape
+      // Outreach skips the assembly step — the email skeleton IS the final
+      // content. Stamp it directly so writers can review/edit immediately.
+      final_content:               renderOutreachEmailSkeleton(parsed),
+      final_content_generated_at:  new Date().toISOString(),
+    })
+    .eq('id', input.briefId)
+
+  // ── Run Tyr review (same scoring engine — outreach gets relaxed thresholds
+  // because the rubric is keyword-density-heavy and outreach pitch is short
+  // form. Skipped for now: outreach Tyr scoring would need a separate rubric.
+  // For Tema 2 ship, we stamp 'reviewed' immediately so the brief is usable. ──
+  await db
+    .from('seo_content_briefs')
+    .update({
+      status:          'reviewed',
+      tyr_status:      'reviewed',
+      tyr_score:       null,                               // intentionally null — different rubric
+      tyr_reviewed_at: new Date().toISOString(),
+      notes: appendNote(
+        input.notes ?? '',
+        '[outreach] Tyr scoring skipped — outreach uses a different rubric than SEO briefs. Brief auto-promoted to reviewed.',
+      ),
+    })
+    .eq('id', input.briefId)
 }

@@ -101,7 +101,7 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
   const [opportunities, setOpportunities] = useState<Opportunity[]>(initialOpportunities)
   const [statusFilter,  setStatusFilter]  = useState<string>('all_active')
   const [agentFilter,   setAgentFilter]   = useState<string>('all')
-  const [sortBy,        setSortBy]        = useState<'updated_at' | 'signal_count' | 'total_sv'>('updated_at')
+  const [sortBy,        setSortBy]        = useState<'updated_at' | 'signal_count' | 'total_sv' | 'clicks_drop'>('updated_at')
   const [selected,      setSelected]      = useState<Set<string>>(new Set())
   const [expanded,      setExpanded]      = useState<string | null>(null)
   const [saving,         setSaving]         = useState(false)
@@ -131,9 +131,20 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
       return sources >= 2
     })
 
+    // Helper: total Heimdall click-drop across all signals on this opp.
+    // Tema 1.3 — surfaces highest-impact recovery opps first when sorted.
+    const totalClicksDrop = (o: Opportunity): number => {
+      if (!Array.isArray(o.heimdall_signals)) return 0
+      return o.heimdall_signals.reduce((sum, s) => {
+        const drop = (s as { clicks_drop?: number })?.clicks_drop
+        return sum + Math.abs(typeof drop === 'number' ? drop : 0)
+      }, 0)
+    }
+
     list = [...list].sort((a, b) => {
       if (sortBy === 'signal_count') return b.signal_count - a.signal_count
       if (sortBy === 'total_sv')     return b.total_sv - a.total_sv
+      if (sortBy === 'clicks_drop')  return totalClicksDrop(b) - totalClicksDrop(a)
       return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
     })
 
@@ -275,6 +286,7 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
           <option value="updated_at">Sort: Recent</option>
           <option value="signal_count">Sort: Signal Count</option>
           <option value="total_sv">Sort: Search Volume</option>
+          <option value="clicks_drop">Sort: Dropped Clicks (Heimdall)</option>
         </select>
 
         <span className="text-xs text-gray-500 ml-auto">{filtered.length} opportunities</span>

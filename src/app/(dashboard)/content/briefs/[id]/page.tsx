@@ -5,6 +5,7 @@ import { notFound, redirect } from 'next/navigation'
 import BriefQualityReview, { type TyrBreakdown } from '@/components/agents/BriefQualityReview'
 import BriefActionBar from '@/components/agents/BriefActionBar'
 import FinalContentPanel from '@/components/agents/FinalContentPanel'
+import OutreachAnchorEditor from '@/components/agents/OutreachAnchorEditor'
 
 // Disable revalidate caching on this page so writers see freshly-generated
 // final content immediately after assembly without a stale 30s window.
@@ -68,6 +69,14 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
   const outline:  OutlineSection[] = Array.isArray(brief.content_outline) ? brief.content_outline : []
   const faqs:     FaqItem[]        = Array.isArray(brief.faq_suggestions) ? brief.faq_suggestions : []
   const keywords: KeywordItem[]    = Array.isArray(brief.new_keywords)    ? brief.new_keywords    : []
+
+  // Outreach briefs reuse the same JSONB columns but with different semantics.
+  // Adjust section labels so writers see "Talking Points" / "Objections" /
+  // "Anchor Texts" instead of the SEO-flavoured defaults.
+  const isOutreach = brief.brief_type === 'outreach'
+  const outlineHeader  = isOutreach ? '🎯 Key Selling Points'   : '📋 Content Outline'
+  const faqHeader      = isOutreach ? '🛡️ Likely Objections'    : '❓ FAQ Suggestions'
+  const keywordsHeader = isOutreach ? '🔗 Anchor Text Options'  : '🎯 Target Keywords'
 
   return (
     <div className="p-8 max-w-4xl">
@@ -138,6 +147,7 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         initialTranslations={(brief.final_content_translations as Record<string, string> | null) ?? {}}
         initialStatus={brief.status as string}
         initialTyrStatus={brief.tyr_status as string | null}
+        briefType={(brief.brief_type as string | null) ?? undefined}
       />
 
       {/* Brief metadata */}
@@ -148,10 +158,10 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         </section>
       )}
 
-      {/* Content outline */}
+      {/* Content outline (or "Key Selling Points" for outreach briefs) */}
       {outline.length > 0 && (
         <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">📋 Content Outline</h2>
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">{outlineHeader}</h2>
           <div className="space-y-3">
             {outline.map((s, i) => (
               <div key={i} className="border-l-2 border-gray-700 pl-3">
@@ -172,10 +182,10 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         </section>
       )}
 
-      {/* FAQ */}
+      {/* FAQ Suggestions (or "Likely Objections" for outreach briefs) */}
       {faqs.length > 0 && (
         <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">❓ FAQ Suggestions</h2>
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">{faqHeader}</h2>
           <div className="space-y-3">
             {faqs.map((f, i) => (
               <div key={i}>
@@ -189,20 +199,30 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         </section>
       )}
 
-      {/* Target keywords */}
-      {keywords.length > 0 && (
+      {/* Target Keywords (or "Anchor Text Options" for outreach briefs).
+          Outreach renders an inline editor so writers can add/remove anchor
+          variations directly; SEO briefs render read-only chips since
+          targetKeywords come from Bragi and aren't writer-edited per-brief. */}
+      {(keywords.length > 0 || isOutreach) && (
         <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">🎯 Target Keywords</h2>
-          <div className="flex flex-wrap gap-2">
-            {keywords.map((k, i) => (
-              <span key={i} className="bg-gray-800 px-2.5 py-1 rounded text-xs text-gray-300">
-                {k.keyword}
-                {k.volume != null && (
-                  <span className="text-gray-500 ml-1.5">· {k.volume}</span>
-                )}
-              </span>
-            ))}
-          </div>
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">{keywordsHeader}</h2>
+          {isOutreach ? (
+            <OutreachAnchorEditor
+              briefId={id}
+              initialAnchors={keywords.map(k => k.keyword ?? '').filter(Boolean) as string[]}
+            />
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {keywords.map((k, i) => (
+                <span key={i} className="bg-gray-800 px-2.5 py-1 rounded text-xs text-gray-300">
+                  {k.keyword}
+                  {k.volume != null && (
+                    <span className="text-gray-500 ml-1.5">· {k.volume}</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
