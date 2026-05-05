@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { readProductSheet } from '@/lib/google/sheets'
-import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
+import { readProductSheet, writeProductRow, SHEET_STATUS } from '@/lib/google/sheets'
+import { buildCategoryInstructions } from '@/lib/g2g-category-prompts'
+import { createProductDoc } from '@/lib/google/drive'
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { logApiUsage } from '@/lib/api-logger'
 import Anthropic from '@anthropic-ai/sdk'
@@ -14,7 +15,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // POST /api/products/auto-content/sync
 // Body: { spreadsheet_id?, sheet_name?, limit?, regenerate_existing? }
-// Reads the Google Sheet, generates content for new/pending products, saves to DB
+// Reads the Google Sheet (Status = "To Do" rows), generates content, writes back to sheet + DB.
 export async function POST(req: Request) {
   const supabase  = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -44,41 +45,47 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'No spreadsheet configured. Set up Google Sheet first.' }, { status: 400 })
   }
 
-  // ── Read Google Sheet ──────────────────────────────────────────────────────
+  // ── Read Google Sheet (only "To Do" rows by default) ──────────────────────
   let sheetRows
   try {
-    sheetRows = await readProductSheet(spreadsheetId, sheetName)
+    // allStatuses=true when regenerate_existing so we can also redo failed/generated rows
+    sheetRows = await readProductSheet(spreadsheetId, sheetName, 2, 500, !!body.regenerate_existing)
   } catch (e) {
     return NextResponse.json({ error: `Google Sheets error: ${String(e)}` }, { status: 500 })
   }
 
   if (!sheetRows.length) {
-    return NextResponse.json({ synced: 0, message: 'Sheet is empty or no valid rows found' })
+    return NextResponse.json({ synced: 0, message: 'No "To Do" rows found in sheet' })
   }
 
-  // ── Find which products need content generated ─────────────────────────────
-  const allRelationIds = sheetRows.map(r => r.relationId)
+  // ── If regenerate_existing, also include already-failed DB rows ────────────
+  let toProcess = sheetRows
 
-  const { data: existing } = await db
-    .from('product_content_queue')
-    .select('relation_id, status')
-    .eq('owner_user_id', ownerId)
-    .in('relation_id', allRelationIds)
+  if (!body.regenerate_existing) {
+    // Skip rows already successfully generated in our DB
+    const allRelationIds = sheetRows.map(r => r.relationId)
+    const { data: existing } = await db
+      .from('product_content_queue')
+      .select('relation_id, status')
+      .eq('owner_user_id', ownerId)
+      .in('relation_id', allRelationIds)
 
-  const existingMap = new Map((existing ?? []).map(r => [r.relation_id, r.status]))
+    const existingMap = new Map((existing ?? []).map(r => [r.relation_id, r.status]))
 
-  const toProcess = sheetRows.filter(row => {
-    const status = existingMap.get(row.relationId)
-    if (!status) return true                                       // new product
-    if (body.regenerate_existing) return true                      // forced regen
-    return status === 'pending' || status === 'failed'             // retry failures
-  }).slice(0, limit)
+    toProcess = sheetRows.filter(row => {
+      const dbStatus = existingMap.get(row.relationId)
+      if (!dbStatus) return true                          // new product — process
+      return dbStatus === 'failed'                        // retry failures
+    })
+  }
+
+  toProcess = toProcess.slice(0, limit)
 
   if (!toProcess.length) {
-    return NextResponse.json({ synced: 0, message: 'All products already have content' })
+    return NextResponse.json({ synced: 0, message: 'All "To Do" products already have content in DB' })
   }
 
-  // ── Upsert rows as 'generating' ────────────────────────────────────────────
+  // ── Upsert rows as 'generating' in DB ─────────────────────────────────────
   await db
     .from('product_content_queue')
     .upsert(
@@ -87,7 +94,7 @@ export async function POST(req: Request) {
         relation_id:   row.relationId,
         product_name:  row.productName,
         category:      row.category,
-        url:           row.url,
+        url:           buildProductUrl(row.category, row.productName),
         sheet_row:     row.rowIndex,
         status:        'generating',
         updated_at:    new Date().toISOString(),
@@ -100,41 +107,35 @@ export async function POST(req: Request) {
 
   for (const row of toProcess) {
     try {
-      // Derive main keyword from product name + category
-      const mainKeyword = row.productName
       const gameName    = extractGameName(row.productName, row.category)
+      const productUrl  = buildProductUrl(row.category, row.productName)
 
-      // Get keyword suggestions for context (non-blocking, best-effort)
-      let secondaryKws: string[] = []
-      try {
-        const suggestions = await getKeywordSuggestions(mainKeyword, 2840, 'en', 10)
-        secondaryKws = suggestions.slice(0, 5).map(s => s.keyword)
-      } catch { /* skip — not critical */ }
+      // Use existing keyword from sheet if already filled; otherwise ask DataForSEO
+      let mainKeyword      = row.mainKeyword      || row.productName
+      let secondaryKwStr   = row.secondaryKeyword || ''
+
+      if (!row.mainKeyword) {
+        try {
+          const suggestions = await getKeywordSuggestions(row.productName, 2840, 'en', 10)
+          if (suggestions.length) {
+            mainKeyword    = suggestions[0].keyword
+            secondaryKwStr = suggestions.slice(1, 6).map(s => s.keyword).join(', ')
+          }
+        } catch { /* non-critical — fall back to product name */ }
+      }
 
       // Build category-specific instructions from Master Prompt List
-      const categoryInstructions = buildCategoryInstructions(row.url, gameName, mainKeyword)
+      // If no template found for this category, falls back to a generic product description prompt
+      const categoryInstructions = buildCategoryInstructions(productUrl, gameName, mainKeyword)
 
-      const prompt = `${categoryInstructions}
-
-PRODUCT DETAILS:
-- Product Name: ${row.productName}
-- Category: ${row.category}
-- URL: ${row.url}
-- Primary Keyword: ${mainKeyword}
-- Secondary Keywords: ${secondaryKws.join(', ') || 'none'}
-
-Generate the complete product page content following ALL the instructions above.
-
-Return a JSON object with these exact fields:
-{
-  "meta_title": "SEO title ≤60 chars",
-  "meta_description": "SEO description ≤110 chars",
-  "meta_keywords": "keyword1, keyword2, keyword3",
-  "marketing_title": "Product page H1 title",
-  "marketing_description": "Full HTML product description using <br><br> between paragraphs, following the section structure above"
-}
-
-No markdown fences. Only valid JSON.`
+      const prompt = buildPrompt({
+        categoryInstructions,
+        productName:  row.productName,
+        category:     row.category,
+        url:          productUrl,
+        mainKeyword,
+        secondaryKws: secondaryKwStr,
+      })
 
       const msg = await anthropic.messages.create({
         model:      'claude-haiku-4-5-20251001',  // fast + cheap for bulk generation
@@ -148,7 +149,27 @@ No markdown fences. Only valid JSON.`
       const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
       const parsed  = JSON.parse(jsonStr)
 
-      // Save to DB
+      // ── Create Google Doc (dual-output backup) ────────────────────────────
+      let googleDocUrl = ''
+      try {
+        googleDocUrl = await createProductDoc({
+          productName:          row.productName,
+          category:             row.category,
+          relationId:           row.relationId,
+          mainKeyword,
+          secondaryKeyword:     secondaryKwStr,
+          metaTitle:            parsed.meta_title            ?? '',
+          metaDescription:      parsed.meta_description      ?? '',
+          metaKeywords:         parsed.meta_keywords         ?? '',
+          marketingTitle:       parsed.marketing_title       ?? row.productName,
+          marketingDescription: parsed.marketing_description ?? '',
+        })
+      } catch (docErr) {
+        // Google Doc creation is best-effort — log but don't fail the whole product
+        console.error(`[auto-content] Google Doc creation failed for ${row.relationId}:`, docErr)
+      }
+
+      // ── Save to DB ────────────────────────────────────────────────────────
       await db
         .from('product_content_queue')
         .update({
@@ -157,6 +178,9 @@ No markdown fences. Only valid JSON.`
           meta_keywords:         parsed.meta_keywords         ?? '',
           marketing_title:       parsed.marketing_title       ?? row.productName,
           marketing_description: parsed.marketing_description ?? '',
+          main_keyword:          mainKeyword,
+          secondary_keywords:    secondaryKwStr,
+          google_doc_url:        googleDocUrl || null,
           status:                'generated',
           generated_at:          new Date().toISOString(),
           updated_at:            new Date().toISOString(),
@@ -164,54 +188,151 @@ No markdown fences. Only valid JSON.`
         .eq('owner_user_id', ownerId)
         .eq('relation_id', row.relationId)
 
+      // ── Write back to Google Sheet ────────────────────────────────────────
+      try {
+        await writeProductRow(spreadsheetId, sheetName, row.rowIndex, {
+          mainKeyword,
+          secondaryKeyword: secondaryKwStr,
+          enFileName:       googleDocUrl || '',
+          status:           SHEET_STATUS.GENERATED,
+        })
+      } catch (sheetErr) {
+        // Sheet write-back is best-effort — don't fail the product
+        console.error(`[auto-content] Sheet write-back failed for row ${row.rowIndex}:`, sheetErr)
+      }
+
       results.push({ relationId: row.relationId, ok: true })
     } catch (e) {
       console.error(`[auto-content] failed for ${row.relationId}:`, e)
+
       await db
         .from('product_content_queue')
         .update({ status: 'failed', updated_at: new Date().toISOString() })
         .eq('owner_user_id', ownerId)
         .eq('relation_id', row.relationId)
+
+      // Mark as Failed in sheet too
+      try {
+        await writeProductRow(spreadsheetId, sheetName, row.rowIndex, {
+          status: SHEET_STATUS.FAILED,
+        })
+      } catch { /* best-effort */ }
+
       results.push({ relationId: row.relationId, ok: false, error: String(e) })
     }
   }
 
-  // Update last_synced_at
+  // ── Update last_synced_at ──────────────────────────────────────────────────
   await db
     .from('product_sheet_config')
     .upsert({
-      owner_user_id: ownerId,
+      owner_user_id:  ownerId,
       spreadsheet_id: spreadsheetId,
-      sheet_name: sheetName,
+      sheet_name:     sheetName,
       last_synced_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      updated_at:     new Date().toISOString(),
     }, { onConflict: 'owner_user_id' })
 
   const succeeded = results.filter(r => r.ok).length
   const failed    = results.filter(r => !r.ok).length
 
   return NextResponse.json({
-    synced:    succeeded,
+    synced:        succeeded,
     failed,
-    total:     toProcess.length,
-    sheetRows: sheetRows.length,
+    total:         toProcess.length,
+    sheetRowsRead: sheetRows.length,
     results,
   })
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function extractGameName(productName: string, category: string): string {
-  // Try to extract the game name by removing common category suffixes
+
+/**
+ * Construct a representative G2G URL from the sheet category name.
+ * This URL is passed to detectCategory() / buildCategoryInstructions() which
+ * uses URL pattern matching to select the right prompt template.
+ *
+ * Sheet categories → G2G URL segment mapping:
+ *   Gift Cards, Payment Card  → gift-card
+ *   Accounts                  → accounts
+ *   Video Game, Game Keys     → cd-key
+ *   Software                  → software
+ *   Boosting                  → boosting
+ *   Currency, Top Up, Coins   → game-coins
+ *   Items, Direct Top Up      → game-items  (will fall back to generic)
+ *   Telco                     → telco        (will fall back to generic)
+ */
+function buildProductUrl(category: string, productName: string): string {
+  const cat = category.toLowerCase().trim()
+  const slug = productName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
+  let segment = 'product'
+
+  if (cat.includes('gift') || cat.includes('payment card')) {
+    segment = 'gift-card'
+  } else if (cat.includes('account')) {
+    segment = 'accounts'
+  } else if (cat.includes('video game') || cat.includes('game key') || cat.includes('cd key')) {
+    segment = 'cd-key'
+  } else if (cat.includes('software') || cat.includes('app')) {
+    segment = 'software'
+  } else if (cat.includes('boost')) {
+    segment = 'boosting'
+  } else if (cat.includes('currency') || cat.includes('coin') || cat.includes('gold') || cat.includes('top up') || cat.includes('topup')) {
+    segment = 'game-coins'
+  } else if (cat.includes('item')) {
+    segment = 'game-items'
+  } else if (cat.includes('gamepal') || cat.includes('lfg')) {
+    segment = 'gamepal'
+  } else if (cat.includes('telco')) {
+    segment = 'telco'
+  }
+
+  return `https://www.g2g.com/${segment}/${slug}`
+}
+
+function extractGameName(productName: string, _category: string): string {
   const suffixes = [
     'coins', 'currency', 'gold', 'credits', 'gems', 'tokens',
     'account', 'accounts', 'boosting', 'boost', 'power leveling',
     'cd key', 'game key', 'keys', 'gift card', 'top-up', 'topup',
-    'gamepal', 'companion', 'software',
+    'gamepal', 'companion', 'software', 'items', 'item',
   ]
-  let name = productName.toLowerCase()
+  let name = productName
   for (const s of suffixes) {
     name = name.replace(new RegExp(`\\s*-?\\s*${s}s?\\s*$`, 'i'), '')
-    name = name.replace(new RegExp(`^buy\\s+`, 'i'), '')
+    name = name.replace(/^buy\s+/i, '')
   }
   return name.trim() || productName
+}
+
+function buildPrompt(opts: {
+  categoryInstructions: string
+  productName:  string
+  category:     string
+  url:          string
+  mainKeyword:  string
+  secondaryKws: string
+}): string {
+  return `${opts.categoryInstructions}
+
+PRODUCT DETAILS:
+- Product Name: ${opts.productName}
+- Category: ${opts.category}
+- URL: ${opts.url}
+- Primary Keyword: ${opts.mainKeyword}
+- Secondary Keywords: ${opts.secondaryKws || 'none'}
+
+Generate the complete product page content following ALL the instructions above.
+
+Return a JSON object with these exact fields:
+{
+  "meta_title": "SEO title ≤60 chars",
+  "meta_description": "SEO description ≤110 chars",
+  "meta_keywords": "keyword1, keyword2, keyword3",
+  "marketing_title": "Product page H1 title",
+  "marketing_description": "Full HTML product description using <br><br> between paragraphs, following the section structure above"
+}
+
+No markdown fences. Only valid JSON.`
 }

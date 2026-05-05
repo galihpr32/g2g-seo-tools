@@ -12,6 +12,9 @@ interface ProductItem {
   category:              string
   url:                   string
   sheet_row:             number
+  main_keyword:          string | null
+  secondary_keywords:    string | null
+  google_doc_url:        string | null
   meta_title:            string | null
   meta_description:      string | null
   meta_keywords:         string | null
@@ -78,6 +81,42 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
         </div>
 
         <div className="p-5 space-y-5">
+          {/* Keywords */}
+          {(item.main_keyword || item.secondary_keywords) && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Keywords</h3>
+              <div className="space-y-2">
+                {item.main_keyword && (
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Main Keyword</label>
+                    <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.main_keyword}</p>
+                  </div>
+                )}
+                {item.secondary_keywords && (
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Secondary Keywords</label>
+                    <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.secondary_keywords}</p>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Google Doc link */}
+          {item.google_doc_url && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Backup Doc</h3>
+              <a
+                href={item.google_doc_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 bg-gray-800 rounded-lg px-3 py-2 transition"
+              >
+                📄 Open Google Doc ↗
+              </a>
+            </section>
+          )}
+
           {/* SEO fields */}
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">SEO Fields</h3>
@@ -187,8 +226,14 @@ function SheetConfigModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
         </div>
         <div className="p-5 space-y-4">
           <p className="text-sm text-gray-400">
-            Share your Google Sheet with the service account, then paste the URL below.
-            Expected columns: <code className="text-yellow-400 bg-gray-800 px-1 rounded">Product Name | Category | URL | Relation ID</code>
+            Share your Google Sheet with the service account email (<strong className="text-gray-300">Editor</strong> permission for write-back), then paste the URL below.
+          </p>
+          <div className="bg-gray-800 rounded-lg p-3 text-xs text-gray-400 font-mono">
+            A: Brand Name &nbsp;|&nbsp; B: Category &nbsp;|&nbsp; C: Relation ID<br/>
+            D: Main Keyword &nbsp;|&nbsp; E: Secondary Keyword &nbsp;|&nbsp; F: EN File Name &nbsp;|&nbsp; G: Status
+          </div>
+          <p className="text-xs text-gray-500">
+            The agent reads rows where Status = &quot;To Do&quot; and writes back keywords, Google Doc URL, and status when done.
           </p>
           <div>
             <label className="block text-sm text-gray-300 mb-1.5">Google Sheet URL</label>
@@ -440,6 +485,7 @@ export default function ProductContentPage() {
                 <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
                 <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">CMS</th>
                 <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Generated</th>
+                <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Doc</th>
                 <th className="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Actions</th>
               </tr>
             </thead>
@@ -501,6 +547,23 @@ export default function ProductContentPage() {
                         ? new Date(item.generated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
                         : '—'}
                     </span>
+                  </td>
+
+                  {/* Google Doc link */}
+                  <td className="px-3 py-2.5">
+                    {item.google_doc_url ? (
+                      <a
+                        href={item.google_doc_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 text-xs transition"
+                        title="Open Google Doc"
+                      >
+                        📄 Doc
+                      </a>
+                    ) : (
+                      <span className="text-gray-600 text-xs">—</span>
+                    )}
                   </td>
 
                   {/* Actions */}

@@ -21,10 +21,12 @@ leave both files unchanged. Verify with md5 after every batch of edits.
 
 **Reference md5s as of last unchanged baseline:**
 ```
-src/app/api/ai/chat/route.ts                    af90bef16ef3e3a6f8f5d7d224617612
-src/components/dashboard/AIAssistant.tsx        d5e7eb0f1c637c0cdce5afec5301bb0d
+src/app/api/ai/chat/route.ts                    7f73ba15f96098faa7023f826d1f0288
+src/components/dashboard/AIAssistant.tsx        4a9b0a9c6c8d368191a8107c206b321b
 ```
-_(Updated after §10 Mimir agent-trigger implementation — Sonnet session 2026-04-28)_
+_(Updated 2026-05-04 after Saga redesign + Topic Detail Page session. The
+Mimir files were NOT modified in that session — these are the pre-existing
+drift values from earlier Sonnet sessions, validated as the new baseline.)_
 
 ```bash
 md5sum src/app/api/ai/chat/route.ts src/components/dashboard/AIAssistant.tsx
@@ -269,8 +271,7 @@ psql "$DATABASE_URL" -f supabase/migrations/add_brief_outcomes.sql
 
 ### High priority
 
-1. **Mimir agent-trigger tool** — see §10 for the full spec. Opus wrote the
-   entire design; Sonnet is tasked with implementing it end-to-end.
+1. ~~**Mimir agent-trigger tool**~~ → ✅ DONE (2026-05-04). `confirm-agent-run/route.ts` created; all components live.
 
 2. **Onboarding wizard + tooltips + empty states for new logins.**
    First-time tour by role (SEO / writer / executive). Right now empty pages
@@ -487,12 +488,21 @@ grep "action.action_type === " src/lib/agents/executor.ts
 
 ---
 
-## 10. SCOPED FEATURE — Mimir agent-trigger tool (FOR SONNET TO IMPLEMENT)
+## 10. SCOPED FEATURE — Mimir agent-trigger tool
 
-**Status:** spec'd, NOT YET BUILT. The user has explicitly scoped this work to
-the next coding session and authorised modifying the AI Assistant files (see
-§0.1 exception clause). Build this end-to-end. Do not partial-implement. Do
-not skip any of items 1-5 below.
+**Status: ✅ COMPLETE (implemented 2026-05-04)**
+
+All components were implemented (Opus wrote frontend, Sonnet wrote backend):
+- `src/app/api/ai/chat/route.ts` — `propose_agent_run` tool + system prompt ✅
+- `src/components/dashboard/AIAssistant.tsx` — `ConfirmCard` + `parseConfirmBlock` + `handleConfirm` ✅
+- `supabase/migrations/mimir_pending_triggers.sql` — DB migration ✅
+- `src/app/api/ai/confirm-agent-run/route.ts` — NEW endpoint created ✅
+
+AI file md5s after implementation (unchanged — neither file was modified in Sonnet session):
+```
+src/app/api/ai/chat/route.ts                    7f73ba15f96098faa7023f826d1f0288
+src/components/dashboard/AIAssistant.tsx        4a9b0a9c6c8d368191a8107c206b321b
+```
 
 ### 10.1 The problem
 
