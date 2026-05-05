@@ -1204,6 +1204,9 @@ interface PromptTemplate {
   sections:              { subheading: string; instructions: string }[]
   is_active:             boolean
   is_customized:         boolean
+  // True when this entry has no built-in TS default — i.e. it's user-created
+  // and can be fully deleted (vs only reset to default).
+  is_custom?:            boolean
 }
 
 function PromptCard({ prompt, onSaved }: { prompt: PromptTemplate; onSaved: () => void }) {
@@ -1237,7 +1240,11 @@ function PromptCard({ prompt, onSaved }: { prompt: PromptTemplate; onSaved: () =
   }
 
   async function handleReset() {
-    if (!confirm('Reset to default? Your customizations will be lost.')) return
+    const isCustom = !!prompt.is_custom
+    const msg = isCustom
+      ? `Delete "${prompt.category_name}"? This custom category will be permanently removed.`
+      : 'Reset to default? Your customizations will be lost.'
+    if (!confirm(msg)) return
     setResetting(true)
     await fetch(`/api/knowledge-base/prompts?category_key=${form.category_key}`, { method: 'DELETE' })
     setResetting(false)
@@ -1332,12 +1339,50 @@ function PromptCard({ prompt, onSaved }: { prompt: PromptTemplate; onSaved: () =
             </div>
           </div>
 
+          {/* Sections — Add / remove */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setForm(f => ({
+                ...f,
+                sections: [...f.sections, { subheading: '', instructions: '' }],
+              }))}
+              className="text-xs text-blue-400 hover:text-blue-300 transition"
+            >
+              + Add section
+            </button>
+            {form.sections.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, sections: f.sections.slice(0, -1) }))}
+                className="text-xs text-gray-500 hover:text-red-400 transition"
+              >
+                – Remove last
+              </button>
+            )}
+          </div>
+
+          {/* URL patterns + actions */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">URL Patterns (comma-separated)</label>
+            <input
+              value={form.url_patterns.join(', ')}
+              onChange={e => setForm(f => ({
+                ...f,
+                url_patterns: e.target.value.split(',').map(s => s.trim()).filter(Boolean),
+              }))}
+              placeholder="account, accounts, profile"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
+            />
+            <p className="text-[10px] text-gray-500 mt-1">URL fragments that auto-match this prompt to a page (e.g., /buy-fifa-account → matches &quot;account&quot;)</p>
+          </div>
+
           {/* Actions */}
           <div className="flex items-center justify-between pt-2">
             {prompt.is_customized ? (
               <button onClick={handleReset} disabled={resetting}
-                className="text-xs text-gray-500 hover:text-red-400 transition disabled:opacity-50">
-                {resetting ? 'Resetting…' : '↩ Reset to default'}
+                className={`text-xs transition disabled:opacity-50 ${prompt.is_custom ? 'text-red-500 hover:text-red-300' : 'text-gray-500 hover:text-red-400'}`}>
+                {resetting ? '…' : prompt.is_custom ? '🗑 Delete category' : '↩ Reset to default'}
               </button>
             ) : <div />}
             <button onClick={handleSave} disabled={saving}
@@ -1351,9 +1396,186 @@ function PromptCard({ prompt, onSaved }: { prompt: PromptTemplate; onSaved: () =
   )
 }
 
+function slugifyKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+}
+
+function AddCustomCategoryForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => void }) {
+  const [name,        setName]        = useState('')
+  const [icon,        setIcon]        = useState('🆕')
+  const [urls,        setUrls]        = useState('')
+  const [h1,          setH1]          = useState('Buy {mainKeyword} - Fast Delivery, 24/7 Support | G2G.com')
+  const [metaTitle,   setMetaTitle]   = useState('Buy {mainKeyword} - G2G.com (≤60 chars)')
+  const [metaDesc,    setMetaDesc]    = useState('≤110 chars. Include benefit + 3 trust terms.')
+  const [keywordRules, setKeywordRules] = useState('Main keyword: 1%–4% density. Secondary keywords: ≤2%, appear at least once.')
+  const [writingRules, setWritingRules] = useState('Natural, helpful tone. Use <br><br> between paragraphs (no <p> tags). Avoid filler words.')
+  const [faqFocus,    setFaqFocus]    = useState('Transaction safety, delivery, refunds, seller verification.')
+  const [sections,    setSections]    = useState<{ subheading: string; instructions: string }[]>([
+    { subheading: 'Buy {mainKeyword} — Overview', instructions: '~250 words, 3+ paragraphs explaining what users gain.' },
+    { subheading: 'Why Buy {mainKeyword} on G2G', instructions: '3 paragraphs covering GamerProtect escrow, ISO/IEC 27001:2013 security, 24/7 support.' },
+    { subheading: 'How to Buy {mainKeyword}', instructions: 'Ordered list of buy steps from search to delivery confirmation.' },
+    { subheading: 'FAQ', instructions: '3–5 FAQs from People Also Ask. Focus on safety, delivery, refunds.' },
+  ])
+  const [saving,      setSaving]      = useState(false)
+  const [error,       setError]       = useState<string | null>(null)
+
+  const key = slugifyKey(name)
+  const valid = name.trim().length >= 3 && key.length > 0
+
+  function updateSection(i: number, field: 'subheading' | 'instructions', val: string) {
+    setSections(s => { const next = [...s]; next[i] = { ...next[i], [field]: val }; return next })
+  }
+
+  async function handleSubmit() {
+    if (!valid) { setError('Category name must be at least 3 characters'); return }
+    setSaving(true); setError(null)
+    try {
+      const res = await fetch('/api/knowledge-base/prompts', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          category_key:           key,
+          category_name:          name.trim(),
+          icon,
+          url_patterns:           urls.split(',').map(s => s.trim()).filter(Boolean),
+          h1_template:            h1,
+          meta_title_template:    metaTitle,
+          meta_description_guide: metaDesc,
+          keyword_rules:          keywordRules,
+          writing_rules:          writingRules,
+          faq_focus:              faqFocus,
+          sections:               sections.filter(s => s.subheading.trim() || s.instructions.trim()),
+          is_active:              true,
+        }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`)
+      onSaved()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save failed')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="bg-gray-900 border border-blue-500/30 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-white font-semibold text-sm">+ New Custom Category</h3>
+        <button onClick={onCancel} className="text-gray-500 hover:text-white text-xs transition">✕ Cancel</button>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-red-300">⚠️ {error}</div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="md:col-span-2">
+          <label className="block text-xs text-gray-400 mb-1">Category Name *</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            placeholder="e.g. NFT/Crypto Items, VPN Services, Robux Items"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+          {key && <p className="text-[10px] text-gray-500 mt-1">key: <code className="text-yellow-400">{key}</code></p>}
+        </div>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Icon (emoji)</label>
+          <input value={icon} onChange={e => setIcon(e.target.value.slice(0, 4))}
+            placeholder="🆕"
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-2xl text-center text-white focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">URL Patterns (comma-separated)</label>
+        <input value={urls} onChange={e => setUrls(e.target.value)}
+          placeholder="e.g. nft, crypto, items"
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+        <p className="text-[10px] text-gray-500 mt-1">URL fragments that auto-match this template (e.g., /buy-nft-collectibles → matches &quot;nft&quot;).</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">H1 Template</label>
+          <input value={h1} onChange={e => setH1(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Meta Title Template</label>
+          <input value={metaTitle} onChange={e => setMetaTitle(e.target.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">Meta Description Guide</label>
+        <input value={metaDesc} onChange={e => setMetaDesc(e.target.value)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Keyword Rules</label>
+          <textarea value={keywordRules} onChange={e => setKeywordRules(e.target.value)}
+            rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">FAQ Focus</label>
+          <textarea value={faqFocus} onChange={e => setFaqFocus(e.target.value)}
+            rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs text-gray-400 mb-1">Writing Rules</label>
+        <textarea value={writingRules} onChange={e => setWritingRules(e.target.value)}
+          rows={3} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-xs text-gray-400">Content Sections ({sections.length})</label>
+          <div className="flex gap-2">
+            <button type="button"
+              onClick={() => setSections(s => [...s, { subheading: '', instructions: '' }])}
+              className="text-xs text-blue-400 hover:text-blue-300 transition">+ Add</button>
+            {sections.length > 0 && (
+              <button type="button"
+                onClick={() => setSections(s => s.slice(0, -1))}
+                className="text-xs text-gray-500 hover:text-red-400 transition">– Remove last</button>
+            )}
+          </div>
+        </div>
+        <div className="space-y-3">
+          {sections.map((sec, i) => (
+            <div key={i} className="bg-gray-800 rounded-lg p-3 space-y-2">
+              <input value={sec.subheading} onChange={e => updateSection(i, 'subheading', e.target.value)}
+                placeholder="H2 subheading template (use {mainKeyword}, {gameName})"
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-red-500" />
+              <textarea value={sec.instructions} onChange={e => updateSection(i, 'instructions', e.target.value)}
+                rows={2}
+                placeholder="Section writing instructions"
+                className="w-full bg-gray-700 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-red-500 resize-none" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-800">
+        <button onClick={onCancel}
+          className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition">Cancel</button>
+        <button onClick={handleSubmit} disabled={!valid || saving}
+          className="px-4 py-1.5 text-sm rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition">
+          {saving ? 'Saving…' : '✓ Create Category'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function PromptsTab() {
   const [prompts, setPrompts] = useState<PromptTemplate[]>([])
   const [loading, setLoading] = useState(true)
+  const [addOpen, setAddOpen] = useState(false)
 
   const fetchPrompts = useCallback(async () => {
     const res = await fetch('/api/knowledge-base/prompts')
@@ -1365,16 +1587,33 @@ function PromptsTab() {
   useEffect(() => { fetchPrompts() }, [fetchPrompts])
 
   const customized = prompts.filter(p => p.is_customized).length
+  const customCount = prompts.filter(p => p.is_custom).length
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-white font-semibold">Prompt Templates</h2>
-        <p className="text-gray-400 text-sm mt-0.5">
-          Master Prompt List — writing instructions per product category, used by auto product generation and content studio.
-          {customized > 0 && <span className="ml-2 text-yellow-400">{customized} customized</span>}
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-white font-semibold">Prompt Templates</h2>
+          <p className="text-gray-400 text-sm mt-0.5">
+            Master Prompt List — writing instructions per product category, used by Bragi (brief generation), auto product content sync, and Content Studio.
+            {customized > 0 && <span className="ml-2 text-yellow-400">{customized} customized</span>}
+            {customCount > 0 && <span className="ml-2 text-blue-400">{customCount} custom</span>}
+          </p>
+        </div>
+        <button
+          onClick={() => setAddOpen(o => !o)}
+          className="px-3 py-1.5 text-sm rounded-lg bg-red-600 hover:bg-red-700 text-white transition flex-shrink-0"
+        >
+          {addOpen ? '✕ Close' : '+ Add Custom Category'}
+        </button>
       </div>
+
+      {addOpen && (
+        <AddCustomCategoryForm
+          onCancel={() => setAddOpen(false)}
+          onSaved={() => { setAddOpen(false); fetchPrompts() }}
+        />
+      )}
 
       {/* Available placeholders */}
       <div className="bg-gray-900 border border-yellow-800/40 rounded-xl p-4">

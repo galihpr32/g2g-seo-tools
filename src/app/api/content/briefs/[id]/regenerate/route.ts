@@ -42,16 +42,24 @@ export async function POST(
   } catch { /* no body */ }
 
   // ── Load brief by ID (no owner filter — verify access separately so legacy
-  // briefs stamped with writer's user_id still work for the workspace owner) ──
+  // briefs stamped with writer's user_id still work for the workspace owner).
+  // We use select('*') instead of a column list because the regen flow has
+  // historically broken whenever a column was renamed/dropped (see the
+  // word_count_target incident); '*' is forgiving and we only consume a small
+  // subset of fields below. ──
   const { data: brief, error: briefErr } = await db
     .from('seo_content_briefs')
-    .select('id, owner_user_id, primary_keyword, page, brief_type, notes, tyr_score, tyr_status, tyr_breakdown, search_volume')
+    .select('*')
     .eq('id', id)
     .maybeSingle()
 
   if (briefErr || !brief) {
-    console.error(`[regenerate] brief lookup failed id=${id}:`, briefErr?.message ?? 'no row')
-    return NextResponse.json({ error: `Brief ${id.slice(0, 8)}… not found in DB` }, { status: 404 })
+    const reason = briefErr?.message ?? 'no row'
+    console.error(`[regenerate] brief lookup failed id=${id}:`, reason)
+    return NextResponse.json(
+      { error: `Brief ${id.slice(0, 8)}… not loaded — ${reason}` },
+      { status: 404 },
+    )
   }
 
   const recordOwnerId = String(brief.owner_user_id ?? '')

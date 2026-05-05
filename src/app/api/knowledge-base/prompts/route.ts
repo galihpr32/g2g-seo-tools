@@ -25,7 +25,12 @@ export async function GET() {
 
   const dbMap = new Map((dbPrompts ?? []).map(p => [p.category_key, p]))
 
-  // Merge DB overrides with TS defaults
+  // Build the keyset of all built-in TS templates so we can detect DB-only
+  // entries (those represent user-created custom categories that have no
+  // hardcoded fallback — they can be FULLY DELETED, not just reset).
+  const builtinKeys = new Set(CATEGORY_TEMPLATES.map(t => categoryKey(t.category)))
+
+  // 1. Merge DB overrides with TS defaults
   const prompts = CATEGORY_TEMPLATES.map(t => {
     const key = categoryKey(t.category)
     const db  = dbMap.get(key)
@@ -43,11 +48,33 @@ export async function GET() {
       faq_focus:             db?.faq_focus              ?? t.faqFocus,
       sections:              db?.sections               ?? t.sections,
       is_active:             db?.is_active              ?? true,
-      is_customized:         !!db,   // flag so UI can show "Customized" badge
+      is_customized:         !!db,    // overrides the TS default
+      is_custom:             false,   // built-in: cannot be deleted, only reset
     }
   })
 
-  return NextResponse.json({ prompts })
+  // 2. Append DB-only entries (custom categories with no TS counterpart)
+  const customPrompts = (dbPrompts ?? [])
+    .filter(p => !builtinKeys.has(p.category_key))
+    .map(p => ({
+      id:                    p.id,
+      category_key:          p.category_key,
+      category_name:         p.category_name,
+      icon:                  p.icon                   ?? '🆕',
+      url_patterns:          p.url_patterns           ?? [],
+      h1_template:           p.h1_template            ?? '',
+      meta_title_template:   p.meta_title_template    ?? '',
+      meta_description_guide: p.meta_description_guide ?? '',
+      keyword_rules:         p.keyword_rules          ?? '',
+      writing_rules:         p.writing_rules          ?? '',
+      faq_focus:             p.faq_focus              ?? '',
+      sections:              p.sections               ?? [],
+      is_active:             p.is_active              ?? true,
+      is_customized:         true,
+      is_custom:             true,    // user-defined: can be fully deleted
+    }))
+
+  return NextResponse.json({ prompts: [...prompts, ...customPrompts] })
 }
 
 // POST /api/knowledge-base/prompts — upsert a single category prompt

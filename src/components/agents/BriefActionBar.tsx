@@ -153,7 +153,7 @@ export default function BriefActionBar({
   if (regenDone) {
     return (
       <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-4 mb-5 text-sm text-blue-300">
-        🔄 Regeneration queued! Bragi is rewriting this brief with Tyr's feedback. Refresh in ~30 seconds.
+        🔄 Regeneration queued! Bragi is rewriting this brief with Tyr&apos;s feedback. Refresh in ~30 seconds.
       </div>
     )
   }
