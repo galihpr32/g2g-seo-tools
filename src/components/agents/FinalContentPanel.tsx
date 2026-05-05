@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { markdownToHtml, DEFAULT_HTML_FORMAT, type BrandHtmlFormat } from '@/lib/agents/markdown-to-html'
 
 /**
  * FinalContentPanel
@@ -58,7 +59,19 @@ export default function FinalContentPanel({
   const [error,          setError]          = useState<string | null>(null)
   const [toast,          setToast]          = useState<string | null>(null)
 
+  // View mode: rendered preview, raw HTML (CMS-paste), or markdown (read-friendly)
+  const [viewMode,    setViewMode]    = useState<'preview' | 'html' | 'markdown'>('preview')
+  const [brandFormat, setBrandFormat] = useState<BrandHtmlFormat>(DEFAULT_HTML_FORMAT)
+
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Load brand HTML format once on mount so converted HTML matches the CMS template
+  useEffect(() => {
+    fetch('/api/knowledge-base/brand-format')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.format) setBrandFormat(d.format) })
+      .catch(() => { /* keep defaults */ })
+  }, [])
 
   const fetchBrief = useCallback(async () => {
     try {
@@ -178,6 +191,21 @@ export default function FinalContentPanel({
   const hasTyrPassed = initialTyrStatus === 'reviewed'
   const isPublished  = initialStatus === 'published'
   const wordCount    = visibleBody.split(/\s+/).filter(Boolean).length
+
+  // The HTML view + Preview both convert markdown → HTML using the brand template.
+  // Computed lazily; cheap (<5ms for typical 1500-word articles).
+  const htmlBody = visibleBody ? markdownToHtml(visibleBody, brandFormat) : ''
+
+  const handleCopy = async (kind: 'html' | 'markdown') => {
+    const text = kind === 'html' ? htmlBody : visibleBody
+    try {
+      await navigator.clipboard.writeText(text)
+      setToast(`✅ Copied ${kind === 'html' ? 'HTML' : 'markdown'} to clipboard`)
+      setTimeout(() => setToast(null), 2500)
+    } catch {
+      setError('Clipboard write failed — your browser may block it on non-HTTPS')
+    }
+  }
 
   // ── Render ──
 
@@ -330,6 +358,47 @@ export default function FinalContentPanel({
         <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 text-sm text-red-300">⚠️ {error}</div>
       )}
 
+      {/* View-mode toggle (only when not editing) — Preview / Markdown / HTML
+          plus per-mode copy buttons. Lets writers paste straight into the CMS
+          without leaving the page. */}
+      {!isEditing && (
+        <div className="flex items-center justify-between flex-wrap gap-2 border-b border-gray-800 pb-3">
+          <div className="inline-flex rounded-lg overflow-hidden border border-gray-700 text-xs">
+            {(['preview', 'markdown', 'html'] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => setViewMode(m)}
+                className={`px-3 py-1.5 transition ${
+                  viewMode === m
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                }`}
+              >
+                {m === 'preview' ? '👁 Preview' : m === 'html' ? '🧩 HTML' : '✍ Markdown'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleCopy('html')}
+              disabled={!htmlBody}
+              className="px-2.5 py-1 text-xs rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20 transition disabled:opacity-40"
+              title="Copy CMS-ready HTML to clipboard"
+            >
+              📋 Copy HTML
+            </button>
+            <button
+              onClick={() => handleCopy('markdown')}
+              disabled={!visibleBody}
+              className="px-2.5 py-1 text-xs rounded-md bg-blue-500/10 border border-blue-500/30 text-blue-300 hover:bg-blue-500/20 transition disabled:opacity-40"
+              title="Copy markdown to clipboard"
+            >
+              📋 Copy MD
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Body — view or edit */}
       {isEditing ? (
         <textarea
@@ -339,6 +408,15 @@ export default function FinalContentPanel({
           className="w-full bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-200 font-mono leading-relaxed focus:outline-none focus:border-blue-500 resize-y"
           spellCheck={false}
         />
+      ) : viewMode === 'preview' ? (
+        <div
+          className="bg-gray-950 border border-gray-800 rounded-lg p-5 max-h-[800px] overflow-y-auto prose prose-invert max-w-none text-gray-200"
+          dangerouslySetInnerHTML={{ __html: htmlBody || '<p class="text-gray-500">(empty)</p>' }}
+        />
+      ) : viewMode === 'html' ? (
+        <pre className="bg-gray-950 border border-gray-800 rounded-lg p-5 max-h-[800px] overflow-auto text-xs text-emerald-200 font-mono leading-relaxed whitespace-pre-wrap">
+          {htmlBody || '(empty)'}
+        </pre>
       ) : (
         <div className="bg-gray-950 border border-gray-800 rounded-lg p-5 max-h-[800px] overflow-y-auto">
           <pre className="text-sm text-gray-200 whitespace-pre-wrap font-sans leading-relaxed">{visibleBody || '(empty)'}</pre>

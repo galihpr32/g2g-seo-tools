@@ -31,12 +31,46 @@ interface ScanResult {
   resolved: number
 }
 
+interface BrandHtmlFormat {
+  h1?:     string   // wrapper, use {text} as placeholder
+  h2?:     string
+  h3?:     string
+  h4?:     string
+  p?:      string   // paragraph wrapper (G2G: just `{text}<br><br>`)
+  ul?:     string   // unordered list wrapper (Bragi inserts <li> children)
+  ol?:     string
+  li?:     string
+  strong?: string
+  em?:     string
+  a?:      string   // link wrapper, use {href} and {text}
+}
+
 interface BrandData {
-  tone?: string
-  audience?: string
-  dos?: string[]
-  donts?: string[]
-  notes?: string
+  tone?:        string
+  audience?:    string
+  dos?:         string[]
+  donts?:       string[]
+  notes?:       string
+  // CMS-specific HTML wrapping. When set, brief assembly outputs HTML using
+  // these templates (one source of truth) instead of vanilla markdown.
+  // {text} = inner content; {href} for links.
+  html_format?: BrandHtmlFormat
+}
+
+// Sensible G2G defaults — Quasar-style class names matching their CMS preview.
+// Drop the Vue-scoped data-v-* attributes (those are runtime-rendered by CMS).
+const DEFAULT_HTML_FORMAT: BrandHtmlFormat = {
+  h1:     '<h1 class="text-h4 q-ma-none">{text}</h1>',
+  h2:     '<h2 class="text-h4 q-ma-none">{text}</h2>',
+  h3:     '<h3 class="text-h6 q-ma-none">{text}</h3>',
+  h4:     '<h4 class="text-subtitle1 q-ma-none">{text}</h4>',
+  p:      '{text}<br><br>',
+  ul:     '<ul>{text}</ul>',
+  ol:     '<ol>{text}</ol>',
+  li:     '<li>{text}</li>',
+  strong: '<strong>{text}</strong>',
+  em:     '<em>{text}</em>',
+  a:      '<a href="{href}">{text}</a>',
 }
 
 interface CategoryData {
@@ -235,6 +269,45 @@ function BrandTab({ items, onRefresh }: { items: KBItem[]; onRefresh: () => void
           rows={2}
           placeholder="Any other brand context for content writers…"
         />
+      </div>
+
+      {/* HTML Output Template — controls how Bragi wraps the assembled article.
+          Set once here, applies to all final_content output (and translations).
+          Use {text} as the inner-content placeholder; {href} for links. */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 className="text-white font-semibold text-sm">🎨 HTML Output Template</h3>
+            <p className="text-gray-500 text-xs mt-0.5">
+              Bragi wraps each markdown element with these templates when generating final content. Use <code className="text-yellow-400">{'{text}'}</code> for the inner content and <code className="text-yellow-400">{'{href}'}</code> for link URLs. Leave blank to use plain markdown.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setData(d => ({ ...d, html_format: { ...DEFAULT_HTML_FORMAT } }))}
+            className="text-xs text-blue-400 hover:text-blue-300 transition"
+          >
+            ↻ Reset to G2G defaults
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {(['h1','h2','h3','h4','p','ul','ol','li','strong','em','a'] as const).map(tag => (
+            <div key={tag}>
+              <label className="block text-xs font-mono text-gray-400 mb-1">&lt;{tag}&gt;</label>
+              <input
+                type="text"
+                value={data.html_format?.[tag] ?? ''}
+                onChange={e => setData(d => ({
+                  ...d,
+                  html_format: { ...(d.html_format ?? {}), [tag]: e.target.value },
+                }))}
+                placeholder={DEFAULT_HTML_FORMAT[tag] ?? ''}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono placeholder-gray-600 focus:outline-none focus:border-red-500"
+              />
+            </div>
+          ))}
+        </div>
       </div>
 
       <button
