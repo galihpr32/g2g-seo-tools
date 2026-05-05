@@ -534,14 +534,17 @@ export async function reviewSingleBrief(
   const { minScore, borderlineWindow } = { ...TYR_DEFAULTS, ...config }
   const db = createServiceClient()
 
+  // Load by ID only — caller (route handler) already verified the user is
+  // allowed to access this brief via canAccessOwnerData. Loading with a
+  // strict owner_user_id filter caused legacy briefs (writer-stamped) to
+  // 404 even for the workspace owner.
   const { data: brief, error: fetchErr } = await db
     .from('seo_content_briefs')
     .select('id, owner_user_id, primary_keyword, page, brief_type, content_outline, content_draft, faq_suggestions, new_keywords, notes, tyr_score')
     .eq('id', briefId)
-    .eq('owner_user_id', ownerId)
-    .single()
+    .maybeSingle()
 
-  if (fetchErr || !brief) throw new Error(`Brief ${briefId} not found: ${fetchErr?.message}`)
+  if (fetchErr || !brief) throw new Error(`Brief ${briefId} not found: ${fetchErr?.message ?? 'no row'}`)
 
   const breakdown    = await judgeBrief(brief as BriefRow, db, ownerId)
   const score        = computeScore(breakdown)

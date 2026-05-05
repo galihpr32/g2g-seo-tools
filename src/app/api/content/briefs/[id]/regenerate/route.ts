@@ -1,7 +1,7 @@
 import { NextResponse, after } from 'next/server'
 import { createClient }        from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { getEffectiveOwnerId } from '@/lib/workspace'
+import { canAccessOwnerData }  from '@/lib/workspace'
 import { generateAgentBrief }  from '@/lib/agents/brief-generator'
 
 export const maxDuration = 60
@@ -31,7 +31,6 @@ export async function POST(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db      = createServiceClient()
   const { id }  = await params
 
@@ -42,17 +41,24 @@ export async function POST(
     userNotes  = String(body.notes ?? '').slice(0, 1000).trim()
   } catch { /* no body */ }
 
-  // ── Load brief ───────────────────────────────────────────────────────────
+  // ── Load brief by ID (no owner filter — verify access separately so legacy
+  // briefs stamped with writer's user_id still work for the workspace owner) ──
   const { data: brief, error: briefErr } = await db
     .from('seo_content_briefs')
     .select('id, owner_user_id, primary_keyword, page, brief_type, notes, tyr_score, tyr_status, tyr_breakdown, search_volume')
     .eq('id', id)
-    .eq('owner_user_id', ownerId)
-    .single()
+    .maybeSingle()
 
   if (briefErr || !brief) {
     return NextResponse.json({ error: 'Brief not found' }, { status: 404 })
   }
+
+  const recordOwnerId = String(brief.owner_user_id)
+  const allowed       = await canAccessOwnerData(supabase, user.id, recordOwnerId)
+  if (!allowed) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  }
+  const ownerId = recordOwnerId   // generation continues under record's owner
 
   const keyword   = String(brief.primary_keyword ?? '')
   const pageUrl   = String(brief.page            ?? '')

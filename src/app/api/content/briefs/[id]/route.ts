@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { getEffectiveOwnerId } from '@/lib/workspace'
+import { canAccessOwnerData } from '@/lib/workspace'
 
 /**
  * GET /api/content/briefs/[id]
@@ -16,22 +16,24 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
   const { data: brief, error } = await db
     .from('seo_content_briefs')
     .select(`
-      id, page, brief_type, primary_keyword, status,
+      id, owner_user_id, page, brief_type, primary_keyword, status,
       tyr_score, tyr_status,
       content_outline, content_draft, faq_suggestions, new_keywords,
       notes, created_at, updated_at
     `)
     .eq('id', id)
-    .eq('owner_user_id', ownerId)
-    .single()
+    .maybeSingle()
 
   if (error || !brief) return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  const allowed = await canAccessOwnerData(supabase, user.id, String(brief.owner_user_id))
+  if (!allowed) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+
   return NextResponse.json({ brief })
 }
 
@@ -54,7 +56,6 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const body = await req.json().catch(() => null) as {
     status?: string
     target_publish_date?: string | null
@@ -62,6 +63,19 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     assigned_to?: string | null
   } | null
   if (!body) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+
+  // Resolve effective owner via the brief itself (handles legacy ownership rows)
+  const dbAuth = createServiceClient()
+  const { data: briefMeta } = await dbAuth
+    .from('seo_content_briefs')
+    .select('owner_user_id')
+    .eq('id', id)
+    .maybeSingle()
+  if (!briefMeta) return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  const ownerId = String(briefMeta.owner_user_id)
+  const allowed = await canAccessOwnerData(supabase, user.id, ownerId)
+  if (!allowed) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const nowIso = new Date().toISOString()
   const update: Record<string, unknown> = {}
@@ -111,6 +125,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+
   // When a brief is published, automatically seed a brief_outcomes row so
   // the ranking impact tracker can start capturing GSC snapshots.
   // Fire-and-forget — don't let this block the response.
@@ -138,8 +153,20 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
+
+  // Resolve ownership via the brief itself (legacy briefs sometimes carry the
+  // writer's user_id in owner_user_id rather than the workspace owner's).
+  const { data: briefMeta } = await db
+    .from('seo_content_briefs')
+    .select('owner_user_id')
+    .eq('id', id)
+    .maybeSingle()
+  if (!briefMeta) return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  const ownerId = String(briefMeta.owner_user_id)
+  const allowed = await canAccessOwnerData(supabase, user.id, ownerId)
+  if (!allowed) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   // Clean up brief_outcomes first (FK)
   await db.from('brief_outcomes').delete().eq('brief_id', id).eq('owner_user_id', ownerId)

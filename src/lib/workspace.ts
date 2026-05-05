@@ -129,3 +129,47 @@ export async function canSeeTeamPerformance(
   // null = solo user (no workspace set up yet) → full access
   return role === 'owner' || role === 'manager' || role === null
 }
+
+/**
+ * Returns true if `userId` is allowed to read/write a record stamped with
+ * `recordOwnerId`. This is a generalised permission gate used by endpoints
+ * that operate on a single record (briefs, prospects, opportunities, etc.)
+ * after a service-role read, since the service client bypasses RLS.
+ *
+ * Allowed when ANY of:
+ *  - userId === recordOwnerId (user owns the record directly)
+ *  - userId is an active workspace_member of recordOwnerId
+ *  - userId is the workspace owner and recordOwnerId is one of their members
+ *    (legacy: writer-created records stamped with member_user_id instead of owner)
+ *
+ * The 3rd case covers the historic "Brief not found" bug: pre-2026 briefs
+ * sometimes got stamped with the writer's user_id (instead of the workspace
+ * owner's), so when the workspace owner now tries to regenerate or mark
+ * published, the strict `.eq('owner_user_id', effectiveOwnerId)` filter
+ * returned 404. This helper accepts that legacy shape.
+ */
+export async function canAccessOwnerData(
+  supabase: SupabaseClient,
+  userId: string,
+  recordOwnerId: string,
+): Promise<boolean> {
+  if (!recordOwnerId) return false
+  if (userId === recordOwnerId) return true
+
+  const db = createServiceClient()
+
+  // Case 1: user is a member of the record owner's workspace
+  const effective = await getEffectiveOwnerId(supabase, userId)
+  if (effective === recordOwnerId) return true
+
+  // Case 2: user is the workspace owner; record was stamped with a member's id
+  const { data } = await db
+    .from('workspace_members')
+    .select('id')
+    .eq('owner_user_id', userId)
+    .eq('member_user_id', recordOwnerId)
+    .eq('status', 'active')
+    .maybeSingle()
+
+  return !!data
+}

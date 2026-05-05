@@ -179,34 +179,19 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   // Persist successfully-parsed brief
   const outlineJson = parsed.contentOutline.map(s => ({ heading: s.heading, points: s.points }))
 
+  // content_draft is the writer-facing summary header. Outline, FAQ, and
+  // target keywords are NOT duplicated here — those are rendered separately
+  // as structured sections by the brief detail page from
+  // content_outline / faq_suggestions / new_keywords columns.
+  // (Pre-2026-05 the draft had everything inline, which caused the FAQ
+  // and outline to render twice on the brief page.)
   const draftLines: string[] = [
     `# ${parsed.suggestedH1}`,
     '',
     `**Meta description:** ${parsed.metaDescription}`,
     '',
     `**User intent:** ${parsed.userIntent}`,
-    '',
-    `**Target keywords:** ${parsed.targetKeywords.join(', ')}`,
-    '',
-    '---',
-    '',
-    '## Content Outline',
-    '',
-    ...parsed.contentOutline.flatMap(s => [
-      `### ${s.heading}`,
-      ...s.points.map(p => `- ${p}`),
-      '',
-    ]),
   ]
-
-  if (parsed.faqSuggestions.length) {
-    draftLines.push('## FAQ Suggestions', '')
-    for (const faq of parsed.faqSuggestions) {
-      draftLines.push(`**Q: ${faq.question}**`)
-      if (faq.suggested_answer) draftLines.push(`A: ${faq.suggested_answer}`)
-      draftLines.push('')
-    }
-  }
 
   await db
     .from('seo_content_briefs')
@@ -251,13 +236,22 @@ function validateAndCoerce(raw: Record<string, unknown>, keyword: string): Parse
     }
   }).filter(s => s.heading)
 
-  const faqs = arr(raw.faqSuggestions).map(f => {
+  // Dedupe by normalised question text — Claude occasionally repeats the
+  // same FAQ when given a long prompt or when re-running on borderline briefs.
+  const faqsRaw = arr(raw.faqSuggestions).map(f => {
     const fq = f as Record<string, unknown>
     return {
       question:         str(fq.question),
       suggested_answer: str(fq.suggested_answer),
     }
   }).filter(f => f.question)
+  const seenFaqs = new Set<string>()
+  const faqs = faqsRaw.filter(f => {
+    const key = f.question.trim().toLowerCase()
+    if (seenFaqs.has(key)) return false
+    seenFaqs.add(key)
+    return true
+  })
 
   const targetKws = arr(raw.targetKeywords).map(k => String(k)).slice(0, 8)
   if (!targetKws.includes(keyword)) targetKws.unshift(keyword)
@@ -344,7 +338,10 @@ async function loadKBBlock(
     // Platforms KB — injected for blog_post briefs to provide
     // writing rules for gaming editorial publications.
     // All platform entries are included (user manages what's relevant).
-    const platformItems = kbItems.filter(i => i.category === 'platforms')
+    // NOTE: KB UI persists with category='platform' (singular). Older code
+    // here filtered for 'platforms' which silently dropped every entry —
+    // confirmed bug, fixed 2026-05.
+    const platformItems = kbItems.filter(i => i.category === 'platform')
     if (platformItems.length) {
       const platformBlocks = platformItems.map(i => {
         const d = i.data as Record<string, unknown>
