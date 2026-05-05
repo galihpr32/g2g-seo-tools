@@ -96,7 +96,8 @@ interface ReportData {
   backlinks?: BacklinksData   // optional for old reports
   competitive: {
     trackedCompetitors: { domain: string; name?: string }[]
-    sovTable: SovRow[]
+    sovTable:      SovRow[]
+    sovEstimated?: boolean
   }
   // Agent activity (v3+) — null for old reports
   agentInsights?: AgentInsightsLite | null
@@ -898,7 +899,17 @@ export default function MonthlyReportPage() {
 
               {/* ── Competitive SoV ── */}
               <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-                <h3 className="text-sm font-semibold text-white mb-4">👁️ Share of Voice</h3>
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+                  <h3 className="text-sm font-semibold text-white">👁️ Share of Voice</h3>
+                  {d.competitive.sovEstimated && d.competitive.sovTable.length > 0 && (
+                    <span
+                      className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-500/10 border border-yellow-500/30 text-yellow-300"
+                      title="No SERP snapshots inside this report's month — falling back to the most recent 60 days. Run SERP tracking again during the target month for accurate values."
+                    >
+                      Estimated · using last 60d
+                    </span>
+                  )}
+                </div>
                 {d.competitive.sovTable.length > 0 ? (
                   <div className="space-y-2.5">
                     {d.competitive.sovTable.map(row => {
@@ -929,7 +940,14 @@ export default function MonthlyReportPage() {
                   <p className="text-xs text-gray-500">
                     No SERP snapshot data for this month. Run the{' '}
                     <a href="/competitive/serp-tracker" className="text-red-400 hover:text-red-300">SERP Tracker</a>{' '}
-                    to start tracking Share of Voice.
+                    to start tracking Share of Voice, or check the{' '}
+                    <a href="/competitive/serp-tracker?tab=history" className="text-blue-400 hover:text-blue-300">📚 History tab</a>{' '}
+                    for past runs.
+                  </p>
+                )}
+                {d.competitive.sovTable.length > 0 && (
+                  <p className="mt-3 pt-3 border-t border-gray-800 text-[11px] text-gray-600">
+                    See <a href="/competitive/serp-tracker?tab=history" className="text-blue-400 hover:text-blue-300">📚 SERP History</a> for full timeline of every tracking run (by date, keyword, country).
                   </p>
                 )}
               </div>

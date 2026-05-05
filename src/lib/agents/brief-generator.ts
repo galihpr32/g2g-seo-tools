@@ -654,10 +654,17 @@ PAGE CONTEXT
 TARGET KEYWORDS (1%–4% density on primary; ≤2% on secondaries; each must appear at least once):
 ${targetKws.slice(0, 8).map(k => `- ${k}`).join('\n')}
 
-OUTLINE (write each section in order, with the heading, and ~150-300 words per section unless noted otherwise):
+REQUIRED ARTICLE STRUCTURE
+1. **H1** — the suggested title above (one line, # prefix)
+2. **Lead paragraph** — 2-3 sentences (40-70 words) IMMEDIATELY after the H1, BEFORE any H2. This is non-negotiable. Establishes context: what the page is about, who it's for, why they should care. Include the primary keyword naturally in the FIRST sentence (helps Google's featured-snippet capture and gives readers a clean entry point). Mention 1-2 trust signals briefly. NO heading above this paragraph.
+3. **Body sections** — one ## H2 per outline entry, in the order given below, ~150-300 words each.
+4. **FAQ section** — at the end, "## Frequently Asked Questions" with the entries below.
+5. **Closing paragraph** — soft CTA back to the page, no hard sell.
+
+OUTLINE (each item below = one ## H2 section, written in order):
 ${outlineBlock}
 
-FAQs to weave in (either inside the FAQ section if the outline has one, or append a "## Frequently Asked Questions" section):
+FAQs to weave in (inside the closing FAQ section, NOT inline with body):
 ${faqBlock}
 
 WRITING RULES
@@ -669,6 +676,7 @@ WRITING RULES
 - Hit the word count: minimum 800 words, target 1200-1500 for category pages, max 1800.
 - Final paragraph should end with a soft CTA back to the page (no hard sell).
 - Do NOT output meta description, target keyword list, or any "writing rules" headers — those live in the structured brief, not the article body.
+- ⚠ NEVER skip the lead paragraph. The article MUST flow: H1 → lead paragraph (no heading) → first H2. If you go straight from H1 to H2, you have failed the brief.
 
 ${kbBlock}
 
@@ -707,6 +715,29 @@ ${draftHeader ? `\nFor reference, the meta description and user intent already a
 
       // Strip code fences if Claude wrapped the markdown
       const cleaned = text.replace(/^```(?:markdown|md)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim()
+
+      // ── Lead-paragraph validator ─────────────────────────────────────────
+      // SEO requirement: H1 must be followed by a prose paragraph (40+ chars
+      // of non-heading text) BEFORE the first H2. Without this, search engines
+      // can't generate a featured snippet, and readers hit a wall of headings.
+      // If the model skipped it, throw — caller retries with the rule already
+      // emphasised in the prompt.
+      const lines = cleaned.split(/\r?\n/)
+      const h1Idx = lines.findIndex(l => /^#\s+/.test(l))
+      const h2Idx = lines.findIndex((l, i) => i > h1Idx && /^##\s+/.test(l))
+      if (h1Idx >= 0 && h2Idx > h1Idx) {
+        const between = lines.slice(h1Idx + 1, h2Idx).join('\n').trim()
+        // Strip blank lines and check we have actual prose, not just headings/lists/whitespace
+        const proseLength = between
+          .split(/\r?\n/)
+          .filter(l => l.trim() && !l.startsWith('#') && !l.startsWith('-') && !l.startsWith('*') && !/^\d+\./.test(l.trim()))
+          .join(' ')
+          .trim().length
+        if (proseLength < 40) {
+          throw new Error(`missing lead paragraph between H1 and first H2 (only ${proseLength} chars of prose found)`)
+        }
+      }
+
       const wordCount = cleaned.split(/\s+/).filter(Boolean).length
 
       await db

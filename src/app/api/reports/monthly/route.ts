@@ -458,14 +458,37 @@ export async function POST(req: Request) {
   const competitorList = (competitorsRes.data ?? []).map(c => ({ domain: c.domain, name: c.name }))
   let sovTable: { domain: string; sov: number; keywords: number }[] = []
 
+  let sovEstimated = false   // true when we fall back to outside the target month
   try {
-    const { data: snapshots } = await db
+    let { data: snapshots } = await db
       .from('serp_snapshots')
       .select('keyword, search_volume, results, snapshot_date')
       .eq('owner_user_id', ownerId)
       .gte('snapshot_date', monthStart)
       .lte('snapshot_date', monthEnd)
       .order('snapshot_date', { ascending: false })
+
+    // Fallback: if no snapshots inside the target month, look at the most
+    // recent 60 days from the report's monthEnd. This handles the very
+    // common case where a user just started SERP tracking — the data
+    // arrives stamped with TODAY but the user's looking at last month's
+    // report, so without this fallback they'd see "No SERP data" forever.
+    // We tag the result as `estimated: true` so the UI can show a hint.
+    if (!snapshots || snapshots.length === 0) {
+      const fallbackStart = new Date(new Date(monthEnd).getTime() - 60 * 86400000)
+        .toISOString().slice(0, 10)
+      const { data: fallback } = await db
+        .from('serp_snapshots')
+        .select('keyword, search_volume, results, snapshot_date')
+        .eq('owner_user_id', ownerId)
+        .gte('snapshot_date', fallbackStart)
+        .order('snapshot_date', { ascending: false })
+      if (fallback && fallback.length > 0) {
+        snapshots = fallback
+        sovEstimated = true
+        console.info(`[monthly-report] no snapshots in ${monthStart}..${monthEnd}; using ${fallback.length} from past 60d as estimate`)
+      }
+    }
 
     if (snapshots && snapshots.length > 0) {
       const latestByKeyword = new Map<string, typeof snapshots[0]>()
@@ -524,7 +547,7 @@ export async function POST(req: Request) {
     ga4: ga4Data,
     semrush: semrushData,
     actionItems: actionItemsData,
-    competitive: { trackedCompetitors: competitorList, sovTable },
+    competitive: { trackedCompetitors: competitorList, sovTable, sovEstimated },
     backlinks: backlinksData,
     agentInsights,
     generatedAt: new Date().toISOString(),

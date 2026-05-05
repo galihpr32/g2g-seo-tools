@@ -76,7 +76,24 @@ export default function SerpTrackerPage() {
   const [lastDate, setLastDate]               = useState('')
   const [error, setError]                     = useState<string | null>(null)
   const [expandedKw, setExpandedKw]           = useState<string | null>(null)
-  const [activeView, setActiveView]           = useState<'sov' | 'serp'>('sov')
+  // Honor `?tab=history` query param so deep links from monthly/weekly
+  // reports land directly on the history view.
+  const initialTab = searchParams.get('tab') === 'history' ? 'history' : 'sov'
+  const [activeView, setActiveView]           = useState<'sov' | 'serp' | 'history'>(initialTab)
+
+  // ── History tab state ─────────────────────────────────────────────────────
+  interface HistoryDay {
+    snapshot_date:  string
+    keyword_count:  number
+    total_sv:       number
+    top_domains:    Array<{ domain: string; sov_pct: number; keywords_in_top10: number }>
+    keywords:       Array<{ keyword: string; search_volume: number | null }>
+  }
+  const [historyDays,  setHistoryDays]  = useState<HistoryDay[]>([])
+  const [historyTotal, setHistoryTotal] = useState({ runs: 0, dates: 0, keywords: 0 })
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyDays_window, setHistoryDays_window] = useState<30 | 90 | 180 | 365>(90)
+  const [expandedDate, setExpandedDate] = useState<string | null>(null)
 
   // Multi-select state — domains user wants to add to Competitor List in bulk.
   // Excludes G2G + already-tracked competitors (they get auto-skipped server-side).
@@ -169,6 +186,26 @@ export default function SerpTrackerPage() {
     init()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Lazy-load history when tab opened (or window changes). Avoids hitting
+  // the endpoint until the user actually opens the History tab.
+  useEffect(() => {
+    if (activeView !== 'history') return
+    setHistoryLoading(true)
+    fetch(`/api/competitive/serp-history?days=${historyDays_window}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        setHistoryDays(d.days ?? [])
+        setHistoryTotal({
+          runs:     d.total_runs        ?? 0,
+          dates:    d.distinct_dates    ?? 0,
+          keywords: d.distinct_keywords ?? 0,
+        })
+      })
+      .catch(() => { /* silent */ })
+      .finally(() => setHistoryLoading(false))
+  }, [activeView, historyDays_window])
 
   // Keywords to track (derived)
   const keywordsToTrack = useMemo(() => {
@@ -300,6 +337,11 @@ export default function SerpTrackerPage() {
 
         <p className="text-xs text-gray-600">
           Uses DataForSEO SERP Live API — each keyword costs ~1 API unit. Results are saved and reused for the same day.
+          {' '}
+          <span className="text-yellow-500/80">
+            ⓘ Snapshots are stamped with TODAY&apos;s date; they appear in this week&apos;s Weekly Pulse and the current month&apos;s Monthly SEO report.
+            Past months show only data captured during that month — older monthly reports stay frozen.
+          </span>
         </p>
       </div>
 
@@ -313,23 +355,40 @@ export default function SerpTrackerPage() {
         </div>
       )}
 
+      {/* View toggle — History tab is always accessible (independent of
+          whether the user just ran a tracking cycle in this session). */}
+      {!loading && (
+        <div className="flex items-center gap-3 mb-5 flex-wrap">
+          <div className="flex rounded-lg overflow-hidden border border-gray-800">
+            <button onClick={() => setActiveView('sov')}
+              disabled={snapshots.length === 0}
+              className={`text-xs px-4 py-2 transition disabled:opacity-40 disabled:cursor-not-allowed ${activeView === 'sov' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
+              📊 Share of Voice
+            </button>
+            <button onClick={() => setActiveView('serp')}
+              disabled={snapshots.length === 0}
+              className={`text-xs px-4 py-2 transition disabled:opacity-40 disabled:cursor-not-allowed ${activeView === 'serp' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
+              🔍 SERP Breakdown
+            </button>
+            <button onClick={() => setActiveView('history')}
+              className={`text-xs px-4 py-2 transition ${activeView === 'history' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
+              📚 History
+            </button>
+          </div>
+          {lastDate && activeView !== 'history' && <span className="text-xs text-gray-600">Snapshot: {lastDate}</span>}
+          {activeView === 'history' && historyTotal.runs > 0 && (
+            <span className="text-xs text-gray-500">
+              {historyTotal.runs} runs · {historyTotal.dates} day{historyTotal.dates !== 1 ? 's' : ''} · {historyTotal.keywords} keywords
+            </span>
+          )}
+          {snapshots.length > 0 && activeView !== 'history' && (
+            <span className="text-xs text-gray-600 ml-auto">{snapshots.length} keywords tracked</span>
+          )}
+        </div>
+      )}
+
       {!loading && snapshots.length > 0 && (
         <>
-          {/* View toggle */}
-          <div className="flex items-center gap-3 mb-5">
-            <div className="flex rounded-lg overflow-hidden border border-gray-800">
-              <button onClick={() => setActiveView('sov')}
-                className={`text-xs px-4 py-2 transition ${activeView === 'sov' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
-                📊 Share of Voice
-              </button>
-              <button onClick={() => setActiveView('serp')}
-                className={`text-xs px-4 py-2 transition ${activeView === 'serp' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'}`}>
-                🔍 SERP Breakdown
-              </button>
-            </div>
-            {lastDate && <span className="text-xs text-gray-600">Snapshot: {lastDate}</span>}
-            <span className="text-xs text-gray-600 ml-auto">{snapshots.length} keywords tracked</span>
-          </div>
 
           {/* SoV view */}
           {activeView === 'sov' && (
@@ -548,11 +607,125 @@ export default function SerpTrackerPage() {
         </>
       )}
 
-      {!loading && snapshots.length === 0 && (
+      {!loading && snapshots.length === 0 && activeView !== 'history' && (
         <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
           <p className="text-3xl mb-3">📊</p>
           <p className="text-white font-semibold mb-1">No SERP data yet</p>
-          <p className="text-gray-400 text-sm">Enter keywords and click "Run tracking" to fetch live SERP data.</p>
+          <p className="text-gray-400 text-sm">Enter keywords and click &quot;Run tracking&quot; to fetch live SERP data.</p>
+          <p className="text-gray-500 text-xs mt-2">Or check the <button onClick={() => setActiveView('history')} className="text-blue-400 hover:text-blue-300 underline">📚 History</button> tab to see all past tracking runs.</p>
+        </div>
+      )}
+
+      {/* ── History tab ─────────────────────────────────────────────────── */}
+      {!loading && activeView === 'history' && (
+        <div className="space-y-4">
+          {/* Window selector */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-gray-500">Window:</span>
+            {([30, 90, 180, 365] as const).map(d => (
+              <button
+                key={d}
+                onClick={() => setHistoryDays_window(d)}
+                className={`text-xs px-3 py-1 rounded-lg border transition ${
+                  historyDays_window === d
+                    ? 'bg-red-500/15 border-red-500/40 text-white'
+                    : 'bg-gray-900 border-gray-800 text-gray-400 hover:border-gray-600 hover:text-white'
+                }`}
+              >
+                {d === 30 ? '30 days' : d === 90 ? '90 days' : d === 180 ? '6 months' : '1 year'}
+              </button>
+            ))}
+            <span className="text-[10px] text-gray-600 ml-auto">
+              ⓘ Each row = one day of tracking. Click to see keywords + top domains for that day.
+            </span>
+          </div>
+
+          {historyLoading ? (
+            <div className="flex justify-center py-12">
+              <LottieLoader size={70} text="Loading history…" />
+            </div>
+          ) : historyDays.length === 0 ? (
+            <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
+              <p className="text-3xl mb-3">📚</p>
+              <p className="text-white font-semibold mb-1">No tracking history yet</p>
+              <p className="text-gray-400 text-sm">Run SERP tracking once and history starts collecting from that day onwards.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {historyDays.map(day => {
+                const isOpen   = expandedDate === day.snapshot_date
+                const g2gEntry = day.top_domains.find(t => t.domain === 'g2g.com')
+                return (
+                  <div key={day.snapshot_date} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedDate(isOpen ? null : day.snapshot_date)}
+                      className="w-full px-4 py-3 flex items-center gap-4 hover:bg-gray-800/50 transition"
+                    >
+                      <div className="text-left flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium">{new Date(day.snapshot_date).toLocaleDateString('id-ID', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">
+                          {day.keyword_count} keyword{day.keyword_count !== 1 ? 's' : ''} tracked · {day.total_sv.toLocaleString()} total SV
+                        </p>
+                      </div>
+                      {g2gEntry && (
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-[10px] text-gray-500">G2G SoV</p>
+                          <p className="text-sm font-semibold text-red-400">{g2gEntry.sov_pct}%</p>
+                        </div>
+                      )}
+                      {day.top_domains.length > 0 && !g2gEntry && (
+                        <div className="text-right flex-shrink-0">
+                          <p className="text-[10px] text-gray-500">Top: {day.top_domains[0].domain}</p>
+                          <p className="text-sm font-semibold text-gray-300">{day.top_domains[0].sov_pct}%</p>
+                        </div>
+                      )}
+                      <span className="text-gray-600 text-xs flex-shrink-0">{isOpen ? '▾' : '▸'}</span>
+                    </button>
+
+                    {isOpen && (
+                      <div className="border-t border-gray-800 p-4 space-y-4">
+                        {/* Top domains for this day */}
+                        <div>
+                          <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Top 5 domains by Share of Voice</p>
+                          <div className="space-y-2">
+                            {day.top_domains.map(td => (
+                              <div key={td.domain} className="flex items-center gap-3">
+                                <div className="flex items-center gap-1.5 w-40 flex-shrink-0">
+                                  <img src={`https://www.google.com/s2/favicons?domain=${td.domain}&sz=16`} alt="" className="w-3 h-3 flex-shrink-0" />
+                                  <span className={`text-xs truncate ${td.domain === 'g2g.com' ? 'text-red-400 font-semibold' : 'text-gray-300'}`}>{td.domain}</span>
+                                </div>
+                                <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full ${td.domain === 'g2g.com' ? 'bg-red-600' : 'bg-gray-600'}`}
+                                    style={{ width: `${Math.min(100, td.sov_pct * 1.5)}%` }}
+                                  />
+                                </div>
+                                <span className="text-xs text-gray-400 w-14 text-right flex-shrink-0">{td.sov_pct}%</span>
+                                <span className="text-[10px] text-gray-600 w-12 text-right flex-shrink-0">{td.keywords_in_top10}/{day.keyword_count} kw</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        {/* Keyword list */}
+                        <div>
+                          <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Keywords tracked that day</p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {day.keywords.map(kw => (
+                              <span key={kw.keyword} className="bg-gray-800 border border-gray-700 px-2 py-0.5 rounded text-[11px] text-gray-300">
+                                {kw.keyword}
+                                {kw.search_volume != null && <span className="text-gray-500 ml-1">· {kw.search_volume.toLocaleString()}</span>}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

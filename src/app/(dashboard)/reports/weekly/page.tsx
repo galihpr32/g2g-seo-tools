@@ -480,15 +480,41 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ site, week_start: customStart, week_end: customEnd }),
       })
-      const { report: r, error: e } = await res.json()
-      if (e) { setError(e); return }
+
+      // Defensive JSON parsing — when Vercel's lambda times out (Hobby 60s
+      // ceiling), the body comes back as plain-text "An error occurred…"
+      // which crashes res.json(). Fall back to text and surface a readable
+      // message instead of leaking the raw SyntaxError to the user.
+      const raw = await res.text()
+      let parsed: { report?: { id: string; week_start: string }; error?: string } = {}
+      try {
+        parsed = raw ? JSON.parse(raw) : {}
+      } catch {
+        if (res.status === 504 || res.status === 502 || /^An error/i.test(raw)) {
+          setError(
+            'Report generation timed out (Vercel 60s limit hit during Claude composition). ' +
+            'Re-try in a moment — partial data may already be saved. ' +
+            'If this keeps happening, tell Galih so he can split the report into async chunks.',
+          )
+        } else {
+          setError(`Server returned non-JSON (HTTP ${res.status}): ${raw.slice(0, 200)}`)
+        }
+        return
+      }
+
+      if (!res.ok || parsed.error) {
+        setError(parsed.error ?? `HTTP ${res.status}`)
+        return
+      }
+      const r = parsed.report
+      if (!r) { setError('Server returned OK but no report payload'); return }
+
       setReports(prev => {
         const filtered = prev.filter(p => p.week_start !== r.week_start)
-        return [r, ...filtered]
+        return [r, ...filtered] as typeof prev
       })
       setSelectedId(r.id)
       setShowPicker(false)
-      // Reset date inputs back to current week so old range doesn't persist
       const freshWeek = getDefaultWeek()
       setCustomStart(freshWeek.start)
       setCustomEnd(freshWeek.end)
