@@ -83,14 +83,19 @@ export default function BriefActionBar({
 
   const submitRegen = async () => {
     setRegenRunning(true)
+    setTyrError(null)   // clear any stale error from a previous attempt
     try {
       const res  = await fetch(`/api/content/briefs/${briefId}/regenerate`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ notes: regenNotes }),
       })
-      const data = await res.json() as { ok: boolean; error?: string }
-      if (!data.ok) throw new Error(data.error ?? 'Regeneration failed')
+      const data = await res.json() as { ok?: boolean; error?: string; briefId?: string }
+      // Treat HTTP non-2xx as failure even if body shape is unexpected
+      if (!res.ok || (data.ok === false)) {
+        const reason = data.error ?? `Regeneration failed (HTTP ${res.status})`
+        throw new Error(reason)
+      }
       setLocalStatus('draft')
       setRegenDone(true)
       setRegenOpen(false)
@@ -210,7 +215,7 @@ export default function BriefActionBar({
           {/* Regenerate */}
           {!regenOpen && (
             <button
-              onClick={() => setRegenOpen(true)}
+              onClick={() => { setTyrError(null); setRegenOpen(true) }}
               className="px-3 py-1.5 text-sm rounded-lg bg-purple-500/10 border border-purple-500/30 text-purple-300
                          hover:bg-purple-500/20 transition"
             >

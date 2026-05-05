@@ -50,13 +50,15 @@ export async function POST(
     .maybeSingle()
 
   if (briefErr || !brief) {
-    return NextResponse.json({ error: 'Brief not found' }, { status: 404 })
+    console.error(`[regenerate] brief lookup failed id=${id}:`, briefErr?.message ?? 'no row')
+    return NextResponse.json({ error: `Brief ${id.slice(0, 8)}… not found in DB` }, { status: 404 })
   }
 
-  const recordOwnerId = String(brief.owner_user_id)
+  const recordOwnerId = String(brief.owner_user_id ?? '')
   const allowed       = await canAccessOwnerData(supabase, user.id, recordOwnerId)
   if (!allowed) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    console.error(`[regenerate] forbidden user=${user.id} record_owner=${recordOwnerId} brief=${id}`)
+    return NextResponse.json({ error: 'You do not have access to this brief\'s workspace' }, { status: 403 })
   }
   const ownerId = recordOwnerId   // generation continues under record's owner
 
