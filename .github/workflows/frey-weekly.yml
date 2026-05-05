@@ -1,0 +1,43 @@
+name: Frey AI Visibility Weekly
+
+# Runs Frey agent once a week — queries Claude + GPT-4o-mini with curated
+# brand prompts, parses for G2G mention/sentiment/competitors, persists
+# findings + emits pipeline signals (Flow 1) + Slack alerts (Flow 2).
+#
+# Required repo secrets:
+#   APP_URL      — Vercel app URL
+#   CRON_SECRET  — same value as Vercel CRON_SECRET env
+
+on:
+  schedule:
+    # Every Sunday at 18:00 UTC (01:00 WIB Monday) — fresh AI data ready
+    # before Monday morning daily briefing (00:00 UTC = 07:00 WIB Mon).
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: frey-weekly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/frey-weekly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 360 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/frey-weekly")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

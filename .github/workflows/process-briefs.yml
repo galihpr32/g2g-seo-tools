@@ -1,0 +1,47 @@
+name: Process Stuck Briefs
+
+# Triggers the Vercel-hosted /api/cron/process-briefs every 10 minutes.
+# Picks up briefs stuck in 'draft' or 'generating' for >30s and re-runs Bragi.
+# Lives on GitHub Actions because Vercel Hobby allows max 2 daily crons,
+# both used by gsc-daily and game-trends-refresh.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   APP_URL      e.g. https://g2g-seo-tools.vercel.app
+#   CRON_SECRET  same value as the CRON_SECRET env var in Vercel
+#
+# Manual run: Actions tab → Process Stuck Briefs → "Run workflow"
+
+on:
+  schedule:
+    # Every 10 minutes, UTC. Aggressive enough that any approve-flow drop
+    # gets healed within a 10min window without overwhelming Bragi.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:   # allow manual trigger from the Actions tab
+
+# Don't queue overlapping runs — cancel any in-progress run when a new one starts
+concurrency:
+  group: process-briefs
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3   # endpoint maxDuration is 60s; give margin
+    steps:
+      - name: Trigger /api/cron/process-briefs
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET secret not set in repo settings"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 90 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/process-briefs")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

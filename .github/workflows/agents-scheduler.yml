@@ -1,0 +1,47 @@
+name: Agents Scheduler
+
+# Triggers the Vercel-hosted /api/cron/agents-scheduler every 30 minutes.
+# We do this via GitHub Actions instead of Vercel cron because the Vercel
+# Hobby (free) plan only allows once-per-day cron expressions, which makes
+# the per-agent schedule UI (hour-of-day picker) practically meaningless.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   APP_URL      e.g. https://g2g-seo-tools.vercel.app
+#   CRON_SECRET  same value as the CRON_SECRET env var in Vercel
+#
+# Manual run: Actions tab → Agents Scheduler → "Run workflow"
+
+on:
+  schedule:
+    # Every 30 minutes, on the hour and at :30. UTC.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:   # allow manual trigger from the Actions tab
+
+# Don't queue overlapping runs — cancel any in-progress run when a new one starts
+concurrency:
+  group: agents-scheduler
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8   # endpoint maxDuration is 300s, give margin
+    steps:
+      - name: Trigger /api/cron/agents-scheduler
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET secret not set in repo settings"
+            exit 1
+          fi
+          # 5xx fails the job; 4xx fails too. Save body for the log.
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 360 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/agents-scheduler")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

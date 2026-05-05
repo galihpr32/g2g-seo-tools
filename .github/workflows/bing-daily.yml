@@ -1,0 +1,47 @@
+name: Bing Webmaster Daily Sync
+
+# Pulls Bing Webmaster API daily and snapshots query/page-level performance
+# into bing_search_data. Bing Copilot uses Bing search index, so this is
+# an indirect AI visibility data source on Microsoft side.
+#
+# Required repo secrets:
+#   APP_URL      — Vercel app URL (https://g2g-seo-tools.vercel.app)
+#   CRON_SECRET  — same value as Vercel CRON_SECRET env
+
+on:
+  schedule:
+    # Once a day at 02:00 UTC (09:00 WIB) — after gsc-daily (01:00 UTC) so
+    # both data sources are fresh by morning briefing time (07:00 WIB).
+    # Wait... 09:00 WIB is AFTER the daily briefing. Let me run earlier:
+    # 06:30 UTC = 13:30 WIB. Hmm, briefing is 07:00 WIB = 00:00 UTC.
+    # So sync should be BEFORE 00:00 UTC. Let's do 23:30 UTC (06:30 WIB,
+    # 30 min before briefing).
+    - cron: '30 23 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: bing-daily
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/bing-daily
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 90 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/bing-daily")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

@@ -1,0 +1,43 @@
+name: Daily Pipeline Briefing
+
+# Runs every weekday at 00:00 UTC (= 07:00 WIB) — composes a Claude markdown
+# summary of yesterday's pipeline activity (opps, briefs, agent runs, prospects)
+# and posts it to #writer-rangers via Slack Bot API.
+#
+# This replaces the previous Cowork scheduled-task setup, which couldn't
+# reach *.vercel.app from its egress-restricted sandbox. GitHub Actions
+# runners have public network access so the curl always succeeds.
+
+on:
+  schedule:
+    - cron: '0 0 * * 1-5'   # 00:00 UTC, Mon–Fri (07:00 WIB)
+  workflow_dispatch:        # manual trigger from Actions tab
+
+concurrency:
+  group: daily-briefing
+  cancel-in-progress: false
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/automation/daily-briefing
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET secret not set in repo settings"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 240 \
+            --request POST \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            --header "Content-Type: application/json" \
+            --data '{}' \
+            "${APP_URL%/}/api/automation/daily-briefing")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"
