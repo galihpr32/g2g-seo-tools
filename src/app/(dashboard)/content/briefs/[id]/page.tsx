@@ -4,8 +4,12 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 import { notFound, redirect } from 'next/navigation'
 import BriefQualityReview, { type TyrBreakdown } from '@/components/agents/BriefQualityReview'
 import BriefActionBar from '@/components/agents/BriefActionBar'
+import FinalContentPanel from '@/components/agents/FinalContentPanel'
 
-export const revalidate = 30
+// Disable revalidate caching on this page so writers see freshly-generated
+// final content immediately after assembly without a stale 30s window.
+export const revalidate = 0
+export const dynamic    = 'force-dynamic'
 
 /**
  * /content/briefs/[id]
@@ -121,6 +125,21 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         breakdown={brief.tyr_breakdown as TyrBreakdown | null}
       />
 
+      {/* ── Final Content (the writer's surface) ────────────────────────────
+          Hosts the assembled article body, inline edit, translate dropdown,
+          and re-assemble button. Surfaced ABOVE the structured brief sections
+          so writers don't have to scroll past outline/FAQ/keywords to reach
+          the actual draft they're working on. ────────────────────────────── */}
+      <FinalContentPanel
+        briefId={id}
+        initialFinalContent={(brief.final_content as string | null) ?? null}
+        initialGeneratedAt={(brief.final_content_generated_at as string | null) ?? null}
+        initialEditedAt={(brief.final_content_edited_at as string | null) ?? null}
+        initialTranslations={(brief.final_content_translations as Record<string, string> | null) ?? {}}
+        initialStatus={brief.status as string}
+        initialTyrStatus={brief.tyr_status as string | null}
+      />
+
       {/* Brief metadata */}
       {brief.notes && (
         <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
@@ -187,17 +206,19 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         </section>
       )}
 
-      {/* Content draft (rendered as preformatted markdown text) */}
+      {/* Brief summary header (H1 + meta + intent only — outline/FAQ/keywords
+          live in their own structured sections above; full article body lives
+          in the FinalContentPanel). ────────────────────────────────────── */}
       {brief.content_draft && (
-        <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">📄 Content Draft</h2>
-          <pre className="text-sm text-gray-300 whitespace-pre-wrap font-sans leading-relaxed">{brief.content_draft as string}</pre>
+        <section className="bg-gray-900/50 border border-gray-800 rounded-xl p-5 mb-5">
+          <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">📋 Brief Summary</h2>
+          <pre className="text-sm text-gray-400 whitespace-pre-wrap font-sans leading-relaxed">{brief.content_draft as string}</pre>
         </section>
       )}
 
       {/* Footer info */}
       <p className="text-gray-600 text-xs text-center">
-        Use the Actions panel above to run Tyr review, regenerate, or mark this brief as published.
+        Final content edits + translations are auto-saved. Mark Published to send to ranking-impact tracker.
       </p>
     </div>
   )

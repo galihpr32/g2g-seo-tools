@@ -249,7 +249,18 @@ export default function BriefActionBar({
       )}
 
       {isPublished && (
-        <p className="text-xs text-green-400">✅ This brief has been published. No further actions needed.</p>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs text-green-400">✅ This brief has been published. Tracking ranking impact via Vor.</p>
+          <button
+            onClick={() => patchStatus('reviewed')}
+            disabled={promoting}
+            title="Move back to reviewed — clears published_at, keeps Tyr score & content."
+            className="px-2.5 py-1 text-xs rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-300
+                       hover:bg-yellow-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {promoting ? '⏳ Saving…' : '↩ Mark Unpublished'}
+          </button>
+        </div>
       )}
 
       {/* Regenerate panel */}

@@ -51,6 +51,14 @@ interface BriefInput {
    * than starting from a blank slate.
    */
   previousReview?: PreviousTyrReview | null
+  /**
+   * Internal flag set when this call is a self-triggered retry after Tyr
+   * failed the brief on the first generation. Caps the auto-retry chain at
+   * exactly ONE additional attempt — without this, a flaky Bragi run could
+   * loop indefinitely. Manual user-triggered regenerates always set this
+   * to false (each user click gets its own fresh chance).
+   */
+  isAutoRegenRetry?: boolean
 }
 
 interface OutlineSection { heading: string; points: string[] }
@@ -208,11 +216,81 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   // No need for manual trigger — Tyr scores the brief and writes tyr_score +
   // tyr_status back to the row. Errors are caught so a Tyr failure doesn't
   // surface as a Bragi failure.
+  let tyrPassed = false
+  let tyrBreakdown: Record<string, unknown> | null = null
+  let tyrScore: number | null = null
+  let tyrStatus: string | null = null
   try {
-    await reviewSingleBrief(input.briefId, input.ownerId)
+    const result = await reviewSingleBrief(input.briefId, input.ownerId)
+    tyrPassed    = result.tyrStatus === 'reviewed'
+    tyrBreakdown = result.breakdown as unknown as Record<string, unknown>
+    tyrScore     = result.score
+    tyrStatus    = result.tyrStatus
   } catch (tyrErr) {
     console.error('[brief-generator] Tyr auto-review failed (non-fatal):', tyrErr)
     // Brief stays at agent_generated — user can re-run Tyr manually from Brief Library
+  }
+
+  // ── If Tyr passes, kick off the full-article assembly step ─────────────────
+  // Assembly is a SEPARATE Claude call (~30-45s on top of the ~40s already
+  // spent on outline + Tyr). Awaiting it inline blows past Vercel Hobby's
+  // 60s maxDuration cap on the parent lambda. So we trigger /assemble via a
+  // fire-and-forget HTTP call — that endpoint owns its own 60s lambda budget.
+  // If APP_URL or CRON_SECRET aren't configured (local dev), fall back to the
+  // inline await so behaviour stays correct.
+  if (tyrPassed) {
+    const appUrl     = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || ''
+    const cronSecret = process.env.CRON_SECRET || ''
+    if (appUrl && cronSecret) {
+      // Decoupled path: fire-and-forget. /assemble has its own auth (Bearer).
+      fetch(`${appUrl.replace(/\/$/, '')}/api/content/briefs/${input.briefId}/assemble`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${cronSecret}`,
+        },
+      }).catch(err => {
+        console.error('[brief-generator] internal /assemble fetch failed:', err)
+      })
+    } else {
+      // Local dev / missing env — run inline, accepting the slower wall-clock.
+      try {
+        await assembleFullArticle(input.briefId, input.ownerId)
+      } catch (asmErr) {
+        console.error('[brief-generator] inline assembly failed (non-fatal):', asmErr)
+      }
+    }
+    return
+  }
+
+  // ── Auto-regenerate-once when Tyr fails ────────────────────────────────────
+  // First-time Tyr fail (borderline OR failed) triggers one self-retry that
+  // feeds Tyr's breakdown back as `previousReview`. This is bounded to exactly
+  // ONE retry by `isAutoRegenRetry` — after that the brief stays at borderline/
+  // failed for a human to decide. Prevents infinite loops on persistently
+  // hard-to-pass briefs (e.g. niche with no SERP competitors).
+  const shouldAutoRetry = !input.isAutoRegenRetry
+                       && (tyrStatus === 'borderline' || tyrStatus === 'failed')
+                       && tyrBreakdown !== null
+  if (shouldAutoRetry) {
+    console.warn(`[brief-generator] Tyr ${tyrStatus} (score ${tyrScore}/100) — auto-regenerating once with feedback`)
+    try {
+      await generateAgentBrief({
+        ...input,
+        notes: appendNote(input.notes ?? '', `[auto-regen 1] First Tyr attempt scored ${tyrScore}/100 (${tyrStatus}). Bragi retrying with breakdown feedback as context.`),
+        previousReview: {
+          score:       tyrScore,
+          dimensions:  (tyrBreakdown as { dimensions?: Record<string, { score: number; comment: string }> }).dimensions ?? null,
+          strengths:   (tyrBreakdown as { strengths?:  string[] }).strengths,
+          weaknesses:  (tyrBreakdown as { weaknesses?: string[] }).weaknesses,
+          suggestions: (tyrBreakdown as { suggestions?: { priority: 'high' | 'medium' | 'low'; text: string }[] }).suggestions,
+          reasoning:   (tyrBreakdown as { reasoning?:  string }).reasoning,
+        },
+        isAutoRegenRetry: true,
+      })
+    } catch (retryErr) {
+      console.error('[brief-generator] auto-regen retry failed:', retryErr)
+    }
   }
 }
 
@@ -483,4 +561,166 @@ function buildRegenFeedbackBlock(review: PreviousTyrReview): string {
   lines.push('═══════════════════════════════════════════════════════════════════')
 
   return lines.join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Final-content assembly (Bragi step 2)
+//
+// After Tyr signs off on the brief, this function turns the outline + FAQs +
+// target keywords into a publish-ready markdown article body and writes it to
+// `seo_content_briefs.final_content`. The brief detail page surfaces this as
+// the writer's working draft (with inline edit + translate).
+//
+// Errors are returned (not thrown) so callers (post-Tyr auto-trigger or manual
+// /assemble endpoint) can decide what to do. The brief stays at 'reviewed'
+// status whether or not assembly succeeds.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ASSEMBLY_MODEL       = 'claude-haiku-4-5-20251001'
+const ASSEMBLY_MAX_TOKENS  = 4096
+const ASSEMBLY_BACKOFF_MS  = 800
+
+interface AssemblyOutlineSection { heading: string; points?: string[] }
+interface AssemblyFaq            { question: string; suggested_answer?: string }
+interface AssemblyKeyword        { keyword?: string; volume?: number | null }
+
+type AssemblyResult =
+  | { ok: true;  wordCount: number; model: string }
+  | { ok: false; reason: string }
+
+export async function assembleFullArticle(
+  briefId: string,
+  ownerId: string,
+): Promise<AssemblyResult> {
+  const db = createServiceClient()
+
+  // ── Load brief + KB context ──
+  const { data: brief, error: loadErr } = await db
+    .from('seo_content_briefs')
+    .select('*')
+    .eq('id', briefId)
+    .maybeSingle()
+
+  if (loadErr || !brief) {
+    return { ok: false, reason: `brief lookup failed: ${loadErr?.message ?? 'no row'}` }
+  }
+
+  const keyword     = String(brief.primary_keyword ?? '')
+  const pageUrl     = String(brief.page ?? '')
+  const briefType   = String(brief.brief_type ?? 'on_page')
+  const h1Hint      = String(brief.content_draft ?? '').match(/^#\s+(.+)$/m)?.[1] ?? keyword
+  const outline     = (Array.isArray(brief.content_outline) ? brief.content_outline : []) as AssemblyOutlineSection[]
+  const faqs        = (Array.isArray(brief.faq_suggestions)  ? brief.faq_suggestions  : []) as AssemblyFaq[]
+  const newKwsRaw   = (Array.isArray(brief.new_keywords)     ? brief.new_keywords     : []) as AssemblyKeyword[]
+  const targetKws   = [keyword, ...newKwsRaw.map(k => k?.keyword).filter(Boolean) as string[]]
+  const draftHeader = String(brief.content_draft ?? '')
+
+  if (!outline.length) {
+    return { ok: false, reason: 'brief has no content_outline (run Bragi step 1 first)' }
+  }
+  if (!keyword) {
+    return { ok: false, reason: 'brief has no primary_keyword' }
+  }
+
+  // KB block (brand voice, category guidelines, platform rules)
+  const kbBlock = await loadKBBlock(db, ownerId, pageUrl, keyword)
+
+  // ── Build assembly prompt ──
+  const outlineBlock = outline.map((s, i) => {
+    const points = (s.points ?? []).map(p => `   - ${p}`).join('\n')
+    return `${i + 1}. ## ${s.heading}\n${points}`
+  }).join('\n\n')
+
+  const faqBlock = faqs.length
+    ? faqs.map(f => `- Q: ${f.question}\n  A (hint): ${f.suggested_answer ?? '(write a clear, concise answer)'}`).join('\n')
+    : '(none — add a FAQ section anyway with 3 likely PAA-style questions)'
+
+  const isCategoryPage = briefType === 'category_page' || pageUrl.includes('/categories/')
+
+  const prompt = `You are the lead SEO writer for G2G (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown.
+
+PAGE CONTEXT
+- Primary keyword: "${keyword}"
+- Page URL: ${pageUrl}
+- Brief type: ${briefType}${isCategoryPage ? ' (category landing page)' : ''}
+- Suggested H1: ${h1Hint}
+
+TARGET KEYWORDS (1%–4% density on primary; ≤2% on secondaries; each must appear at least once):
+${targetKws.slice(0, 8).map(k => `- ${k}`).join('\n')}
+
+OUTLINE (write each section in order, with the heading, and ~150-300 words per section unless noted otherwise):
+${outlineBlock}
+
+FAQs to weave in (either inside the FAQ section if the outline has one, or append a "## Frequently Asked Questions" section):
+${faqBlock}
+
+WRITING RULES
+- Markdown headings: # for H1 (only one, at the very top), ## for section H2, ### for sub-points.
+- Plain prose paragraphs. No HTML. No <br> tags. Use blank lines to separate paragraphs.
+- DO NOT use the forbidden filler vocabulary: "immerse yourself", "step into", "dive into", "delve into", "embark", "captivating", "buckle up", "unravel", "thrill", "forge".
+- Bold ONLY brand/feature names (e.g. **GamerProtect**) — never bold the primary keyword itself.
+- Mention G2G's trust signals naturally: GamerProtect escrow, ISO/IEC 27001:2013 certified, 200+ payment methods, 24/7 support, transparent ratings. Do NOT mention competing marketplaces or the game's own publisher/developer.
+- Hit the word count: minimum 800 words, target 1200-1500 for category pages, max 1800.
+- Final paragraph should end with a soft CTA back to the page (no hard sell).
+- Do NOT output meta description, target keyword list, or any "writing rules" headers — those live in the structured brief, not the article body.
+
+${kbBlock}
+
+OUTPUT FORMAT
+Return ONLY the markdown article body. No preamble, no JSON, no explanation. Start with "# ${h1Hint}" on the first line.
+
+${draftHeader ? `\nFor reference, the meta description and user intent already approved are:\n\n${draftHeader}\n` : ''}`
+
+  // ── Call Claude (with one retry on transient errors) ──
+  let lastErr: unknown = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await anthropic.messages.create({
+        model:      ASSEMBLY_MODEL,
+        max_tokens: ASSEMBLY_MAX_TOKENS,
+        messages:   [{ role: 'user', content: prompt }],
+      })
+
+      logClaudeUsage(db, ownerId, {
+        model:       ASSEMBLY_MODEL,
+        endpoint:    'brief_assembly',
+        triggeredBy: 'agent_bragi',
+        usage:       response.usage,
+        extra:       { brief_id: briefId, attempt },
+      })
+
+      const text = response.content
+        .filter(b => b.type === 'text')
+        .map(b => (b.type === 'text' ? b.text : ''))
+        .join('\n')
+        .trim()
+
+      if (!text || text.length < 200) {
+        throw new Error(`assembly output too short (${text.length} chars)`)
+      }
+
+      // Strip code fences if Claude wrapped the markdown
+      const cleaned = text.replace(/^```(?:markdown|md)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim()
+      const wordCount = cleaned.split(/\s+/).filter(Boolean).length
+
+      await db
+        .from('seo_content_briefs')
+        .update({
+          final_content:               cleaned,
+          final_content_generated_at:  new Date().toISOString(),
+          updated_at:                  new Date().toISOString(),
+          // Preserve any prior translations — don't blow away final_content_translations.
+        })
+        .eq('id', briefId)
+
+      return { ok: true, wordCount, model: ASSEMBLY_MODEL }
+    } catch (err) {
+      lastErr = err
+      console.warn(`[assembleFullArticle] attempt ${attempt}/2 failed:`, err instanceof Error ? err.message : err)
+      if (attempt < 2) await sleep(ASSEMBLY_BACKOFF_MS)
+    }
+  }
+
+  const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  return { ok: false, reason }
 }

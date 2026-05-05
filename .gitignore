@@ -21,3 +21,12 @@ next-env.d.ts
 .DS_Store
 *.pem
 g2g-seo-tools/
+
+# Cowork automation auto-generated reports — regenerated every run
+# Keep the folder + README via reports/README.md (which is committed).
+reports/*.md
+!reports/README.md
+
+# SQL diagnostic & recovery scripts — workspace tools, not deploy artifacts
+diagnostic-*.sql
+recovery-*.sql

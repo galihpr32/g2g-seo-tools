@@ -24,6 +24,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       id, owner_user_id, page, brief_type, primary_keyword, status,
       tyr_score, tyr_status,
       content_outline, content_draft, faq_suggestions, new_keywords,
+      final_content, final_content_generated_at, final_content_edited_at,
+      final_content_translations,
+      published_at, published_by, target_publish_date,
       notes, created_at, updated_at
     `)
     .eq('id', id)
@@ -61,6 +64,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     target_publish_date?: string | null
     notes?: string
     assigned_to?: string | null
+    final_content?: string             // inline-edit the assembled article body
+    final_content_translations?: Record<string, string>  // inline-edit a specific lang translation
   } | null
   if (!body) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
@@ -92,6 +97,14 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       update.published_by = user.id
       update.published_at = nowIso
     }
+
+    // When un-publishing (writer pressed "Mark unpublished" on a published brief),
+    // clear the published_* attribution so /team-performance and /reports/ranking-impact
+    // don't keep counting it as a live publication.
+    if (body.status === 'reviewed' || body.status === 'draft') {
+      update.published_by = null
+      update.published_at = null
+    }
   }
 
   // Allow setting or clearing target_publish_date (null clears it)
@@ -100,6 +113,29 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       return NextResponse.json({ error: 'target_publish_date must be YYYY-MM-DD or null' }, { status: 400 })
     }
     update.target_publish_date = body.target_publish_date ?? null
+  }
+
+  // Inline-edit the assembled article body (writer's manual revision).
+  // Capping at 100k chars guards against accidental paste-of-an-entire-PDF.
+  if (typeof body.final_content === 'string') {
+    update.final_content          = body.final_content.slice(0, 100_000)
+    update.final_content_edited_at = nowIso
+  }
+
+  // Inline-edit a specific translation. Body shape: { final_content_translations: { id: '...' } }
+  // Merges with existing translations (doesn't blow away other languages).
+  if (body.final_content_translations && typeof body.final_content_translations === 'object') {
+    const dbCur = createServiceClient()
+    const { data: row } = await dbCur
+      .from('seo_content_briefs')
+      .select('final_content_translations')
+      .eq('id', id)
+      .maybeSingle()
+    const existing = (row?.final_content_translations ?? {}) as Record<string, string>
+    const incoming = Object.fromEntries(
+      Object.entries(body.final_content_translations).map(([k, v]) => [k, String(v ?? '').slice(0, 100_000)]),
+    )
+    update.final_content_translations = { ...existing, ...incoming }
   }
 
   // Writer assignment — pass null to unassign, uuid to assign.
