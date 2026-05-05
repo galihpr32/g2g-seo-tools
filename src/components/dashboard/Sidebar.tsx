@@ -30,6 +30,7 @@ const navItems = [
       { label: 'Product Content',    href: '/content/products',        icon: '📦' },
       { label: 'Knowledge Base',     href: '/knowledge-base',          icon: '🧠' },
       { label: 'Game Trends',        href: '/content/trends',          icon: '🎮' },
+      { label: 'News Signals',       href: '/content/news-signals',    icon: '📰' },
       { label: 'Keyword Map',        href: '/content/keyword-map',          icon: '🗺️' },
       { label: 'Keyword Exclusions', href: '/content/keyword-exclusions',   icon: '🚫' },
       { label: 'Internal Links',     href: '/content/internal-links',       icon: '🔗' },

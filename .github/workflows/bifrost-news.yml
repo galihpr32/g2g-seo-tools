@@ -1,0 +1,37 @@
+name: Bifrost News Listener
+
+# Runs every 6 hours — pulls Tier 1 gaming news RSS feeds, extracts game
+# mentions via Haiku, queues high-signal mentions (≥3 articles in 7d, KB
+# matched) into the pipeline for Saga aggregation.
+
+on:
+  schedule:
+    - cron: '15 */6 * * *'   # 00:15, 06:15, 12:15, 18:15 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: bifrost-news
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/bifrost
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET secret not set in repo settings"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 240 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/bifrost")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

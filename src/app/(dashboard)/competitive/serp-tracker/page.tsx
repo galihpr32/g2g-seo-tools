@@ -95,6 +95,113 @@ export default function SerpTrackerPage() {
   const [historyDays_window, setHistoryDays_window] = useState<30 | 90 | 180 | 365>(90)
   const [expandedDate, setExpandedDate] = useState<string | null>(null)
 
+  // ── SERP-recommend state ─────────────────────────────────────────────────
+  // ContentIdea shape mirrors the server response from /api/competitive/serp-recommend
+  interface ContentIdea {
+    id:                   string
+    type:                 'title_pattern' | 'content_depth' | 'new_keyword' | 'quick_win'
+    title:                string
+    body:                 string
+    target_keyword:       string
+    target_url:           string | null
+    suggested_brief_type: 'optimize_existing' | 'new_page' | 'category_page' | 'blog_post'
+    evidence:             string
+  }
+  // Map: snapshot_date → {recommendation_id, ideas, diagnostics, pushedIds}
+  const [recBySnapDate, setRecBySnapDate] = useState<Record<string, {
+    id:           string
+    ideas:        ContentIdea[]
+    diagnostics?: { keywords_analysed: number; urls_scraped: number; cache_hits: number; cache_misses: number; cost_usd: number; remaining_today: number }
+    pushedIds:    Set<string>
+  } | null>>({})
+  const [recLoadingDate, setRecLoadingDate] = useState<string | null>(null)
+  const [recError,       setRecError]       = useState<string | null>(null)
+  const [pushingIdeaId,  setPushingIdeaId]  = useState<string | null>(null)
+  const [pushSuccessIds, setPushSuccessIds] = useState<Set<string>>(new Set())
+
+  async function fetchOrGenerateIdeas(snapshotDate: string) {
+    setRecError(null)
+    setRecLoadingDate(snapshotDate)
+    try {
+      // Try existing run first (free)
+      const existing = await fetch(`/api/competitive/serp-recommend?date=${snapshotDate}`).then(r => r.ok ? r.json() : null)
+      if (existing?.runs?.length > 0) {
+        const latest = existing.runs[0] as { id: string; ideas: ContentIdea[]; pushed_links: Array<{ idea_id: string }> }
+        setRecBySnapDate(prev => ({
+          ...prev,
+          [snapshotDate]: {
+            id:        latest.id,
+            ideas:     latest.ideas ?? [],
+            pushedIds: new Set((latest.pushed_links ?? []).map(p => p.idea_id)),
+          },
+        }))
+        return
+      }
+      // Generate fresh — costs Sonnet + FireCrawl
+      const res  = await fetch('/api/competitive/serp-recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ snapshot_date: snapshotDate }),
+      })
+      const data = await res.json() as {
+        ok?: boolean; id?: string; ideas?: ContentIdea[]
+        diagnostics?: { keywords_analysed: number; urls_scraped: number; cache_hits: number; cache_misses: number; cost_usd: number; remaining_today: number }
+        error?: string
+      }
+      if (!res.ok || !data.ok) {
+        setRecError(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setRecBySnapDate(prev => ({
+        ...prev,
+        [snapshotDate]: {
+          id:          data.id ?? '',
+          ideas:       data.ideas ?? [],
+          diagnostics: data.diagnostics,
+          pushedIds:   new Set(),
+        },
+      }))
+    } catch (err) {
+      setRecError(err instanceof Error ? err.message : 'Failed to load ideas')
+    } finally {
+      setRecLoadingDate(null)
+    }
+  }
+
+  async function pushIdeaToBragi(snapshotDate: string, idea: ContentIdea) {
+    const rec = recBySnapDate[snapshotDate]
+    if (!rec) return
+    setPushingIdeaId(idea.id)
+    try {
+      const res = await fetch('/api/competitive/serp-recommend/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recommendation_id:    rec.id,
+          idea_id:              idea.id,
+          primary_keyword:      idea.target_keyword,
+          target_url:           idea.target_url,
+          suggested_brief_type: idea.suggested_brief_type,
+        }),
+      })
+      const data = await res.json() as { ok?: boolean; opp_id?: string; error?: string; already_pushed?: boolean }
+      if (!res.ok || !data.ok) {
+        setRecError(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setPushSuccessIds(prev => new Set(prev).add(idea.id))
+      setRecBySnapDate(prev => {
+        const r = prev[snapshotDate]
+        if (!r) return prev
+        return { ...prev, [snapshotDate]: { ...r, pushedIds: new Set([...r.pushedIds, idea.id]) } }
+      })
+    } catch (err) {
+      setRecError(err instanceof Error ? err.message : 'Push failed')
+    } finally {
+      setPushingIdeaId(null)
+    }
+  }
+
   // Multi-select state — domains user wants to add to Competitor List in bulk.
   // Excludes G2G + already-tracked competitors (they get auto-skipped server-side).
   const [selectedDomains, setSelectedDomains]   = useState<Set<string>>(new Set())
@@ -718,6 +825,96 @@ export default function SerpTrackerPage() {
                               </span>
                             ))}
                           </div>
+                        </div>
+
+                        {/* ── Get content ideas (Sonnet + FireCrawl) ────── */}
+                        <div className="border-t border-gray-800 pt-4">
+                          {!recBySnapDate[day.snapshot_date] && recLoadingDate !== day.snapshot_date && (
+                            <button
+                              onClick={() => fetchOrGenerateIdeas(day.snapshot_date)}
+                              className="px-4 py-2 text-xs rounded-lg bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white transition shadow-lg"
+                            >
+                              💡 Get content ideas (Sonnet + FireCrawl, ~60s, ~$0.10)
+                            </button>
+                          )}
+                          {recLoadingDate === day.snapshot_date && (
+                            <div className="text-xs text-purple-300 animate-pulse">
+                              ⏳ Sonnet analysing SERP + FireCrawl scraping top competitors… 30-60s
+                            </div>
+                          )}
+                          {recError && recLoadingDate === null && expandedDate === day.snapshot_date && (
+                            <p className="text-xs text-red-400 mt-2">⚠️ {recError}</p>
+                          )}
+
+                          {recBySnapDate[day.snapshot_date] && (() => {
+                            const rec = recBySnapDate[day.snapshot_date]!
+                            const groupBy = (t: ContentIdea['type']) => rec.ideas.filter(i => i.type === t)
+                            const categories: Array<{ type: ContentIdea['type']; label: string; emoji: string; cls: string }> = [
+                              { type: 'title_pattern', label: 'Title Patterns',     emoji: '📝', cls: 'border-purple-500/30 bg-purple-500/5' },
+                              { type: 'content_depth', label: 'Content Depth Gaps', emoji: '📚', cls: 'border-blue-500/30 bg-blue-500/5'   },
+                              { type: 'new_keyword',   label: 'New Keywords',       emoji: '🔑', cls: 'border-emerald-500/30 bg-emerald-500/5' },
+                              { type: 'quick_win',     label: 'Quick-Win Positioning', emoji: '🎯', cls: 'border-amber-500/30 bg-amber-500/5' },
+                            ]
+                            return (
+                              <div className="space-y-3">
+                                <div className="flex items-center justify-between flex-wrap gap-2">
+                                  <p className="text-xs text-purple-300 font-semibold uppercase tracking-wider">💡 {rec.ideas.length} content ideas</p>
+                                  {rec.diagnostics && (
+                                    <p className="text-[10px] text-gray-500 font-mono">
+                                      {rec.diagnostics.urls_scraped} URLs scraped ({rec.diagnostics.cache_hits} cached) · ${rec.diagnostics.cost_usd.toFixed(3)} · {rec.diagnostics.remaining_today} left today
+                                    </p>
+                                  )}
+                                </div>
+
+                                {categories.map(cat => {
+                                  const cIdeas = groupBy(cat.type)
+                                  if (cIdeas.length === 0) return null
+                                  return (
+                                    <div key={cat.type} className={`border rounded-lg p-3 ${cat.cls}`}>
+                                      <p className="text-xs font-semibold text-white mb-2">{cat.emoji} {cat.label} ({cIdeas.length})</p>
+                                      <div className="space-y-2">
+                                        {cIdeas.map(idea => {
+                                          const isPushed  = rec.pushedIds.has(idea.id) || pushSuccessIds.has(idea.id)
+                                          const isPushing = pushingIdeaId === idea.id
+                                          return (
+                                            <div key={idea.id} className="bg-gray-900/60 border border-gray-800 rounded-md p-3">
+                                              <div className="flex items-start justify-between gap-3 mb-1.5">
+                                                <p className="text-sm font-medium text-white flex-1">{idea.title}</p>
+                                                {isPushed ? (
+                                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 flex-shrink-0">
+                                                    ✓ Pushed
+                                                  </span>
+                                                ) : (
+                                                  <button
+                                                    onClick={() => pushIdeaToBragi(day.snapshot_date, idea)}
+                                                    disabled={isPushing}
+                                                    className="text-[10px] px-2 py-1 rounded-md bg-purple-600 hover:bg-purple-500 text-white transition disabled:opacity-50 flex-shrink-0"
+                                                  >
+                                                    {isPushing ? '…' : '🚀 Push to Bragi'}
+                                                  </button>
+                                                )}
+                                              </div>
+                                              <p className="text-xs text-gray-400 mb-2">{idea.body}</p>
+                                              <div className="flex items-center gap-2 flex-wrap text-[10px] text-gray-500">
+                                                <span className="bg-gray-800 px-1.5 py-0.5 rounded">kw: {idea.target_keyword}</span>
+                                                {idea.target_url && (
+                                                  <span className="bg-gray-800 px-1.5 py-0.5 rounded truncate max-w-xs">
+                                                    {(() => { try { return new URL(idea.target_url).pathname } catch { return idea.target_url } })()}
+                                                  </span>
+                                                )}
+                                                <span className="bg-gray-800 px-1.5 py-0.5 rounded">→ {idea.suggested_brief_type}</span>
+                                              </div>
+                                              <p className="text-[10px] text-gray-600 italic mt-1.5">📎 {idea.evidence}</p>
+                                            </div>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )
+                          })()}
                         </div>
                       </div>
                     )}
