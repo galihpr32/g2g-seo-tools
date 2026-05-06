@@ -79,6 +79,10 @@ export default function NewsSignalsPage() {
   const [pushedGames, setPushedGames]     = useState<Set<string>>(new Set())
   const [pushError, setPushError]         = useState<string | null>(null)
 
+  // Rematch state
+  const [rematchLoading, setRematchLoading] = useState(false)
+  const [rematchResult,  setRematchResult]  = useState<string | null>(null)
+
   // Deep dive state
   const [deepDiveItemId, setDeepDiveItemId] = useState<string | null>(null)
   const [deepDiveContent, setDeepDiveContent] = useState<string | null>(null)
@@ -148,6 +152,28 @@ export default function NewsSignalsPage() {
       setPushError(err instanceof Error ? err.message : 'Push failed')
     } finally {
       setPushingGame(null)
+    }
+  }
+
+  async function rematchKb() {
+    setRematchLoading(true)
+    setRematchResult(null)
+    try {
+      const res = await fetch('/api/news/rematch', { method: 'POST' })
+      const d = await res.json() as { ok?: boolean; evaluated?: number; newly_matched?: number; kept_matched?: number; error?: string }
+      if (!res.ok || !d.ok) {
+        setRematchResult(`⚠️ ${d.error ?? `HTTP ${res.status}`}`)
+      } else {
+        setRematchResult(
+          `✓ Re-matched ${d.evaluated} extractions. ${d.newly_matched} newly matched. ${d.kept_matched} already matched.`,
+        )
+        // Reload signals to reflect updated kb_matched flags
+        fetchSignals()
+      }
+    } catch (err) {
+      setRematchResult(`⚠️ ${err instanceof Error ? err.message : 'Rematch failed'}`)
+    } finally {
+      setRematchLoading(false)
     }
   }
 
@@ -280,10 +306,21 @@ export default function NewsSignalsPage() {
               />
               KB-matched only
             </label>
+            <button
+              onClick={rematchKb}
+              disabled={rematchLoading}
+              title="Re-evaluate KB matching against existing extractions using the latest fuzzy matcher (token overlap + abbreviations). Free — does not re-run Haiku."
+              className="px-3 py-1 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 transition disabled:opacity-50"
+            >
+              {rematchLoading ? '⏳ Re-matching…' : '🔁 Re-match KB'}
+            </button>
             <span className="text-[10px] text-gray-600 ml-auto">
-              ⓘ KB-matched = game name exists in your Knowledge Base categories. Toggles off to surface new candidates.
+              ⓘ KB-matched = game name overlaps with your Knowledge Base categories. Toggles off to surface new candidates.
             </span>
           </div>
+          {rematchResult && (
+            <p className="text-xs text-gray-400 mb-3">{rematchResult}</p>
+          )}
 
           {pushError && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-300 mb-3">⚠️ {pushError}</div>

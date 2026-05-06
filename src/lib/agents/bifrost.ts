@@ -118,6 +118,74 @@ function normalizeGameName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
+// Stop-words that appear in G2G's KB category names but NOT in news editorial.
+// E.g. KB names like "WoW Gold", "FIFA Mobile Account", "MLBB Diamonds" — news
+// sites just say "World of Warcraft", "FIFA Mobile", "Mobile Legends". Strip
+// the commerce suffix before token-overlap matching so a real franchise match
+// counts even when the game-name surface forms differ.
+const KB_STOP_TOKENS = new Set([
+  'account','accounts','accs','acc','gold','silver','diamonds','crystals','gems',
+  'items','keys','cards','top-up','topup','currency','coins','credits','tokens',
+  'wallet','voucher','vouchers','coaching','boost','boosting','services','service',
+  'gift','rivals','dlc','expansion','recharge','code','codes',
+])
+
+function gameNameTokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(t => t.length >= 2 && !KB_STOP_TOKENS.has(t))
+}
+
+// Common abbreviation map — extend as the team encounters new ones.
+// Both directions: when extracted name has the canonical, fall through to the
+// canonical's tokens; when extracted has the abbreviation, expand it. This is
+// cheaper than fuzzy distance and high-precision for the gaming domain.
+const GAME_ABBREVIATIONS: Record<string, string[]> = {
+  'wow':       ['world', 'of', 'warcraft'],
+  'lol':       ['league', 'of', 'legends'],
+  'csgo':      ['counter', 'strike', 'global', 'offensive'],
+  'cs':        ['counter', 'strike'],
+  'mlbb':      ['mobile', 'legends', 'bang', 'bang'],
+  'pubg':      ['playerunknowns', 'battlegrounds'],
+  'gi':        ['genshin', 'impact'],
+  'gta':       ['grand', 'theft', 'auto'],
+  'tft':       ['teamfight', 'tactics'],
+  'd2r':       ['diablo', '2', 'resurrected'],
+  'd4':        ['diablo', '4'],
+  'ff':        ['final', 'fantasy'],
+  'ffxiv':     ['final', 'fantasy', 'xiv'],
+  'cod':       ['call', 'of', 'duty'],
+  'rs':        ['runescape'],
+  'osrs':      ['old', 'school', 'runescape'],
+  'apex':      ['apex', 'legends'],
+}
+
+function expandAbbreviations(tokens: string[]): string[] {
+  const out: string[] = []
+  for (const t of tokens) {
+    out.push(t)
+    const expansion = GAME_ABBREVIATIONS[t]
+    if (expansion) out.push(...expansion)
+  }
+  return out
+}
+
+/**
+ * Loose match between an extracted game name (Haiku output) and a KB name.
+ * Returns true when at least 1 meaningful token overlaps after stop-word
+ * stripping + abbreviation expansion. Tuned for high precision on gaming
+ * franchise names where false positives are rare (most short tokens are
+ * unique brand markers like "warcraft", "diablo", "valorant").
+ */
+function fuzzyMatchKb(extractedName: string, kbName: string): boolean {
+  const a = expandAbbreviations(gameNameTokens(extractedName))
+  const b = expandAbbreviations(gameNameTokens(kbName))
+  if (a.length === 0 || b.length === 0) return false
+  const setB = new Set(b)
+  return a.some(t => setB.has(t))
+}
+
 // ─── Main runner ──────────────────────────────────────────────────────────────
 export async function runBifrost(ownerId: string): Promise<{
   ok:           boolean
@@ -257,23 +325,28 @@ export async function runBifrost(ownerId: string): Promise<{
         .from('news_game_extractions')
         .upsert(extractionRows, { onConflict: 'news_item_id,game_name_norm' })
 
-      // Mark KB matches
-      const norms = Array.from(new Set(extractionRows.map(r => r.game_name_norm)))
-      if (norms.length > 0) {
-        const { data: kbItems } = await db
-          .from('knowledge_base_items')
-          .select('id, name')
-          .eq('owner_user_id', ownerId)
-          .eq('category', 'category')
+      // Mark KB matches via token-overlap fuzzy matcher (strict slug equality
+      // misses cases like extracted "World of Warcraft" vs KB "WoW Gold").
+      const { data: kbItems } = await db
+        .from('knowledge_base_items')
+        .select('id, name')
+        .eq('owner_user_id', ownerId)
+        .eq('category', 'category')
+
+      for (const ext of extractionRows) {
+        let bestMatch: { id: string; name: string } | null = null
         for (const kb of kbItems ?? []) {
-          const kbNorm = normalizeGameName(String(kb.name ?? ''))
-          if (norms.includes(kbNorm)) {
-            await db
-              .from('news_game_extractions')
-              .update({ kb_matched: true, kb_category_id: kb.id })
-              .eq('news_item_id', item.id)
-              .eq('game_name_norm', kbNorm)
+          if (fuzzyMatchKb(ext.game_name, String(kb.name ?? ''))) {
+            bestMatch = { id: String(kb.id), name: String(kb.name) }
+            break   // first match wins — gaming franchise names rarely overlap
           }
+        }
+        if (bestMatch) {
+          await db
+            .from('news_game_extractions')
+            .update({ kb_matched: true, kb_category_id: bestMatch.id })
+            .eq('news_item_id', item.id)
+            .eq('game_name_norm', ext.game_name_norm)
         }
       }
     }
