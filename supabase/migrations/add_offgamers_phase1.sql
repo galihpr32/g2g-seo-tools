@@ -75,20 +75,21 @@ CREATE INDEX IF NOT EXISTS outreach_domain_scores_site_slug_idx
 
 
 -- ── 7. seo_action_items — add site_slug ──────────────────────────────────────
--- Currently filtered by site_url (which works), but adding site_slug
--- makes Phase 2 route updates simpler and more consistent.
+-- Note: this table uses site_url (not owner_user_id) as its primary filter.
+-- Index accordingly.
 
 ALTER TABLE public.seo_action_items
   ADD COLUMN IF NOT EXISTS site_slug text NOT NULL DEFAULT 'g2g';
 
 CREATE INDEX IF NOT EXISTS seo_action_items_site_slug_idx
-  ON public.seo_action_items (owner_user_id, site_slug);
+  ON public.seo_action_items (site_slug);
 
 
 -- ── 8. seo_content_briefs — add site_slug ────────────────────────────────────
+-- Same pattern: filtered by site_url, not owner_user_id.
 
 ALTER TABLE public.seo_content_briefs
   ADD COLUMN IF NOT EXISTS site_slug text NOT NULL DEFAULT 'g2g';
 
 CREATE INDEX IF NOT EXISTS seo_content_briefs_site_slug_idx
-  ON public.seo_content_briefs (owner_user_id, site_slug);
+  ON public.seo_content_briefs (site_slug);
