@@ -70,6 +70,7 @@ export async function createProductDoc(content: ProductDocContent): Promise<stri
   const title = `[G2G] ${content.productName}`
 
   const fileRes = await drive.files.create({
+    supportsAllDrives: true,
     requestBody: {
       name:     title,
       mimeType: 'application/vnd.google-apps.document',
@@ -198,6 +199,10 @@ export async function uploadFileToDrive(
   const stream = Readable.from(buffer)
 
   const fileRes = await drive.files.create({
+    // supportsAllDrives is required when the target folder lives in a
+    // Shared Drive (Team Drive). Without it the API returns a 403 "storage
+    // quota" error because service accounts have no personal quota.
+    supportsAllDrives: true,
     requestBody: {
       name:     filename,
       mimeType,
@@ -218,6 +223,7 @@ export async function uploadFileToDrive(
   if (options.makePublic !== false) {
     await drive.permissions.create({
       fileId,
+      supportsAllDrives: true,
       requestBody: { role: 'reader', type: 'anyone' },
     })
   }

@@ -323,10 +323,8 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
   const [generating, setGenerating]       = useState(false)
   const [error, setError]                 = useState<string | null>(null)
   const [showPicker, setShowPicker]       = useState(false)
-  // PPTX export state — kept local to the page so multiple reports tracked
-  // independently as user toggles between them.
+  // PPTX export state
   const [exportingPptx, setExportingPptx] = useState(false)
-  const [pptxUrl,       setPptxUrl]       = useState<string | null>(null)
   const [pptxError,     setPptxError]     = useState<string | null>(null)
 
   const def = getDefaultMonth()
@@ -354,16 +352,10 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
     if (!selectedId) return
     setLoadingReport(true)
     setReport(null)
-    setPptxUrl(null)         // reset PPTX state when switching reports
     setPptxError(null)
     fetch(`/api/reports/monthly?id=${selectedId}`)
       .then(r => r.json())
-      .then(({ report: r }) => {
-        setReport(r)
-        // If the report already has a generated PPTX (from a previous
-        // export), surface the existing link instead of forcing a re-export.
-        if (r?.pptx_drive_url) setPptxUrl(r.pptx_drive_url as string)
-      })
+      .then(({ report: r }) => { setReport(r) })
       .catch(() => {})
       .finally(() => setLoadingReport(false))
   }, [selectedId])
@@ -373,22 +365,30 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
     if (!selectedId) return
     setExportingPptx(true)
     setPptxError(null)
-    setPptxUrl(null)
     try {
-      const res  = await fetch('/api/reports/monthly/export-pptx', {
+      const res = await fetch('/api/reports/monthly/export-pptx', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ id: selectedId }),
       })
-      const data = await res.json() as { ok?: boolean; url?: string; error?: string }
-      if (!res.ok || !data.ok || !data.url) {
+      if (!res.ok) {
+        // Error responses are JSON
+        const data = await res.json().catch(() => ({})) as { error?: string }
         setPptxError(data.error ?? 'Failed to export PPTX')
         return
       }
-      setPptxUrl(data.url)
-      // Best-effort auto-open in a new tab. If the browser blocks it (popup
-      // blocker), the link stays visible inline so user can click manually.
-      try { window.open(data.url, '_blank', 'noopener,noreferrer') } catch { /* ignored */ }
+      // Success — stream is the raw PPTX binary. Trigger browser download.
+      const blob     = await res.blob()
+      const filename = res.headers.get('Content-Disposition')
+        ?.match(/filename="([^"]+)"/)?.[1] ?? 'Monthly-Report.pptx'
+      const url      = URL.createObjectURL(blob)
+      const a        = document.createElement('a')
+      a.href         = url
+      a.download     = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
     } catch (e) {
       setPptxError(String(e))
     } finally {
@@ -457,26 +457,14 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
             </button>
           )}
           {report && (
-            pptxUrl ? (
-              <a
-                href={pptxUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-orange-400 hover:text-orange-300 border border-orange-700/40 hover:border-orange-500 bg-orange-900/20 px-3 py-2 rounded-lg transition flex items-center gap-1.5"
-                title="Open the generated PPTX in Google Drive"
-              >
-                📊 View PPTX
-              </a>
-            ) : (
-              <button
-                onClick={exportPptx}
-                disabled={exportingPptx}
-                className="text-xs text-orange-400 hover:text-orange-300 border border-orange-700/40 hover:border-orange-500 disabled:opacity-50 px-3 py-2 rounded-lg transition flex items-center gap-1.5"
-                title="Generate a stakeholder-ready PPTX deck and save to Google Drive"
-              >
-                {exportingPptx ? <><span className="animate-spin">⟳</span> Building…</> : <>📊 Export PPTX</>}
-              </button>
-            )
+            <button
+              onClick={exportPptx}
+              disabled={exportingPptx}
+              className="text-xs text-orange-400 hover:text-orange-300 border border-orange-700/40 hover:border-orange-500 disabled:opacity-50 px-3 py-2 rounded-lg transition flex items-center gap-1.5"
+              title="Generate and download a stakeholder-ready PPTX deck"
+            >
+              {exportingPptx ? <><span className="animate-spin">⟳</span> Building…</> : <>📊 Export PPTX</>}
+            </button>
           )}
           <div className="relative">
             <button

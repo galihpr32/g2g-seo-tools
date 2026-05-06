@@ -73,6 +73,10 @@ export async function GET(req: Request) {
   const locationCode = parseInt(url.searchParams.get('locationCode') ?? '2840', 10)
   const languageCode = url.searchParams.get('languageCode') ?? 'en'
   const includeBelowThreshold = url.searchParams.get('includeBelow') === '1'
+  // Site slug — which brand is doing the outreach discovery.
+  // Reads from query param first, then active-site cookie, defaults to 'g2g'.
+  const cookieSite = req.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+  const siteSlug   = url.searchParams.get('site') ?? cookieSite
 
   if (!keyword) {
     return NextResponse.json({ error: 'keyword is required' }, { status: 400 })
@@ -111,7 +115,14 @@ export async function GET(req: Request) {
   }
 
   // ── 2. Auto-skip social media / marketplaces (cheap pre-filter) ───────────
-  const ourDomain = 'g2g.com'
+  // Look up our own domain from site_configs so G2G and OG each exclude themselves.
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('favicon_domain')
+    .eq('slug', siteSlug)
+    .maybeSingle()
+  const ourDomain = siteConfig?.favicon_domain ?? 'g2g.com'
+
   let autoSkipped = 0
   const filteredOrganic = organic
     .filter(r => r.domain && !r.domain.toLowerCase().includes(ourDomain))
@@ -133,7 +144,7 @@ export async function GET(req: Request) {
   const evaluations = await Promise.all(
     filteredOrganic.map(async (r): Promise<{ serp: typeof r; score: DomainScore | null }> => {
       try {
-        const score = await evaluateDomain(db, ownerId, r.domain, keyword)
+        const score = await evaluateDomain(db, ownerId, r.domain, keyword, {}, siteSlug)
         return { serp: r, score }
       } catch (err) {
         console.error('[outreach/discover] eval failed for', r.domain, err)
@@ -152,6 +163,7 @@ export async function GET(req: Request) {
     .from('outreach_prospects')
     .select('domain, status')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .in('domain', domains.length ? domains : ['__never__'])
 
   const existingMap = new Map((existing ?? []).map(r => [r.domain, r.status]))

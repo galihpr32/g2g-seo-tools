@@ -26,12 +26,25 @@ export async function POST(request: Request) {
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
+
+  // Resolve active site from cookie
+  const cookieSite = request.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+
+  // Prefer site_configs.gsc_property for brand-accurate site_url
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', cookieSite)
+    .maybeSingle()
+
   const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', effectiveOwnerId)
     .single()
-  if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
+
+  const resolvedSiteUrl = siteConfig?.gsc_property ?? conn?.site_url ?? null
+  if (!resolvedSiteUrl) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
 
   const reqBody = await request.json()
   const { action_item_id, content_type_config, selected_keywords, custom_instructions, serp_country } = reqBody as {
@@ -55,7 +68,7 @@ export async function POST(request: Request) {
   const { data: gscQueries } = await supabase
     .from('gsc_ranking_drop_queries')
     .select('query, clicks, impressions, ctr, position')
-    .eq('site_url', conn.site_url)
+    .eq('site_url', resolvedSiteUrl)
     .eq('page', item.page)
     .order('clicks', { ascending: false })
     .limit(10)
@@ -67,11 +80,12 @@ export async function POST(request: Request) {
   const { data: brief, error: insertErr } = await supabase
     .from('seo_content_briefs')
     .insert({
-      site_url: conn.site_url,
+      site_url:        resolvedSiteUrl,
+      site_slug:       cookieSite,
       action_item_id,
-      page: item.page,
-      brief_type: item.action_type,
-      status: 'generating',
+      page:            item.page,
+      brief_type:      item.action_type,
+      status:          'generating',
       primary_keyword: primaryKeyword,
     })
     .select()
@@ -85,7 +99,7 @@ export async function POST(request: Request) {
   // `after()` keeps the serverless function alive until the promise resolves,
   // even after the HTTP response is returned to the client.
   after(
-    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions, serp_country)
+    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, resolvedSiteUrl, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions, serp_country)
       .catch(err => console.error('Brief pipeline error:', err))
   )
 

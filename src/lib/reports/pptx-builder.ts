@@ -112,6 +112,36 @@ export interface BuildPptxInput {
   reportData:  MonthlyReportData
   aiNarrative: string
   aiActionPlan: string
+  /** Optional executive-friendly card overrides. When supplied, the
+   *  narrative slide renders as a 2x3 grid of insight cards instead of
+   *  a wall of prose. Falls back to paragraph layout if absent. */
+  narrativeHighlights?: NarrativeHighlight[]
+  /** Optional structured action items. When supplied, the action plan
+   *  slide renders as a 2x4 grid of priority cards instead of a numbered
+   *  list. Falls back to numbered list if absent. */
+  actionItems?: ActionItemCard[]
+}
+
+export interface NarrativeHighlight {
+  /** Optional emoji or single character glyph displayed top-left of the card. */
+  icon?:     string
+  /** Short bold statement — what happened. Max ~80 chars. */
+  headline:  string
+  /** 1-2 sentence supporting detail. Max ~180 chars. */
+  body:      string
+  /** Drives accent color: up=green, down=red, flat=muted, warning=amber. */
+  trend?:    'up' | 'down' | 'flat' | 'warning'
+}
+
+export interface ActionItemCard {
+  /** Imperative short title. Max ~60 chars. */
+  title:     string
+  /** Why it matters. Max ~180 chars. */
+  body:      string
+  /** Priority badge — drives card accent + label. */
+  priority?: 'P0' | 'P1' | 'P2'
+  /** Optional small grouping label shown above the title. */
+  category?: string
 }
 
 // ── Theme ───────────────────────────────────────────────────────────────────
@@ -210,8 +240,8 @@ function drawSlideHeader(slide: PptxGenJS.Slide, title: string, eyebrow?: string
 }
 
 // Footer slide number + branding
-function drawFooter(slide: PptxGenJS.Slide, slideNum: number, total: number, monthLabel: string) {
-  slide.addText('G2G Monthly Report', {
+function drawFooter(slide: PptxGenJS.Slide, slideNum: number, total: number, monthLabel: string, siteName: string) {
+  slide.addText(`${siteName} Monthly Report`, {
     x: M, y: SLIDE_H - 0.4, w: 4, h: 0.25,
     fontFace: FB, fontSize: 9, color: T.textDim, align: 'left', margin: 0,
   })
@@ -224,19 +254,21 @@ function drawFooter(slide: PptxGenJS.Slide, slideNum: number, total: number, mon
 // ── Public API ──────────────────────────────────────────────────────────────
 
 export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buffer> {
-  const { reportData: r, aiNarrative, aiActionPlan } = input
+  const { reportData: r, aiNarrative, aiActionPlan, narrativeHighlights, actionItems } = input
 
   const pres = new PptxGenJS()
   pres.layout = 'LAYOUT_WIDE'
-  pres.title  = `G2G Monthly Report — ${r.monthLabel}`
-  pres.author = 'G2G SEO Tools'
-  pres.company = 'G2G'
+  pres.title  = `${r.siteName} Monthly Report — ${r.monthLabel}`
+  pres.author = `${r.siteName} SEO Tools`
+  pres.company = r.siteName
 
   // Build slides in order. Total count is used by drawFooter.
   const buildFns: ((slide: PptxGenJS.Slide, idx: number, total: number) => void | Promise<void>)[] = [
     s => buildCoverSlide(s, r),
     (s, i, t) => buildExecKpisSlide(s, r, i, t),
-    (s, i, t) => buildNarrativeSlide(s, r, aiNarrative, i, t),
+    (s, i, t) => narrativeHighlights && narrativeHighlights.length > 0
+      ? buildHighlightsSlide(s, r, narrativeHighlights, i, t)
+      : buildNarrativeSlide(s, r, aiNarrative, i, t),
   ]
 
   // GSC trend — only if we have data
@@ -265,7 +297,9 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
   }
 
   // Action plan
-  if (aiActionPlan?.trim()) {
+  if (actionItems && actionItems.length > 0) {
+    buildFns.push((s, i, t) => buildActionItemsCardsSlide(s, r, actionItems, i, t))
+  } else if (aiActionPlan?.trim()) {
     buildFns.push((s, i, t) => buildActionPlanSlide(s, r, aiActionPlan, i, t))
   }
 
@@ -319,7 +353,7 @@ function buildCoverSlide(slide: PptxGenJS.Slide, r: MonthlyReportData) {
   })
 
   // Footer: brand + generated date
-  slide.addText('Prepared by G2G SEO Tools', {
+  slide.addText(`Prepared by ${r.siteName} SEO Tools`, {
     x: M, y: SLIDE_H - 0.7, w: 6, h: 0.25,
     fontFace: FB, fontSize: 10, color: T.textDim, align: 'left', margin: 0,
   })
@@ -447,7 +481,7 @@ function buildExecKpisSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
     fontFace: FB, fontSize: 12, margin: 0,
   })
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 3 — AI Narrative ──────────────────────────────────────────────────
@@ -485,7 +519,7 @@ function buildNarrativeSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, narra
     })
   }
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 4 — GSC Trend chart ───────────────────────────────────────────────
@@ -555,7 +589,7 @@ function buildGscTrendSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
     })
   }
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 5 — Top queries ───────────────────────────────────────────────────
@@ -612,7 +646,7 @@ function buildTopQueriesSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx:
     rowH: 0.55,
   })
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 6 — Top pages ─────────────────────────────────────────────────────
@@ -680,7 +714,7 @@ function buildTopPagesSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
     rowH: rowCount > 6 ? 0.55 : 0.65,
   })
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 7 — Competitive Share of Voice ────────────────────────────────────
@@ -695,7 +729,7 @@ function buildCompetitiveSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx
       x: M + 0.4, y: 2.5, w: SLIDE_W - 2 * M - 0.8, h: 0.6,
       fontFace: FB, fontSize: 14, color: T.textMuted, italic: true, align: 'center', margin: 0,
     })
-    drawFooter(slide, idx, total, r.monthLabel)
+    drawFooter(slide, idx, total, r.monthLabel, r.siteName)
     return
   }
 
@@ -766,7 +800,7 @@ function buildCompetitiveSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx
     })
   }
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 8 — Backlinks ─────────────────────────────────────────────────────
@@ -823,7 +857,7 @@ function buildBacklinksSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: 
     })
   }
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }
 
 // ── Slide 9 — Action plan ───────────────────────────────────────────────────
@@ -877,5 +911,188 @@ function buildActionPlanSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, plan
     })
   }
 
-  drawFooter(slide, idx, total, r.monthLabel)
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+}
+
+// ── Slide 3 (alt) — Highlight cards ─────────────────────────────────────────
+// Replaces the prose narrative slide when `narrativeHighlights` is provided.
+// Renders a 2x3 grid of insight cards (or 2x2 for ≤4 highlights).
+function buildHighlightsSlide(
+  slide: PptxGenJS.Slide,
+  r: MonthlyReportData,
+  highlights: NarrativeHighlight[],
+  idx: number,
+  total: number,
+) {
+  drawSlideHeader(slide, 'What happened this month', 'Key takeaways')
+
+  // Pick layout — 2x2 if 4 or fewer, else 2x3 (max 6 displayed)
+  const items = highlights.slice(0, 6)
+  const cols = 3
+  const rows = Math.ceil(items.length / cols)
+  const gap  = 0.25
+  const top  = 1.7
+  const totalW = SLIDE_W - 2 * M
+  const cardW  = (totalW - gap * (cols - 1)) / cols
+  const availH = SLIDE_H - top - 0.7
+  const cardH  = (availH - gap * (rows - 1)) / rows
+
+  const trendColor = (t?: NarrativeHighlight['trend']) => {
+    if (t === 'up')      return T.gainGreen
+    if (t === 'down')    return T.lossRed
+    if (t === 'warning') return 'F59E0B'
+    return T.textMuted
+  }
+  const trendLabel = (t?: NarrativeHighlight['trend']) => {
+    if (t === 'up')      return 'GAIN'
+    if (t === 'down')    return 'DECLINE'
+    if (t === 'warning') return 'WATCH'
+    return 'NEUTRAL'
+  }
+
+  for (let i = 0; i < items.length; i++) {
+    const row = Math.floor(i / cols)
+    const col = i % cols
+    const x = M + col * (cardW + gap)
+    const y = top + row * (cardH + gap)
+    const h = items[i]
+    const tColor = trendColor(h.trend)
+
+    // Card background
+    slide.addShape('rect' as 'rect', {
+      x, y, w: cardW, h: cardH,
+      fill: { color: T.bgCard }, line: { color: T.borderDim, width: 0.5 },
+      shadow: { type: 'outer', color: '000000', blur: 8, offset: 2, angle: 90, opacity: 0.25 },
+    })
+    // Trend-colored top border (replaces left-strip motif so cards feel
+    // distinct from the rest of the deck)
+    slide.addShape('rect' as 'rect', {
+      x, y, w: cardW, h: 0.07,
+      fill: { color: tColor }, line: { type: 'none' },
+    })
+
+    // Optional icon + trend pill (top row of card)
+    if (h.icon) {
+      slide.addText(h.icon, {
+        x: x + 0.25, y: y + 0.18, w: 0.6, h: 0.6,
+        fontSize: 28, color: tColor, margin: 0,
+      })
+    }
+    slide.addText(trendLabel(h.trend), {
+      x: x + cardW - 1.2, y: y + 0.22, w: 1.0, h: 0.3,
+      fontFace: FH, fontSize: 9, bold: true, charSpacing: 4,
+      color: tColor, align: 'right', margin: 0,
+    })
+
+    // Headline (bold, ~16pt)
+    slide.addText(h.headline, {
+      x: x + 0.3, y: y + 0.85, w: cardW - 0.6, h: 1.0,
+      fontFace: FH, fontSize: 16, bold: true,
+      color: T.textPrimary, align: 'left', valign: 'top', margin: 0,
+    })
+
+    // Body (smaller, muted-ish)
+    slide.addText(h.body, {
+      x: x + 0.3, y: y + 1.85, w: cardW - 0.6, h: cardH - 2.1,
+      fontFace: FB, fontSize: 11.5, color: T.textPrimary,
+      align: 'left', valign: 'top', margin: 0, paraSpaceAfter: 4,
+    })
+  }
+
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+}
+
+// ── Action plan (alt) — Priority cards ──────────────────────────────────────
+// Replaces the numbered list when `actionItems` is provided. 2x4 grid, with
+// red number badge, optional priority pill, bold title, short body.
+function buildActionItemsCardsSlide(
+  slide: PptxGenJS.Slide,
+  r: MonthlyReportData,
+  items: ActionItemCard[],
+  idx: number,
+  total: number,
+) {
+  drawSlideHeader(slide, 'Recommended action plan', 'Next month')
+
+  const list = items.slice(0, 8)
+  const cols = 2
+  const rows = Math.ceil(list.length / cols)
+  const gap  = 0.25
+  const top  = 1.7
+  const totalW = SLIDE_W - 2 * M
+  const cardW  = (totalW - gap * (cols - 1)) / cols
+  const availH = SLIDE_H - top - 0.7
+  const cardH  = (availH - gap * (rows - 1)) / rows
+
+  const priorityColor = (p?: ActionItemCard['priority']) => {
+    if (p === 'P0') return T.lossRed
+    if (p === 'P1') return 'F59E0B'
+    if (p === 'P2') return T.textMuted
+    return T.accentRed
+  }
+
+  for (let i = 0; i < list.length; i++) {
+    const row = Math.floor(i / cols)
+    const col = i % cols
+    const x = M + col * (cardW + gap)
+    const y = top + row * (cardH + gap)
+    const it = list[i]
+    const pColor = priorityColor(it.priority)
+
+    // Card body
+    slide.addShape('rect' as 'rect', {
+      x, y, w: cardW, h: cardH,
+      fill: { color: T.bgCard }, line: { color: T.borderDim, width: 0.5 },
+      shadow: { type: 'outer', color: '000000', blur: 8, offset: 2, angle: 90, opacity: 0.25 },
+    })
+    // Left red strip — keeps the visual motif consistent with KPI/data cards
+    slide.addShape('rect' as 'rect', {
+      x, y, w: 0.08, h: cardH,
+      fill: { color: pColor }, line: { type: 'none' },
+    })
+
+    // Number badge (red circle, top-left)
+    const badgeSize = 0.6
+    slide.addShape('ellipse' as 'ellipse', {
+      x: x + 0.3, y: y + 0.3, w: badgeSize, h: badgeSize,
+      fill: { color: pColor }, line: { type: 'none' },
+    })
+    slide.addText(String(i + 1), {
+      x: x + 0.3, y: y + 0.3, w: badgeSize, h: badgeSize,
+      fontFace: FH, fontSize: 22, bold: true,
+      color: 'FFFFFF', align: 'center', valign: 'middle', margin: 0,
+    })
+
+    // Optional priority pill (top-right)
+    if (it.priority) {
+      slide.addText(it.priority, {
+        x: x + cardW - 1.0, y: y + 0.32, w: 0.7, h: 0.3,
+        fontFace: FH, fontSize: 9, bold: true, charSpacing: 3,
+        color: pColor, align: 'right', margin: 0,
+      })
+    }
+    if (it.category) {
+      slide.addText(it.category.toUpperCase(), {
+        x: x + 1.05, y: y + 0.32, w: cardW - 2.2, h: 0.25,
+        fontFace: FH, fontSize: 9, bold: true, charSpacing: 4,
+        color: T.textMuted, align: 'left', margin: 0,
+      })
+    }
+
+    // Title (bold)
+    slide.addText(it.title, {
+      x: x + 1.05, y: y + 0.62, w: cardW - 1.3, h: 0.55,
+      fontFace: FH, fontSize: 15, bold: true,
+      color: T.textPrimary, align: 'left', valign: 'top', margin: 0,
+    })
+
+    // Body
+    slide.addText(it.body, {
+      x: x + 1.05, y: y + 1.18, w: cardW - 1.3, h: cardH - 1.4,
+      fontFace: FB, fontSize: 11, color: T.textPrimary,
+      align: 'left', valign: 'top', margin: 0,
+    })
+  }
+
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
 }

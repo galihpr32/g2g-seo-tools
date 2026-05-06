@@ -140,14 +140,16 @@ type DB = SupabaseClient<any>
 
 /** Read a non-expired cached score row. Returns null if missing or expired. */
 export async function getCachedScore(
-  db:       DB,
-  ownerId:  string,
-  domain:   string,
+  db:        DB,
+  ownerId:   string,
+  domain:    string,
+  siteSlug:  string = 'g2g',
 ): Promise<DomainScore | null> {
   const { data } = await db
     .from('outreach_domain_scores')
     .select('*')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .eq('domain', domain.toLowerCase())
     .gt('expires_at', new Date().toISOString())
     .maybeSingle()
@@ -355,11 +357,12 @@ function computeOverall(s: {
  * treat that as "auto-skipped, do not pitch".
  */
 export async function evaluateDomain(
-  db:           DB,
-  ownerId:      string,
-  domain:       string,
+  db:            DB,
+  ownerId:       string,
+  domain:        string,
   sourceKeyword: string | null,
-  opts:         EvaluateOptions = {},
+  opts:          EvaluateOptions = {},
+  siteSlug:      string = 'g2g',
 ): Promise<DomainScore | null> {
   const cleanDomain = domain.toLowerCase().replace(/^www\./, '').replace(/\/$/, '')
   if (!cleanDomain || cleanDomain.includes(' ')) return null
@@ -367,9 +370,9 @@ export async function evaluateDomain(
   // 1. Skip-list filter.
   if (isSkipDomain(cleanDomain)) return null
 
-  // 2. Cache check.
+  // 2. Cache check (scoped to siteSlug — G2G and OG score same domain separately).
   if (!opts.forceRefresh) {
-    const cached = await getCachedScore(db, ownerId, cleanDomain)
+    const cached = await getCachedScore(db, ownerId, cleanDomain, siteSlug)
     if (cached) return cached
   }
 
@@ -391,7 +394,7 @@ export async function evaluateDomain(
       contactEmail:  null,
       notes:         'Could not scrape homepage. Domain may be parked, blocking bots, or temporarily down.',
       scrapedUrls:   [],
-    })
+    }, siteSlug)
   }
   scrapedUrls.push(baseUrl)
 
@@ -506,7 +509,7 @@ ${ctxParts.join('\n')}`
       contactEmail:  detectedEmail,
       notes:         `LLM evaluation failed: ${err instanceof Error ? err.message : 'unknown error'}`,
       scrapedUrls,
-    })
+    }, siteSlug)
   }
 
   const haikuEmail = (raw.contact_email ?? '').trim().toLowerCase()
@@ -523,7 +526,7 @@ ${ctxParts.join('\n')}`
     contactEmail:  finalEmail,
     notes:         String(raw.notes ?? '').slice(0, 1200),
     scrapedUrls,
-  })
+  }, siteSlug)
 }
 
 // ── Persist (upsert) ─────────────────────────────────────────────────────────
@@ -542,11 +545,12 @@ interface PersistInput {
 }
 
 async function persistEvaluation(
-  db:           DB,
-  ownerId:      string,
-  domain:       string,
+  db:            DB,
+  ownerId:       string,
+  domain:        string,
   sourceKeyword: string | null,
-  s:            PersistInput,
+  s:             PersistInput,
+  siteSlug:      string = 'g2g',
 ): Promise<DomainScore> {
   const overallScore = computeOverall(s)
   const evaluatedAt  = new Date().toISOString()
@@ -554,6 +558,7 @@ async function persistEvaluation(
 
   const row = {
     owner_user_id:    ownerId,
+    site_slug:        siteSlug,
     domain,
     source_keyword:   sourceKeyword,
     niche_score:      s.nicheScore,
@@ -573,7 +578,7 @@ async function persistEvaluation(
 
   const { error } = await db
     .from('outreach_domain_scores')
-    .upsert(row, { onConflict: 'owner_user_id,domain' })
+    .upsert(row, { onConflict: 'owner_user_id,site_slug,domain' })
 
   if (error) {
     console.error('[hermod-eval] upsert failed:', error.message)

@@ -13,26 +13,34 @@ function slugify(text: string) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 }
 
-// ── GET — list all maps ───────────────────────────────────────────────────────
+function getSiteSlug(req: Request): string {
+  const url = new URL(req.url)
+  const cookieSite = req.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+  return url.searchParams.get('site') ?? cookieSite
+}
+
+// ── GET — list all maps for the active site ───────────────────────────────────
 export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = getSiteSlug(req)
   const db = createServiceClient()
 
   const { data: maps } = await db
     .from('keyword_maps')
     .select('*, keyword_map_clusters(count)')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .order('created_at', { ascending: false })
 
   return NextResponse.json({ maps: maps ?? [] })
 }
 
 // ── POST — create a new map + AI-generate clusters ───────────────────────────
-// Body: { topic, market?, seed_keywords?, add_cluster? }
+// Body: { topic, market?, seed_keywords?, add_cluster?, site? }
 // add_cluster: { keyword, volume?, source?, source_ref_id? }
 //   → adds a single keyword to an existing or new map (from Trends/Gap/manual)
 export async function POST(req: Request) {
@@ -40,7 +48,8 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = getSiteSlug(req)
   const db = createServiceClient()
 
   const body = await req.json().catch(() => ({}))
@@ -95,11 +104,12 @@ export async function POST(req: Request) {
   const locationCode = market === 'id' ? 2360 : 2840
   const languageCode = market === 'id' ? 'id' : 'en'
 
-  // Check if map with same slug exists
+  // Check if map with same slug exists for this site
   const { data: existing } = await db
     .from('keyword_maps')
     .select('id')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .eq('topic_slug', topicSlug)
     .maybeSingle()
 
@@ -258,6 +268,7 @@ Rules:
     .from('keyword_maps')
     .insert({
       owner_user_id:  ownerId,
+      site_slug:      siteSlug,
       topic,
       topic_slug:     topicSlug,
       market,

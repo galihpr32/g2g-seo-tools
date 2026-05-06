@@ -55,6 +55,7 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => ({})) as {
     domain:             string
+    site?:              string   // which brand is adding this prospect ('g2g' | 'offgamers')
     authority_score?:   number
     organic_traffic?:   number
     organic_keywords?:  number
@@ -71,6 +72,10 @@ export async function POST(req: Request) {
     approval_required?: boolean
     score_breakdown?:   Record<string, unknown>
   }
+
+  // Resolve site slug: body.site → active-site cookie → 'g2g'
+  const cookieSite = req.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+  const siteSlug   = body.site ?? cookieSite
 
   if (!body.domain?.trim()) {
     return NextResponse.json({ error: 'domain is required' }, { status: 400 })
@@ -91,6 +96,7 @@ export async function POST(req: Request) {
     .from('outreach_prospects')
     .upsert({
       owner_user_id:    ownerId,
+      site_slug:        siteSlug,
       domain:           body.domain.trim().replace(/^https?:\/\//, '').replace(/\/$/, ''),
       authority_score:  body.authority_score ?? null,
       organic_traffic:  body.organic_traffic ?? null,
@@ -111,7 +117,7 @@ export async function POST(req: Request) {
       approved_for_send_at: briefMode ? null : new Date().toISOString(),
       approved_for_send_by: briefMode ? null : ownerId,
       updated_at:       new Date().toISOString(),
-    }, { onConflict: 'owner_user_id,domain' })
+    }, { onConflict: 'owner_user_id,site_slug,domain' })
     .select()
     .single()
 

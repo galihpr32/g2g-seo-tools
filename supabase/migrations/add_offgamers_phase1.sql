@@ -63,15 +63,24 @@ CREATE INDEX IF NOT EXISTS outreach_prospects_site_slug_idx
   ON public.outreach_prospects (owner_user_id, site_slug);
 
 
--- ── 6. outreach_domain_scores — add site_slug ────────────────────────────────
--- Hermod domain eval cache is per-URL but scores are brand-context-dependent.
--- Tag scores so OG can re-evaluate domains independently if needed.
+-- ── 6. outreach_domain_scores — add site_slug + fix unique constraint ────────
+-- Hermod eval scores are brand-context-dependent (outreach_angle, audience_score
+-- differ between G2G and OG). Each brand gets its own cache row per domain.
 
 ALTER TABLE public.outreach_domain_scores
   ADD COLUMN IF NOT EXISTS site_slug text NOT NULL DEFAULT 'g2g';
 
+-- Drop old constraint (owner_user_id, domain) — too narrow for multi-brand
+ALTER TABLE public.outreach_domain_scores
+  DROP CONSTRAINT IF EXISTS outreach_domain_scores_owner_user_id_domain_key;
+
+-- New constraint: one score row per (owner, site, domain)
+ALTER TABLE public.outreach_domain_scores
+  ADD CONSTRAINT outreach_domain_scores_owner_site_domain_key
+  UNIQUE (owner_user_id, site_slug, domain);
+
 CREATE INDEX IF NOT EXISTS outreach_domain_scores_site_slug_idx
-  ON public.outreach_domain_scores (site_slug, domain);
+  ON public.outreach_domain_scores (owner_user_id, site_slug, overall_score DESC);
 
 
 -- ── 7. seo_action_items — add site_slug ──────────────────────────────────────

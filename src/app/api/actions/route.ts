@@ -13,13 +13,25 @@ export async function POST(request: Request) {
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
+
+  // Resolve active site from cookie
+  const cookieSite = request.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+
+  // Resolve site_url from site_configs (brand-aware) — fallback to gsc_connections
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', cookieSite)
+    .maybeSingle()
+
   const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url')
     .eq('user_id', effectiveOwnerId)
     .single()
 
-  if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
+  const resolvedSiteUrl = siteConfig?.gsc_property ?? conn?.site_url ?? null
+  if (!resolvedSiteUrl) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
 
   const body = await request.json()
 
@@ -38,7 +50,7 @@ export async function POST(request: Request) {
     let normalised = page.trim()
     if (!normalised.startsWith('http')) {
       // Accept path like /categories/xyz and prepend site_url
-      const base = conn.site_url.replace(/\/$/, '')
+      const base = resolvedSiteUrl.replace(/\/$/, '')
       normalised = `${base}${normalised.startsWith('/') ? '' : '/'}${normalised}`
     }
 
@@ -46,14 +58,15 @@ export async function POST(request: Request) {
     const { data, error } = await db
       .from('seo_action_items')
       .insert({
-        site_url: conn.site_url,
-        page: normalised,
+        site_url:      resolvedSiteUrl,
+        site_slug:     cookieSite,
+        page:          normalised,
         action_type,
-        notes: notes ?? null,
+        notes:         notes ?? null,
         snapshot_date: today,
-        clicks_drop: null,
+        clicks_drop:   null,
         position_change: null,
-        status: 'pending',
+        status:        'pending',
       })
       .select()
       .single()
@@ -75,14 +88,15 @@ export async function POST(request: Request) {
   }
 
   const inserts = pages.map(p => ({
-    site_url: conn.site_url,
-    page: p.page,
+    site_url:        resolvedSiteUrl,
+    site_slug:       cookieSite,
+    page:            p.page,
     action_type,
-    notes: notes ?? null,
+    notes:           notes ?? null,
     snapshot_date,
-    clicks_drop: p.clicks_drop,
+    clicks_drop:     p.clicks_drop,
     position_change: p.position_change,
-    status: 'pending',
+    status:          'pending',
   }))
 
   const { data, error } = await db
