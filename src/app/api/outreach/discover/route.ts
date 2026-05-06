@@ -2,11 +2,62 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getKeywordOrganicResults, getDomainAuthority, type OutreachCandidate } from '@/lib/semrush/client'
+import { getSerpData } from '@/lib/dataforseo/client'
+import {
+  evaluateDomain,
+  isSkipDomain,
+  meetsThreshold,
+  HERMOD_SCORE_THRESHOLDS,
+  type DomainScore,
+  type HermodThreshold,
+} from '@/lib/agents/hermod-domain-eval'
+import { logApiUsage } from '@/lib/api-logger'
+
+// Hermod v2 — replaces the old SEMrush-backed discovery flow.
+//
+// Pipeline:
+//   1. Pull top 10 organic results for the keyword from DataForSEO SERP Live.
+//   2. Drop social media / marketplace / walled-garden domains automatically.
+//   3. For each remaining domain, run the Hermod evaluator (FireCrawl scrape
+//      + Haiku 5-dim score). Results are cached for 14 days in
+//      outreach_domain_scores so a re-search hitting the same domains is
+//      effectively free.
+//   4. Filter by score threshold (default: balanced, ≥ 6.5).
+//   5. Mark which prospects are already in the outreach tracker.
+//
+// Long-running by design — the evaluator runs Haiku per domain, so the lambda
+// budget is bumped to 60s. Caller should expect 15-45s for an uncached search.
 
 export const maxDuration = 60
 
-// GET /api/outreach/discover?keyword=buy+gaming+currency&database=us&limit=20
+interface CandidateOut {
+  domain:           string
+  rankingUrl:       string
+  position:         number
+  // Hermod v2 score fields
+  overallScore:     number
+  nicheScore:       number
+  qualityScore:     number
+  outreachScore:    number
+  audienceScore:    number
+  trustScore:       number
+  outreachAngle:    string
+  hasWriteForUs:    boolean
+  contactEmail:     string | null
+  notes:            string
+  cached:           boolean
+  evaluatedAt:      string
+  // Legacy fields kept for backward-compat with existing UI
+  organicTraffic:   number
+  organicKeywords:  number
+  authorityScore:   number
+  // Tracker status
+  inTracker:        boolean
+  trackerStatus:    string | null
+  belowThreshold:   boolean
+}
+
+// GET /api/outreach/discover?keyword=...&threshold=balanced&locationCode=2840&languageCode=en
 export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -14,67 +65,143 @@ export async function GET(req: Request) {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
-  const url      = new URL(req.url)
-  const keyword  = url.searchParams.get('keyword') ?? ''
-  const database = url.searchParams.get('database') ?? 'us'
-  const limit    = Math.min(30, parseInt(url.searchParams.get('limit') ?? '20'))
+  const url           = new URL(req.url)
+  const keyword       = url.searchParams.get('keyword')?.trim() ?? ''
+  const thresholdName = (url.searchParams.get('threshold') ?? 'balanced') as HermodThreshold
+  // Default location/language: US/en (gaming + outreach typically EN-first).
+  // Caller can override (e.g. 2360 / 'id' for the Indonesian SERP).
+  const locationCode = parseInt(url.searchParams.get('locationCode') ?? '2840', 10)
+  const languageCode = url.searchParams.get('languageCode') ?? 'en'
+  const includeBelowThreshold = url.searchParams.get('includeBelow') === '1'
 
-  if (!keyword.trim()) {
+  if (!keyword) {
     return NextResponse.json({ error: 'keyword is required' }, { status: 400 })
   }
+  if (!(thresholdName in HERMOD_SCORE_THRESHOLDS)) {
+    return NextResponse.json({ error: `Invalid threshold "${thresholdName}". Use: ${Object.keys(HERMOD_SCORE_THRESHOLDS).join(', ')}` }, { status: 400 })
+  }
 
-  // 1. Get domains ranking for keyword
-  let candidates: OutreachCandidate[]
+  // ── 1. SERP top 10 from DataForSEO ─────────────────────────────────────────
+  let serpData
   try {
-    candidates = await getKeywordOrganicResults(keyword, database, limit)
+    serpData = await getSerpData(keyword, locationCode, languageCode, 10)
   } catch (e) {
-    return NextResponse.json({ error: `SEMrush error: ${String(e)}` }, { status: 500 })
+    return NextResponse.json({ error: `DataForSEO error: ${String(e)}` }, { status: 500 })
   }
 
-  if (!candidates.length) {
-    return NextResponse.json({ candidates: [], keyword, database })
+  logApiUsage(db, ownerId, {
+    api:         'dataforseo',
+    endpoint:    'serp/google/organic/live/advanced',
+    triggeredBy: 'agent_hermod',
+    metadata:    { source: 'outreach_discover', keyword, locationCode, languageCode },
+  })
+
+  const organic = serpData.organicResults ?? []
+  if (!organic.length) {
+    return NextResponse.json({
+      candidates: [],
+      keyword,
+      threshold: thresholdName,
+      thresholdValue: HERMOD_SCORE_THRESHOLDS[thresholdName],
+      total: 0,
+      autoSkipped: 0,
+      belowThreshold: 0,
+      message: 'DataForSEO returned no organic results — keyword may be too obscure or the search location/language combo has no SERP.',
+    })
   }
 
-  // 2. Enrich top 10 with domain authority (parallel, best-effort)
-  const top10 = candidates.slice(0, 10)
-  const enriched = await Promise.all(
-    top10.map(async c => {
+  // ── 2. Auto-skip social media / marketplaces (cheap pre-filter) ───────────
+  const ourDomain = 'g2g.com'
+  let autoSkipped = 0
+  const filteredOrganic = organic
+    .filter(r => r.domain && !r.domain.toLowerCase().includes(ourDomain))
+    .filter(r => {
+      if (isSkipDomain(r.domain)) {
+        autoSkipped++
+        return false
+      }
+      return true
+    })
+    // Keep only top 10 unique domains
+    .reduce<typeof organic>((acc, r) => {
+      if (!acc.some(x => x.domain === r.domain)) acc.push(r)
+      return acc
+    }, [])
+    .slice(0, 10)
+
+  // ── 3. Evaluate in parallel (cache makes repeat domains ~free) ────────────
+  const evaluations = await Promise.all(
+    filteredOrganic.map(async (r): Promise<{ serp: typeof r; score: DomainScore | null }> => {
       try {
-        const auth = await getDomainAuthority(c.domain, database)
-        return {
-          ...c,
-          authorityScore:  auth?.authorityScore  ?? 0,
-          organicTraffic:  auth?.organicTraffic   ?? c.organicTraffic,
-          organicKeywords: auth?.organicKeywords  ?? 0,
-        }
-      } catch {
-        return c
+        const score = await evaluateDomain(db, ownerId, r.domain, keyword)
+        return { serp: r, score }
+      } catch (err) {
+        console.error('[outreach/discover] eval failed for', r.domain, err)
+        return { serp: r, score: null }
       }
     })
   )
 
-  // The rest (11-30) get basic data without enrichment
-  const rest = candidates.slice(10).map(c => ({ ...c, authorityScore: 0 }))
-  const allCandidates = [...enriched, ...rest]
+  // ── 4. Build response ─────────────────────────────────────────────────────
+  // Pull current tracker rows to flag in-pipeline domains
+  const evaluated = evaluations
+    .filter((e): e is { serp: typeof e.serp; score: DomainScore } => !!e.score)
+  const domains = evaluated.map(e => e.score.domain)
 
-  // 3. Check which domains are already in the tracker
-  const domains = allCandidates.map(c => c.domain)
   const { data: existing } = await db
     .from('outreach_prospects')
     .select('domain, status')
     .eq('owner_user_id', ownerId)
-    .in('domain', domains)
+    .in('domain', domains.length ? domains : ['__never__'])
 
   const existingMap = new Map((existing ?? []).map(r => [r.domain, r.status]))
 
-  // 4. Filter out g2g.com itself
-  const filtered = allCandidates
-    .filter(c => !c.domain.includes('g2g.com'))
-    .map(c => ({
-      ...c,
-      inTracker:     existingMap.has(c.domain),
-      trackerStatus: existingMap.get(c.domain) ?? null,
-    }))
+  let belowCount = 0
+  const candidates: CandidateOut[] = evaluated
+    .map(({ serp, score }) => {
+      const passes = meetsThreshold(score, thresholdName)
+      if (!passes) belowCount++
+      return {
+        domain:          score.domain,
+        rankingUrl:      serp.url ?? '',
+        position:        serp.rank_absolute ?? 0,
 
-  return NextResponse.json({ candidates: filtered, keyword, database, total: filtered.length })
+        overallScore:    score.overallScore,
+        nicheScore:      score.nicheScore,
+        qualityScore:    score.qualityScore,
+        outreachScore:   score.outreachScore,
+        audienceScore:   score.audienceScore,
+        trustScore:      score.trustScore,
+        outreachAngle:   score.outreachAngle,
+        hasWriteForUs:   score.hasWriteForUs,
+        contactEmail:    score.contactEmail,
+        notes:           score.notes,
+        cached:          score.cached,
+        evaluatedAt:     score.evaluatedAt,
+
+        // Legacy compatibility — set to 0/empty since we no longer pull SEMrush data
+        organicTraffic:  0,
+        organicKeywords: 0,
+        authorityScore:  0,
+
+        inTracker:       existingMap.has(score.domain),
+        trackerStatus:   existingMap.get(score.domain) ?? null,
+        belowThreshold:  !passes,
+      }
+    })
+    .filter(c => includeBelowThreshold || !c.belowThreshold)
+    // Sort high → low score, ties broken by SERP position
+    .sort((a, b) => b.overallScore - a.overallScore || a.position - b.position)
+
+  return NextResponse.json({
+    candidates,
+    keyword,
+    threshold:      thresholdName,
+    thresholdValue: HERMOD_SCORE_THRESHOLDS[thresholdName],
+    total:          candidates.length,
+    autoSkipped,                 // social-media etc. dropped before eval
+    belowThreshold: belowCount,  // evaluated but below threshold (hidden unless includeBelow=1)
+    locationCode,
+    languageCode,
+  })
 }

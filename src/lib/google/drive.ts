@@ -18,9 +18,17 @@ import { google } from 'googleapis'
 
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
-  const key   = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+  let key     = process.env.GOOGLE_PRIVATE_KEY ?? ''
+  if (key.startsWith('"') && key.endsWith('"')) key = key.slice(1, -1)
+  key = key.replace(/\\n/g, '\n').trim()
 
   if (!email || !key) throw new Error('Google service account credentials not configured')
+  if (!key.includes('BEGIN PRIVATE KEY') || !key.includes('END PRIVATE KEY')) {
+    throw new Error(
+      'GOOGLE_PRIVATE_KEY appears malformed: missing BEGIN/END markers. ' +
+      'Re-paste the private_key value from your service account JSON without surrounding quotes.',
+    )
+  }
 
   return new google.auth.JWT({
     email,

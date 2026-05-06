@@ -54,23 +54,37 @@ export async function POST(req: Request) {
   const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
-    domain:           string
-    authority_score?: number
-    organic_traffic?: number
-    organic_keywords?: number
-    contact_name?:    string
-    contact_email?:   string
-    topic?:           string
-    target_url?:      string
-    anchor_text?:     string
-    notes?:           string
-    follow_up_date?:  string
-    source_keyword?:  string
-    discovered_via?:  string
+    domain:             string
+    authority_score?:   number
+    organic_traffic?:   number
+    organic_keywords?:  number
+    contact_name?:      string
+    contact_email?:     string
+    topic?:             string
+    target_url?:        string
+    anchor_text?:       string
+    notes?:             string
+    follow_up_date?:    string
+    source_keyword?:    string
+    discovered_via?:    string
+    // Hermod v2 — Brief mode + score breakdown
+    approval_required?: boolean
+    score_breakdown?:   Record<string, unknown>
   }
 
   if (!body.domain?.trim()) {
     return NextResponse.json({ error: 'domain is required' }, { status: 400 })
+  }
+
+  const briefMode = body.approval_required === true
+
+  // Compose notes — preserve any user-supplied notes, append the score
+  // breakdown JSON as a tail block so existing tooling that reads `notes`
+  // still works while we expose structured data downstream.
+  let notesField = body.notes ?? null
+  if (body.score_breakdown && Object.keys(body.score_breakdown).length) {
+    const tail = `\n\n---\nHermod score: ${JSON.stringify(body.score_breakdown)}`
+    notesField = (notesField ?? '') + tail
   }
 
   const { data, error } = await db
@@ -86,11 +100,16 @@ export async function POST(req: Request) {
       topic:            body.topic           ?? null,
       target_url:       body.target_url      ?? null,
       anchor_text:      body.anchor_text     ?? null,
-      notes:            body.notes           ?? null,
+      notes:            notesField,
       follow_up_date:   body.follow_up_date  ?? null,
       source_keyword:   body.source_keyword  ?? null,
       discovered_via:   body.discovered_via  ?? 'manual',
       status:           'prospecting',
+      // Brief mode — queue as pending_approval so the row sits idle until
+      // the user clicks Send on the Outreach page (clears approved_for_send_at).
+      approval_required:    briefMode,
+      approved_for_send_at: briefMode ? null : new Date().toISOString(),
+      approved_for_send_by: briefMode ? null : ownerId,
       updated_at:       new Date().toISOString(),
     }, { onConflict: 'owner_user_id,domain' })
     .select()

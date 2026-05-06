@@ -44,14 +44,34 @@ export const SHEET_STATUS = {
 
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
-  const key   = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+  let key     = process.env.GOOGLE_PRIVATE_KEY ?? ''
 
-  if (!email || !key) throw new Error('Google service account credentials not configured')
+  // Defensive cleanup — covers the most common Vercel env-var paste mistakes
+  // that produce the cryptic OpenSSL "1E08010C:DECODER routines::unsupported"
+  // error at JWT-sign time.
+  // 1. Strip surrounding double-quotes (UI sometimes stores them literally).
+  // 2. Convert escaped \n to real newlines (code expects literal \n in env).
+  // 3. Trim accidental leading/trailing whitespace.
+  if (key.startsWith('"') && key.endsWith('"')) key = key.slice(1, -1)
+  key = key.replace(/\\n/g, '\n').trim()
+
+  if (!email || !key) {
+    throw new Error('Google service account credentials not configured (GOOGLE_SERVICE_ACCOUNT_EMAIL + GOOGLE_PRIVATE_KEY env vars required)')
+  }
+
+  // Validate key shape — fail fast with a helpful error instead of waiting
+  // for the JWT lib to throw the cryptic OpenSSL DECODER message.
+  if (!key.includes('BEGIN PRIVATE KEY') || !key.includes('END PRIVATE KEY')) {
+    throw new Error(
+      'GOOGLE_PRIVATE_KEY appears malformed: missing BEGIN/END PRIVATE KEY markers. ' +
+      'Re-paste the exact private_key value from your service account JSON file. ' +
+      'Make sure NO surrounding quotes, and newlines are either literal \\n escapes or actual line breaks.',
+    )
+  }
 
   return new google.auth.JWT({
     email,
     key,
-    // Full spreadsheets scope for read + write back
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   })
 }
