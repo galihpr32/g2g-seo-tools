@@ -65,8 +65,13 @@ export async function POST(req: Request) {
   const monthFmt = (r.monthLabel ?? `${report.month_start}`).replace(/\s+/g, '-')
   const filename = `${brand} Monthly Report — ${monthFmt}.pptx`
 
-  // 4. Stream the file directly to the browser
-  return new Response(buffer, {
+  // 4. Stream the file directly to the browser.
+  // Wrap the Node Buffer in a Blob — this is the cleanest BodyInit shape that
+  // satisfies Next 16's strict Response typing (Buffer<ArrayBufferLike> and
+  // bare Uint8Array both fail TS contextual narrowing because the BodyInit
+  // union resolves to URLSearchParams in this Next/Node lib combo).
+  const body = new Blob([new Uint8Array(buffer)], { type: PPTX_MIME })
+  return new Response(body, {
     status: 200,
     headers: {
       'Content-Type':        PPTX_MIME,

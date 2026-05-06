@@ -809,13 +809,80 @@ Do NOT build these yet. The data foundation needs to mature first.
 
 ---
 
-## 12. Multi-site isolation — OffGamers (NEW — full audit done 2026-04-29)
+## 12. Multi-site isolation — OffGamers
 
-**Context:** The app supports G2G + OffGamers via a site switcher. Architecture is designed for multi-site (`site_slug` column exists on most tables), but the implementation is incomplete. A full audit was done and revealed 26 critical issues where data is NOT isolated per site.
+**Context:** The app supports G2G + OffGamers via a site switcher. Architecture is designed for multi-site (`site_slug` column exists on most tables). Phase 1 migration + Phase 2 API route isolation is now largely done. See §12.4 for exact completion status.
 
 **Golden rule for all OffGamers work:** Every API query on a table that has `site_slug` MUST include `.eq('site_slug', siteSlug)`. No exceptions. If the column doesn't exist on a table yet, add a migration first.
 
-**Tasks #19–28 in the task list cover everything. Open a dedicated chat for OffGamers work.**
+**OG credentials:**
+- GSC property: `offgamers.com`
+- GA4 Property ID: `382569541`
+- `site_configs.slug = 'offgamers'` — row exists in prod
+
+---
+
+### 12.4 What was done — OffGamers Phase 1 & 2 (session 2026-05-06)
+
+#### DB Migrations applied to prod ✅
+
+**`supabase/migrations/add_offgamers_phase1.sql`** — applied:
+- Set `ga4_property_id = '382569541'` in `site_configs` where `slug = 'offgamers'`
+- Added `site_slug text NOT NULL DEFAULT 'g2g'` to: `monthly_reports`, `competitors`, `keyword_maps`, `outreach_prospects`, `outreach_domain_scores`, `seo_action_items`, `seo_content_briefs`
+- Fixed unique constraints: `monthly_reports` → `(owner_user_id, site_slug, month_start)`
+- Added indexes for all affected tables
+
+**`supabase/migrations/add_offgamers_phase1_constraints.sql`** — applied:
+- `outreach_domain_scores` unique: `(owner_user_id, site_slug, domain)`
+- `outreach_prospects` unique: `(owner_user_id, site_slug, domain)`
+
+**Two migrations NOT yet run in Supabase (still pending):**
+- `supabase/migrations/add_outreach_domain_scores.sql` — creates outreach_domain_scores table + approval columns on outreach_prospects
+- `supabase/migrations/add_monthly_report_pptx_columns.sql` — adds pptx_drive_id, pptx_drive_url, pptx_generated_at to monthly_reports (low priority — PPTX now uses direct download, not Drive)
+
+#### Code changes — committed but NOT YET pushed to git ⚠️
+
+All files below are modified locally. Run `git status` to verify. Commit + push needed.
+
+**Monthly reports (multi-brand):**
+- `src/app/api/reports/monthly/route.ts` — GET filters by `site_slug`; POST resolves GA4 property, GSC URL, SoV domain, competitors from `site_configs`; upsert includes `site_slug`
+- `src/app/(dashboard)/reports/monthly/page.tsx` — accepts `site?: string` prop; passes to API calls
+- `src/app/(dashboard)/[site]/reports/monthly/page.tsx` — NEW: dynamic route wrapper for `/g2g/reports/monthly` and `/offgamers/reports/monthly`
+- `src/components/dashboard/SiteSwitcher.tsx` — added `/reports/monthly` to `SITE_AWARE_PATHS`
+
+**PPTX export (direct download — no Google Drive):**
+- `src/app/api/reports/monthly/export-pptx/route.ts` — completely rewritten: builds PPTX in memory, returns binary as `attachment` download. Drive upload removed entirely.
+- `src/app/(dashboard)/reports/monthly/page.tsx` — updated `exportPptx()` to handle blob download via `URL.createObjectURL`. Removed `pptxUrl` state.
+- `src/lib/google/drive.ts` — added `supportsAllDrives: true` to both `drive.files.create` calls (for future use if Drive is needed)
+- `src/lib/reports/pptx-builder.ts` — all 11 hardcoded `"G2G"` references replaced with dynamic `r.siteName`
+
+**Hermod outreach (brand-aware):**
+- `src/lib/agents/hermod-domain-eval.ts` — `getCachedScore` and `evaluateDomain` accept `siteSlug` param; cache scoped per `(owner_user_id, site_slug, domain)`; `onConflict` updated
+- `src/app/api/outreach/discover/route.ts` — reads `siteSlug` from query param / cookie; resolves `ourDomain` from `site_configs.favicon_domain`; threads `siteSlug` to `evaluateDomain` and tracker check
+- `src/app/api/outreach/prospects/route.ts` — reads `siteSlug` from body / cookie; writes `site_slug` on upsert; `onConflict` includes `site_slug`
+
+**Phase 2 API routes (site_slug isolation):**
+- `src/app/api/competitors/route.ts` — GET filters by `site_slug`; POST inserts `site_slug`
+- `src/app/api/keyword-maps/route.ts` — GET filters by `site_slug`; POST inserts `site_slug`; dedup check includes `site_slug`
+- `src/app/api/dashboard/stats/route.ts` — resolves `site_url` from `site_configs.gsc_property` (brand-aware) instead of just `gsc_connections`
+- `src/app/api/actions/route.ts` — resolves `site_url` from `site_configs`; writes `site_slug` on all inserts to `seo_action_items`
+- `src/app/api/brief/generate/route.ts` — resolves `site_url` from `site_configs`; writes `site_slug` on `seo_content_briefs` insert
+
+#### Git state ⚠️
+
+Many files are uncommitted. Before pushing:
+```bash
+sudo rm "/path/to/.git/index.lock"  # if lock exists
+git add -A
+git commit -m "feat: OffGamers Phase 1+2 — multi-brand isolation, PPTX direct download"
+git push
+```
+
+Test artifacts to delete from repo root before committing:
+- `test-pptx.ts`, `test-pptx.cts`, `build-real.ts`, `build-cards.ts`, `build-cards.ts.bak`
+- (keep `G2G-Monthly-Report-*.pptx` if still useful, otherwise delete)
+
+---
 
 ### 12.1 What's already site-aware ✅
 - `seo_opportunities` — all queries filter by `site_slug`
@@ -824,18 +891,24 @@ Do NOT build these yet. The data foundation needs to mature first.
 - `pipeline-journey` API — filters by `site_slug`
 - `getSiteUrlForSlug()` in `src/lib/agents/site-helpers.ts` — works for both sites
 - Agents (Heimdall, Loki, Odin, Hermod) accept `siteSlug` param
+- `monthly_reports` — GET + POST + PPTX export ✅ (done 2026-05-06)
+- `outreach_prospects` + `outreach_domain_scores` — discovery + tracker ✅ (done 2026-05-06)
+- `competitors` — GET + POST ✅ (done 2026-05-06)
+- `keyword_maps` — GET + POST ✅ (done 2026-05-06)
+- `seo_action_items` — POST resolves site_url from site_configs ✅ (done 2026-05-06)
+- `seo_content_briefs` — generate route writes site_slug ✅ (done 2026-05-06)
+- `dashboard/stats` — resolves site_url from site_configs ✅ (done 2026-05-06)
 
-### 12.2 Critical gaps to fix 🔴
+### 12.2 Critical gaps — remaining 🔴
 
 **Task #19 — Client-side site context hook**
 - `src/app/(dashboard)/command-center/pipeline/page.tsx` hardcodes `site=g2g` in fetch URL
 - Build `useSiteSlug()` hook reading from SiteSwitcher, inject into all client fetch calls
 
-**Task #20 — Remove all `?? 'g2g'` API defaults**
-- 16 routes still default to g2g if site param missing:
+**Task #20 — Remove all `?? 'g2g'` API defaults** (partially done)
+- Still defaulting to g2g (not yet fixed):
   - `src/app/api/backlinks/audit/route.ts`
   - `src/app/api/reports/weekly/route.ts`
-  - `src/app/api/reports/monthly/route.ts`
   - `src/app/api/opportunities/route.ts`
   - `src/app/api/serp-features/route.ts`
   - `src/app/api/agents/actions/route.ts`
@@ -844,14 +917,15 @@ Do NOT build these yet. The data foundation needs to mature first.
   - `src/app/api/pipeline-journey/approve/route.ts`
   - `src/app/api/agents/aggregate/route.ts`
   - `src/app/api/ai/confirm-agent-run/route.ts`
+- ✅ DONE: `reports/monthly/route.ts`, `competitors/route.ts`, `keyword-maps/route.ts`, `dashboard/stats/route.ts`, `actions/route.ts`, `brief/generate/route.ts`, `outreach/discover/route.ts`, `outreach/prospects/route.ts`
 
-**Task #21 — Outreach prospects isolation**
-- `outreach_prospects` table has no `site_slug` column → all 6 outreach routes mix data across sites
-- Need DB migration + filter in all routes under `src/app/api/outreach/`
+**Task #21 — Outreach prospects isolation** ✅ DONE
+- `site_slug` column added via migration + `outreach/prospects` and `outreach/discover` routes updated
 
-**Task #22 — Content briefs isolation**
-- `seo_content_briefs` may lack `site_slug` → all `/api/brief/*` routes filter by `owner_user_id` only
-- Routes: `/api/brief/generate`, `/api/brief/update`, `/api/brief/add-ideas`, `/api/brief/keywords`, `/api/brief/generate-draft`, `/api/content/briefs/[id]/*`
+**Task #22 — Content briefs isolation** ✅ PARTIALLY DONE
+- `seo_content_briefs.site_slug` column added via migration
+- `brief/generate/route.ts` now writes `site_slug` ✅
+- Still missing `site_slug` filter in: `brief/update`, `brief/add-ideas`, `brief/keywords`, `brief/generate-draft`, `content/briefs/[id]/*`
 
 **Task #23 — Agent data isolation**
 - `agent_findings`, `agent_runs`, `agent_actions` queries without `site_slug`:
