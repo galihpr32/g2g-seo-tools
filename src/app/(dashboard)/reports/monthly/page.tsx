@@ -314,7 +314,7 @@ function ActionPlan({ raw }: { raw: string }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function MonthlyReportPage() {
+export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
   const [reports, setReports]             = useState<ReportSummary[]>([])
   const [selectedId, setSelectedId]       = useState<string | null>(null)
   const [report, setReport]               = useState<MonthlyReport | null>(null)
@@ -323,6 +323,11 @@ export default function MonthlyReportPage() {
   const [generating, setGenerating]       = useState(false)
   const [error, setError]                 = useState<string | null>(null)
   const [showPicker, setShowPicker]       = useState(false)
+  // PPTX export state — kept local to the page so multiple reports tracked
+  // independently as user toggles between them.
+  const [exportingPptx, setExportingPptx] = useState(false)
+  const [pptxUrl,       setPptxUrl]       = useState<string | null>(null)
+  const [pptxError,     setPptxError]     = useState<string | null>(null)
 
   const def = getDefaultMonth()
   const [pickYear,  setPickYear]  = useState(def.year)
@@ -332,7 +337,7 @@ export default function MonthlyReportPage() {
   const loadList = useCallback(async () => {
     setLoadingList(true)
     try {
-      const res = await fetch('/api/reports/monthly')
+      const res = await fetch(`/api/reports/monthly?site=${site}`)
       if (res.ok) {
         const { reports: list } = await res.json()
         setReports(list ?? [])
@@ -340,7 +345,7 @@ export default function MonthlyReportPage() {
       }
     } catch { /* silent */ }
     finally { setLoadingList(false) }
-  }, []) // eslint-disable-line
+  }, [site]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadList() }, [loadList])
 
@@ -349,12 +354,47 @@ export default function MonthlyReportPage() {
     if (!selectedId) return
     setLoadingReport(true)
     setReport(null)
+    setPptxUrl(null)         // reset PPTX state when switching reports
+    setPptxError(null)
     fetch(`/api/reports/monthly?id=${selectedId}`)
       .then(r => r.json())
-      .then(({ report: r }) => setReport(r))
+      .then(({ report: r }) => {
+        setReport(r)
+        // If the report already has a generated PPTX (from a previous
+        // export), surface the existing link instead of forcing a re-export.
+        if (r?.pptx_drive_url) setPptxUrl(r.pptx_drive_url as string)
+      })
       .catch(() => {})
       .finally(() => setLoadingReport(false))
   }, [selectedId])
+
+  // ── Export PPTX ──────────────────────────────────────────────────────────────
+  async function exportPptx() {
+    if (!selectedId) return
+    setExportingPptx(true)
+    setPptxError(null)
+    setPptxUrl(null)
+    try {
+      const res  = await fetch('/api/reports/monthly/export-pptx', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ id: selectedId }),
+      })
+      const data = await res.json() as { ok?: boolean; url?: string; error?: string }
+      if (!res.ok || !data.ok || !data.url) {
+        setPptxError(data.error ?? 'Failed to export PPTX')
+        return
+      }
+      setPptxUrl(data.url)
+      // Best-effort auto-open in a new tab. If the browser blocks it (popup
+      // blocker), the link stays visible inline so user can click manually.
+      try { window.open(data.url, '_blank', 'noopener,noreferrer') } catch { /* ignored */ }
+    } catch (e) {
+      setPptxError(String(e))
+    } finally {
+      setExportingPptx(false)
+    }
+  }
 
   // ── Generate ─────────────────────────────────────────────────────────────────
   async function generate() {
@@ -364,7 +404,7 @@ export default function MonthlyReportPage() {
       const res = await fetch('/api/reports/monthly', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ year: pickYear, month: pickMonth }),
+        body: JSON.stringify({ site, year: pickYear, month: pickMonth }),
       })
       const { report: r, error: e } = await res.json()
       if (e) { setError(e); return }
@@ -416,6 +456,28 @@ export default function MonthlyReportPage() {
               🖨️ Export PDF
             </button>
           )}
+          {report && (
+            pptxUrl ? (
+              <a
+                href={pptxUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-orange-400 hover:text-orange-300 border border-orange-700/40 hover:border-orange-500 bg-orange-900/20 px-3 py-2 rounded-lg transition flex items-center gap-1.5"
+                title="Open the generated PPTX in Google Drive"
+              >
+                📊 View PPTX
+              </a>
+            ) : (
+              <button
+                onClick={exportPptx}
+                disabled={exportingPptx}
+                className="text-xs text-orange-400 hover:text-orange-300 border border-orange-700/40 hover:border-orange-500 disabled:opacity-50 px-3 py-2 rounded-lg transition flex items-center gap-1.5"
+                title="Generate a stakeholder-ready PPTX deck and save to Google Drive"
+              >
+                {exportingPptx ? <><span className="animate-spin">⟳</span> Building…</> : <>📊 Export PPTX</>}
+              </button>
+            )
+          )}
           <div className="relative">
             <button
               onClick={() => setShowPicker(p => !p)}
@@ -462,6 +524,22 @@ export default function MonthlyReportPage() {
       {error && (
         <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm print:hidden">
           {error}
+        </div>
+      )}
+
+      {pptxError && (
+        <div className="mb-4 bg-orange-500/10 border border-orange-500/30 rounded-xl p-4 text-orange-300 text-sm print:hidden flex items-start gap-2">
+          <span>⚠️</span>
+          <div className="flex-1">
+            <p className="font-medium">PPTX export failed</p>
+            <p className="mt-1 text-xs text-orange-200/80">{pptxError}</p>
+          </div>
+          <button
+            onClick={() => setPptxError(null)}
+            className="text-orange-400 hover:text-orange-200 text-xs ml-2"
+          >
+            ✕
+          </button>
         </div>
       )}
 

@@ -48,7 +48,8 @@ export async function GET(req: Request) {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
   const { searchParams } = new URL(req.url)
-  const id = searchParams.get('id')
+  const id   = searchParams.get('id')
+  const site = searchParams.get('site') ?? 'g2g'
 
   if (id) {
     const { data, error } = await db
@@ -63,8 +64,9 @@ export async function GET(req: Request) {
 
   const { data, error } = await db
     .from('monthly_reports')
-    .select('id, month_start, month_end, created_at, ai_narrative')
+    .select('id, month_start, month_end, created_at, ai_narrative, site_slug')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', site)
     .order('month_start', { ascending: false })
     .limit(24)
 
@@ -101,11 +103,12 @@ export async function POST(req: Request) {
   const siteSlug   = (body.site as string | undefined) ?? 'g2g'
   const { data: siteConfig } = await db
     .from('site_configs')
-    .select('slug, display_name, semrush_domain, gsc_property, ga4_property_id')
+    .select('slug, display_name, semrush_domain, gsc_property, ga4_property_id, favicon_domain')
     .eq('slug', siteSlug)
     .maybeSingle()
-  const semrushDomain = siteConfig?.semrush_domain ?? 'g2g.com'
-  const siteDisplay   = siteConfig?.display_name   ?? 'G2G'
+  const semrushDomain = siteConfig?.semrush_domain  ?? 'g2g.com'
+  const siteDisplay   = siteConfig?.display_name    ?? 'G2G'
+  const faviconDomain = siteConfig?.favicon_domain  ?? 'g2g.com'
 
   // Default to last complete month
   const now = new Date()
@@ -119,25 +122,29 @@ export async function POST(req: Request) {
   const { year: prevYear, month: prevMonth } = getPreviousMonth(targetYear, targetMonth)
   const { start: prevStart, end: prevEnd }   = getMonthRange(prevYear, prevMonth)
 
-  // Delete and regenerate if already exists
+  // Delete and regenerate if already exists (scoped to this site)
   const { data: existing } = await db
     .from('monthly_reports')
     .select('id')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .eq('month_start', monthStart)
     .maybeSingle()
   if (existing) {
     await db.from('monthly_reports').delete().eq('id', existing.id)
   }
 
-  // GSC connection
+  // GSC connection — tokens are shared across sites (same Google account).
+  // Use siteConfig.gsc_property as the GSC property URL (not conn.site_url which
+  // reflects whichever property was last selected during OAuth). This matches
+  // the weekly report pattern and ensures OG queries OG's GSC property.
   const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url, access_token, refresh_token, expires_at')
     .eq('user_id', ownerId)
     .maybeSingle()
 
-  const siteUrl = conn?.site_url ?? null
+  const siteUrl = siteConfig?.gsc_property ?? conn?.site_url ?? null
 
   // ── Fetch action items + competitors + backlinks (in parallel; GSC fetched
   // separately below from the live API because the snapshot table is a
@@ -161,6 +168,7 @@ export async function POST(req: Request) {
       .from('competitors')
       .select('domain, name, active')
       .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
       .eq('active', true)
       .limit(5),
 
@@ -403,7 +411,8 @@ export async function POST(req: Request) {
 
   try {
     if (conn?.access_token) {
-      const ga4PropertyId = process.env.GA4_PROPERTY_ID
+      // Prefer site_configs.ga4_property_id (per-site), fall back to env var (G2G legacy)
+      const ga4PropertyId = siteConfig?.ga4_property_id ?? process.env.GA4_PROPERTY_ID
       if (ga4PropertyId) {
         const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
         const [thisMonthRaw, prevMonthRaw, topPagesRaw] = await Promise.all([
@@ -528,14 +537,15 @@ export async function POST(req: Request) {
 
       const totalRaw = Array.from(rawSov.values()).reduce((a, b) => a + b, 0)
       if (totalRaw > 0) {
-        const allDomains = new Set(['g2g.com', ...competitorList.map(c => normalizeDomain(c.domain))])
+        const primaryDomain = normalizeDomain(faviconDomain)  // 'g2g.com' or 'offgamers.com'
+        const allDomains = new Set([primaryDomain, ...competitorList.map(c => normalizeDomain(c.domain))])
         sovTable = Array.from(allDomains)
           .map(dom => ({
             domain:   dom,
             sov:      Math.round(((rawSov.get(dom) ?? 0) / totalRaw) * 1000) / 10,
             keywords: kwCount.get(dom) ?? 0,
           }))
-          .filter(r => r.sov > 0 || r.domain === 'g2g.com')
+          .filter(r => r.sov > 0 || r.domain === primaryDomain)
           .sort((a, b) => b.sov - a.sov)
       }
     }
@@ -594,6 +604,7 @@ export async function POST(req: Request) {
     .from('monthly_reports')
     .insert({
       owner_user_id:  ownerId,
+      site_slug:      siteSlug,
       month_start:    monthStart,
       month_end:      monthEnd,
       report_data:    reportData,

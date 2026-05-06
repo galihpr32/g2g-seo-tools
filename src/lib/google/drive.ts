@@ -15,6 +15,7 @@
 // Note: this is separate from sheets.ts auth (different scope).
 
 import { google } from 'googleapis'
+import { Readable } from 'stream'
 
 function getAuth() {
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
@@ -163,3 +164,68 @@ export async function createProductDoc(content: ProductDocContent): Promise<stri
 
   return `https://docs.google.com/document/d/${docId}/edit`
 }
+
+/**
+ * Upload a binary file (PPTX, PDF, etc.) to Google Drive.
+ *
+ * Used by the monthly-report PPTX export flow — generates the file as a
+ * Buffer in memory, hands it here to be uploaded into the configured
+ * GOOGLE_DRIVE_FOLDER_ID, and returns a public-readable share link.
+ *
+ * Returns an object with:
+ *   - id        : the Drive file ID (useful for follow-up Sheets links etc.)
+ *   - webViewLink : the user-friendly /file/d/ID/view URL
+ *   - webContentLink : direct download URL (needs auth)
+ */
+export interface UploadedFile {
+  id:              string
+  webViewLink:     string
+  webContentLink?: string
+}
+
+export async function uploadFileToDrive(
+  buffer:    Buffer,
+  filename:  string,
+  mimeType:  string,
+  options: { folderId?: string; makePublic?: boolean } = {},
+): Promise<UploadedFile> {
+  const auth  = getAuth()
+  const drive = google.drive({ version: 'v3', auth })
+
+  const folderId = options.folderId ?? process.env.GOOGLE_DRIVE_FOLDER_ID
+
+  // googleapis expects a stream for binary uploads — wrap the Buffer.
+  const stream = Readable.from(buffer)
+
+  const fileRes = await drive.files.create({
+    requestBody: {
+      name:     filename,
+      mimeType,
+      ...(folderId ? { parents: [folderId] } : {}),
+    },
+    media: {
+      mimeType,
+      body: stream,
+    },
+    fields: 'id, webViewLink, webContentLink',
+  })
+
+  const fileId = fileRes.data.id
+  if (!fileId) throw new Error('Drive upload returned no file ID')
+
+  // Default: make link-readable so the team can open without being added to
+  // the service account's drive individually. Same pattern as createProductDoc.
+  if (options.makePublic !== false) {
+    await drive.permissions.create({
+      fileId,
+      requestBody: { role: 'reader', type: 'anyone' },
+    })
+  }
+
+  return {
+    id:              fileId,
+    webViewLink:     fileRes.data.webViewLink     ?? `https://drive.google.com/file/d/${fileId}/view`,
+    webContentLink:  fileRes.data.webContentLink  ?? undefined,
+  }
+}
+

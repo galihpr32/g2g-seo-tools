@@ -18,7 +18,7 @@ const SITES: Site[] = [
 
 // Pages that support site switching (URL gets prefixed with /[site]/)
 // Add more slugs here as pages are built out for each site
-const SITE_AWARE_PATHS = ['/reports/weekly']
+const SITE_AWARE_PATHS = ['/reports/weekly', '/reports/monthly']
 
 export default function SiteSwitcher() {
   const pathname = usePathname()
