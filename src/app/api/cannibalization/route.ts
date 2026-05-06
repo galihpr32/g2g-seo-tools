@@ -99,9 +99,15 @@ async function handleGET(req: Request) {
     return NextResponse.json({ error: 'GSC not connected' }, { status: 422 })
   }
 
-  const auth      = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
-  const startDate = `${days}daysAgo`
-  const endDate   = 'yesterday'
+  const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
+  // GSC API requires YYYY-MM-DD, NOT GA4-style relative strings like "90daysAgo".
+  // Convert here so callers can keep using the friendly day-count param.
+  const today    = new Date()
+  const yest     = new Date(today.getTime() - 86400000)
+  const startD   = new Date(today.getTime() - days * 86400000)
+  const fmt      = (d: Date) => d.toISOString().slice(0, 10)
+  const startDate = fmt(startD)
+  const endDate   = fmt(yest)
 
   // ── 2. Pull GSC query+page data ─────────────────────────────────────────────
   // This gives us: for each (query, page) pair, clicks/impressions/ctr/position

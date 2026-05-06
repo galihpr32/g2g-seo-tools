@@ -315,6 +315,7 @@ export default function InternalLinksPage() {
   const [reasonFilter, setReasonFilter] = useState<string>('all')
   const [anchorOpen,   setAnchorOpen]   = useState<Set<string>>(new Set())
   const [triggerAudit, setTriggerAudit] = useState(false)
+  const [auditProgress, setAuditProgress] = useState<string | null>(null)
 
   useEffect(() => { load() }, []) // eslint-disable-line
 
@@ -337,31 +338,70 @@ export default function InternalLinksPage() {
 
   async function runAudit() {
     setTriggerAudit(true)
+    setError('')
+    setAuditProgress('Starting DataForSEO crawl…')
     try {
       const res = await fetch('/api/site-audit', { method: 'POST' })
       const json = await res.json()
       if (json.task?.status === 'finished') {
+        setAuditProgress('Crawl finished. Loading link graph…')
         await load()
-      } else {
-        // Poll
-        const taskRowId = json.task?.id
-        if (taskRowId) {
-          let attempts = 0
-          const interval = setInterval(async () => {
-            attempts++
-            const poll = await fetch(`/api/site-audit?poll=${taskRowId}`)
-            const pd   = await poll.json()
-            if (pd.task?.status === 'finished' || attempts > 12) {
-              clearInterval(interval)
-              await load()
-            }
-          }, 5000)
-        }
+        setAuditProgress(null)
+        setTriggerAudit(false)
+        return
       }
+
+      const taskRowId = json.task?.id
+      if (!taskRowId) {
+        setAuditProgress(null)
+        setTriggerAudit(false)
+        return
+      }
+
+      // Poll — DFS crawls of 100 pages can take 5-10 minutes. Old logic
+      // gave up after 12 × 5s = 60s and silently abandoned. Now we poll
+      // every 10s up to 60 attempts (10 min), with explicit progress text.
+      const MAX_ATTEMPTS  = 60
+      const POLL_EVERY_MS = 10_000
+      const startedAt     = Date.now()
+      let attempts        = 0
+
+      const interval = setInterval(async () => {
+        attempts++
+        const elapsedSec = Math.round((Date.now() - startedAt) / 1000)
+        try {
+          const poll = await fetch(`/api/site-audit?poll=${taskRowId}`)
+          const pd   = await poll.json()
+
+          if (pd.task?.status === 'finished') {
+            clearInterval(interval)
+            setAuditProgress('Crawl finished. Loading link graph…')
+            await load()
+            setAuditProgress(null)
+            setTriggerAudit(false)
+            return
+          }
+
+          const progress = pd.task?.summary?.crawlProgress ?? 'in_progress'
+          setAuditProgress(`${elapsedSec}s elapsed · ${progress}`)
+
+          if (attempts >= MAX_ATTEMPTS) {
+            clearInterval(interval)
+            setAuditProgress(null)
+            setTriggerAudit(false)
+            setError(
+              `Audit still running after ${Math.round(MAX_ATTEMPTS * POLL_EVERY_MS / 60_000)} minutes. ` +
+              `It will finish in the background — refresh this page in a few minutes to see results.`,
+            )
+          }
+        } catch {
+          // Network blip; keep retrying up to MAX_ATTEMPTS
+        }
+      }, POLL_EVERY_MS)
     } catch (e) {
       setError(String(e))
-    } finally {
       setTriggerAudit(false)
+      setAuditProgress(null)
     }
   }
 
@@ -432,7 +472,13 @@ export default function InternalLinksPage() {
           ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Running audit…</>
           : '🔍 Run Site Audit'}
       </button>
-      <p className="text-gray-700 text-xs mt-3">Takes ~30–60 seconds</p>
+      {auditProgress && triggerAudit && (
+        <p className="text-blue-400 text-xs mt-3 max-w-md">{auditProgress}</p>
+      )}
+      <p className="text-gray-700 text-xs mt-3">
+        DataForSEO crawl of 100 pages typically takes 3–8 minutes. We&apos;ll keep polling for up to 10 minutes.
+        After that the crawl continues in the background — just refresh this page later to see results.
+      </p>
     </div>
   )
 

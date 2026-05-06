@@ -89,9 +89,16 @@ export async function GET(req: Request) {
 
   if (hasGSC) {
     const auth = await getRefreshedClient(conn!.access_token, conn!.refresh_token, conn!.expires_at)
+    // GSC API needs YYYY-MM-DD, not GA4-style "7daysAgo"/"yesterday" strings.
+    const fmt = (d: Date) => d.toISOString().slice(0, 10)
+    const now = Date.now()
+    const yest    = fmt(new Date(now - 1  * 86400000))
+    const sevenAgo = fmt(new Date(now - 7  * 86400000))
+    const sixtyOne = fmt(new Date(now - 61 * 86400000))
+    const ninety   = fmt(new Date(now - 90 * 86400000))
     const [curr, hist] = await Promise.all([
-      getSearchAnalytics(auth, conn!.site_url, '7daysAgo', 'yesterday', ['page'], 5000).catch(() => []),
-      getSearchAnalytics(auth, conn!.site_url, '90daysAgo', '61daysAgo', ['page'], 5000).catch(() => []),
+      getSearchAnalytics(auth, conn!.site_url, sevenAgo, yest, ['page'], 5000).catch(() => []),
+      getSearchAnalytics(auth, conn!.site_url, ninety,   sixtyOne, ['page'], 5000).catch(() => []),
     ])
     currentGSC  = curr.map(r => ({ page: r.keys?.[0] ?? '', clicks: r.clicks ?? 0, impressions: r.impressions ?? 0, position: r.position ?? 0 })).filter(r => r.page)
     historicalGSC = hist.map(r => ({ page: r.keys?.[0] ?? '', clicks: r.clicks ?? 0, impressions: r.impressions ?? 0, position: r.position ?? 0 })).filter(r => r.page)

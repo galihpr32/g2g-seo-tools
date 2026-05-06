@@ -627,8 +627,14 @@ function buildStages(
     const isReviewed     = tyrPassed && (brief.claude_review_status === 'passed' || brief.claude_review_status === 'skipped')
     const isClaudeReviewing = tyrPassed && claudePending
     const isPublished    = brief.status === 'published'
+    // Order matters: a manually-published brief should mark Stage 4 'done'
+    // even if claude_review_status is still 'pending' (publish overrides
+    // pending review). Without isPublished as the first priority, Execute
+    // stage stays 'locked' → user sees "Waiting for approved brief" forever
+    // even after Mark Published.
     const briefStatus: PipelineStageInfo['status'] =
       isGenerating       ? 'active'       :
+      isPublished        ? 'done'         :
       isFailed           ? 'needs_action' :
       claudeFailed       ? 'needs_action' :
       isClaudeReviewing  ? 'active'       :
@@ -643,14 +649,14 @@ function buildStages(
       status:  briefStatus,
       summary: isGenerating
         ? 'Bragi is generating the brief…'
-        : isFailed
-          ? `Brief failed Tyr review (${brief.tyr_score ?? '?'}/100) — needs regeneration`
-          : claudeFailed
-            ? `Claude flagged issues (${brief.claude_review_score ?? '?'}/100) — see notes & regenerate`
-            : isClaudeReviewing
-              ? `Tyr passed (${brief.tyr_score ?? '?'}/100) · awaiting independent review…`
-              : isPublished
-                ? `Published · ${[wdStr, tyrStr, claudeStr].filter(Boolean).join(' · ')}`
+        : isPublished
+          ? `Published · ${[wdStr, tyrStr, claudeStr].filter(Boolean).join(' · ')}`
+          : isFailed
+            ? `Brief failed Tyr review (${brief.tyr_score ?? '?'}/100) — needs regeneration`
+            : claudeFailed
+              ? `Claude flagged issues (${brief.claude_review_score ?? '?'}/100) — see notes & regenerate`
+              : isClaudeReviewing
+                ? `Tyr passed (${brief.tyr_score ?? '?'}/100) · awaiting independent review…`
                 : isReviewed
                   ? `Reviewed & ready · ${[wdStr, tyrStr, claudeStr].filter(Boolean).join(' · ')}`
                   : isAgentDone

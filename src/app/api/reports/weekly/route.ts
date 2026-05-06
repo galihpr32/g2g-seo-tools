@@ -148,26 +148,10 @@ export async function POST(req: Request) {
 
     // ── Fetch all data in parallel ───────────────────────────────────────────
     const [
-      gscCurrent,
-      gscPrevious,
       actionItemsAll,
       actionItemsThisWeek,
       competitors,
     ] = await Promise.all([
-      db
-        .from('gsc_ranking_snapshots')
-        .select('page, clicks, impressions, ctr, position, snapshot_date')
-        .eq('site_url', siteUrl)
-        .gte('snapshot_date', weekStart)
-        .lte('snapshot_date', weekEnd),
-
-      db
-        .from('gsc_ranking_snapshots')
-        .select('page, clicks, impressions, ctr, position, snapshot_date')
-        .eq('site_url', siteUrl)
-        .gte('snapshot_date', prevWeekStart)
-        .lte('snapshot_date', prevWeekEnd),
-
       db
         .from('seo_action_items')
         .select('id, status, assigned_to, created_at, completed_at, action_type')
@@ -187,16 +171,20 @@ export async function POST(req: Request) {
         .limit(5),
     ])
 
-    // ── Process GSC — fallback to live API if no snapshot data ──────────────
-    let curSnaps  = gscCurrent.data  ?? []
-    let prevSnaps = gscPrevious.data ?? []
+    // ── GSC monthly aggregates DIRECTLY from live API ───────────────────────
+    // Same fix as monthly route: snapshot table is a 7-day-rolling-window
+    // trend cache (not a daily aggregate), and PostgREST default 1000-row
+    // limit truncates ~30k row queries to <3% sample. Always call live API
+    // first; snapshot fallback only fires when no GSC connection.
+    let curSnaps:  Array<{ page: string; clicks: number; impressions: number; ctr: number; position: number; snapshot_date: string }> = []
+    let prevSnaps: Array<{ page: string; clicks: number; impressions: number; ctr: number; position: number; snapshot_date: string }> = []
 
-    if (curSnaps.length === 0 && conn?.access_token) {
+    if (conn?.access_token) {
       try {
         const gscAuth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
         const [curRows, prevRows] = await Promise.all([
-          getSearchAnalytics(gscAuth, siteUrl, weekStart, weekEnd, ['page'], 1000),
-          getSearchAnalytics(gscAuth, siteUrl, prevWeekStart, prevWeekEnd, ['page'], 1000),
+          getSearchAnalytics(gscAuth, siteUrl, weekStart,     weekEnd,     ['page'], 5000),
+          getSearchAnalytics(gscAuth, siteUrl, prevWeekStart, prevWeekEnd, ['page'], 5000),
         ])
         curSnaps = curRows.map(r => ({
           page:          r.keys?.[0] ?? '',
@@ -215,8 +203,30 @@ export async function POST(req: Request) {
           snapshot_date: prevWeekEnd,
         }))
       } catch (e) {
-        console.warn('[weekly-report] GSC live API fallback failed:', e)
+        console.warn('[weekly-report] GSC live API failed:', e)
       }
+    }
+
+    // Last-resort fallback: snapshot table when no auth.
+    if (curSnaps.length === 0) {
+      const { data } = await db
+        .from('gsc_ranking_snapshots')
+        .select('page, clicks, impressions, ctr, position, snapshot_date')
+        .eq('site_url', siteUrl)
+        .gte('snapshot_date', weekStart)
+        .lte('snapshot_date', weekEnd)
+        .limit(5000)
+      curSnaps = (data ?? []) as typeof curSnaps
+    }
+    if (prevSnaps.length === 0) {
+      const { data } = await db
+        .from('gsc_ranking_snapshots')
+        .select('page, clicks, impressions, ctr, position, snapshot_date')
+        .eq('site_url', siteUrl)
+        .gte('snapshot_date', prevWeekStart)
+        .lte('snapshot_date', prevWeekEnd)
+        .limit(5000)
+      prevSnaps = (data ?? []) as typeof prevSnaps
     }
 
     const sumBy = (rows: typeof curSnaps) => {

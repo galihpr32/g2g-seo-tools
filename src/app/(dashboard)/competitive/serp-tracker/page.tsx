@@ -123,10 +123,14 @@ export default function SerpTrackerPage() {
     setRecError(null)
     setRecLoadingDate(snapshotDate)
     try {
-      // Try existing run first (free)
-      const existing = await fetch(`/api/competitive/serp-recommend?date=${snapshotDate}`).then(r => r.ok ? r.json() : null)
-      if (existing?.runs?.length > 0) {
-        const latest = existing.runs[0] as { id: string; ideas: ContentIdea[]; pushed_links: Array<{ idea_id: string }> }
+      // Try existing run first (free) — also defensively parse to avoid
+      // SyntaxError when the response is plain-text (e.g. Vercel timeout).
+      const existingRes = await fetch(`/api/competitive/serp-recommend?date=${snapshotDate}`)
+      const existingRaw = existingRes.ok ? await existingRes.text() : ''
+      let existing: { runs?: Array<{ id: string; ideas: ContentIdea[]; pushed_links: Array<{ idea_id: string }> }> } = {}
+      if (existingRaw) { try { existing = JSON.parse(existingRaw) } catch { /* ignore */ } }
+      if (existing.runs && existing.runs.length > 0) {
+        const latest = existing.runs[0]
         setRecBySnapDate(prev => ({
           ...prev,
           [snapshotDate]: {
@@ -137,16 +141,29 @@ export default function SerpTrackerPage() {
         }))
         return
       }
+
       // Generate fresh — costs Sonnet + FireCrawl
-      const res  = await fetch('/api/competitive/serp-recommend', {
-        method: 'POST',
+      const res = await fetch('/api/competitive/serp-recommend', {
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ snapshot_date: snapshotDate }),
       })
-      const data = await res.json() as {
+      const raw = await res.text()
+      let data: {
         ok?: boolean; id?: string; ideas?: ContentIdea[]
         diagnostics?: { keywords_analysed: number; urls_scraped: number; cache_hits: number; cache_misses: number; cost_usd: number; remaining_today: number }
         error?: string
+      } = {}
+      try { data = raw ? JSON.parse(raw) : {} }
+      catch {
+        if (res.status === 504 || res.status === 502 || /^An error/i.test(raw)) {
+          setRecError(
+            'Server timed out (Vercel 60s) generating ideas. Retry in a moment — Sonnet calls can be slow when FireCrawl scrapes are uncached.',
+          )
+        } else {
+          setRecError(`Server returned non-JSON (HTTP ${res.status}): ${raw.slice(0, 200)}`)
+        }
+        return
       }
       if (!res.ok || !data.ok) {
         setRecError(data.error ?? `HTTP ${res.status}`)

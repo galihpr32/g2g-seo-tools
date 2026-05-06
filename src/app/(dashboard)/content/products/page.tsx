@@ -284,10 +284,39 @@ export default function ProductContentPage() {
   const [search, setSearch]           = useState('')
   const [preview, setPreview]         = useState<ProductItem | null>(null)
   const [showSheetConfig, setShowSheetConfig] = useState(false)
-  const [syncResult, setSyncResult]   = useState<{ synced: number; failed: number } | null>(null)
+  const [syncResult, setSyncResult]   = useState<{ synced: number; failed: number; message?: string | null } | null>(null)
   const [lastSynced, setLastSynced]   = useState<string | null>(null)
   const [page, setPage]               = useState(1)
   const PAGE_SIZE = 50
+
+  // ── CSV import state ────────────────────────────────────────────────────
+  interface CsvRow {
+    brand_name:         string
+    category:           string
+    relation_id:        string
+    main_keyword:       string
+    secondary_keywords: string
+    en_file_url:        string
+    status:             string
+  }
+  interface ImportPreview {
+    rowCount:  number
+    new:       Array<{ csv: CsvRow }>
+    unchanged: Array<{ csv: CsvRow; db: CsvRow }>
+    conflicts: Array<{ csv: CsvRow; db: CsvRow; fieldDiffs: Record<string, { csv: string; db: string }> }>
+    warnings:  string[]
+  }
+  const [csvFile, setCsvFile]                 = useState<File | null>(null)
+  const [importPreview, setImportPreview]     = useState<ImportPreview | null>(null)
+  const [importPreviewLoading, setImportPreviewLoading] = useState(false)
+  const [importError, setImportError]         = useState<string | null>(null)
+  const [conflictResolutions, setConflictResolutions]   = useState<Record<string, 'use_csv' | 'keep_db' | 'skip'>>({})
+  const [applying, setApplying]               = useState(false)
+  const [importHistory, setImportHistory]     = useState<Array<{
+    id: string; source: string; source_file: string | null; imported_at: string
+    rows_total: number; rows_new: number; rows_updated: number; rows_skipped: number; rows_conflicts: number
+  }>>([])
+  const [showHistory, setShowHistory]         = useState(false)
 
   const fetchItems = useCallback(async () => {
     setLoading(true)
@@ -314,12 +343,115 @@ export default function ProductContentPage() {
     setSyncResult(null)
     try {
       const res = await fetch('/api/products/auto-content/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      const data = await res.json()
-      setSyncResult({ synced: data.synced ?? 0, failed: data.failed ?? 0 })
+      const data = await res.json() as { synced?: number; failed?: number; message?: string; error?: string }
+      setSyncResult({
+        synced:  data.synced ?? 0,
+        failed:  data.failed ?? 0,
+        message: data.message ?? data.error ?? null,
+      })
       await fetchItems()
     } catch { /* silent */ }
     setSyncing(false)
   }
+
+  // ── CSV export / template / import handlers ─────────────────────────────
+  function downloadFile(url: string) {
+    const a = document.createElement('a')
+    a.href = url
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
+  async function handlePickCsv(file: File) {
+    setCsvFile(file)
+    setImportError(null)
+    setImportPreview(null)
+    setConflictResolutions({})
+    setImportPreviewLoading(true)
+    try {
+      const text = await file.text()
+      const res = await fetch('/api/products/auto-content/csv-import', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ csv: text }),
+      })
+      const data = await res.json() as ImportPreview & { error?: string }
+      if (!res.ok || data.error) {
+        setImportError(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setImportPreview(data)
+      // Default conflict resolution: use_csv (most common intent on import)
+      const initial: Record<string, 'use_csv' | 'keep_db' | 'skip'> = {}
+      for (const c of data.conflicts) initial[c.csv.relation_id] = 'use_csv'
+      setConflictResolutions(initial)
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setImportPreviewLoading(false)
+    }
+  }
+
+  async function applyImport() {
+    if (!importPreview) return
+    setApplying(true)
+    setImportError(null)
+    try {
+      const toInsert = importPreview.new.map(r => r.csv)
+      const toUpdate: Array<{ relation_id: string; fields: Partial<CsvRow> }> = []
+      const skipped: string[] = []
+      for (const c of importPreview.conflicts) {
+        const choice = conflictResolutions[c.csv.relation_id] ?? 'use_csv'
+        if (choice === 'use_csv') {
+          // Send only the changed fields
+          const fields: Partial<CsvRow> = {}
+          for (const f of Object.keys(c.fieldDiffs) as Array<keyof CsvRow>) {
+            fields[f] = c.csv[f]
+          }
+          toUpdate.push({ relation_id: c.csv.relation_id, fields })
+        } else if (choice === 'skip') {
+          skipped.push(c.csv.relation_id)
+        }
+        // 'keep_db' = no-op
+      }
+
+      const res = await fetch('/api/products/auto-content/csv-import/apply', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ toInsert, toUpdate, skipped, fileName: csvFile?.name ?? null }),
+      })
+      const data = await res.json() as { ok?: boolean; inserted?: number; updated?: number; skipped?: number; error?: string }
+      if (!res.ok || !data.ok) {
+        setImportError(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setSyncResult({
+        synced:  (data.inserted ?? 0) + (data.updated ?? 0),
+        failed:  0,
+        message: `Imported via CSV: ${data.inserted ?? 0} new, ${data.updated ?? 0} updated, ${data.skipped ?? 0} skipped`,
+      })
+      // Reset
+      setCsvFile(null)
+      setImportPreview(null)
+      setConflictResolutions({})
+      await fetchItems()
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Apply failed')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  async function loadImportHistory() {
+    try {
+      const res = await fetch('/api/products/auto-content/imports')
+      const data = await res.json()
+      setImportHistory(data.imports ?? [])
+    } catch { /* silent */ }
+  }
+
+  useEffect(() => { if (showHistory) loadImportHistory() }, [showHistory])
 
   async function handleUpload(uploadAll = false) {
     setUploading(true)
@@ -370,7 +502,7 @@ export default function ProductContentPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => setShowSheetConfig(true)}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition flex items-center gap-2"
@@ -388,16 +520,226 @@ export default function ProductContentPage() {
               <>🔄 Sync from Sheet</>
             )}
           </button>
+
+          {/* Vertical separator */}
+          <span className="text-gray-700 mx-1">|</span>
+
+          {/* CSV ops — template / export / import */}
+          <button
+            onClick={() => downloadFile('/api/products/auto-content/csv-export?mode=template')}
+            title="Download blank CSV template with the correct columns"
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition"
+          >
+            📋 Template
+          </button>
+          <button
+            onClick={() => downloadFile('/api/products/auto-content/csv-export?mode=data')}
+            title="Export current queue as CSV (with generated_at + uploaded_at dates)"
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition"
+          >
+            📥 Export CSV
+          </button>
+          <label className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-sm rounded-lg transition cursor-pointer">
+            📤 Import CSV
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handlePickCsv(f) }}
+            />
+          </label>
+          <button
+            onClick={() => setShowHistory(o => !o)}
+            title="Import history audit trail"
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition"
+          >
+            📜 History
+          </button>
         </div>
       </div>
 
-      {/* Sync result toast */}
+      {/* ── Import History panel ──────────────────────────────────────── */}
+      {showHistory && (
+        <div className="mb-4 bg-gray-900 border border-gray-800 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-white font-semibold text-sm">📜 Import History</h3>
+            <button onClick={() => setShowHistory(false)} className="text-gray-500 hover:text-white text-sm">✕</button>
+          </div>
+          {importHistory.length === 0 ? (
+            <p className="text-xs text-gray-500">No imports yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {importHistory.map(h => (
+                <div key={h.id} className="flex items-center justify-between text-xs bg-gray-950/50 border border-gray-800 rounded-lg px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white font-medium">
+                      {h.source === 'csv' ? '📤' : '🔄'} {h.source.toUpperCase()}
+                      {h.source_file && <span className="text-gray-500 ml-2">{h.source_file}</span>}
+                    </p>
+                    <p className="text-gray-500 text-[10px] mt-0.5">
+                      {new Date(h.imported_at).toLocaleString('id-ID')} ·
+                      {' '}{h.rows_total} rows · {h.rows_new} new · {h.rows_updated} updated · {h.rows_skipped} skipped
+                      {h.rows_conflicts > 0 && <span className="text-amber-400 ml-1">· {h.rows_conflicts} conflicts resolved</span>}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── CSV Import Preview Modal ───────────────────────────────────── */}
+      {(csvFile && (importPreview || importPreviewLoading || importError)) && (
+        <div className="fixed inset-0 bg-black/70 z-40 flex items-center justify-center p-6" onClick={() => { if (!applying) { setCsvFile(null); setImportPreview(null) } }}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-4xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-gray-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-white font-semibold">📤 Import CSV — Preview</h3>
+                <p className="text-xs text-gray-500 mt-0.5">{csvFile.name}</p>
+              </div>
+              <button onClick={() => { setCsvFile(null); setImportPreview(null) }} disabled={applying} className="text-gray-500 hover:text-white disabled:opacity-50">✕</button>
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1">
+              {importPreviewLoading && <p className="text-sm text-gray-400 animate-pulse">Validating CSV…</p>}
+              {importError && <p className="text-sm text-red-400">⚠️ {importError}</p>}
+
+              {importPreview && (
+                <div className="space-y-5">
+                  {/* Summary */}
+                  <div className="grid grid-cols-4 gap-3 text-xs">
+                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3">
+                      <p className="text-emerald-300 font-bold text-lg">{importPreview.new.length}</p>
+                      <p className="text-gray-400">New</p>
+                    </div>
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+                      <p className="text-amber-300 font-bold text-lg">{importPreview.conflicts.length}</p>
+                      <p className="text-gray-400">Conflicts</p>
+                    </div>
+                    <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                      <p className="text-gray-300 font-bold text-lg">{importPreview.unchanged.length}</p>
+                      <p className="text-gray-400">Unchanged</p>
+                    </div>
+                    <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
+                      <p className="text-gray-300 font-bold text-lg">{importPreview.warnings.length}</p>
+                      <p className="text-gray-400">Warnings</p>
+                    </div>
+                  </div>
+
+                  {importPreview.warnings.length > 0 && (
+                    <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-lg p-3 text-xs text-yellow-300 max-h-32 overflow-y-auto">
+                      {importPreview.warnings.map((w, i) => <p key={i}>⚠️ {w}</p>)}
+                    </div>
+                  )}
+
+                  {/* Per-row conflict resolution */}
+                  {importPreview.conflicts.length > 0 && (
+                    <div>
+                      <h4 className="text-white font-semibold text-sm mb-2">Conflicts — pick a resolution per row</h4>
+                      <div className="space-y-3 max-h-96 overflow-y-auto">
+                        {importPreview.conflicts.map(c => {
+                          const choice = conflictResolutions[c.csv.relation_id] ?? 'use_csv'
+                          return (
+                            <div key={c.csv.relation_id} className="bg-gray-950 border border-amber-500/30 rounded-lg p-3">
+                              <div className="flex items-start justify-between gap-3 mb-2">
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-white text-sm font-medium truncate">{c.csv.brand_name}</p>
+                                  <p className="text-[10px] text-gray-500 font-mono">{c.csv.relation_id}</p>
+                                </div>
+                                <div className="flex gap-1 flex-shrink-0">
+                                  {(['use_csv', 'keep_db', 'skip'] as const).map(opt => (
+                                    <button
+                                      key={opt}
+                                      onClick={() => setConflictResolutions(prev => ({ ...prev, [c.csv.relation_id]: opt }))}
+                                      className={`px-2 py-0.5 text-[10px] rounded border transition ${
+                                        choice === opt
+                                          ? opt === 'use_csv'  ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                                          : opt === 'keep_db'  ? 'bg-blue-500/20 border-blue-500/40 text-blue-300'
+                                          :                      'bg-gray-700 border-gray-600 text-gray-300'
+                                          : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300'
+                                      }`}
+                                    >
+                                      {opt === 'use_csv' ? '📤 Use CSV' : opt === 'keep_db' ? '📚 Keep DB' : '⊘ Skip'}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <div className="text-[11px] space-y-1">
+                                {Object.entries(c.fieldDiffs).map(([field, diff]) => (
+                                  <div key={field} className="grid grid-cols-[100px,1fr,1fr] gap-2 items-start">
+                                    <span className="text-gray-500 font-mono">{field}:</span>
+                                    <span className="text-emerald-300 truncate">CSV: {diff.csv || <em className="text-gray-700">empty</em>}</span>
+                                    <span className="text-blue-300 truncate">DB: {diff.db || <em className="text-gray-700">empty</em>}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* New rows preview (collapsed) */}
+                  {importPreview.new.length > 0 && (
+                    <div>
+                      <h4 className="text-white font-semibold text-sm mb-2">New rows ({importPreview.new.length})</h4>
+                      <div className="bg-gray-950 border border-gray-800 rounded-lg max-h-32 overflow-y-auto p-2 space-y-0.5 text-[10px] font-mono text-gray-400">
+                        {importPreview.new.slice(0, 30).map(r => (
+                          <p key={r.csv.relation_id} className="truncate">{r.csv.brand_name} · {r.csv.category} · {r.csv.relation_id}</p>
+                        ))}
+                        {importPreview.new.length > 30 && <p className="text-gray-600">+ {importPreview.new.length - 30} more…</p>}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-gray-800 flex items-center justify-between">
+              <p className="text-xs text-gray-500">
+                {importPreview && `${importPreview.new.length} insert + ${importPreview.conflicts.filter(c => (conflictResolutions[c.csv.relation_id] ?? 'use_csv') === 'use_csv').length} update + ${importPreview.conflicts.filter(c => conflictResolutions[c.csv.relation_id] === 'skip').length} skip`}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setCsvFile(null); setImportPreview(null) }}
+                  disabled={applying}
+                  className="px-3 py-1.5 text-xs text-gray-400 hover:text-white disabled:opacity-50 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applyImport}
+                  disabled={applying || !importPreview || (importPreview.new.length === 0 && importPreview.conflicts.length === 0)}
+                  className="px-4 py-1.5 text-xs rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white transition"
+                >
+                  {applying ? 'Applying…' : '✓ Apply Import'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sync result toast — also surfaces diagnostics when synced=0
+           (e.g., "Sheet has 50 rows but none are 'To Do'…"), so users know
+           why nothing was generated. */}
       {syncResult && (
-        <div className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-center justify-between ${syncResult.failed > 0 ? 'bg-yellow-900/50 text-yellow-300 border border-yellow-700' : 'bg-green-900/50 text-green-300 border border-green-700'}`}>
-          <span>
-            Sync complete — <strong>{syncResult.synced}</strong> generated
-            {syncResult.failed > 0 && <>, <strong>{syncResult.failed}</strong> failed</>}
-          </span>
+        <div className={`mb-4 px-4 py-3 rounded-lg text-sm flex items-start justify-between gap-3 ${
+          syncResult.failed > 0       ? 'bg-yellow-900/50 text-yellow-300 border border-yellow-700' :
+          syncResult.synced === 0     ? 'bg-yellow-900/40 text-yellow-200 border border-yellow-700/60' :
+          'bg-green-900/50 text-green-300 border border-green-700'
+        }`}>
+          <div className="flex-1 min-w-0">
+            <p>
+              Sync complete — <strong>{syncResult.synced}</strong> generated
+              {syncResult.failed > 0 && <>, <strong>{syncResult.failed}</strong> failed</>}
+            </p>
+            {syncResult.message && syncResult.synced === 0 && (
+              <p className="text-xs mt-1 opacity-90">⚠️ {syncResult.message}</p>
+            )}
+          </div>
           <button onClick={() => setSyncResult(null)} className="text-current opacity-60 hover:opacity-100">✕</button>
         </div>
       )}

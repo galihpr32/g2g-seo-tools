@@ -56,9 +56,25 @@ export async function GET(req: Request) {
   const db = createServiceClient()
 
   const { searchParams } = new URL(req.url)
-  const startDate = searchParams.get('start') ?? '30daysAgo'
-  const endDate   = searchParams.get('end')   ?? 'yesterday'
-  const mapIdFilter = searchParams.get('map_id') ?? null
+  // Accept either YYYY-MM-DD or GA4-style relative ('30daysAgo','yesterday').
+  // GA4 callbacks below accept relative strings, but GSC requires ISO dates,
+  // so we convert here once and pass ISO to GSC + relative-pass-through to GA4.
+  const fmtIso = (d: Date) => d.toISOString().slice(0, 10)
+  function relToIso(s: string): string {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+    if (s === 'today')     return fmtIso(new Date())
+    if (s === 'yesterday') return fmtIso(new Date(Date.now() - 86400000))
+    const m = s.match(/^(\d+)daysAgo$/)
+    if (m) return fmtIso(new Date(Date.now() - Number(m[1]) * 86400000))
+    return fmtIso(new Date(Date.now() - 30 * 86400000))   // safe default
+  }
+  const rawStart = searchParams.get('start') ?? '30daysAgo'
+  const rawEnd   = searchParams.get('end')   ?? 'yesterday'
+  const startDate     = rawStart   // GA4 compatible (accepts relative)
+  const endDate       = rawEnd
+  const startDateIso  = relToIso(rawStart)
+  const endDateIso    = relToIso(rawEnd)
+  const mapIdFilter   = searchParams.get('map_id') ?? null
 
   // ── 1. Fetch GSC connection + GSC site URL ────────────────────────────────
   const { data: conn } = await supabase
@@ -67,7 +83,20 @@ export async function GET(req: Request) {
     .eq('user_id', ownerId)
     .single()
 
-  const propertyId = process.env.GA4_PROPERTY_ID
+  // GA4 property ID — env var first, then per-site config (system/health also
+  // does this dual-source lookup, otherwise users who configured GA4 inside
+  // /command-center get a false "not configured" warning here).
+  let propertyId = process.env.GA4_PROPERTY_ID || ''
+  if (!propertyId) {
+    const { data: siteCfg } = await db
+      .from('site_configs')
+      .select('ga4_property_id')
+      .eq('owner_user_id', ownerId)
+      .not('ga4_property_id', 'is', null)
+      .limit(1)
+      .maybeSingle()
+    if (siteCfg?.ga4_property_id) propertyId = String(siteCfg.ga4_property_id)
+  }
 
   if (!conn?.access_token) {
     return NextResponse.json({ error: 'Google account not connected' }, { status: 422 })
@@ -94,7 +123,26 @@ export async function GET(req: Request) {
 
   const { data: publishedClusters } = await query
 
-  if (!publishedClusters?.length) {
+  // ── 2b. Pipeline-published briefs (seo_content_briefs.status='published')
+  // Treated as additional ROI rows alongside keyword_map_clusters. Both
+  // surfaces represent "content that's live and should have measurable
+  // impact". We dedup by URL — if the same page is in both sources, the
+  // cluster row wins (it has richer cluster metadata).
+  let publishedBriefs: Array<{
+    id: string; primary_keyword: string | null; page: string | null
+    brief_type: string | null; published_at: string | null; created_at: string
+  }> = []
+  if (!mapIdFilter) {
+    const { data: briefRows } = await db
+      .from('seo_content_briefs')
+      .select('id, primary_keyword, page, brief_type, published_at, created_at')
+      .eq('owner_user_id', ownerId)
+      .eq('status', 'published')
+      .not('page', 'is', null)
+    publishedBriefs = (briefRows ?? []) as typeof publishedBriefs
+  }
+
+  if (!publishedClusters?.length && !publishedBriefs.length) {
     return NextResponse.json({
       clusters: [],
       summary: { totalPublished: 0, totalRevenueLanding: 0, totalRevenueOnPage: 0, totalClicks: 0, totalSessions: 0 },
@@ -114,9 +162,9 @@ export async function GET(req: Request) {
     propertyId ? getGA4RevenueByPage(auth, propertyId, startDate, endDate, 1000).catch(() => []) : Promise.resolve([]),
     // GA4: Organic sessions per page
     propertyId ? getGA4OrganicSessionsByPage(auth, propertyId, startDate, endDate, 1000).catch(() => []) : Promise.resolve([]),
-    // GSC: clicks + impressions + position per page
+    // GSC: clicks + impressions + position per page (ISO dates required)
     conn.site_url
-      ? getSearchAnalytics(auth, conn.site_url, startDate, endDate, ['page'], 5000).catch(() => [])
+      ? getSearchAnalytics(auth, conn.site_url, startDateIso, endDateIso, ['page'], 5000).catch(() => [])
       : Promise.resolve([]),
   ])
 
@@ -188,7 +236,7 @@ export async function GET(req: Request) {
   }
 
   // ── 6. Build enriched cluster rows ────────────────────────────────────────
-  const enriched = publishedClusters.map(c => {
+  const enriched = (publishedClusters ?? []).map(c => {
     const slug = c.url_slug ?? ''
     const map  = c.keyword_maps as unknown as { id: string; topic: string; topic_slug: string; market: string; status: string }
 
@@ -205,6 +253,7 @@ export async function GET(req: Request) {
       map_market:     map?.market ?? 'us',
       keyword:        c.keyword,
       url_slug:       slug,
+      source:         'keyword_map' as 'keyword_map' | 'pipeline_brief',
       suggested_title: c.suggested_title,
       search_volume:  c.search_volume,
       difficulty:     c.difficulty,
@@ -242,6 +291,64 @@ export async function GET(req: Request) {
       rps: (org?.sessions ?? 0) > 0 ? (lp?.revenue ?? 0) / (org?.sessions ?? 1) : 0,
     }
   })
+
+  // ── 6b. Append pipeline-published briefs (dedup by url_slug) ─────────────
+  // Match brief.page (full URL) → strip to slug → skip if already in `enriched`
+  // from keyword_map. Otherwise enrich with same GA4/GSC lookups.
+  const existingSlugs = new Set(enriched.map(e => e.url_slug.toLowerCase()))
+  function urlToSlug(url: string): string {
+    try {
+      const u = new URL(url)
+      return u.pathname.split('/').filter(Boolean).pop() ?? ''
+    } catch {
+      return url.split('/').filter(Boolean).pop() ?? ''
+    }
+  }
+
+  for (const b of publishedBriefs) {
+    const slug = urlToSlug(String(b.page ?? ''))
+    if (!slug || existingSlugs.has(slug.toLowerCase())) continue
+
+    const lp  = findBestMatch(slug, lpRevenueMap)
+    const op  = findBestMatch(slug, opRevenueMap)
+    const org = findBestMatch(slug, organicMap)
+    const gsc = findBestMatch(slug, gscMap)
+
+    enriched.push({
+      id:              b.id,
+      map_id:          '',
+      map_topic:       b.brief_type ?? 'pipeline',     // shows brief_type as group label
+      map_market:      'us',
+      keyword:         b.primary_keyword ?? slug,
+      url_slug:        slug,
+      source:          'pipeline_brief' as const,
+      suggested_title: null,
+      search_volume:   null,
+      difficulty:      null,
+      intent:          null,
+      content_type:    b.brief_type,
+      cluster_group:   null,
+      is_pillar:       false,
+      published_at:    b.published_at ?? b.created_at,
+      gsc_clicks:       gsc?.clicks ?? 0,
+      gsc_impressions:  gsc?.impressions ?? 0,
+      gsc_ctr:          gsc?.ctr ?? 0,
+      gsc_position:     gsc?.position ?? null,
+      ga4_sessions:        org?.sessions ?? 0,
+      ga4_engaged:         org?.engaged ?? 0,
+      ga4_bounce_rate:     org?.bounce ?? 0,
+      ga4_avg_duration:    org?.avgDuration ?? 0,
+      ga4_views:           org?.views ?? 0,
+      revenue_landing:       lp?.revenue ?? 0,
+      transactions_landing:  lp?.transactions ?? 0,
+      sessions_landing:      lp?.sessions ?? 0,
+      revenue_on_page:       op?.revenue ?? 0,
+      transactions_on_page:  op?.transactions ?? 0,
+      rpc: gsc?.clicks ? (lp?.revenue ?? 0) / gsc.clicks : 0,
+      rps: (org?.sessions ?? 0) > 0 ? (lp?.revenue ?? 0) / (org?.sessions ?? 1) : 0,
+    } as typeof enriched[number])
+    existingSlugs.add(slug.toLowerCase())
+  }
 
   // ── 7. Summary ────────────────────────────────────────────────────────────
   const summary = {

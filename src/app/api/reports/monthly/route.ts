@@ -139,32 +139,15 @@ export async function POST(req: Request) {
 
   const siteUrl = conn?.site_url ?? null
 
-  // ── Fetch GSC + action items ─────────────────────────────────────────────────
+  // ── Fetch action items + competitors + backlinks (in parallel; GSC fetched
+  // separately below from the live API because the snapshot table is a
+  // 7-day-rolling-window trend cache, not a daily aggregate, so summing it
+  // over a month overcounts AND truncates at 1000 rows) ────────────────────
   const [
-    gscCurrentRes,
-    gscPreviousRes,
     actionItemsRes,
     competitorsRes,
     backlinksRes,
   ] = await Promise.all([
-    siteUrl
-      ? db
-          .from('gsc_ranking_snapshots')
-          .select('page, clicks, impressions, ctr, position, snapshot_date')
-          .eq('site_url', siteUrl)
-          .gte('snapshot_date', monthStart)
-          .lte('snapshot_date', monthEnd)
-      : Promise.resolve({ data: [] }),
-
-    siteUrl
-      ? db
-          .from('gsc_ranking_snapshots')
-          .select('page, clicks, impressions, ctr, position, snapshot_date')
-          .eq('site_url', siteUrl)
-          .gte('snapshot_date', prevStart)
-          .lte('snapshot_date', prevEnd)
-      : Promise.resolve({ data: [] }),
-
     siteUrl
       ? db
           .from('seo_action_items')
@@ -188,36 +171,68 @@ export async function POST(req: Request) {
       .eq('owner_user_id', ownerId),
   ])
 
-  // ── Process GSC — fallback to live API ────────────────────────────────────────
-  let curSnaps  = gscCurrentRes.data  ?? []
-  let prevSnaps = gscPreviousRes.data ?? []
+  // ── Fetch GSC monthly aggregates DIRECTLY from live API ──────────────────
+  // The previous snapshot-based path was wrong on two axes:
+  //   1. gsc-daily upserts 7-day-window aggregates per (site, page, today) →
+  //      summing 30 daily rows = ~7x overcount on each page.
+  //   2. PostgREST default max-rows=1000 truncated 30k+ row queries to <3%
+  //      sample → severe undercount.
+  //   Net visible effect: April reported 247K clicks vs GSC truth 1.63M.
+  // GSC API is the source of truth — call it directly with rowLimit=5000
+  // (covers >99% of clicks for typical sites; GSC API caps at 25k).
+  let curSnaps:  Array<{ page: string; clicks: number; impressions: number; ctr: number; position: number; snapshot_date: string }> = []
+  let prevSnaps: Array<{ page: string; clicks: number; impressions: number; ctr: number; position: number; snapshot_date: string }> = []
 
-  if (curSnaps.length === 0 && conn?.access_token && siteUrl) {
+  if (conn?.access_token && siteUrl) {
     try {
       const gscAuth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
       const [curRows, prevRows] = await Promise.all([
-        getSearchAnalytics(gscAuth, siteUrl, monthStart, monthEnd, ['page'], 1000),
-        getSearchAnalytics(gscAuth, siteUrl, prevStart, prevEnd, ['page'], 1000),
+        getSearchAnalytics(gscAuth, siteUrl, monthStart, monthEnd, ['page'], 5000),
+        getSearchAnalytics(gscAuth, siteUrl, prevStart,  prevEnd,  ['page'], 5000),
       ])
       curSnaps = curRows.map(r => ({
-        page:         r.keys?.[0] ?? '',
-        clicks:       r.clicks ?? 0,
-        impressions:  r.impressions ?? 0,
-        ctr:          r.ctr ?? 0,
-        position:     r.position ?? 0,
+        page:          r.keys?.[0] ?? '',
+        clicks:        r.clicks ?? 0,
+        impressions:   r.impressions ?? 0,
+        ctr:           r.ctr ?? 0,
+        position:      r.position ?? 0,
         snapshot_date: monthEnd,
       }))
       prevSnaps = prevRows.map(r => ({
-        page:         r.keys?.[0] ?? '',
-        clicks:       r.clicks ?? 0,
-        impressions:  r.impressions ?? 0,
-        ctr:          r.ctr ?? 0,
-        position:     r.position ?? 0,
+        page:          r.keys?.[0] ?? '',
+        clicks:        r.clicks ?? 0,
+        impressions:   r.impressions ?? 0,
+        ctr:           r.ctr ?? 0,
+        position:      r.position ?? 0,
         snapshot_date: prevEnd,
       }))
     } catch (e) {
-      console.warn('[monthly-report] GSC live API fallback failed:', e)
+      console.warn('[monthly-report] GSC live API failed:', e)
     }
+  }
+
+  // Last-resort fallback: snapshot table (only if we have NO live access).
+  // Acknowledges the snapshot data is approximate (overcount + truncated)
+  // but better than nothing.
+  if (curSnaps.length === 0 && siteUrl) {
+    const { data } = await db
+      .from('gsc_ranking_snapshots')
+      .select('page, clicks, impressions, ctr, position, snapshot_date')
+      .eq('site_url', siteUrl)
+      .gte('snapshot_date', monthStart)
+      .lte('snapshot_date', monthEnd)
+      .limit(5000)
+    curSnaps = (data ?? []) as typeof curSnaps
+  }
+  if (prevSnaps.length === 0 && siteUrl) {
+    const { data } = await db
+      .from('gsc_ranking_snapshots')
+      .select('page, clicks, impressions, ctr, position, snapshot_date')
+      .eq('site_url', siteUrl)
+      .gte('snapshot_date', prevStart)
+      .lte('snapshot_date', prevEnd)
+      .limit(5000)
+    prevSnaps = (data ?? []) as typeof prevSnaps
   }
 
   const sumBy = (rows: typeof curSnaps) => {

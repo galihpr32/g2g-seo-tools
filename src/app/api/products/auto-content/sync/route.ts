@@ -55,7 +55,29 @@ export async function POST(req: Request) {
   }
 
   if (!sheetRows.length) {
-    return NextResponse.json({ synced: 0, message: 'No "To Do" rows found in sheet' })
+    // Pull a raw count so the UI can tell the user EXACTLY why 0 rows were
+    // found — most common cause is column G ("Status") not being "To Do"
+    // (e.g. blank, "Done", "ToDo" without space, lowercase).
+    let rawCount = 0
+    let nonTodoCount = 0
+    let missingFieldCount = 0
+    try {
+      const allRows = await readProductSheet(spreadsheetId, sheetName, 2, 500, true)
+      rawCount = allRows.length
+      nonTodoCount = allRows.filter(r => r.sheetStatus !== SHEET_STATUS.TODO).length
+      missingFieldCount = allRows.filter(r => !r.productName || !r.relationId).length
+    } catch { /* swallow; diagnostic best-effort */ }
+
+    return NextResponse.json({
+      synced:   0,
+      message:  rawCount === 0
+                  ? `Sheet is empty or unreachable. Verify the spreadsheet ID + sheet name "${sheetName}" exist and the row data starts at row 2.`
+                  : `Sheet has ${rawCount} rows but none are "To Do". ` +
+                    `${nonTodoCount} rows have a different status (Generated / blank / typo). ` +
+                    `${missingFieldCount} rows missing productName or relationId. ` +
+                    `To regenerate already-Generated rows, pass {regenerate_existing: true}.`,
+      diagnostics: { rawCount, nonTodoCount, missingFieldCount, sheetName },
+    })
   }
 
   // ── If regenerate_existing, also include already-failed DB rows ────────────
@@ -82,7 +104,11 @@ export async function POST(req: Request) {
   toProcess = toProcess.slice(0, limit)
 
   if (!toProcess.length) {
-    return NextResponse.json({ synced: 0, message: 'All "To Do" products already have content in DB' })
+    return NextResponse.json({
+      synced:  0,
+      message: `All ${sheetRows.length} "To Do" rows already have content in DB. Pass {regenerate_existing: true} to regenerate them.`,
+      diagnostics: { sheetRows: sheetRows.length, alreadyDone: sheetRows.length },
+    })
   }
 
   // ── Upsert rows as 'generating' in DB ─────────────────────────────────────

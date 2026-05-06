@@ -99,6 +99,13 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     if (body.status === 'published') {
       update.published_by = user.id
       update.published_at = nowIso
+      // Manual publish overrides the Claude review gate. Without this, a
+      // brief stuck at claude_review_status='pending' keeps the pipeline
+      // Stage 4 stuck 'active' even after Mark Published, which freezes
+      // the Execute + downstream stages.
+      update.claude_review_status   = 'skipped'
+      update.claude_review_notes    = '[manual publish] Claude review skipped by user click on Mark Published.'
+      update.claude_review_reviewed_at = nowIso
     }
 
     // When un-publishing (writer pressed "Mark unpublished" on a published brief),
