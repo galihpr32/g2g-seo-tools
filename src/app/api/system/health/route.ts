@@ -78,7 +78,13 @@ export async function GET(req: Request) {
   const gscExpired   = gscExpiresAt ? new Date(gscExpiresAt).getTime() < now : false
 
   const ga4Configured = (siteConfigsRes.data ?? []).some(s => Boolean(s.ga4_property_id)) || Boolean(process.env.GA4_PROPERTY_ID)
-  const slackOk       = Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_CHANNEL_ID && process.env.SLACK_SIGNING_SECRET)
+  // Pinpoint which Slack env var is actually missing — generic "X / Y missing"
+  // wasn't actionable when the user had all 4 set in Vercel and still saw red.
+  const slackMissing: string[] = []
+  if (!process.env.SLACK_BOT_TOKEN)      slackMissing.push('SLACK_BOT_TOKEN')
+  if (!process.env.SLACK_CHANNEL_ID)     slackMissing.push('SLACK_CHANNEL_ID')
+  if (!process.env.SLACK_SIGNING_SECRET) slackMissing.push('SLACK_SIGNING_SECRET')
+  const slackOk = slackMissing.length === 0
   const anthropicOk   = Boolean(process.env.ANTHROPIC_API_KEY)
   const dfsOk         = Boolean(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD)
   const semrushOk     = Boolean(process.env.SEMRUSH_API_KEY && process.env.SEMRUSH_API_KEY !== 'placeholder')
@@ -89,7 +95,7 @@ export async function GET(req: Request) {
     { name: 'Anthropic',  ok: anthropicOk,   detail: anthropicOk ? 'API key set' : 'ANTHROPIC_API_KEY missing' },
     { name: 'DataForSEO', ok: dfsOk,         detail: dfsOk       ? 'Credentials set' : 'DATAFORSEO_LOGIN/PASSWORD missing' },
     { name: 'SEMrush',    ok: semrushOk,     detail: semrushOk   ? 'API key set' : 'SEMRUSH_API_KEY missing or placeholder' },
-    { name: 'Slack',      ok: slackOk,       detail: slackOk     ? 'Bot token + signing secret set' : 'SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET missing' },
+    { name: 'Slack',      ok: slackOk,       detail: slackOk     ? 'Bot token + channel + signing secret set' : `Missing: ${slackMissing.join(', ')}` },
   ]
 
   // ── 3. Cron freshness ─────────────────────────────────────────────────────-
