@@ -146,7 +146,10 @@ export async function POST(req: Request) {
     .eq('user_id', ownerId)
     .maybeSingle()
 
-  const siteUrl = siteConfig?.gsc_property ?? conn?.site_url ?? null
+  // Sprint 12 fix: NO fallback to gsc_connections.site_url — that legacy
+  // path always returned G2G's URL (single OAuth row per user), causing
+  // OffGamers monthly reports to render G2G data.
+  const siteUrl = siteConfig?.gsc_property ?? null
 
   // ── Fetch action items + competitors + backlinks (in parallel; GSC fetched
   // separately below from the live API because the snapshot table is a

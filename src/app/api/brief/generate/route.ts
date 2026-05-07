@@ -30,21 +30,24 @@ export async function POST(request: Request) {
   // Resolve active site from cookie
   const cookieSite = request.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
 
-  // Prefer site_configs.gsc_property for brand-accurate site_url
+  // Sprint 12: site_url ONLY from site_configs based on active slug.
+  // No fallback to gsc_connections.site_url (always returned G2G's URL).
   const { data: siteConfig } = await db
     .from('site_configs')
     .select('gsc_property')
     .eq('slug', cookieSite)
+    .eq('is_active', true)
     .maybeSingle()
 
+  // Verify GSC OAuth is connected (tokens shared across sites under same Google account)
   const { data: conn } = await db
     .from('gsc_connections')
-    .select('site_url')
+    .select('user_id')
     .eq('user_id', effectiveOwnerId)
-    .single()
+    .maybeSingle()
 
-  const resolvedSiteUrl = siteConfig?.gsc_property ?? conn?.site_url ?? null
-  if (!resolvedSiteUrl) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
+  const resolvedSiteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
+  if (!resolvedSiteUrl) return NextResponse.json({ error: `No GSC data for site=${cookieSite}` }, { status: 400 })
 
   const reqBody = await request.json()
   const { action_item_id, content_type_config, selected_keywords, custom_instructions, serp_country } = reqBody as {

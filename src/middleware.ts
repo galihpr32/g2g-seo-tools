@@ -79,7 +79,16 @@ export async function middleware(request: NextRequest) {
     request.cookies.set(SITE_COOKIE, detectedSlug)
   }
 
-  let supabaseResponse = NextResponse.next({ request })
+  // Inject the active slug as a request header so RSCs (which can't read
+  // the URL directly) can resolve it deterministically via `headers().get(
+  // 'x-active-site')`. Falls back to cookie when prefix is absent.
+  const headerSlug = detectedSlug ?? (request.cookies.get(SITE_COOKIE)?.value ?? 'g2g')
+  const requestHeaders = new Headers(request.headers)
+  requestHeaders.set('x-active-site', headerSlug)
+
+  let supabaseResponse = NextResponse.next({
+    request: { headers: requestHeaders },
+  })
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -138,7 +147,9 @@ export async function middleware(request: NextRequest) {
   } else {
     const rewriteUrl = request.nextUrl.clone()
     rewriteUrl.pathname = strippedPath
-    baseResponse = NextResponse.rewrite(rewriteUrl, { request })
+    baseResponse = NextResponse.rewrite(rewriteUrl, {
+      request: { headers: requestHeaders },
+    })
     // Mirror auth cookies through the rewrite response
     for (const c of supabaseResponse.cookies.getAll()) {
       baseResponse.cookies.set(c.name, c.value, c)

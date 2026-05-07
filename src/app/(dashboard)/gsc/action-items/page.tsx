@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites'
 import { ActionItemsTable, type ActionItem, type BriefSummary } from './ActionItemsTable'
 
 export const revalidate = 60
@@ -20,11 +21,20 @@ export default async function ActionItemsPage({
   const { data: { user } } = await supabase.auth.getUser()
 
   const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
-  const { data: conn } = effectiveOwnerId
-    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
-    : { data: null }
 
-  const siteUrl = conn?.site_url
+  // Multi-brand-safe site resolution: active slug → site_configs.gsc_property
+  // (Sprint 12 audit fix — was reading gsc_connections which only stored
+  // user's first OAuth site, so /offgamers/* always rendered G2G data).
+  const activeSlug = await getActiveSiteSlug()
+  const dbAdmin = createServiceClient()
+  const { data: siteConfig } = await dbAdmin
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  const siteUrl  = siteConfig?.gsc_property ?? null
+  const siteSlug = activeSlug
 
   // ── Pagination + date params ──────────────────────────────────────────────
   const limit  = Math.min(Math.max(parseInt(params.limit ?? '20'), 1), 100)
@@ -42,6 +52,7 @@ export default async function ActionItemsPage({
       .from('seo_action_items')
       .select('*', { count: 'exact' })
       .eq('site_url', siteUrl)
+      .eq('site_slug', siteSlug)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1)
 
@@ -133,10 +144,10 @@ export default async function ActionItemsPage({
         </div>
       </div>
 
-      {!conn ? (
+      {!siteUrl ? (
         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-8 text-center">
-          <p className="text-yellow-400 font-medium">GSC not connected</p>
-          <p className="text-gray-400 text-sm mt-1">Go to Settings &amp; Connections to connect Google Search Console.</p>
+          <p className="text-yellow-400 font-medium">No data for {activeSlug.toUpperCase()}</p>
+          <p className="text-gray-400 text-sm mt-1">Connect Google Search Console in Settings, or switch sites if this brand has no items yet.</p>
         </div>
       ) : (
         <ActionItemsTable

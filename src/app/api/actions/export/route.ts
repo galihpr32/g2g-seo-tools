@@ -15,18 +15,11 @@ export async function GET(request: Request) {
   const siteSlug = resolveSiteSlugFromRequest(request)
   const db = createServiceClient()
 
-  // Resolve site_url for the active brand from site_configs first; fall back
-  // to the user's gsc_connections if no per-site config is registered yet.
+  // Sprint 12: site_url comes from site_configs based on active slug.
+  // No fallback to gsc_connections.site_url — that legacy path always
+  // returned G2G's URL and broke OffGamers exports.
   const siteCfg = await getSiteConfig(supabase, siteSlug)
-  let siteUrl = siteCfg?.gsc_property as string | undefined
-  if (!siteUrl) {
-    const { data: conn } = await db
-      .from('gsc_connections')
-      .select('site_url')
-      .eq('user_id', ownerId)
-      .maybeSingle()
-    siteUrl = conn?.site_url
-  }
+  const siteUrl = siteCfg?.gsc_property as string | undefined
 
   // Parse optional date filter from query params
   const { searchParams } = new URL(request.url)

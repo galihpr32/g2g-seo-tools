@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites'
 import Link from 'next/link'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -195,30 +196,49 @@ export default async function DashboardPage() {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db      = createServiceClient()
 
-  const { data: conn } = await db
-    .from('gsc_connections')
-    .select('site_url')
-    .eq('user_id', ownerId)
+  // Resolve the active site from URL/cookie. Multi-brand-safe: this is
+  // the single source of truth for "which site's data should I render?"
+  const activeSlug = await getActiveSiteSlug()
+
+  // Lookup the site's GSC property from site_configs. Previously this
+  // page read gsc_connections.site_url which only stores ONE site per
+  // user (whichever was OAuth-connected first), so /offgamers/dashboard
+  // was rendering G2G data — bug surfaced 2026-05-08 audit.
+  const { data: site } = await db
+    .from('site_configs')
+    .select('slug, gsc_property, favicon_domain, display_name')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
     .maybeSingle()
 
-  const siteUrl      = conn?.site_url ?? null
+  const siteUrl      = site?.gsc_property ?? null
+  const siteSlug     = site?.slug ?? activeSlug
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   // ── Parallel fetches ──────────────────────────────────────────────────────
   const [itemsRes, briefsRes, campsRes, snapsRes, agentRunsRes, pendingActionsRes] =
     await Promise.all([
+      // Site-scoped action items: filter by both site_url (legacy column,
+      // matches gsc_property) AND site_slug (the multi-brand isolation
+      // column added in Sprint 23-26). Either alone is enough for new rows
+      // but legacy rows may have one but not the other.
       siteUrl
         ? db.from('seo_action_items')
             .select('id, status, action_type, assigned_to, created_at')
-            .eq('site_url', siteUrl)
+            .eq('owner_user_id', ownerId)
+            .eq('site_slug', siteSlug)
         : Promise.resolve({ data: [] as Array<{ id: string; status: string; action_type: string | null; assigned_to: string | null; created_at: string }>, error: null }),
 
       siteUrl
         ? db.from('seo_content_briefs')
             .select('id, status, created_at')
-            .eq('site_url', siteUrl)
+            .eq('owner_user_id', ownerId)
+            .eq('site_slug', siteSlug)
         : Promise.resolve({ data: [] as Array<{ id: string; status: string; created_at: string }>, error: null }),
 
+      // Campaigns don't have a site_slug column yet (migration TBD).
+      // Filter by user only for now — multi-brand isolation comes when
+      // campaigns get site-scoped in a follow-up.
       db.from('campaigns')
         .select('id, campaign_pages(id)')
         .eq('owner_user_id', ownerId),
@@ -232,10 +252,11 @@ export default async function DashboardPage() {
             .order('snapshot_date', { ascending: true })
         : Promise.resolve({ data: [] as Array<{ snapshot_date: string; clicks: number | null; impressions: number | null }>, error: null }),
 
-      // Agent runs — last run per agent
+      // Agent runs — last run per agent (per-site)
       db.from('agent_runs')
         .select('agent_key, status, summary, actions_queued, started_at, finished_at')
         .eq('owner_user_id', ownerId)
+        .eq('site_slug', siteSlug)
         .order('started_at', { ascending: false })
         .limit(40),
 
@@ -243,6 +264,7 @@ export default async function DashboardPage() {
       db.from('agent_actions')
         .select('agent_key, title, priority')
         .eq('owner_user_id', ownerId)
+        .eq('site_slug', siteSlug)
         .eq('status', 'pending')
         .order('created_at', { ascending: false })
         .limit(5),

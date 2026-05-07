@@ -99,10 +99,10 @@ SELECT DISTINCT
   split_part(tp.name, ' ', 1) AS topic,
   lower(regexp_replace(split_part(tp.name, ' ', 1), '[^a-z0-9]+', '-', 'gi')) AS topic_slug,
   0 AS level,
-  NULL,
-  true,
-  'tracked_product',
-  'Auto-seeded from tracked_products. Re-run Saga to refine.'
+  NULL::uuid AS parent_map_id,
+  true AS auto_generated,
+  'tracked_product' AS source,
+  'Auto-seeded from tracked_products. Re-run Saga to refine.' AS description
 FROM public.tracked_products tp
 WHERE tp.active = true
   AND length(split_part(tp.name, ' ', 1)) > 1

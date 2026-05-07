@@ -38,25 +38,36 @@ export async function GET(req: Request) {
   const marketB  = searchParams.get('market_b') ?? 'idn'
   const minImpr  = parseInt(searchParams.get('min_impr') ?? '5')
 
-  // ── 1. GSC connection ─────────────────────────────────────────────────────
+  // ── 1. GSC OAuth + brand-aware site URL (Sprint 12) ───────────────────────
+  const { resolveSiteSlugFromRequest } = await import('@/lib/sites')
+  const { createServiceClient } = await import('@/lib/supabase/service')
+  const siteSlug = resolveSiteSlugFromRequest(req)
+  const dbAdmin = createServiceClient()
   const { data: conn } = await supabase
     .from('gsc_connections')
     .select('*')
     .eq('user_id', ownerId)
     .single()
+  const { data: brandSiteConfig } = await dbAdmin
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
 
-  if (!conn?.access_token || !conn?.site_url) {
-    return NextResponse.json({ error: 'GSC not connected' }, { status: 422 })
+  if (!conn?.access_token || !brandSiteConfig?.gsc_property) {
+    return NextResponse.json({ error: `GSC not connected or no config for site=${siteSlug}` }, { status: 422 })
   }
 
+  const siteUrl   = brandSiteConfig.gsc_property
   const auth      = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
   const startDate = `${days}daysAgo`
   const endDate   = 'yesterday'
 
   // ── 2. Fetch both markets concurrently ────────────────────────────────────
   const [rowsA, rowsB] = await Promise.all([
-    getSearchAnalyticsByCountry(auth, conn.site_url, startDate, endDate, marketA, ['query', 'page'], 15000).catch(() => []),
-    getSearchAnalyticsByCountry(auth, conn.site_url, startDate, endDate, marketB, ['query', 'page'], 15000).catch(() => []),
+    getSearchAnalyticsByCountry(auth, siteUrl, startDate, endDate, marketA, ['query', 'page'], 15000).catch(() => []),
+    getSearchAnalyticsByCountry(auth, siteUrl, startDate, endDate, marketB, ['query', 'page'], 15000).catch(() => []),
   ])
 
   // ── 3. Build per-query maps: query → {clicks, impressions, position, pages} ─

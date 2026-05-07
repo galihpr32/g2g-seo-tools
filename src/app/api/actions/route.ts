@@ -18,21 +18,25 @@ export async function POST(request: Request) {
   // Resolve active site (cookie/query/body) — single helper, used everywhere
   const cookieSite = resolveSiteSlugFromRequest(request)
 
-  // Resolve site_url from site_configs (brand-aware) — fallback to gsc_connections
+  // Sprint 12: site_url ONLY comes from site_configs based on active slug.
+  // No fallback to gsc_connections.site_url — that path always returned
+  // G2G's URL regardless of which brand the user is on.
   const { data: siteConfig } = await db
     .from('site_configs')
     .select('gsc_property')
     .eq('slug', cookieSite)
+    .eq('is_active', true)
     .maybeSingle()
 
+  // Verify user has GSC OAuth connected; without it, we can't act on rankings.
   const { data: conn } = await db
     .from('gsc_connections')
-    .select('site_url')
+    .select('user_id')
     .eq('user_id', effectiveOwnerId)
-    .single()
+    .maybeSingle()
 
-  const resolvedSiteUrl = siteConfig?.gsc_property ?? conn?.site_url ?? null
-  if (!resolvedSiteUrl) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
+  const resolvedSiteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
+  if (!resolvedSiteUrl) return NextResponse.json({ error: `No data for site=${cookieSite}` }, { status: 400 })
 
   const body = await request.json()
 

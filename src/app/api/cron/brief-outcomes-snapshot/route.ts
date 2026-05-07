@@ -67,6 +67,24 @@ export async function GET(request: Request) {
     byOwner.set(r.owner_user_id, arr)
   }
 
+  // Sprint 12: build a hostname → gsc_property map so each row's GSC fetch
+  // uses the correct brand. Replaces the broken pattern of using a single
+  // gsc_connections.site_url for all of an owner's briefs.
+  const { data: siteCfgs } = await db
+    .from('site_configs')
+    .select('slug, gsc_property, favicon_domain')
+    .eq('is_active', true)
+  const hostToGscProperty = new Map<string, string>()
+  for (const cfg of (siteCfgs ?? []) as Array<{ favicon_domain: string; gsc_property: string }>) {
+    hostToGscProperty.set(cfg.favicon_domain.toLowerCase(), cfg.gsc_property)
+  }
+  function gscPropertyForUrl(pageUrl: string): string | null {
+    try {
+      const host = new URL(pageUrl).hostname.toLowerCase().replace(/^www\./, '')
+      return hostToGscProperty.get(host) ?? null
+    } catch { return null }
+  }
+
   const today    = new Date()
   let totalProcessed = 0
   let totalSnapshots = 0
@@ -76,14 +94,16 @@ export async function GET(request: Request) {
     const warnings: string[] = []
     let ownerProcessed = 0
 
-    // Find this owner's GSC connection
+    // Find this owner's GSC connection (tokens cover all properties under
+    // the same Google account; the site_url is determined per-row from
+    // the brief's page_url hostname).
     const { data: conn } = await db
       .from('gsc_connections')
-      .select('access_token, refresh_token, expires_at, site_url')
+      .select('access_token, refresh_token, expires_at')
       .eq('user_id', ownerId)
       .maybeSingle()
 
-    if (!conn?.access_token || !conn?.site_url) {
+    if (!conn?.access_token) {
       warnings.push('No GSC connection — skipping owner')
       results.push({ ownerId, processed: 0, warnings })
       continue
@@ -111,6 +131,15 @@ export async function GET(request: Request) {
 
       if (dueCheckpoints.length === 0) continue
 
+      // Resolve the brand-specific GSC property for THIS row's page_url.
+      // Different briefs may belong to different brands; we can't use a
+      // single site_url for an owner.
+      const rowSiteUrl = gscPropertyForUrl(row.page_url)
+      if (!rowSiteUrl) {
+        warnings.push(`No site_config matches host of ${row.page_url} — skipping row`)
+        continue
+      }
+
       for (const cp of dueCheckpoints) {
         // Snapshot window: rolling 7-day ending at exactly +Nd from publish.
         // (E.g., for +30d, we sum the 7 days ending publish_date+30.)
@@ -126,7 +155,7 @@ export async function GET(request: Request) {
 
         try {
           const gscRows = await getSearchAnalytics(
-            auth, conn.site_url, fmtDate(windowStart), fmtDate(windowEnd),
+            auth, rowSiteUrl, fmtDate(windowStart), fmtDate(windowEnd),
             ['page'], 5000,
           )
           // Find the matching page (URL exact OR pathname match)

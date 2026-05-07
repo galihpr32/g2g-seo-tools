@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites'
 
 export const revalidate = 3600
 
@@ -12,11 +13,24 @@ export default async function IndexCoveragePage() {
   // Use service client so workspace members can read owner's snapshots (bypasses RLS)
   const db = createServiceClient()
 
+  // Multi-brand-safe site lookup. Reads active slug from middleware-injected
+  // header (or cookie fallback) → maps to gsc_property. Replaces the legacy
+  // gsc_connections.site_url lookup which only stored the user's first OAuth
+  // connection (always G2G), causing /offgamers/... to render G2G data.
+  const activeSlug = await getActiveSiteSlug()
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  // Also check the user actually has a GSC connection — if not, downstream
+  // queries return empty (we never silently fall back to a different site).
   const { data: conn } = effectiveOwnerId
-    ? await db.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
+    ? await db.from('gsc_connections').select('user_id').eq('user_id', effectiveOwnerId).maybeSingle()
     : { data: null }
 
-  const siteUrl = conn?.site_url
+  const siteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
 
   const { data: snapshots } = siteUrl
     ? await db

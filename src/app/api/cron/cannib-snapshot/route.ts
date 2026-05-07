@@ -66,7 +66,7 @@ export async function GET(req: Request) {
         // Cron-internal fetch — uses CRON_SECRET as the body trust signal so
         // /api/cannibalization can resolve owner without an auth cookie.
         // (Alternative: re-implement detection here. Proxy keeps logic DRY.)
-        const res = await fetch(`${appUrl}/api/cannibalization?days=30&min_impr=10&owner=${encodeURIComponent(ownerId)}&cron_secret=${encodeURIComponent(process.env.CRON_SECRET!)}`, {
+        const res = await fetch(`${appUrl}/api/cannibalization?days=30&min_impr=10&owner=${encodeURIComponent(ownerId)}&site=${encodeURIComponent(siteSlug)}&cron_secret=${encodeURIComponent(process.env.CRON_SECRET!)}`, {
           headers: { 'Content-Type': 'application/json' },
         })
         if (!res.ok) {

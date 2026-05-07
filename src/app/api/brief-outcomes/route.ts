@@ -144,7 +144,7 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: true, message: `Checkpoint ${checkpoint}d already snapshotted` })
   }
 
-  // GSC connection
+  // GSC OAuth (tokens cover all properties under this Google account)
   const { data: conn } = await supabase
     .from('gsc_connections')
     .select('*')
@@ -153,11 +153,26 @@ export async function PATCH(req: Request) {
 
   if (!conn?.access_token) return NextResponse.json({ error: 'GSC not connected' }, { status: 422 })
 
+  // Sprint 12: site_url comes from the active brand's site_configs row,
+  // NOT from gsc_connections.site_url which is single-site per user.
+  const siteSlug = resolveSiteSlugFromRequest(req)
+  const dbAdmin = createServiceClient()
+  const { data: siteConfig } = await dbAdmin
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  if (!siteConfig?.gsc_property) {
+    return NextResponse.json({ error: `No site config for slug=${siteSlug}` }, { status: 422 })
+  }
+  const siteUrl = siteConfig.gsc_property
+
   const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
 
   // Fetch last 7 days of GSC data for this page, filtered by keyword
   const rows = await getSearchAnalytics(
-    auth, conn.site_url,
+    auth, siteUrl,
     daysAgo(7), daysAgo(1),
     ['page', 'query'],
     5000
@@ -185,7 +200,7 @@ export async function PATCH(req: Request) {
   // If no keyword match, try page-only aggregate
   if (position === null) {
     const pageRows = await getSearchAnalytics(
-      auth, conn.site_url,
+      auth, siteUrl,
       daysAgo(7), daysAgo(1),
       ['page'], 5000
     ).catch(() => [])

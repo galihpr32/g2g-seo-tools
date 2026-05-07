@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId, canSeeTeamPerformance } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import RetroDraftButton from '@/components/team/RetroDraftButton'
@@ -99,21 +101,34 @@ export default async function TeamPerformancePage() {
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
 
-  // Get GSC site_url
+  // Multi-brand-safe (Sprint 12): site_url comes from active slug → site_configs
+  // not from gsc_connections (which stores only the user's first OAuth site).
+  const activeSlug = await getActiveSiteSlug()
+  const dbAdmin = createServiceClient()
+  const { data: siteConfig } = await dbAdmin
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  // We still verify GSC OAuth is connected — if not, no team-performance data.
   const { data: conn } = await supabase
     .from('gsc_connections')
-    .select('site_url')
+    .select('user_id')
     .eq('user_id', ownerId)
     .maybeSingle()
 
-  const siteUrl = conn?.site_url
+  const siteUrl  = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
+  const siteSlug = activeSlug
 
   if (!siteUrl) {
     return (
       <div className="p-8 max-w-lg">
         <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-8 text-center">
-          <p className="text-yellow-400 font-medium">GSC not connected</p>
-          <p className="text-gray-400 text-sm mt-1">Connect Google Search Console in Settings first.</p>
+          <p className="text-yellow-400 font-medium">{conn ? `No data for ${activeSlug.toUpperCase()} yet` : 'GSC not connected'}</p>
+          <p className="text-gray-400 text-sm mt-1">
+            {conn ? 'Switch sites or run the cron jobs to populate data for this brand.' : 'Connect Google Search Console in Settings first.'}
+          </p>
         </div>
       </div>
     )
@@ -127,12 +142,14 @@ export default async function TeamPerformancePage() {
       .from('seo_action_items')
       .select('id, page, action_type, status, assigned_to, created_at, completed_at, snapshot_date')
       .eq('site_url', siteUrl)
+      .eq('site_slug', siteSlug)
       .order('created_at', { ascending: false }),
 
     supabase
       .from('seo_content_briefs')
       .select('id, action_item_id, status')
-      .eq('site_url', siteUrl),
+      .eq('site_url', siteUrl)
+      .eq('site_slug', siteSlug),
 
     // Get team member list for display names
     supabase

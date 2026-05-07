@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics, getDateRange, detectRankingDrops } from '@/lib/gsc/client'
 import { RankingDropTable } from './RankingDropTable'
@@ -25,9 +27,30 @@ export default async function RankingDropPage() {
   const { data: { user } } = await supabase.auth.getUser()
 
   const effectiveOwnerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
-  const { data: conn } = effectiveOwnerId
+
+  // Multi-brand-safe site resolution. Use active slug → site_configs.gsc_property
+  // for the site_url filter. gsc_connections is still used for OAuth tokens
+  // (one set of tokens per user can read multiple GSC properties under that
+  // Google account), but the SITE we filter for comes from the active slug.
+  const activeSlug = await getActiveSiteSlug()
+  const db = createServiceClient()
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  const { data: rawConn } = effectiveOwnerId
     ? await supabase.from('gsc_connections').select('*').eq('user_id', effectiveOwnerId).single()
     : { data: null }
+
+  // Override conn.site_url with the active site's gsc_property so all
+  // downstream filters scope correctly. If the user has no GSC connection
+  // OR the active site isn't configured, conn=null → empty page (never
+  // fall back to a different brand).
+  const conn = (rawConn && siteConfig?.gsc_property)
+    ? { ...rawConn, site_url: siteConfig.gsc_property }
+    : null
 
   let drops: PageDropWithQueries[] = []
   let totalTracked = 0
