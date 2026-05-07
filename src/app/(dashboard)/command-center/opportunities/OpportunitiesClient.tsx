@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useMemo } from 'react'
+import ClusterChip from '@/components/clusters/ClusterChip'
+import PriorityBreakdownPanel from '@/components/opportunities/PriorityBreakdownPanel'
 
 interface SignalEntry {
   action_id:     string
@@ -44,6 +46,8 @@ interface Opportunity {
   odin_signals:     SignalEntry[]
   /** Enriched server-side: past briefs/action items in last 90d for same topic */
   pastWork?:        PastWork[]
+  /** Sprint 8.2: count of OTHER opportunities sharing this opp's Saga cluster */
+  cluster_siblings?: number
 }
 
 interface Props {
@@ -388,9 +392,28 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
                     />
 
                     {/* Topic */}
-                    <div className="min-w-0">
+                    <div className="min-w-0 relative">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-white font-medium text-sm truncate">{opp.topic}</span>
+                        <ClusterChip
+                          pageUrl={opp.target_url ?? undefined}
+                          keyword={opp.topic}
+                          compact
+                        />
+                        <PriorityBreakdownPanel opp={{
+                          signal_count:    opp.signal_count,
+                          total_sv:        opp.total_sv,
+                          last_signal_at:  opp.last_signal_at,
+                          heimdall_signals: opp.heimdall_signals,
+                        }} />
+                        {opp.cluster_siblings != null && opp.cluster_siblings > 0 && (
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded border bg-purple-900/30 text-purple-300 border-purple-700/40"
+                            title={`${opp.cluster_siblings} other opportunit${opp.cluster_siblings === 1 ? 'y' : 'ies'} share this Saga cluster — consider batching them together.`}
+                          >
+                            ↺ {opp.cluster_siblings} sibling{opp.cluster_siblings === 1 ? '' : 's'}
+                          </span>
+                        )}
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${statusCfg.color}`}>
                           {statusCfg.label}
                         </span>

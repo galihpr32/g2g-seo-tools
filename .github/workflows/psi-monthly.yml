@@ -13,9 +13,16 @@ concurrency:
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      # Sequential — Vercel functions can hit cold-start contention if 2 sites
+      # invoke at once. Plus PSI quota is per-API-key; we don't need to race.
+      matrix:
+        site: [g2g, offgamers]
+      max-parallel: 1
+      fail-fast: false
     steps:
-      - name: Trigger /api/cron/psi-monthly
+      - name: Trigger /api/cron/psi-monthly?site=${{ matrix.site }}
         env:
           APP_URL:     ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
@@ -25,10 +32,12 @@ jobs:
             echo "::error::APP_URL or CRON_SECRET not set"
             exit 1
           fi
+          # Per-site invocation keeps each Vercel function under 300s.
+          # 12 pages × ~20s = ~240s, well within the 300s function ceiling.
           response=$(curl --silent --show-error --fail-with-body \
-            --max-time 600 \
+            --max-time 320 \
             --request GET \
             --header "Authorization: Bearer ${CRON_SECRET}" \
-            "${APP_URL%/}/api/cron/psi-monthly")
-          echo "Response:"
+            "${APP_URL%/}/api/cron/psi-monthly?site=${{ matrix.site }}")
+          echo "Response (${{ matrix.site }}):"
           echo "${response}" | jq . 2>/dev/null || echo "${response}"

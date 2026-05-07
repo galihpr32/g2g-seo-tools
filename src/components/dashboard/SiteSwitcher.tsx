@@ -37,16 +37,25 @@ export default function SiteSwitcher() {
     setOpen(false)
     if (slug === currentSlug) return
 
-    // Persist active site so server-side (OAuth callback, API routes) knows which site
-    // the user is working on. Both cookie (server-readable) and localStorage (client-readable).
+    // Sprint 11 / URL Prefix 3 — URL is now the source of truth.
+    // We push to /<newSite>/<currentPath> and let the middleware:
+    //   1. Strip the prefix and rewrite to the un-prefixed page
+    //   2. Set the active-site cookie to the new value
+    //   3. Pass through Supabase auth + page render
+    //
+    // We still write the cookie + localStorage + dispatch the same-tab
+    // event eagerly, because the URL push is async and `useSiteSlug()`
+    // consumers shouldn't show stale data even for the few ms between
+    // click and route resolution.
     try {
       // eslint-disable-next-line react-hooks/immutability -- intentional browser global write
       document.cookie = `active-site=${slug}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`
       localStorage.setItem('active-site', slug)
+      window.dispatchEvent(new CustomEvent('site-changed', { detail: { slug } }))
     } catch { /* ignore */ }
 
     // Strip the current site prefix if present so we can compute the
-    // brand-agnostic path. e.g. `/g2g/reports/weekly` → `/reports/weekly`.
+    // brand-agnostic path.
     let base = pathname
     const slugs = SITES.map(s => s.slug)
     const parts = pathname.split('/').filter(Boolean)
@@ -54,22 +63,19 @@ export default function SiteSwitcher() {
       base = '/' + parts.slice(1).join('/')
     }
 
-    // Two routing modes:
-    //   1. Site-aware paths (`/reports/*`) have a `[site]/...` dynamic
-    //      route — we re-prefix with the new slug so the new file/route
-    //      handler loads.
-    //   2. Every other page reads `useSiteSlug()` (cookie) on render —
-    //      we stay on the SAME path and trigger a refresh so the new
-    //      cookie value is picked up. Used to force-redirect users to
-    //      `/reports/weekly` here, which lost their context every switch.
+    // SITE_AWARE_PATHS retain the legacy `/[site]/...` App Router pattern,
+    // so we need a hard prefix push. Every other path goes through the
+    // middleware rewrite which still gets us the cookie + cookie-driven
+    // hydration without needing a page-level [site] segment.
     const isSiteAware = SITE_AWARE_PATHS.some(p => base.startsWith(p) || base === p)
     if (isSiteAware) {
       router.push(`/${slug}${base}`)
     } else {
-      // Same path, but force a re-render so server components see the new
-      // active-site cookie. router.refresh() refetches RSC data; combined
-      // with the cookie update above, the page renders for the new brand.
-      router.push(base)
+      // Push to the prefixed URL — middleware rewrites it back to `base`
+      // internally and pins the cookie. This makes the URL itself the
+      // source of truth, so a copy-paste of the URL respects the site
+      // context for the recipient.
+      router.push(`/${slug}${base}`)
       router.refresh()
     }
   }

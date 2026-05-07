@@ -35,6 +35,7 @@ const navItems = [
       { label: 'Game Trends',        href: '/content/trends',          icon: '🎮' },
       { label: 'News Signals',       href: '/content/news-signals',    icon: '📰' },
       { label: 'Keyword Map',        href: '/content/keyword-map',          icon: '🗺️' },
+      { label: 'Clusters',           href: '/clusters',                     icon: '📚' },
       { label: 'Keyword Exclusions', href: '/content/keyword-exclusions',   icon: '🚫' },
       { label: 'Internal Links',     href: '/content/internal-links',       icon: '🔗' },
       { label: 'Cannibalization',    href: '/content/cannibalization',      icon: '🍖' },
@@ -271,7 +272,11 @@ export default function Sidebar() {
     router.refresh()
   }
 
-  const siteAwarePaths = ['/reports/weekly']
+  // Keep this aligned with DYNAMIC_SITE_PATHS in src/middleware.ts.
+  // These are the routes with an App Router `[site]/...` dynamic segment;
+  // every other page reads the site via cookie / useSiteSlug() so the
+  // un-prefixed path works fine.
+  const siteAwarePaths = ['/reports/weekly', '/reports/monthly']
 
   return (
     <aside className="w-60 h-screen sticky top-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">

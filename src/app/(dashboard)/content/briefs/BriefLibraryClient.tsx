@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import ClusterChip from '@/components/clusters/ClusterChip'
 
 /**
  * BriefLibraryClient — client-side filterable, sortable brief list.
@@ -38,6 +39,8 @@ interface Brief {
   faq_suggestions:  unknown
   new_keywords:     unknown
   notes:            string | null
+  blocker_reason?:  string | null
+  blocked_at?:      string | null
   created_at:       string | null
   updated_at:       string | null
 }
@@ -349,6 +352,14 @@ export default function BriefLibraryClient({ initialBriefs }: { initialBriefs: B
                       {b.brief_type && (
                         <span className="text-[10px] text-gray-600">· {b.brief_type}</span>
                       )}
+                      {b.blocker_reason && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded border bg-yellow-500/10 text-yellow-300 border-yellow-500/30"
+                          title={b.blocker_reason}
+                        >
+                          🚧 Blocked
+                        </span>
+                      )}
                     </div>
                     <a
                       href={editorUrl}
@@ -358,6 +369,11 @@ export default function BriefLibraryClient({ initialBriefs }: { initialBriefs: B
                     </a>
                     {path && (
                       <p className="text-[11px] text-gray-500 truncate">{path}</p>
+                    )}
+                    {b.page && (
+                      <div className="mt-1">
+                        <ClusterChip pageUrl={b.page} keyword={b.primary_keyword ?? undefined} compact />
+                      </div>
                     )}
                     <p className="text-[10px] text-gray-600 mt-1">
                       Created {formatDate(b.created_at)}

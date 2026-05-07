@@ -77,11 +77,23 @@ export async function GET(req: Request) {
 }
 
 async function handleGET(req: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // Cron-internal call path: cron passes ?cron_secret=…&owner=… so we can run
+  // detection on behalf of an owner without an auth cookie. Required for the
+  // /api/cron/cannib-snapshot weekly persister.
+  const url = new URL(req.url)
+  const cronSecret = url.searchParams.get('cron_secret')
+  const cronOwner  = url.searchParams.get('owner')
+  let ownerId: string
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  if (cronSecret && cronOwner && cronSecret === process.env.CRON_SECRET) {
+    ownerId = cronOwner
+  } else {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    ownerId = await getEffectiveOwnerId(supabase, user.id)
+  }
+
   const db = createServiceClient()
 
   const { searchParams } = new URL(req.url)
@@ -89,7 +101,9 @@ async function handleGET(req: Request) {
   const minImpr = parseInt(searchParams.get('min_impr') ?? '10')
 
   // ── 1. GSC connection ───────────────────────────────────────────────────────
-  const { data: conn } = await supabase
+  // Use the service client for the connection lookup so cron-context calls
+  // (which have no user session / cookie) can still fetch the row.
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('*')
     .eq('user_id', ownerId)

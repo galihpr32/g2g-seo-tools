@@ -60,12 +60,24 @@ export function useSiteSlug(): string {
 
     setSlug(readSlug())
 
-    // Listen for cross-tab changes via localStorage 'storage' event.
+    // Cross-TAB changes (different tab updates localStorage)
     function onStorage(e: StorageEvent) {
       if (e.key === 'active-site') setSlug(readSlug())
     }
+    // Same-TAB changes — `storage` event does NOT fire when localStorage is
+    // mutated in the same tab. SiteSwitcher dispatches a custom event
+    // ('site-changed') after writing cookie+localStorage; we listen for it
+    // here so every client component using useSiteSlug re-renders without a
+    // page reload.
+    function onSiteChanged() {
+      setSlug(readSlug())
+    }
     window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
+    window.addEventListener('site-changed', onSiteChanged)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('site-changed', onSiteChanged)
+    }
   }, [pathname])
 
   return slug

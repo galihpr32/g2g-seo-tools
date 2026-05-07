@@ -4,22 +4,21 @@ import { createClient as createSupabase } from '@supabase/supabase-js'
 export const maxDuration = 300
 
 /**
- * GET /api/cron/psi-monthly
+ * GET /api/cron/psi-monthly?site=<slug>
  *
- * Monthly cron — for each active site's top 20 traffic pages, calls
- * Google PageSpeed Insights API (mobile strategy by default), persists
- * Lighthouse scores + Core Web Vitals.
+ * Monthly cron — for ONE site (specified via `?site=` param) or all active
+ * sites if no param, calls Google PSI API for top traffic pages,
+ * persists Lighthouse scores + CWV.
+ *
+ * IMPORTANT: Per-site invocation (`?site=g2g` or `?site=offgamers`) keeps
+ * each function call under Vercel's 300s timeout. The GitHub Action loops
+ * over sites and calls this route once per site. Without per-site split:
+ *   2 sites × 12 pages × 20s/call = 480s → 504 Gateway Timeout.
+ *
+ * Page cap reduced 20→12 to give headroom: 12 × 20s = 240s, fits in 300s.
  *
  * Auth: Bearer CRON_SECRET via GitHub Actions.
- *
- * Requires env: PSI_API_KEY (from Google Cloud Console — Pagespeed Insights API)
- *
- * PSI is free for moderate use (~25k requests/day quota); 2 sites × 20 pages =
- * 40 requests/month easily within limit. Each call ~10-25s — runs sequential
- * to avoid timeout cascades.
- *
- * Replaces the manual "open PSI for top 20 pages, copy scores" ritual
- * (Workflow #3 step 3.9).
+ * Requires env: PSI_API_KEY
  */
 function isCronAuth(req: Request): boolean {
   return req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
@@ -125,12 +124,25 @@ export async function GET(req: Request) {
   const today = new Date().toISOString().split('T')[0]
   const stats = { sites: 0, pagesChecked: 0, written: 0, failed: 0 }
 
-  const { data: sites } = await db
+  // Per-site invocation cap: when ?site= is passed we only process THAT site.
+  // Without it (manual trigger / legacy GH workflows) we process all — but
+  // that risks 504. The current workflow ALWAYS passes ?site=...
+  const reqUrl = new URL(req.url)
+  const siteFilter = reqUrl.searchParams.get('site')
+
+  let sitesQuery = db
     .from('site_configs')
     .select('slug, gsc_property')
     .eq('is_active', true)
+  if (siteFilter) sitesQuery = sitesQuery.eq('slug', siteFilter)
 
-  if (!sites?.length) return NextResponse.json({ error: 'No active sites' }, { status: 500 })
+  const { data: sites } = await sitesQuery
+
+  if (!sites?.length) return NextResponse.json({ error: `No active sites${siteFilter ? ` matching slug=${siteFilter}` : ''}` }, { status: 500 })
+
+  // Page cap reduced to 12 per site — fits comfortably within 300s ceiling
+  // (12 pages × ~20s each = ~240s, leaves headroom for cold start + db).
+  const MAX_PAGES_PER_SITE = 12
 
   for (const site of sites) {
     stats.sites++
@@ -166,7 +178,7 @@ export async function GET(req: Request) {
     }
 
     for (const [ownerId, urlSet] of ownerToUrls.entries()) {
-      const urls = Array.from(urlSet).slice(0, 20)
+      const urls = Array.from(urlSet).slice(0, MAX_PAGES_PER_SITE)
       for (const url of urls) {
         stats.pagesChecked++
         const audit = await callPsi(url, 'mobile')

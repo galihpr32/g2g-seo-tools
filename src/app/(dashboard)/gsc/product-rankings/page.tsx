@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
+import ClusterChip from '@/components/clusters/ClusterChip'
 
 // ── CSV Import helpers ─────────────────────────────────────────────────────────
 
@@ -449,6 +450,9 @@ function ProductCard({ product, history, onDelete, onEdit }: {
             className="text-xs text-blue-400 hover:text-blue-300 truncate block mt-0.5 transition">
             {product.page_url}
           </a>
+          <div className="mt-1">
+            <ClusterChip pageUrl={product.page_url} />
+          </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button onClick={() => onEdit(product)} className="text-xs text-gray-500 hover:text-white px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 transition">

@@ -84,6 +84,32 @@ export default async function OpportunitiesPage() {
     pastWorkByTopic.set(key, arr)
   }
 
+  // ── Cluster-aware sibling detection ──────────────────────────────────────
+  // Sprint 8.2: detect when multiple opportunities point to the same Saga
+  // sub-product cluster. Surfaces "3 sibling opps in WoW Gold cluster" so
+  // Specialist 1 can batch-process related opps.
+  const targetUrls = Array.from(new Set((opportunities ?? []).map(o => o.target_url).filter(Boolean) as string[]))
+  const { data: clusterPages } = targetUrls.length > 0
+    ? await db
+        .from('cluster_pages')
+        .select('cluster_id, page_url')
+        .eq('owner_user_id', effectiveOwnerId)
+        .in('page_url', targetUrls)
+    : { data: [] }
+
+  const urlToClusterId = new Map<string, string>()
+  for (const cp of (clusterPages ?? []) as Array<{ cluster_id: string; page_url: string }>) {
+    urlToClusterId.set(cp.page_url, cp.cluster_id)
+  }
+
+  // Count opportunities per cluster_id
+  const clusterCounts = new Map<string, number>()
+  for (const o of opportunities ?? []) {
+    const cid = o.target_url ? urlToClusterId.get(o.target_url) : null
+    if (!cid) continue
+    clusterCounts.set(cid, (clusterCounts.get(cid) ?? 0) + 1)
+  }
+
   // Attach `pastWork` array to each opportunity. We match on topic_slug.
   const enrichedOpportunities = (opportunities ?? []).map(o => {
     const slugKey = tokenize(String(o.topic_slug ?? ''))
@@ -105,7 +131,9 @@ export default async function OpportunitiesPage() {
         }
       }
     }
-    return { ...o, pastWork: pastWork.slice(0, 5) }
+    const cid = o.target_url ? urlToClusterId.get(o.target_url) : null
+    const clusterSiblings = cid ? Math.max(0, (clusterCounts.get(cid) ?? 0) - 1) : 0
+    return { ...o, pastWork: pastWork.slice(0, 5), cluster_siblings: clusterSiblings }
   })
 
   // Count stats for header

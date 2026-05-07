@@ -56,6 +56,8 @@ export default async function BriefLibraryPage() {
       faq_suggestions,
       new_keywords,
       notes,
+      blocker_reason,
+      blocked_at,
       created_at,
       updated_at
     `)

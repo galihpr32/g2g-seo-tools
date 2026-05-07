@@ -1,0 +1,28 @@
+name: Daily Bifrost Newsjacking Classifier
+
+on:
+  schedule:
+    # Every day at 05:30 UTC (12:30 WIB) — runs after Bifrost RSS pull at 05:00
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: bifrost-newsjacking
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/bifrost-newsjacking
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          curl --silent --show-error --fail-with-body \
+            --max-time 200 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/bifrost-newsjacking" | jq . 2>/dev/null || true
