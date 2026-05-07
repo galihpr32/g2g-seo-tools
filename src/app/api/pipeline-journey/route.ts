@@ -2,6 +2,7 @@ import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 /**
  * GET /api/pipeline-journey
@@ -23,7 +24,7 @@ export async function GET(req: Request) {
   const ownerId  = await getEffectiveOwnerId(supabase, user.id)
   const db       = createServiceClient()
   const { searchParams } = new URL(req.url)
-  const siteSlug = searchParams.get('site')   ?? 'g2g'
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const filter   = searchParams.get('status') ?? 'all'
   const limit    = Math.min(parseInt(searchParams.get('limit') ?? '60'), 200)
 

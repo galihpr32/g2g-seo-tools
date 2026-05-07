@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 // POST /api/actions
 //   Bulk (from ranking drop):  { pages: [...], action_type, notes, snapshot_date }
@@ -14,8 +15,8 @@ export async function POST(request: Request) {
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
-  // Resolve active site from cookie
-  const cookieSite = request.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+  // Resolve active site (cookie/query/body) — single helper, used everywhere
+  const cookieSite = resolveSiteSlugFromRequest(request)
 
   // Resolve site_url from site_configs (brand-aware) — fallback to gsc_connections
   const { data: siteConfig } = await db

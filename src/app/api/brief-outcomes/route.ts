@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 60
 
@@ -41,21 +42,25 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
   const { searchParams } = new URL(req.url)
   const briefId = searchParams.get('brief_id')
 
+  // brief_outcomes itself doesn't have site_slug — we filter via the
+  // !inner join to seo_content_briefs which carries the brand isolation.
   let query = db
     .from('brief_outcomes')
     .select(`
       *,
       seo_content_briefs!inner(
-        primary_keyword, page, status, tyr_score, content_outline, target_publish_date
+        primary_keyword, page, status, tyr_score, content_outline, target_publish_date, site_slug
       )
     `)
     .eq('owner_user_id', ownerId)
+    .eq('seo_content_briefs.site_slug', siteSlug)
     .order('published_at', { ascending: false })
     .limit(200)
 

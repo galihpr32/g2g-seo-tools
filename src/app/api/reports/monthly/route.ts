@@ -172,11 +172,13 @@ export async function POST(req: Request) {
       .eq('active', true)
       .limit(5),
 
-    // Paid backlinks — all active, plus those acquired this month
+    // Paid backlinks — all active, plus those acquired this month, scoped
+    // to the active brand so OG reports don't pull G2G's backlink portfolio.
     db
       .from('paid_backlinks')
       .select('id, site_name, external_url, anchor_text, target_page, target_keyword, link_status, live_date, cost_amount, cost_currency, position_current, position_at_creation')
-      .eq('owner_user_id', ownerId),
+      .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug),
   ])
 
   // ── Fetch GSC monthly aggregates DIRECTLY from live API ──────────────────
@@ -554,7 +556,7 @@ export async function POST(req: Request) {
   }
 
   // ── Agent insights ───────────────────────────────────────────────────────
-  const agentInsights = await getAgentInsights(db, ownerId, monthStart, monthEnd)
+  const agentInsights = await getAgentInsights(db, ownerId, monthStart, monthEnd, siteSlug)
     .catch(e => {
       console.warn('[monthly-report] agent insights failed:', e)
       return null

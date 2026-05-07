@@ -7,6 +7,7 @@ import { getDomainOverview } from '@/lib/semrush/client'
 import { getCountryPreset, SERP_COUNTRIES } from '@/lib/country-config'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { logApiUsage } from '@/lib/api-logger'
+import { resolveSiteSlugFromRequest, getSiteConfig } from '@/lib/sites'
 
 export const maxDuration = 60
 
@@ -76,19 +77,26 @@ export async function POST(request: Request) {
     const domain = extractDomain(normalizedUrl)
     const primaryKeyword = extractPrimaryKeyword(normalizedUrl)
     const countryPreset = getCountryPreset(country)
-    const isOwnPage = domain.includes('g2g.com')
 
-    // Get effective owner ID for workspace queries
+    // Get effective owner ID + active site (cookie/query/body) so OG users
+    // analysing offgamers.com URLs flag them as "own page" + look up the
+    // right action items.
     const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
+    const siteSlug         = resolveSiteSlugFromRequest(request, body)
+    const siteCfg          = await getSiteConfig(supabase, siteSlug)
+    const ownDomain        = siteCfg?.favicon_domain ?? 'g2g.com'
+    const isOwnPage        = domain.includes(ownDomain)
+
     const db = createServiceClient()
 
-    // Check for existing action item
+    // Check for existing action item — scoped to the active brand
     let existingActionItemId: string | null = null
     if (isOwnPage) {
       const { data: actionItem } = await db
         .from('seo_action_items')
         .select('id')
         .eq('user_id', effectiveOwnerId)
+        .eq('site_slug', siteSlug)
         .eq('page', normalizedUrl)
         .maybeSingle()
 

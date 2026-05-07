@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { costForCall } from '@/lib/anthropic-pricing'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 30
 
@@ -22,13 +23,14 @@ export const maxDuration = 30
  *  6. recentErrors — top 10 failed runs/actions in last 7d
  *  7. budget    — Claude MTD spend + (optional) monthly budget threshold from env
  */
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const db      = createServiceClient()
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
+  const db       = createServiceClient()
 
   const now = Date.now()
   const dayAgoIso  = new Date(now -  24 * 60 * 60 * 1000).toISOString()
@@ -52,10 +54,11 @@ export async function GET() {
   ] = await Promise.all([
     db.from('gsc_connections').select('site_url, expires_at, updated_at').eq('user_id', ownerId).maybeSingle(),
     db.from('site_configs').select('slug, ga4_property_id').eq('is_active', true),
-    db.from('agent_runs').select('id, agent_key, status, started_at').eq('owner_user_id', ownerId).gte('started_at', dayAgoIso),
-    db.from('agent_actions').select('id, status').eq('owner_user_id', ownerId).gte('created_at', dayAgoIso),
+    db.from('agent_runs').select('id, agent_key, status, started_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug).gte('started_at', dayAgoIso),
+    db.from('agent_actions').select('id, status').eq('owner_user_id', ownerId).eq('site_slug', siteSlug).gte('created_at', dayAgoIso),
     db.from('agent_runs').select('id, agent_key, status, summary, error_message, started_at')
         .eq('owner_user_id', ownerId)
+        .eq('site_slug', siteSlug)
         .in('status', ['error', 'partial'])
         .gte('started_at', weekAgoIso)
         .order('started_at', { ascending: false })
@@ -63,9 +66,9 @@ export async function GET() {
     db.from('gsc_ranking_drops').select('snapshot_date').order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
     db.from('game_trends_cache').select('cached_at').order('cached_at', { ascending: false }).limit(1).maybeSingle(),
     db.from('serp_snapshots').select('snapshot_date').eq('owner_user_id', ownerId).order('snapshot_date', { ascending: false }).limit(1).maybeSingle(),
-    db.from('seo_content_briefs').select('updated_at, status').eq('owner_user_id', ownerId).order('updated_at', { ascending: false }).limit(1).maybeSingle(),
-    db.from('weekly_reports').select('week_end, created_at').eq('owner_user_id', ownerId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-    db.from('monthly_reports').select('month_end, created_at').eq('owner_user_id', ownerId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    db.from('seo_content_briefs').select('updated_at, status').eq('owner_user_id', ownerId).eq('site_slug', siteSlug).order('updated_at', { ascending: false }).limit(1).maybeSingle(),
+    db.from('weekly_reports').select('week_end, created_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    db.from('monthly_reports').select('month_end, created_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug).order('created_at', { ascending: false }).limit(1).maybeSingle(),
     db.from('api_usage_logs').select('endpoint, metadata, created_at').eq('owner_user_id', ownerId).eq('api_name', 'claude').gte('created_at', monthStartIso),
   ])
 

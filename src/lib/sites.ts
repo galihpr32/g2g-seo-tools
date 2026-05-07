@@ -59,3 +59,53 @@ export function getSiteSlugFromPath(
   }
   return 'g2g'
 }
+
+/**
+ * Resolve the active site_slug for a server-side API route.
+ *
+ * Priority order (first match wins):
+ *   1. `?site=...` query param   — explicit overrides
+ *   2. `?siteSlug=...` query param — alternate spelling some pages use
+ *   3. `active-site` cookie        — set by SiteSwitcher in the dashboard
+ *   4. JSON body `site` / `siteSlug` — POST handlers can opt-in via {body}
+ *   5. Fallback `'g2g'`             — backwards compatible default
+ *
+ * Use this in every route that touches a site_slug-scoped table so all 8+
+ * existing call-sites use the same parsing logic. If you need to read from
+ * the request body, pass it as the second arg AFTER you've already
+ * `await req.json()`-ed it elsewhere — this helper is sync.
+ *
+ * @example
+ *   // GET handler
+ *   const siteSlug = resolveSiteSlugFromRequest(req)
+ *
+ *   // POST handler (uses body)
+ *   const body = await req.json()
+ *   const siteSlug = resolveSiteSlugFromRequest(req, body)
+ */
+export function resolveSiteSlugFromRequest(
+  req: Request,
+  body?: Record<string, unknown>,
+  knownSlugs: string[] = ['g2g', 'offgamers'],
+): string {
+  // 1. Query param
+  try {
+    const url   = new URL(req.url)
+    const qSite = url.searchParams.get('site') ?? url.searchParams.get('siteSlug')
+    if (qSite && knownSlugs.includes(qSite)) return qSite
+  } catch { /* invalid URL — fall through */ }
+
+  // 2. Cookie
+  const cookieMatch = req.headers.get('cookie')?.match(/(?:^|;\s*)active-site=([^;]+)/)
+  const cookieSite  = cookieMatch?.[1]
+  if (cookieSite && knownSlugs.includes(cookieSite)) return cookieSite
+
+  // 3. Body (POST handlers — caller passes their already-parsed body)
+  if (body) {
+    const bSite = (body.site as string | undefined) ?? (body.siteSlug as string | undefined)
+    if (bSite && knownSlugs.includes(bSite)) return bSite
+  }
+
+  // 4. Default
+  return 'g2g'
+}

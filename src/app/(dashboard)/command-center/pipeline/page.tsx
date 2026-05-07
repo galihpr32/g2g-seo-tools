@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import type { JourneyItem, PipelineStageInfo, BriefSummary, Actor, SignalReason } from '@/app/api/pipeline-journey/route'
+import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
 // ── Agent badge styling for "Why this opp" reasons ────────────────────────────
 const AGENT_STYLE: Record<SignalReason['agent'], { label: string; cls: string; emoji: string }> = {
@@ -788,10 +789,14 @@ export default function PipelineJourneyPage() {
   const [filterAssignee, setFilterAssignee] = useState<string>('all')   // 'all' | 'unassigned' | userId
   const [sortBy,         setSortBy]         = useState<'updated' | 'clicks' | 'sv' | 'created'>('updated')
 
+  // Active site slug — drives which brand's pipeline we're viewing.
+  // Reactive: re-runs fetchData when SiteSwitcher updates the cookie.
+  const siteSlug = useSiteSlug()
+
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const res  = await fetch(`/api/pipeline-journey?site=g2g&limit=60`)
+      const res  = await fetch(`/api/pipeline-journey?site=${siteSlug}&limit=60`)
       if (!res.ok) return
       const json = await res.json()
       const journey: JourneyItem[] = json.journey ?? []
@@ -808,7 +813,7 @@ export default function PipelineJourneyPage() {
       }
     } catch { /* silent */ }
     finally { setLoading(false) }
-  }, [])
+  }, [siteSlug])
 
   // Manual "process stuck" trigger — loops until all stuck briefs are cleared.
   // process-briefs handles 1 brief per invocation (within Hobby's 60s limit).

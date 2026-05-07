@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest, getSiteConfig } from '@/lib/sites'
 
 // ── GET /api/actions/export?from=YYYY-MM-DD&to=YYYY-MM-DD ────────────────────
 // Returns a CSV of all action items (no pagination) with brief status joined.
@@ -10,27 +11,35 @@ export async function GET(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(request)
   const db = createServiceClient()
 
-  // Get GSC site_url(s) for this owner
-  const { data: conn } = await db
-    .from('gsc_connections')
-    .select('site_url')
-    .eq('user_id', ownerId)
-    .maybeSingle()
-
-  const siteUrl = conn?.site_url
+  // Resolve site_url for the active brand from site_configs first; fall back
+  // to the user's gsc_connections if no per-site config is registered yet.
+  const siteCfg = await getSiteConfig(supabase, siteSlug)
+  let siteUrl = siteCfg?.gsc_property as string | undefined
+  if (!siteUrl) {
+    const { data: conn } = await db
+      .from('gsc_connections')
+      .select('site_url')
+      .eq('user_id', ownerId)
+      .maybeSingle()
+    siteUrl = conn?.site_url
+  }
 
   // Parse optional date filter from query params
   const { searchParams } = new URL(request.url)
   const from = searchParams.get('from')
   const to   = searchParams.get('to')
 
-  // Fetch all action items (no limit)
+  // Fetch all action items (no limit). Filter by site_slug AND site_url —
+  // site_slug is the brand isolation; site_url provides legacy compatibility
+  // for rows written before the slug column was populated.
   let query = db
     .from('seo_action_items')
     .select('id, page, action_type, status, notes, snapshot_date, clicks_drop, position_change, assigned_to, created_at, completed_at')
+    .eq('site_slug', siteSlug)
     .order('snapshot_date', { ascending: false })
     .order('created_at', { ascending: false })
 

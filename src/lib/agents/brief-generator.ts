@@ -38,6 +38,10 @@ interface PreviousTyrReview {
 interface BriefInput {
   briefId:       string
   ownerId:       string
+  /** Active brand for this generation. Drives KB filtering + brand voice in
+   *  prompts. Defaults to 'g2g' for backwards compatibility — pass
+   *  'offgamers' (etc.) when the brief belongs to another site. */
+  siteSlug?:     string
   keyword:       string
   pageUrl:       string
   briefType:     string
@@ -134,13 +138,18 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
     .update({ status: 'generating' })
     .eq('id', input.briefId)
 
+  // Resolve brand name once (display_name from site_configs). Drives the H1
+  // fallback + brand mentions in the prompt so OG content doesn't get
+  // labelled "G2G" by accident.
+  const brandName = await loadBrandName(db, input.siteSlug ?? 'g2g')
+
   let lastErr: unknown = null
   let parsed: ParsedBrief | null = null
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword)
-      const prompt  = buildPrompt(input, kbBlock)
+      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
+      const prompt  = buildPrompt(input, kbBlock, brandName)
 
       const response = await anthropic.messages.create({
         model:       MODEL,
@@ -164,7 +173,7 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
         throw new Error(`Claude did not call submit_seo_brief tool (stop_reason=${response.stop_reason})`)
       }
 
-      parsed = validateAndCoerce(toolUse.input as Record<string, unknown>, input.keyword)
+      parsed = validateAndCoerce(toolUse.input as Record<string, unknown>, input.keyword, brandName)
       break  // success
     } catch (err) {
       lastErr = err
@@ -308,7 +317,7 @@ function appendNote(existing: string, line: string): string {
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
-function validateAndCoerce(raw: Record<string, unknown>, keyword: string): ParsedBrief {
+function validateAndCoerce(raw: Record<string, unknown>, keyword: string, brandName: string = 'G2G'): ParsedBrief {
   const arr = (v: unknown) => Array.isArray(v) ? v : []
   const str = (v: unknown) => typeof v === 'string' ? v : ''
 
@@ -346,12 +355,35 @@ function validateAndCoerce(raw: Record<string, unknown>, keyword: string): Parse
   }
 
   return {
-    suggestedH1:     str(raw.suggestedH1) || `${keyword} — Buy & Sell on G2G`,
+    suggestedH1:     str(raw.suggestedH1) || `${keyword} — Buy & Sell on ${brandName}`,
     metaDescription: str(raw.metaDescription),
     userIntent:      str(raw.userIntent),
     contentOutline:  outline,
     targetKeywords:  targetKws.slice(0, 8),
     faqSuggestions:  faqs,
+  }
+}
+
+// ── Brand resolver ────────────────────────────────────────────────────────────
+// Pulls the active brand's display_name from site_configs so prompts can
+// substitute "G2G" / "OffGamers" / etc. instead of hardcoding. Falls back to
+// 'G2G' for backwards compat when site_slug isn't passed or the row is
+// missing — the agents have always defaulted to G2G framing.
+async function loadBrandName(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  siteSlug: string,
+): Promise<string> {
+  try {
+    const { data } = await db
+      .from('site_configs')
+      .select('display_name')
+      .eq('slug', siteSlug)
+      .maybeSingle()
+    const name = data?.display_name as string | undefined
+    return (name && name.trim()) || 'G2G'
+  } catch {
+    return 'G2G'
   }
 }
 
@@ -369,12 +401,17 @@ async function loadKBBlock(
   ownerId: string,
   pageUrl: string,
   keyword: string,
+  siteSlug: string = 'g2g',
 ): Promise<string> {
   try {
+    // Pull rows for the active brand PLUS workspace-wide rows (slug='*').
+    // 'brand' KB rows tagged '*' apply across both G2G and OG; per-site
+    // 'category' / 'platform' rows stay isolated.
     const { data: kbItemsRaw } = await db
       .from('knowledge_base_items')
       .select('category, name, data')
       .eq('owner_user_id', ownerId)
+      .in('site_slug', [siteSlug, '*'])
 
     const kbItems: KBItem[] = (kbItemsRaw ?? []) as KBItem[]
     if (!kbItems.length) return ''
@@ -460,9 +497,10 @@ function slugifyPath(pageUrl: string): string {
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
-function buildPrompt(input: BriefInput, kbBlock: string): string {
+function buildPrompt(input: BriefInput, kbBlock: string, brandName: string = 'G2G'): string {
   const volStr     = input.searchVolume ? `${input.searchVolume.toLocaleString()} monthly searches` : 'unknown volume'
   const isCategory = input.briefType === 'category_page' || input.pageUrl.includes('/categories/')
+  const brandHost  = input.pageUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)?.[1] ?? `${brandName.toLowerCase()}.com`
 
   // ── Tyr regenerate-feedback block ──
   // When this is a regen of a brief that failed Tyr's review, inline Tyr's
@@ -474,7 +512,7 @@ function buildPrompt(input: BriefInput, kbBlock: string): string {
 
   const baseRequirements = `Quality requirements:
 
-- suggestedH1: keyword-rich, specific to the page, NOT generic ("Buy X" is fine; "Welcome to G2G" is not).
+- suggestedH1: keyword-rich, specific to the page, NOT generic ("Buy X" is fine; "Welcome to ${brandName}" is not).
 - metaDescription: 150-160 chars, includes primary keyword and a clear CTA.
 - userIntent: 1-2 sentences describing what the user actually wants (not what we want to sell).
 - targetKeywords: primary keyword + 4-7 related long-tail variants and LSI terms (NOT just price/cheap/buy permutations — include intent-specific variants).
@@ -482,7 +520,7 @@ function buildPrompt(input: BriefInput, kbBlock: string): string {
 - faqSuggestions: 3-5 questions real users actually search (use "people also ask" style — pricing, safety, delivery time, refund policy).
 - Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.`
 
-  return `You are an expert SEO content strategist for G2G.com, a peer-to-peer gaming marketplace.
+  return `You are an expert SEO content strategist for ${brandHost}, a gaming marketplace.
 
 Create a structured SEO content brief for the following:
 
@@ -611,6 +649,11 @@ export async function assembleFullArticle(
     return { ok: false, reason: `brief lookup failed: ${loadErr?.message ?? 'no row'}` }
   }
 
+  // Pull brand from the brief row — assembly is async, the original
+  // request that triggered it has long since returned, so we re-derive
+  // siteSlug from the persisted brief instead of receiving it as a param.
+  const siteSlug    = String(brief.site_slug ?? 'g2g')
+  const brandName   = await loadBrandName(db, siteSlug)
   const keyword     = String(brief.primary_keyword ?? '')
   const pageUrl     = String(brief.page ?? '')
   const briefType   = String(brief.brief_type ?? 'on_page')
@@ -628,8 +671,8 @@ export async function assembleFullArticle(
     return { ok: false, reason: 'brief has no primary_keyword' }
   }
 
-  // KB block (brand voice, category guidelines, platform rules)
-  const kbBlock = await loadKBBlock(db, ownerId, pageUrl, keyword)
+  // KB block (brand voice, category guidelines, platform rules) — site-aware
+  const kbBlock = await loadKBBlock(db, ownerId, pageUrl, keyword, siteSlug)
 
   // ── Build assembly prompt ──
   const outlineBlock = outline.map((s, i) => {
@@ -643,7 +686,7 @@ export async function assembleFullArticle(
 
   const isCategoryPage = briefType === 'category_page' || pageUrl.includes('/categories/')
 
-  const prompt = `You are the lead SEO writer for G2G (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown.
+  const prompt = `You are the lead SEO writer for ${brandName} (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown.
 
 PAGE CONTEXT
 - Primary keyword: "${keyword}"
@@ -672,7 +715,7 @@ WRITING RULES
 - Plain prose paragraphs. No HTML. No <br> tags. Use blank lines to separate paragraphs.
 - DO NOT use the forbidden filler vocabulary: "immerse yourself", "step into", "dive into", "delve into", "embark", "captivating", "buckle up", "unravel", "thrill", "forge".
 - Bold ONLY brand/feature names (e.g. **GamerProtect**) — never bold the primary keyword itself.
-- Mention G2G's trust signals naturally: GamerProtect escrow, ISO/IEC 27001:2013 certified, 200+ payment methods, 24/7 support, transparent ratings. Do NOT mention competing marketplaces or the game's own publisher/developer.
+- Mention ${brandName}'s trust signals naturally — pull them from the BRAND CONTEXT block above (or the workspace's KB). Do NOT mention competing marketplaces or the game's own publisher/developer. (For G2G specifically: GamerProtect escrow, ISO/IEC 27001:2013 certified, 200+ payment methods, 24/7 support, transparent ratings — these are G2G-only facts; OG and other brands have their own list in the KB.)
 - Hit the word count: minimum 800 words, target 1200-1500 for category pages, max 1800.
 - Final paragraph should end with a soft CTA back to the page (no hard sell).
 - Do NOT output meta description, target keyword list, or any "writing rules" headers — those live in the structured brief, not the article body.
@@ -796,17 +839,17 @@ const outreachTool: Anthropic.Tool = {
     properties: {
       valueProposition: {
         type: 'string',
-        description: '1 paragraph (50-80 words). Why a gaming blogger / Discord mod / YouTuber should care about linking to G2G for this topic. Lead with value to THEIR audience, not what G2G wants.',
+        description: '1 paragraph (50-80 words). Why a gaming blogger / Discord mod / YouTuber should care about linking to OUR brand (named in the prompt above) for this topic. Lead with value to THEIR audience, not what we want.',
       },
       talkingPoints: {
         type: 'array',
         items: { type: 'string' },
-        description: '5-7 concrete G2G facts that make the pitch credible. Examples: "ISO/IEC 27001:2013 certified", "GamerProtect escrow on every transaction", "200+ payment methods including local options", "24/7 support team". One fact per item, no fluff.',
+        description: '5-7 concrete brand facts that make the pitch credible. Pull from the BRAND CONTEXT block in the prompt (KB-sourced trust signals). Examples for G2G: "ISO/IEC 27001:2013 certified", "GamerProtect escrow on every transaction", "200+ payment methods", "24/7 support". For other brands, use their own KB facts. One fact per item, no fluff.',
       },
       anchorTextOptions: {
         type: 'array',
         items: { type: 'string' },
-        description: '5-8 natural anchor text variations. Mix: 2-3 branded ("G2G", "G2G marketplace"), 2-3 generic ("verified marketplace", "trusted seller platform"), 2-3 topical (mention the keyword naturally). AVOID exact-match keyword stuffing — Google penalises that.',
+        description: '5-8 natural anchor text variations. Mix: 2-3 branded (the brand name from the prompt + "[brand] marketplace" style), 2-3 generic ("verified marketplace", "trusted seller platform"), 2-3 topical (mention the keyword naturally). AVOID exact-match keyword stuffing — Google penalises that.',
       },
       emailSubjects: {
         type: 'array',
@@ -838,11 +881,11 @@ const outreachTool: Anthropic.Tool = {
   },
 }
 
-function buildOutreachPrompt(input: BriefInput, kbBlock: string): string {
+function buildOutreachPrompt(input: BriefInput, kbBlock: string, brandName: string = 'G2G'): string {
   const review = input.previousReview
   const regenBlock = review ? buildRegenFeedbackBlock(review) : ''
 
-  return `You are creating a LINK-BUILDING OUTREACH brief for G2G — a leading gaming marketplace selling in-game accounts, currencies, gift cards, top-ups (Robux, V-Bucks, etc.).
+  return `You are creating a LINK-BUILDING OUTREACH brief for ${brandName} — a leading gaming marketplace selling in-game accounts, currencies, gift cards, top-ups (Robux, V-Bucks, etc.).
 
 PAGE THAT NEEDS BACKLINKS
 - Page URL: ${input.pageUrl}
@@ -959,13 +1002,17 @@ export async function generateOutreachBrief(input: BriefInput): Promise<void> {
     .update({ status: 'generating' })
     .eq('id', input.briefId)
 
+  // Resolve brand name once for the outreach prompt (outreach pitches lean
+  // hard on brand identity — must match the actual site, not a hardcoded G2G).
+  const brandName = await loadBrandName(db, input.siteSlug ?? 'g2g')
+
   let lastErr: unknown = null
   let parsed: OutreachBrief | null = null
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword)
-      const prompt  = buildOutreachPrompt(input, kbBlock)
+      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
+      const prompt  = buildOutreachPrompt(input, kbBlock, brandName)
 
       const response = await anthropic.messages.create({
         model:       MODEL,
