@@ -118,6 +118,27 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         </p>
       </div>
 
+      {/* Last-error banner — surfaces WHY a brief failed to generate so the
+          user has context before deciding to regenerate. Hidden when
+          last_error is null (most briefs). The error itself is truncated
+          server-side at 1000 chars. */}
+      {brief.last_error && (
+        <div className="mb-6 bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm">
+          <div className="flex items-start gap-2 text-red-300">
+            <span>⚠️</span>
+            <div className="flex-1 min-w-0">
+              <p className="font-medium">Last generation attempt failed</p>
+              <p className="mt-1 text-xs text-red-200/80 break-words font-mono">{brief.last_error as string}</p>
+              {brief.last_error_at && (
+                <p className="mt-2 text-[11px] text-red-200/50">
+                  Logged {new Date(brief.last_error_at as string).toLocaleString('id-ID')}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Action bar — Tyr, Regenerate, Override, Publish */}
       <BriefActionBar
         briefId={id}

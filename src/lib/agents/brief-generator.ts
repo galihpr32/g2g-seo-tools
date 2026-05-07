@@ -135,8 +135,20 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   // Mark as generating
   await db
     .from('seo_content_briefs')
-    .update({ status: 'generating' })
+    .update({
+      status:        'generating',
+      last_error:    null,        // clear stale error from previous failed run
+      last_error_at: null,
+    })
     .eq('id', input.briefId)
+
+  // Outer guard — wraps the entire generation flow including KB load,
+  // brand name resolve, validation, DB writes. Without this, anything that
+  // throws OUTSIDE the per-attempt retry loop leaves the brief stuck at
+  // status='generating' with no diagnostic. The catch records the reason
+  // to seo_content_briefs.last_error and reverts status to 'draft' so the
+  // user can see what went wrong + the stale-brief cron can re-pick-up.
+  try {
 
   // Resolve brand name once (display_name from site_configs). Drives the H1
   // fallback + brand mentions in the prompt so OG content doesn't get
@@ -178,7 +190,16 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
     } catch (err) {
       lastErr = err
       const isLast = attempt === MAX_ATTEMPTS
-      console.warn(`[brief-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err instanceof Error ? err.message : err)
+      const retryable = isRetryableAnthropicError(err)
+      console.warn(`[brief-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed${retryable ? ' (retryable)' : ''}:`, err instanceof Error ? err.message : err)
+
+      // Bail early on non-retryable errors (e.g. 4xx auth/validation) — no
+      // point burning the remaining retries on something that won't change.
+      if (!retryable && !isLast) {
+        console.warn('[brief-generator] non-retryable — skipping remaining attempts')
+        break
+      }
+
       if (!isLast) {
         await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
       }
@@ -186,13 +207,21 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   }
 
   if (!parsed) {
-    // All retries failed — revert to 'draft' and log the reason
+    // All retries failed — revert to 'draft', log the reason, persist
+    // diagnostic on last_error so the UI can surface it.
     const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
     console.error('[brief-generator] all retries failed:', reason)
+    await recordBriefError(
+      db,
+      input.briefId,
+      `Bragi auto-generation failed after ${MAX_ATTEMPTS} attempts: ${reason}`,
+    )
+    // Also leave breadcrumb in notes (user-facing, persisted on the brief
+    // detail page), in case the user is reading notes rather than the
+    // dedicated error UI.
     await db
       .from('seo_content_briefs')
       .update({
-        status: 'draft',
         notes: appendNote(input.notes ?? '', `[brief-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
       })
       .eq('id', input.briefId)
@@ -307,6 +336,17 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
       console.error('[brief-generator] auto-regen retry failed:', retryErr)
     }
   }
+  } catch (outerErr) {
+    // Anything that escaped the retry loop (KB query died, brand resolve
+    // crashed, validateAndCoerce barfed, DB write rejected, Tyr scheduling
+    // crashed) ends up here. Record the reason + revert status so the row
+    // doesn't stay stuck at 'generating' indefinitely.
+    const reason = outerErr instanceof Error
+      ? `${outerErr.name}: ${outerErr.message}`
+      : String(outerErr)
+    console.error('[brief-generator] outer guard caught:', reason)
+    await recordBriefError(createServiceClient(), input.briefId, reason)
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -316,6 +356,54 @@ function appendNote(existing: string, line: string): string {
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
+
+/**
+ * Persist a generation failure on the brief row. Writes both:
+ *   - status = 'draft'  (so cron/process-briefs re-picks-up if it's still
+ *                        within the 5-min stale window)
+ *   - last_error / last_error_at  (diagnostics — surface in UI so user can
+ *                                  see WHY the brief stuck instead of just
+ *                                  "still generating…" forever)
+ *
+ * Best-effort — DB error here is logged but not re-thrown (caller is
+ * already in an error path).
+ */
+async function recordBriefError(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:      any,
+  briefId: string,
+  reason:  string,
+  /** When true, also revert status from 'generating' back to 'draft' so the
+   *  brief is re-pickup-able. Default true. Set false when the caller has
+   *  already moved status to a final state (e.g. 'agent_generated'). */
+  revertStatus: boolean = true,
+): Promise<void> {
+  // Cap reason length — we've seen Anthropic 5xx error bodies blow past 8KB
+  // when the retry chain stringifies the underlying request payload too.
+  const trimmed = reason.length > 1000 ? reason.slice(0, 1000) + '… [truncated]' : reason
+  try {
+    const update: Record<string, unknown> = {
+      last_error:    trimmed,
+      last_error_at: new Date().toISOString(),
+    }
+    if (revertStatus) update.status = 'draft'
+    await db.from('seo_content_briefs').update(update).eq('id', briefId)
+  } catch (dbErr) {
+    console.error('[brief-generator] failed to persist last_error:', dbErr)
+  }
+}
+
+/** Detect Anthropic SDK errors that are worth retrying (rate limits + 5xx). */
+function isRetryableAnthropicError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { status?: number; statusCode?: number; name?: string }
+  const status = e.status ?? e.statusCode
+  if (status === 429) return true                   // rate limit
+  if (status && status >= 500 && status < 600) return true   // server-side
+  if (e.name === 'APIConnectionError') return true  // network blip
+  if (e.name === 'APITimeoutError')    return true
+  return false
+}
 
 function validateAndCoerce(raw: Record<string, unknown>, keyword: string, brandName: string = 'G2G'): ParsedBrief {
   const arr = (v: unknown) => Array.isArray(v) ? v : []
@@ -796,12 +884,24 @@ ${draftHeader ? `\nFor reference, the meta description and user intent already a
       return { ok: true, wordCount, model: ASSEMBLY_MODEL }
     } catch (err) {
       lastErr = err
-      console.warn(`[assembleFullArticle] attempt ${attempt}/2 failed:`, err instanceof Error ? err.message : err)
+      const retryable = isRetryableAnthropicError(err)
+      console.warn(`[assembleFullArticle] attempt ${attempt}/2 failed${retryable ? ' (retryable)' : ''}:`, err instanceof Error ? err.message : err)
+      // Bail early on non-retryable errors instead of burning the second
+      // attempt on something that can't recover.
+      if (!retryable && attempt < 2) {
+        console.warn('[assembleFullArticle] non-retryable — skipping remaining attempt')
+        break
+      }
       if (attempt < 2) await sleep(ASSEMBLY_BACKOFF_MS)
     }
   }
 
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  // Persist diagnostic — assembly is fire-and-forget from /assemble route,
+  // so without this the user has no way to know WHY the body never appeared.
+  // Don't revert status here — assembly only runs after Tyr-passed, so the
+  // brief is at status='reviewed' and we shouldn't drop it back to 'draft'.
+  await recordBriefError(db, briefId, `Article assembly failed: ${reason}`, false)
   return { ok: false, reason }
 }
 
@@ -996,66 +1096,78 @@ function renderOutreachEmailSkeleton(o: OutreachBrief): string {
 export async function generateOutreachBrief(input: BriefInput): Promise<void> {
   const db = createServiceClient()
 
-  // Mark as generating
+  // Mark as generating + clear stale error from any previous failed attempt
   await db
     .from('seo_content_briefs')
-    .update({ status: 'generating' })
+    .update({ status: 'generating', last_error: null, last_error_at: null })
     .eq('id', input.briefId)
 
-  // Resolve brand name once for the outreach prompt (outreach pitches lean
-  // hard on brand identity — must match the actual site, not a hardcoded G2G).
-  const brandName = await loadBrandName(db, input.siteSlug ?? 'g2g')
+  // Outer guard — same pattern as generateAgentBrief. Anything thrown
+  // outside the retry loop ends up here and gets recorded to last_error.
+  try {
+    // Resolve brand name once for the outreach prompt (outreach pitches lean
+    // hard on brand identity — must match the actual site, not a hardcoded G2G).
+    const brandName = await loadBrandName(db, input.siteSlug ?? 'g2g')
 
-  let lastErr: unknown = null
-  let parsed: OutreachBrief | null = null
+    let lastErr: unknown = null
+    let parsed: OutreachBrief | null = null
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
-      const prompt  = buildOutreachPrompt(input, kbBlock, brandName)
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
+        const prompt  = buildOutreachPrompt(input, kbBlock, brandName)
 
-      const response = await anthropic.messages.create({
-        model:       MODEL,
-        max_tokens:  MAX_TOKENS,
-        tools:       [outreachTool],
-        tool_choice: { type: 'tool', name: 'submit_outreach_brief' },
-        messages:    [{ role: 'user', content: prompt }],
-      })
+        const response = await anthropic.messages.create({
+          model:       MODEL,
+          max_tokens:  MAX_TOKENS,
+          tools:       [outreachTool],
+          tool_choice: { type: 'tool', name: 'submit_outreach_brief' },
+          messages:    [{ role: 'user', content: prompt }],
+        })
 
-      logClaudeUsage(db, input.ownerId, {
-        model:       MODEL,
-        endpoint:    'outreach_brief',
-        triggeredBy: 'agent_bragi',
-        usage:       response.usage,
-        extra:       { brief_id: input.briefId, attempt },
-      })
+        logClaudeUsage(db, input.ownerId, {
+          model:       MODEL,
+          endpoint:    'outreach_brief',
+          triggeredBy: 'agent_bragi',
+          usage:       response.usage,
+          extra:       { brief_id: input.briefId, attempt },
+        })
 
-      const toolUse = response.content.find(b => b.type === 'tool_use')
-      if (!toolUse || toolUse.type !== 'tool_use') {
-        throw new Error(`Claude did not call submit_outreach_brief (stop_reason=${response.stop_reason})`)
+        const toolUse = response.content.find(b => b.type === 'tool_use')
+        if (!toolUse || toolUse.type !== 'tool_use') {
+          throw new Error(`Claude did not call submit_outreach_brief (stop_reason=${response.stop_reason})`)
+        }
+
+        parsed = validateOutreachBrief(toolUse.input as Record<string, unknown>)
+        break
+      } catch (err) {
+        lastErr = err
+        const retryable = isRetryableAnthropicError(err)
+        console.warn(`[outreach-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed${retryable ? ' (retryable)' : ''}:`, err instanceof Error ? err.message : err)
+        if (!retryable && attempt < MAX_ATTEMPTS) {
+          console.warn('[outreach-generator] non-retryable — skipping remaining attempts')
+          break
+        }
+        if (attempt < MAX_ATTEMPTS) await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
       }
-
-      parsed = validateOutreachBrief(toolUse.input as Record<string, unknown>)
-      break
-    } catch (err) {
-      lastErr = err
-      console.warn(`[outreach-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err instanceof Error ? err.message : err)
-      if (attempt < MAX_ATTEMPTS) await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
     }
-  }
 
-  if (!parsed) {
-    const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
-    console.error('[outreach-generator] all retries failed:', reason)
-    await db
-      .from('seo_content_briefs')
-      .update({
-        status: 'draft',
-        notes:  appendNote(input.notes ?? '', `[outreach-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
-      })
-      .eq('id', input.briefId)
-    return
-  }
+    if (!parsed) {
+      const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
+      console.error('[outreach-generator] all retries failed:', reason)
+      await recordBriefError(
+        db,
+        input.briefId,
+        `Outreach brief generation failed after ${MAX_ATTEMPTS} attempts: ${reason}`,
+      )
+      await db
+        .from('seo_content_briefs')
+        .update({
+          notes:  appendNote(input.notes ?? '', `[outreach-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
+        })
+        .eq('id', input.briefId)
+      return
+    }
 
   // ── Persist using shared seo_content_briefs columns (semantic re-use) ─────
   const outlineJson = [{
@@ -1080,21 +1192,28 @@ export async function generateOutreachBrief(input: BriefInput): Promise<void> {
     })
     .eq('id', input.briefId)
 
-  // ── Run Tyr review (same scoring engine — outreach gets relaxed thresholds
-  // because the rubric is keyword-density-heavy and outreach pitch is short
-  // form. Skipped for now: outreach Tyr scoring would need a separate rubric.
-  // For Tema 2 ship, we stamp 'reviewed' immediately so the brief is usable. ──
-  await db
-    .from('seo_content_briefs')
-    .update({
-      status:          'reviewed',
-      tyr_status:      'reviewed',
-      tyr_score:       null,                               // intentionally null — different rubric
-      tyr_reviewed_at: new Date().toISOString(),
-      notes: appendNote(
-        input.notes ?? '',
-        '[outreach] Tyr scoring skipped — outreach uses a different rubric than SEO briefs. Brief auto-promoted to reviewed.',
-      ),
-    })
-    .eq('id', input.briefId)
+    // ── Run Tyr review (same scoring engine — outreach gets relaxed thresholds
+    // because the rubric is keyword-density-heavy and outreach pitch is short
+    // form. Skipped for now: outreach Tyr scoring would need a separate rubric.
+    // For Tema 2 ship, we stamp 'reviewed' immediately so the brief is usable. ──
+    await db
+      .from('seo_content_briefs')
+      .update({
+        status:          'reviewed',
+        tyr_status:      'reviewed',
+        tyr_score:       null,                               // intentionally null — different rubric
+        tyr_reviewed_at: new Date().toISOString(),
+        notes: appendNote(
+          input.notes ?? '',
+          '[outreach] Tyr scoring skipped — outreach uses a different rubric than SEO briefs. Brief auto-promoted to reviewed.',
+        ),
+      })
+      .eq('id', input.briefId)
+  } catch (outerErr) {
+    const reason = outerErr instanceof Error
+      ? `${outerErr.name}: ${outerErr.message}`
+      : String(outerErr)
+    console.error('[outreach-generator] outer guard caught:', reason)
+    await recordBriefError(createServiceClient(), input.briefId, reason)
+  }
 }
