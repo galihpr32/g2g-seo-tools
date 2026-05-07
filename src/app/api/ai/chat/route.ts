@@ -38,6 +38,7 @@ const PAGE_CONTEXTS: Record<string, string> = {
   '/content/keyword-map':              'Keyword Map — visual cluster map of the G2G keyword universe',
   '/command-center':                   'Command Center — run Norse AI agents, monitor pipeline health, review findings',
   '/command-center/opportunities':     'Opportunities — unified triage queue grouping Heimdall + Loki + Odin signals by topic. Queue Brief here to send an opportunity to Bragi.',
+  '/experiments':                      'Experiments — Start/Stop/Continue tracker for monthly bets. Includes Mimir\'s Council chat panel that proposes experiment ideas grounded in the latest report data, tracked-keyword history, and past experiment outcomes.',
   '/knowledge-base':                   'Knowledge Base — G2G brand guidelines, USPs, and writing rules for Bragi and writers',
   '/reports/weekly':                   'Weekly Pulse Report — weekly SEO performance summary for G2G',
   '/reports/monthly':                  'Monthly SEO Report — monthly performance, wins, and action plan',

@@ -35,7 +35,77 @@ interface Ga4Data {
   totalRevenue: number
   prevRevenue: number
   revenuePct: number | null
-  topPages: { pagePath: string; sessions: number; conversions: number; revenue: number }[]
+  topPages: { pagePath: string; sessions: number; conversions: number; revenue: number; prevSessions?: number; sessionsPct?: number | null }[]
+}
+
+// ── v2 — Channel Breakdown (GA4 sessionDefaultChannelGroup) ─────────────────
+interface ChannelBreakdown {
+  rows: {
+    channel:        string
+    sessions:       number
+    prevSessions:   number
+    sessionsPct:    number | null
+    conversions:    number
+    prevConversions: number
+    conversionsPct: number | null
+    revenue:        number
+    prevRevenue:    number
+    revenuePct:     number | null
+    share:          number
+  }[]
+  totalCur:  { sessions: number; conversions: number; revenue: number }
+  totalPrev: { sessions: number; conversions: number; revenue: number }
+}
+
+// ── v2 — Tracked-product ranking analysis ──────────────────────────────────
+interface RankingMovement {
+  keyword:       string
+  productName:   string
+  productPath:   string
+  curPosition:   number | null
+  prevPosition:  number | null
+  movement:      number | null
+  bestPosition:  number | null
+  searchVolume:  number | null
+  url:           string | null
+}
+interface RankingBuckets { top3: number; top5: number; top10: number; top20: number; top100: number; total: number; ranked: number }
+interface RankingActionItem {
+  keyword:        string
+  productName:    string
+  curPosition:    number | null
+  movement:       number | null
+  recommendation: string
+  priority:       'P0' | 'P1' | 'P2'
+  category:       string
+}
+interface TrackedRankings {
+  bucketsCur:   RankingBuckets
+  bucketsPrev:  RankingBuckets
+  movements:    RankingMovement[]
+  topImprovers: RankingMovement[]
+  topDroppers:  RankingMovement[]
+  actionPlan:   RankingActionItem[] | null
+}
+
+// ── v2 — Experiments snapshot ──────────────────────────────────────────────
+interface ExperimentBrief {
+  id: string
+  title: string
+  hypothesis: string | null
+  category: string | null
+  success_metric: string | null
+  source: string | null
+  current_value?: number | null
+  target_value?: number | null
+  outcome?: string | null
+  decision_notes?: string | null
+}
+interface ExperimentsSnapshot {
+  period: string
+  start: ExperimentBrief[]
+  continue: ExperimentBrief[]
+  stop: ExperimentBrief[]
 }
 
 interface SemrushData {
@@ -101,6 +171,11 @@ interface ReportData {
   }
   // Agent activity (v3+) — null for old reports
   agentInsights?: AgentInsightsLite | null
+
+  // v2 — added 2026-05. All optional so older reports still render.
+  channelBreakdown?: ChannelBreakdown | null
+  trackedRankings?: TrackedRankings  | null
+  experiments?:     ExperimentsSnapshot | null
 }
 
 interface MonthlyReport {
@@ -309,6 +384,226 @@ function ActionPlan({ raw }: { raw: string }) {
         )
       })}
     </ol>
+  )
+}
+
+// ── v2 — Channel breakdown card ────────────────────────────────────────────
+function ChannelBreakdownSection({ cb, curLabel, prevLabel }: { cb: ChannelBreakdown; curLabel: string; prevLabel: string }) {
+  const rows = cb.rows.slice(0, 8)
+  const maxSessions = Math.max(...rows.map(r => Math.max(r.sessions, r.prevSessions)), 1)
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-white">📡 Traffic by Channel</h3>
+        <p className="text-[10px] text-gray-500">Sessions · {fmt(cb.totalCur.sessions)} this month vs {fmt(cb.totalPrev.sessions)} last</p>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-gray-800">
+            <th className="text-left pb-2 text-gray-500 font-semibold uppercase tracking-wider">Channel</th>
+            <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-20">{curLabel}</th>
+            <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-20">{prevLabel}</th>
+            <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Δ MoM</th>
+            <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-16">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => {
+            const pct = r.sessionsPct
+            const isBigDrop = pct != null && pct <= -20
+            const isBigGain = pct != null && pct >= 20
+            return (
+              <tr key={r.channel} className="border-b border-gray-800/50 last:border-0">
+                <td className="py-2 pr-3">
+                  <div>
+                    <p className="text-white font-medium">{r.channel}</p>
+                    <div className="flex gap-1 mt-1 h-1">
+                      <div className="bg-red-600/80 rounded-full" style={{ width: `${Math.round((r.sessions / maxSessions) * 100)}%` }} />
+                    </div>
+                  </div>
+                </td>
+                <td className="py-2 text-right text-gray-200 font-medium">{fmt(r.sessions)}</td>
+                <td className="py-2 text-right text-gray-500">{fmt(r.prevSessions)}</td>
+                <td className="py-2 text-right">
+                  {pct == null ? (
+                    <span className="text-gray-700">—</span>
+                  ) : (
+                    <span className={`font-semibold ${
+                      isBigGain ? 'text-green-400' :
+                      pct >= 0  ? 'text-green-500' :
+                      isBigDrop ? 'text-red-400 font-bold' :
+                                  'text-red-500'
+                    }`}>
+                      {pct >= 0 ? '▲' : '▼'}{Math.abs(pct)}%
+                    </span>
+                  )}
+                </td>
+                <td className="py-2 text-right text-gray-400">{r.share.toFixed(1)}%</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// ── v2 — Tracked-product ranking analysis card ────────────────────────────
+function RankingAnalysisSection({ tr }: { tr: TrackedRankings }) {
+  const buckets = [
+    { label: 'Top 3',  cur: tr.bucketsCur.top3,  prev: tr.bucketsPrev.top3 },
+    { label: 'Top 5',  cur: tr.bucketsCur.top5,  prev: tr.bucketsPrev.top5 },
+    { label: 'Top 10', cur: tr.bucketsCur.top10, prev: tr.bucketsPrev.top10 },
+    { label: 'Top 20', cur: tr.bucketsCur.top20, prev: tr.bucketsPrev.top20 },
+  ]
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-white">🎯 Tracked Product Rankings</h3>
+        <p className="text-[10px] text-gray-500">{tr.bucketsCur.ranked}/{tr.bucketsCur.total} keywords ranked · DataForSEO daily SERP</p>
+      </div>
+
+      {/* Bucket cards */}
+      <div className="grid grid-cols-4 gap-3 mb-5">
+        {buckets.map(b => {
+          const delta = b.cur - b.prev
+          return (
+            <div key={b.label} className="bg-gray-800 rounded-lg p-3 text-center">
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider">{b.label}</p>
+              <p className="text-2xl font-bold text-white mt-0.5">{b.cur}</p>
+              <p className={`text-[11px] font-medium mt-0.5 ${delta > 0 ? 'text-green-400' : delta < 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                {delta > 0 ? `+${delta}` : delta < 0 ? delta : '—'} <span className="text-gray-600">vs prev</span>
+              </p>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Top movers */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <p className="text-[10px] text-green-400 uppercase tracking-wider font-semibold mb-2">▲ Top Improvers</p>
+          {tr.topImprovers.length === 0 ? (
+            <p className="text-xs text-gray-600 italic">No improvements yet — daily history needs more days.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {tr.topImprovers.slice(0, 6).map(m => (
+                <li key={m.keyword + m.productName} className="flex items-start gap-2 text-xs">
+                  <span className="text-green-400 font-bold w-12 flex-shrink-0">▲{m.movement}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-white font-medium truncate" title={m.keyword}>{m.keyword}</p>
+                    <p className="text-gray-500 truncate text-[11px]">{m.productName} · pos {m.curPosition}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div>
+          <p className="text-[10px] text-red-400 uppercase tracking-wider font-semibold mb-2">▼ Top Droppers</p>
+          {tr.topDroppers.length === 0 ? (
+            <p className="text-xs text-gray-600 italic">No drops detected — nice.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {tr.topDroppers.slice(0, 6).map(m => (
+                <li key={m.keyword + m.productName} className="flex items-start gap-2 text-xs">
+                  <span className="text-red-400 font-bold w-12 flex-shrink-0">▼{Math.abs(m.movement ?? 0)}</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-white font-medium truncate" title={m.keyword}>{m.keyword}</p>
+                    <p className="text-gray-500 truncate text-[11px]">{m.productName} · pos {m.curPosition ?? '—'}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {/* AI action plan (monthly only) */}
+      {tr.actionPlan && tr.actionPlan.length > 0 && (
+        <div className="mt-5 pt-5 border-t border-gray-800">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-3">🤖 AI-generated Action Plan</p>
+          <div className="space-y-2">
+            {tr.actionPlan.slice(0, 6).map((a, i) => {
+              const pColor =
+                a.priority === 'P0' ? 'bg-red-500/10 text-red-300 border-red-500/30' :
+                a.priority === 'P1' ? 'bg-amber-500/10 text-amber-300 border-amber-500/30' :
+                                      'bg-gray-700/30 text-gray-400 border-gray-700'
+              return (
+                <div key={i} className="bg-gray-800/60 border border-gray-800 rounded-lg p-3 text-xs">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${pColor}`}>
+                      {a.priority}
+                    </span>
+                    <span className="text-[10px] text-gray-500 uppercase tracking-wider">{a.category}</span>
+                    <span className="text-white font-medium">&ldquo;{a.keyword}&rdquo;</span>
+                    {a.curPosition != null && <span className="text-gray-500 text-[10px]">pos {a.curPosition}</span>}
+                    {a.movement != null && (
+                      <span className={`text-[10px] font-semibold ${a.movement > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {a.movement > 0 ? `▲${a.movement}` : `▼${Math.abs(a.movement)}`}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-gray-300 leading-relaxed">{a.recommendation}</p>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── v2 — Experiments snapshot card ────────────────────────────────────────
+function ExperimentsSnapshotSection({ ex }: { ex: ExperimentsSnapshot }) {
+  const cols: { key: 'start' | 'continue' | 'stop'; label: string; icon: string; tint: string; items: ExperimentBrief[] }[] = [
+    { key: 'start',    label: 'Start',    icon: '🌱', tint: 'border-green-500/30 bg-green-500/5', items: ex.start },
+    { key: 'continue', label: 'Continue', icon: '🔄', tint: 'border-blue-500/30 bg-blue-500/5',   items: ex.continue },
+    { key: 'stop',     label: 'Stop',     icon: '🛑', tint: 'border-red-500/30 bg-red-500/5',     items: ex.stop },
+  ]
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-white">🧪 Experiments — Start / Stop / Continue</h3>
+        <a href="/experiments" className="text-xs text-red-400 hover:text-red-300 transition">Manage →</a>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {cols.map(c => (
+          <section key={c.key} className={`rounded-xl border ${c.tint} p-3`}>
+            <header className="flex items-center justify-between mb-2 px-1">
+              <h4 className="text-white font-semibold text-xs flex items-center gap-1.5"><span>{c.icon}</span>{c.label}</h4>
+              <span className="text-[10px] text-gray-500">{c.items.length}</span>
+            </header>
+            <ul className="space-y-2">
+              {c.items.length === 0 && (
+                <li className="text-[11px] text-gray-600 italic px-1 py-3 text-center">
+                  {c.key === 'start' ? 'No new ideas this period.' : c.key === 'continue' ? 'Nothing carried over.' : 'No experiments stopped.'}
+                </li>
+              )}
+              {c.items.slice(0, 5).map(it => (
+                <li key={it.id} className="bg-gray-900/70 border border-gray-800 rounded-md p-2 text-[11px]">
+                  <p className="text-white font-medium leading-tight">{it.title}</p>
+                  {(it.hypothesis || it.success_metric || it.decision_notes) && (
+                    <p className="text-gray-400 mt-0.5 line-clamp-2">{it.decision_notes ?? it.success_metric ?? it.hypothesis}</p>
+                  )}
+                  {(it.category || it.outcome || it.source === 'mimir') && (
+                    <div className="mt-1 flex gap-1.5 flex-wrap">
+                      {it.category && <span className="text-[9px] uppercase tracking-wider text-gray-500">{it.category}</span>}
+                      {it.outcome  && <span className="text-[9px] uppercase tracking-wider text-amber-400">{it.outcome}</span>}
+                      {it.source === 'mimir' && <span className="text-[9px] uppercase tracking-wider text-amber-300">🪶 Mimir</span>}
+                    </div>
+                  )}
+                </li>
+              ))}
+              {c.items.length > 5 && (
+                <li className="text-[10px] text-gray-600 italic px-1">+ {c.items.length - 5} more</li>
+              )}
+            </ul>
+          </section>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -768,7 +1063,7 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
                 </div>
               </div>
 
-              {/* ── GA4 top pages ── */}
+              {/* ── GA4 top pages — v2: vs Last Month delta column ── */}
               {d.ga4 && d.ga4.topPages.length > 0 && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-white mb-4">📄 Top Organic Category Pages (GA4)</h3>
@@ -778,6 +1073,7 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
                         <tr className="border-b border-gray-800">
                           <th className="text-left pb-2 text-gray-500 font-semibold uppercase tracking-wider">Page</th>
                           <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-20">Sessions</th>
+                          <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-28">vs Last Month</th>
                           <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Conversions</th>
                           <th className="text-right pb-2 text-gray-500 font-semibold uppercase tracking-wider w-24">Revenue</th>
                         </tr>
@@ -785,34 +1081,74 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
                       <tbody>
                         {(() => {
                           const maxSessions = Math.max(...d.ga4!.topPages.map(p => p.sessions), 1)
-                          return d.ga4!.topPages.map(p => (
-                            <tr key={p.pagePath} className="border-b border-gray-800/50 last:border-0">
-                              <td className="py-2 pr-3">
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-gray-300 truncate max-w-xs">{p.pagePath}</p>
-                                  <div className="h-1 bg-gray-800 rounded-full mt-1 overflow-hidden w-full">
-                                    <div className="h-full bg-blue-600 rounded-full" style={{ width: `${Math.round((p.sessions / maxSessions) * 100)}%` }} />
+                          return d.ga4!.topPages.map(p => {
+                            // Delta cell: NEW badge when prev=0, red when drop >20%
+                            const hasPrev = p.prevSessions !== undefined
+                            const isNew   = hasPrev && (p.prevSessions ?? 0) === 0 && p.sessions > 0
+                            const pct     = p.sessionsPct ?? null
+                            const isBigDrop = pct != null && pct <= -20
+                            return (
+                              <tr key={p.pagePath} className="border-b border-gray-800/50 last:border-0">
+                                <td className="py-2 pr-3">
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-gray-300 truncate max-w-xs">{p.pagePath}</p>
+                                    <div className="h-1 bg-gray-800 rounded-full mt-1 overflow-hidden w-full">
+                                      <div className="h-full bg-blue-600 rounded-full" style={{ width: `${Math.round((p.sessions / maxSessions) * 100)}%` }} />
+                                    </div>
                                   </div>
-                                </div>
-                              </td>
-                              <td className="py-2 text-right text-gray-300 font-medium">{fmt(p.sessions)}</td>
-                              <td className="py-2 text-right">
-                                <span className={p.conversions > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
-                                  {p.conversions > 0 ? fmt(p.conversions) : '—'}
-                                </span>
-                              </td>
-                              <td className="py-2 text-right">
-                                <span className={p.revenue > 0 ? 'text-amber-400 font-medium' : 'text-gray-600'}>
-                                  {p.revenue > 0 ? fmtUsd(p.revenue) : '—'}
-                                </span>
-                              </td>
-                            </tr>
-                          ))
+                                </td>
+                                <td className="py-2 text-right text-gray-300 font-medium">{fmt(p.sessions)}</td>
+                                <td className="py-2 text-right">
+                                  {!hasPrev ? (
+                                    <span className="text-gray-700">—</span>
+                                  ) : isNew ? (
+                                    <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 border border-green-500/30">NEW</span>
+                                  ) : pct == null ? (
+                                    <span className="text-gray-700">—</span>
+                                  ) : (
+                                    <span className={`font-semibold ${
+                                      pct >= 20  ? 'text-green-400' :
+                                      pct >= 0   ? 'text-green-500' :
+                                      isBigDrop  ? 'text-red-400 font-bold' :
+                                                   'text-red-500'
+                                    }`}>
+                                      {pct >= 0 ? '▲' : '▼'}{Math.abs(pct)}%
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-2 text-right">
+                                  <span className={p.conversions > 0 ? 'text-green-400 font-medium' : 'text-gray-600'}>
+                                    {p.conversions > 0 ? fmt(p.conversions) : '—'}
+                                  </span>
+                                </td>
+                                <td className="py-2 text-right">
+                                  <span className={p.revenue > 0 ? 'text-amber-400 font-medium' : 'text-gray-600'}>
+                                    {p.revenue > 0 ? fmtUsd(p.revenue) : '—'}
+                                  </span>
+                                </td>
+                              </tr>
+                            )
+                          })
                         })()}
                       </tbody>
                     </table>
                   </div>
                 </div>
+              )}
+
+              {/* ── Channel Breakdown (v2) ── */}
+              {d.channelBreakdown && d.channelBreakdown.rows.length > 0 && (
+                <ChannelBreakdownSection cb={d.channelBreakdown} curLabel={d.monthLabel} prevLabel={d.prevMonthLabel} />
+              )}
+
+              {/* ── Tracked product ranking analysis (v2) ── */}
+              {d.trackedRankings && d.trackedRankings.bucketsCur.total > 0 && (
+                <RankingAnalysisSection tr={d.trackedRankings} />
+              )}
+
+              {/* ── Experiments — Start / Stop / Continue (v2) ── */}
+              {d.experiments && (d.experiments.start.length > 0 || d.experiments.continue.length > 0 || d.experiments.stop.length > 0) && (
+                <ExperimentsSnapshotSection ex={d.experiments} />
               )}
 
               {/* ── Paid Backlinks ── */}

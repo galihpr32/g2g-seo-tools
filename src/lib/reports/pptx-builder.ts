@@ -80,7 +80,52 @@ export interface MonthlyReportData {
     totalRevenue:     number
     prevRevenue:      number
     revenuePct:       number | null
-    topPages:         { pagePath: string; sessions: number; conversions: number; revenue: number }[]
+    // `prevSessions` and `sessionsPct` are optional — the route fills them
+    // in v2 of monthly report; older reports persisted in monthly_reports
+    // before that change won't have them, so the slide must tolerate undefined.
+    topPages:         { pagePath: string; sessions: number; conversions: number; revenue: number; prevSessions?: number; sessionsPct?: number | null }[]
+  } | null
+
+  // ── v2 additions — channel breakdown, ranking analysis, experiments ──────
+  // All optional so older monthly_reports rows still render through the same
+  // builder. Each new slide checks for presence before rendering.
+  channelBreakdown?: {
+    rows: {
+      channel:        string
+      sessions:       number
+      prevSessions:   number
+      sessionsPct:    number | null
+      conversions:    number
+      prevConversions: number
+      conversionsPct: number | null
+      revenue:        number
+      prevRevenue:    number
+      revenuePct:     number | null
+      share:          number
+    }[]
+    totalCur:  { sessions: number; conversions: number; revenue: number }
+    totalPrev: { sessions: number; conversions: number; revenue: number }
+  } | null
+
+  trackedRankings?: {
+    bucketsCur:  { top3: number; top5: number; top10: number; top20: number; top100: number; total: number; ranked: number }
+    bucketsPrev: { top3: number; top5: number; top10: number; top20: number; top100: number; total: number; ranked: number }
+    movements: {
+      keyword: string; productName: string; productPath: string
+      curPosition: number | null; prevPosition: number | null
+      movement: number | null; bestPosition: number | null
+      searchVolume: number | null; url: string | null
+    }[]
+    topImprovers: { keyword: string; productName: string; curPosition: number | null; movement: number | null }[]
+    topDroppers:  { keyword: string; productName: string; curPosition: number | null; movement: number | null }[]
+    actionPlan:   { keyword: string; productName: string; curPosition: number | null; movement: number | null; recommendation: string; priority: 'P0'|'P1'|'P2'; category: string }[] | null
+  } | null
+
+  experiments?: {
+    period: string
+    start:    { id: string; title: string; hypothesis: string | null; category: string | null; success_metric: string | null; source: string | null }[]
+    continue: { id: string; title: string; hypothesis: string | null; category: string | null; success_metric: string | null; source: string | null; current_value?: number | null; target_value?: number | null }[]
+    stop:     { id: string; title: string; outcome: string | null; decision_notes: string | null; category: string | null }[]
   } | null
 
   semrush?: {
@@ -291,6 +336,14 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
   pres.company = r.siteName
 
   // Build slides in order. Total count is used by drawFooter.
+  // ── Order rationale ─────────────────────────────────────────────────────
+  //   Cover → Exec KPIs → Narrative → Channel breakdown → Search trend →
+  //   Top queries → Top pages → Tracked rankings → Ranking action plan →
+  //   Competitive SoV → Backlinks → Experiments → Strategic action plan
+  // Channel breakdown sits right after the narrative because exec wants to
+  // see WHICH channel drove the headline numbers before drilling into
+  // search-specific charts. Experiments goes near the END (right before
+  // the strategic plan) since it's "what we're betting on going forward".
   const buildFns: ((slide: PptxGenJS.Slide, idx: number, total: number) => void | Promise<void>)[] = [
     s => buildCoverSlide(s, r),
     (s, i, t) => buildExecKpisSlide(s, r, i, t),
@@ -298,6 +351,11 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
       ? buildHighlightsSlide(s, r, narrativeHighlights, i, t)
       : buildNarrativeSlide(s, r, aiNarrative, i, t),
   ]
+
+  // Channel breakdown (v2) — only if data present
+  if (r.channelBreakdown && r.channelBreakdown.rows.length > 0) {
+    buildFns.push((s, i, t) => buildChannelBreakdownSlide(s, r, i, t))
+  }
 
   // GSC trend — only if we have data
   if (r.gsc && (r.gsc.dailySeries?.length || (r.gsc.monthClicks ?? 0) > 0)) {
@@ -314,6 +372,15 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
     buildFns.push((s, i, t) => buildTopPagesSlide(s, r, i, t))
   }
 
+  // Tracked-product ranking analysis (v2) — bucket counts + top movers
+  if (r.trackedRankings && (r.trackedRankings.bucketsCur.total > 0)) {
+    buildFns.push((s, i, t) => buildRankingAnalysisSlide(s, r, i, t))
+    // AI action plan — separate slide to give each item room to breathe
+    if (r.trackedRankings.actionPlan && r.trackedRankings.actionPlan.length > 0) {
+      buildFns.push((s, i, t) => buildRankingActionPlanSlide(s, r, i, t))
+    }
+  }
+
   // Competitive
   if (r.competitive?.sovTable?.length) {
     buildFns.push((s, i, t) => buildCompetitiveSlide(s, r, i, t))
@@ -324,6 +391,11 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
   const blNew     = r.backlinks?.newThisMonthCount  ?? r.backlinks?.newThisMonth      ?? 0
   if (r.backlinks && (blActive || blNew)) {
     buildFns.push((s, i, t) => buildBacklinksSlide(s, r, i, t))
+  }
+
+  // Experiments (v2) — Start / Stop / Continue Kanban snapshot
+  if (r.experiments && (r.experiments.start.length || r.experiments.continue.length || r.experiments.stop.length)) {
+    buildFns.push((s, i, t) => buildExperimentsSlide(s, r, i, t))
   }
 
   // Action plan
@@ -561,25 +633,86 @@ function buildNarrativeSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, narra
 }
 
 // ── Slide 4 — GSC Trend chart ───────────────────────────────────────────────
+// Shows month-name x-axis labels (not "1, 2") + a delta KPI strip above the
+// chart so the exec doesn't have to mental-math from bar heights.
 function buildGscTrendSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
   drawSlideHeader(slide, 'Search performance trend', 'Google Search Console')
+
+  // Short month labels for tighter x-axis ('Mar 2026' instead of 'March 2026')
+  const shortMonth = (label: string): string => {
+    // input is e.g. 'April 2026' from monthLabel(); shrink to 'Apr 2026'
+    const parts = label.split(' ')
+    if (parts.length !== 2) return label
+    return `${parts[0].slice(0, 3)} ${parts[1]}`
+  }
+  const prevLbl = shortMonth(r.prevMonthLabel)
+  const curLbl  = shortMonth(r.monthLabel)
+
+  // ── KPI delta strip — clicks / impressions / CTR / avg position ──────────
+  // Drawn as a single card with 4 inline KPI cells. Each cell shows the
+  // current value + colored delta vs prev month.
+  const stripY = 1.45
+  const stripH = 0.85
+  drawCard(slide, M, stripY, SLIDE_W - 2 * M, stripH)
+
+  const c          = r.gsc?.monthClicks         ?? 0
+  const cPrev      = r.gsc?.prevMonthClicks     ?? 0
+  const cPct       = r.gsc?.clicksPct
+  const i          = r.gsc?.monthImpressions    ?? 0
+  const iPct       = r.gsc?.impressionsPct
+  const ctr        = (r.gsc?.monthCtr ?? 0)
+  const ctrPrev    = (r.gsc?.prevCtr  ?? 0)
+  const ctrPct     = r.gsc?.ctrPct
+  const avgPos     = r.gsc?.avgPosition         ?? 0
+  type Cell = { label: string; value: string; delta?: string; color: string }
+  const cells: Cell[] = [
+    { label: 'Clicks',       value: fmt(c, true), delta: fmtPct(cPct), color: deltaColor(cPct) },
+    { label: 'Impressions',  value: fmt(i, true), delta: fmtPct(iPct), color: deltaColor(iPct) },
+    { label: 'CTR',          value: `${ctr.toFixed(2)}%`,
+      delta: ctrPct != null ? fmtPct(ctrPct) : (ctr - ctrPrev).toFixed(2) + 'pp',
+      color: deltaColor(ctrPct ?? (ctr - ctrPrev)) },
+    { label: 'Avg position', value: avgPos.toFixed(1),
+      delta: undefined,           // position is contextual; don't fake a delta
+      color: T.textMuted },
+  ]
+  const cellW = (SLIDE_W - 2 * M - 0.4) / cells.length
+  for (let k = 0; k < cells.length; k++) {
+    const cx = M + 0.2 + k * cellW
+    slide.addText(cells[k].label.toUpperCase(), {
+      x: cx, y: stripY + 0.08, w: cellW - 0.2, h: 0.22,
+      fontFace: FH, fontSize: 9, bold: true, charSpacing: 3,
+      color: T.textMuted, margin: 0,
+    })
+    slide.addText(cells[k].value, {
+      x: cx, y: stripY + 0.28, w: cellW - 0.2, h: 0.42,
+      fontFace: FH, fontSize: 22, bold: true,
+      color: T.textPrimary, margin: 0,
+    })
+    if (cells[k].delta) {
+      slide.addText(cells[k].delta!, {
+        x: cx + 1.1, y: stripY + 0.34, w: cellW - 1.2, h: 0.32,
+        fontFace: FH, fontSize: 13, bold: true,
+        color: cells[k].color, margin: 0,
+      })
+    }
+  }
 
   const series = r.gsc?.dailySeries ?? []
 
   if (series.length === 0) {
     // Fallback: just show the monthly totals as 2-bar comparison.
-    drawCard(slide, M, 1.5, SLIDE_W - 2 * M, 4.8)
+    drawCard(slide, M, 2.45, SLIDE_W - 2 * M, 4.45)
     const data = [
-      { name: 'Clicks', labels: [r.prevMonthLabel, r.monthLabel],
-        values: [r.gsc?.prevMonthClicks ?? 0, r.gsc?.monthClicks ?? 0] },
-      { name: 'Impressions', labels: [r.prevMonthLabel, r.monthLabel],
-        values: [r.gsc?.prevImpressions ?? 0, r.gsc?.monthImpressions ?? 0] },
+      { name: 'Clicks',      labels: [prevLbl, curLbl], values: [cPrev, c] },
+      { name: 'Impressions', labels: [prevLbl, curLbl], values: [r.gsc?.prevImpressions ?? 0, i] },
     ]
-    slide.addChart('bar' as 'bar', data, {
-      x: M + 0.3, y: 1.7, w: SLIDE_W - 2 * M - 0.6, h: 4.5, barDir: 'col',
+    slide.addChart('bar' as const, data, {
+      x: M + 0.3, y: 2.6, w: SLIDE_W - 2 * M - 0.6, h: 4.2, barDir: 'col',
       chartColors: [T.accentRed, T.accentRed2],
       chartArea: { fill: { color: T.bgCard }, roundedCorners: false },
-      catAxisLabelColor: T.textMuted, catAxisLabelFontSize: 12,
+      // Force category axis to show our string labels
+      catAxisLabelColor: T.textPrimary, catAxisLabelFontSize: 13, catAxisLabelFontFace: FB,
+      catAxisLabelRotate: 0,
       valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 11,
       valGridLine: { color: T.borderDim, size: 0.5 },
       catGridLine: { style: 'none' },
@@ -590,36 +723,37 @@ function buildGscTrendSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
     })
   } else {
     // Two stacked line charts — clicks on top, impressions below — sharing x-axis.
-    drawCard(slide, M, 1.5, SLIDE_W - 2 * M, 4.8)
+    // KPI strip already takes y=1.45..2.30; charts start at 2.45.
+    drawCard(slide, M, 2.45, SLIDE_W - 2 * M, 4.45)
 
     const labels = series.map(d => d.date.slice(5))   // MM-DD
     const clicks      = series.map(d => d.clicks)
     const impressions = series.map(d => d.impressions)
 
-    slide.addChart('line' as 'line', [
+    slide.addChart('line' as const, [
       { name: 'Clicks',      labels, values: clicks },
     ], {
-      x: M + 0.3, y: 1.7, w: SLIDE_W - 2 * M - 0.6, h: 2.1,
+      x: M + 0.3, y: 2.6, w: SLIDE_W - 2 * M - 0.6, h: 1.95,
       chartColors: [T.accentRed],
       chartArea: { fill: { color: T.bgCard } },
       lineSize: 3, lineSmooth: true,
-      showTitle: true, title: 'Daily clicks',
-      titleColor: T.textPrimary, titleFontFace: FH, titleFontSize: 13,
+      showTitle: true, title: `Daily clicks — ${curLbl}`,
+      titleColor: T.textPrimary, titleFontFace: FH, titleFontSize: 12,
       catAxisLabelColor: T.textMuted, catAxisLabelFontSize: 9,
       valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 9,
       valGridLine: { color: T.borderDim, size: 0.5 },
       showLegend: false,
     })
 
-    slide.addChart('line' as 'line', [
+    slide.addChart('line' as const, [
       { name: 'Impressions', labels, values: impressions },
     ], {
-      x: M + 0.3, y: 4.0, w: SLIDE_W - 2 * M - 0.6, h: 2.1,
+      x: M + 0.3, y: 4.7, w: SLIDE_W - 2 * M - 0.6, h: 1.95,
       chartColors: [T.accentRed2],
       chartArea: { fill: { color: T.bgCard } },
       lineSize: 3, lineSmooth: true,
-      showTitle: true, title: 'Daily impressions',
-      titleColor: T.textPrimary, titleFontFace: FH, titleFontSize: 13,
+      showTitle: true, title: `Daily impressions — ${curLbl}`,
+      titleColor: T.textPrimary, titleFontFace: FH, titleFontSize: 12,
       catAxisLabelColor: T.textMuted, catAxisLabelFontSize: 9,
       valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 9,
       valGridLine: { color: T.borderDim, size: 0.5 },
@@ -717,21 +851,44 @@ function buildTopPagesSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
   const rowCount = useGa4 ? Math.min(8, ga4Pages.length) : Math.min(8, r.gsc?.topPagesByClicks?.length ?? 0)
 
   if (useGa4) {
+    // "vs Last Month" column: shows ▲/▼ % delta. NEW badge when prev=0.
+    // Red text when drop >20% so the eye snaps to losses.
+    const deltaCellFor = (p: { prevSessions?: number; sessionsPct?: number | null }) => {
+      // No prev-month data captured (legacy reports) → blank cell
+      if (p.prevSessions === undefined) return cellBody('—', { align: 'right', color: T.textDim })
+      // Brand new page this month
+      if ((p.prevSessions ?? 0) === 0) {
+        return cellBody('NEW', { align: 'right', bold: true, color: T.gainGreen })
+      }
+      const pct = p.sessionsPct ?? null
+      if (pct == null) return cellBody('—', { align: 'right', color: T.textDim })
+      const isBigDrop = pct <= -20
+      const arrow = pct >= 0 ? '▲' : '▼'
+      return cellBody(`${arrow}${Math.abs(pct)}%`, {
+        align: 'right',
+        bold:  isBigDrop || pct >= 20,
+        color: pct >= 0 ? T.gainGreen : isBigDrop ? T.lossRed : T.textMuted,
+      })
+    }
+
     tableData = [
       [
         cellHeader('Page'),
         cellHeader('Sessions'),
+        cellHeader('vs Last Month'),
         cellHeader('Conversions'),
         cellHeader('Revenue'),
       ],
       ...ga4Pages.slice(0, 8).map(p => [
         cellBody(truncate(p.pagePath, 70)),
         cellBody(fmt(p.sessions),    { align: 'right', bold: true }),
+        deltaCellFor(p),
         cellBody(fmt(p.conversions), { align: 'right', color: T.textMuted }),
         cellBody(fmtMoney(p.revenue), { align: 'right', color: T.gainGreen }),
       ]),
     ]
-    colW = [SLIDE_W - 2 * M - 0.6 - 4.5, 1.5, 1.5, 1.5]
+    // 5 cols: page (flex), sessions, delta, conversions, revenue
+    colW = [SLIDE_W - 2 * M - 0.6 - 6.0, 1.5, 1.5, 1.5, 1.5]
   } else {
     const rows = r.gsc?.topPagesByClicks?.slice(0, 8) ?? []
     tableData = [
@@ -778,7 +935,7 @@ function buildCompetitiveSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx
   // Highlight G2G's row in red, others in muted gray
   const colors = sov.map(s => /g2g\.com$/i.test(s.domain) ? T.accentRed : '64748B')
 
-  slide.addChart('bar' as 'bar', [
+  slide.addChart('bar' as const, [
     {
       name:   'Share of Voice (%)',
       labels: sov.map(s => truncate(s.domain.replace(/^www\./, ''), 24)),
@@ -1000,14 +1157,14 @@ function buildHighlightsSlide(
     const tColor = trendColor(h.trend)
 
     // Card background
-    slide.addShape('rect' as 'rect', {
+    slide.addShape('rect' as const, {
       x, y, w: cardW, h: cardH,
       fill: { color: T.bgCard }, line: { color: T.borderDim, width: 0.5 },
       shadow: { type: 'outer', color: '000000', blur: 8, offset: 2, angle: 90, opacity: 0.25 },
     })
     // Trend-colored top border (replaces left-strip motif so cards feel
     // distinct from the rest of the deck)
-    slide.addShape('rect' as 'rect', {
+    slide.addShape('rect' as const, {
       x, y, w: cardW, h: 0.07,
       fill: { color: tColor }, line: { type: 'none' },
     })
@@ -1081,20 +1238,20 @@ function buildActionItemsCardsSlide(
     const pColor = priorityColor(it.priority)
 
     // Card body
-    slide.addShape('rect' as 'rect', {
+    slide.addShape('rect' as const, {
       x, y, w: cardW, h: cardH,
       fill: { color: T.bgCard }, line: { color: T.borderDim, width: 0.5 },
       shadow: { type: 'outer', color: '000000', blur: 8, offset: 2, angle: 90, opacity: 0.25 },
     })
     // Left red strip — keeps the visual motif consistent with KPI/data cards
-    slide.addShape('rect' as 'rect', {
+    slide.addShape('rect' as const, {
       x, y, w: 0.08, h: cardH,
       fill: { color: pColor }, line: { type: 'none' },
     })
 
     // Number badge (red circle, top-left)
     const badgeSize = 0.6
-    slide.addShape('ellipse' as 'ellipse', {
+    slide.addShape('ellipse' as const, {
       x: x + 0.3, y: y + 0.3, w: badgeSize, h: badgeSize,
       fill: { color: pColor }, line: { type: 'none' },
     })
@@ -1133,6 +1290,372 @@ function buildActionItemsCardsSlide(
       fontFace: FB, fontSize: 11, color: T.textPrimary,
       align: 'left', valign: 'top', margin: 0,
     })
+  }
+
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+}
+
+// ── v2 Slide — Channel Breakdown (GA4 sessionDefaultChannelGroup) ──────────
+// Stacked bar comparison + table. Shows which channel grew/shrank MoM.
+function buildChannelBreakdownSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
+  drawSlideHeader(slide, 'Traffic by channel', 'Google Analytics 4')
+
+  const cb = r.channelBreakdown
+  if (!cb || cb.rows.length === 0) {
+    drawCard(slide, M, 1.5, SLIDE_W - 2 * M, 5)
+    slide.addText('No channel breakdown data — GA4 either not configured or has no traffic for this period.', {
+      x: M + 0.4, y: 2.5, w: SLIDE_W - 2 * M - 0.8, h: 0.6,
+      fontFace: FB, fontSize: 14, color: T.textMuted, italic: true, align: 'center', margin: 0,
+    })
+    drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+    return
+  }
+
+  // Top 8 channels — keeps the chart readable + table compact
+  const rows = cb.rows.slice(0, 8)
+
+  // Left: bar chart (sessions cur vs prev). Right: data table with deltas.
+  const leftW = 6.8
+  drawCard(slide, M, 1.5, leftW, 5.4)
+
+  slide.addChart('bar' as const, [
+    { name: r.prevMonthLabel, labels: rows.map(rw => truncate(rw.channel, 18)), values: rows.map(rw => rw.prevSessions) },
+    { name: r.monthLabel,     labels: rows.map(rw => truncate(rw.channel, 18)), values: rows.map(rw => rw.sessions) },
+  ], {
+    x: M + 0.3, y: 1.7, w: leftW - 0.6, h: 5.0, barDir: 'bar',
+    chartColors: ['64748B', T.accentRed],
+    chartArea: { fill: { color: T.bgCard } },
+    catAxisLabelColor: T.textPrimary, catAxisLabelFontFace: FB, catAxisLabelFontSize: 11,
+    valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 10,
+    valGridLine: { color: T.borderDim, size: 0.5 },
+    catGridLine: { style: 'none' },
+    showValue: false,
+    showLegend: true, legendPos: 't', legendColor: T.textMuted,
+    legendFontFace: FB, legendFontSize: 10,
+  })
+
+  // Right card — table
+  const rightX = M + leftW + 0.25
+  const rightW = SLIDE_W - rightX - M
+  drawCard(slide, rightX, 1.5, rightW, 5.4)
+
+  const cellHeader = (text: string) => ({
+    text,
+    options: { bold: true, color: T.textMuted, fontFace: FH, fontSize: 10, fill: { color: T.bgCard }, valign: 'middle' as const },
+  })
+  const cellBody = (text: string, opts: Partial<PptxGenJS.TableCellProps> = {}) => ({
+    text,
+    options: { color: T.textPrimary, fontFace: FB, fontSize: 11, fill: { color: T.bgCard }, valign: 'middle' as const, ...opts },
+  })
+
+  const fmtPctCell = (n: number | null) => {
+    if (n == null) return cellBody('—', { align: 'right', color: T.textDim })
+    const big   = Math.abs(n) >= 20
+    const arrow = n >= 0 ? '▲' : '▼'
+    return cellBody(`${arrow}${Math.abs(n)}%`, {
+      align: 'right',
+      bold:  big,
+      color: n >= 0 ? T.gainGreen : (big ? T.lossRed : T.textMuted),
+    })
+  }
+
+  const tableData: PptxGenJS.TableRow[] = [
+    [ cellHeader('Channel'), cellHeader('Sessions'), cellHeader('Δ MoM'), cellHeader('Share') ],
+    ...rows.map(rw => [
+      cellBody(truncate(rw.channel, 22), { bold: true }),
+      cellBody(fmt(rw.sessions, true), { align: 'right' }),
+      fmtPctCell(rw.sessionsPct),
+      cellBody(`${rw.share.toFixed(1)}%`, { align: 'right', color: T.textMuted }),
+    ]),
+  ]
+
+  slide.addTable(tableData, {
+    x: rightX + 0.2, y: 1.7, w: rightW - 0.4,
+    colW: [(rightW - 0.4) * 0.40, (rightW - 0.4) * 0.22, (rightW - 0.4) * 0.20, (rightW - 0.4) * 0.18],
+    border: { type: 'solid', pt: 0.5, color: T.borderDim },
+    rowH: 0.42,
+  })
+
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+}
+
+// ── v2 Slide — Tracked Product Ranking Analysis ────────────────────────────
+// Bucket KPI cards (top 3 / 5 / 10 / 20) with MoM deltas + top movers + AI
+// action plan summary (when monthly).
+function buildRankingAnalysisSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
+  drawSlideHeader(slide, 'Tracked product rankings', 'DataForSEO daily SERP')
+
+  const tr = r.trackedRankings
+  if (!tr || tr.bucketsCur.total === 0) {
+    drawCard(slide, M, 1.5, SLIDE_W - 2 * M, 5)
+    slide.addText(
+      tr ? 'Tracked-product ranking history is empty for this period — daily DataForSEO cron needs at least one cycle to populate this.'
+         : 'No tracked products configured. Add some at /gsc/product-rankings to surface ranking analysis here.',
+      {
+        x: M + 0.4, y: 2.5, w: SLIDE_W - 2 * M - 0.8, h: 0.6,
+        fontFace: FB, fontSize: 14, color: T.textMuted, italic: true, align: 'center', margin: 0,
+      }
+    )
+    drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+    return
+  }
+
+  // 4 bucket cards across the top
+  const buckets = [
+    { label: 'Top 3',  cur: tr.bucketsCur.top3,  prev: tr.bucketsPrev.top3 },
+    { label: 'Top 5',  cur: tr.bucketsCur.top5,  prev: tr.bucketsPrev.top5 },
+    { label: 'Top 10', cur: tr.bucketsCur.top10, prev: tr.bucketsPrev.top10 },
+    { label: 'Top 20', cur: tr.bucketsCur.top20, prev: tr.bucketsPrev.top20 },
+  ]
+
+  const gap = 0.2
+  const totalW = SLIDE_W - 2 * M
+  const cardW = (totalW - gap * 3) / 4
+  const cardH = 1.55
+  const top   = 1.45
+
+  for (let i = 0; i < buckets.length; i++) {
+    const x = M + i * (cardW + gap)
+    const b = buckets[i]
+    const delta = b.cur - b.prev
+    drawCard(slide, x, top, cardW, cardH)
+    slide.addText(b.label.toUpperCase(), {
+      x: x + 0.25, y: top + 0.15, w: cardW - 0.5, h: 0.25,
+      fontFace: FH, fontSize: 10, bold: true, charSpacing: 4, color: T.textMuted, margin: 0,
+    })
+    slide.addText(String(b.cur), {
+      x: x + 0.25, y: top + 0.4, w: cardW - 0.5, h: 0.7,
+      fontFace: FH, fontSize: 32, bold: true, color: T.textPrimary, margin: 0,
+    })
+    slide.addText(`${delta >= 0 ? '+' : ''}${delta} vs prev`, {
+      x: x + 0.25, y: top + 1.1, w: cardW - 0.5, h: 0.3,
+      fontFace: FH, fontSize: 11, bold: true,
+      color: delta > 0 ? T.gainGreen : delta < 0 ? T.lossRed : T.textMuted, margin: 0,
+    })
+  }
+
+  // Two columns below buckets: improvers (left) + droppers (right)
+  const colY = top + cardH + 0.2
+  const colH = SLIDE_H - colY - 0.7
+  const colW2 = (totalW - gap) / 2
+
+  drawCard(slide, M,                         colY, colW2, colH)
+  drawCard(slide, M + colW2 + gap,           colY, colW2, colH)
+
+  slide.addText('TOP IMPROVERS', {
+    x: M + 0.25, y: colY + 0.15, w: colW2 - 0.5, h: 0.3,
+    fontFace: FH, fontSize: 11, bold: true, charSpacing: 4, color: T.gainGreen, margin: 0,
+  })
+  slide.addText('TOP DROPPERS', {
+    x: M + colW2 + gap + 0.25, y: colY + 0.15, w: colW2 - 0.5, h: 0.3,
+    fontFace: FH, fontSize: 11, bold: true, charSpacing: 4, color: T.lossRed, margin: 0,
+  })
+
+  // Improvers list
+  const improvers = tr.topImprovers.slice(0, 6)
+  const droppers  = tr.topDroppers.slice(0, 6)
+  const renderMover = (kw: { keyword: string; productName: string; curPosition: number | null; movement: number | null }, x: number, y: number, w: number) => {
+    const positionLine = `${kw.curPosition != null ? `pos ${kw.curPosition}` : 'unranked'}${kw.movement != null ? ` · ${kw.movement > 0 ? `▲${kw.movement}` : `▼${Math.abs(kw.movement)}`}` : ''}`
+    slide.addText(truncate(kw.keyword, 60), {
+      x, y, w, h: 0.25, fontFace: FB, fontSize: 11, bold: true, color: T.textPrimary, margin: 0,
+    })
+    slide.addText(`${truncate(kw.productName, 30)} · ${positionLine}`, {
+      x, y: y + 0.25, w, h: 0.22, fontFace: FB, fontSize: 9, color: (kw.movement ?? 0) >= 0 ? T.gainGreen : T.lossRed, margin: 0,
+    })
+  }
+
+  for (let i = 0; i < improvers.length; i++) {
+    const y = colY + 0.5 + i * 0.55
+    renderMover(improvers[i], M + 0.3, y, colW2 - 0.5)
+  }
+  for (let i = 0; i < droppers.length; i++) {
+    const y = colY + 0.5 + i * 0.55
+    renderMover(droppers[i], M + colW2 + gap + 0.3, y, colW2 - 0.5)
+  }
+
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+}
+
+// ── v2 Slide — AI Action Plan from ranking analysis (monthly only) ─────────
+function buildRankingActionPlanSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
+  drawSlideHeader(slide, 'Ranking action plan', 'AI-generated · what to ship')
+
+  const items = r.trackedRankings?.actionPlan ?? []
+  if (items.length === 0) {
+    drawCard(slide, M, 1.5, SLIDE_W - 2 * M, 5)
+    slide.addText('No action items — keyword rankings are stable, or there isn\'t enough history yet.', {
+      x: M + 0.4, y: 2.5, w: SLIDE_W - 2 * M - 0.8, h: 0.6,
+      fontFace: FB, fontSize: 14, color: T.textMuted, italic: true, align: 'center', margin: 0,
+    })
+    drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+    return
+  }
+
+  // Up to 6 items rendered as 2x3 grid of cards, sorted P0 > P1 > P2
+  const sorted = [...items].sort((a, b) => {
+    const order: Record<string, number> = { P0: 0, P1: 1, P2: 2 }
+    return (order[a.priority] ?? 9) - (order[b.priority] ?? 9)
+  }).slice(0, 6)
+
+  const gap = 0.2
+  const cols = 2
+  const rows = Math.ceil(sorted.length / cols)
+  const totalW = SLIDE_W - 2 * M
+  const cardW = (totalW - gap * (cols - 1)) / cols
+  const cardH = (SLIDE_H - 2.0 - gap * (rows - 1)) / rows
+  const topY  = 1.5
+
+  const priorityColor = (p: 'P0' | 'P1' | 'P2'): string =>
+    p === 'P0' ? T.lossRed : p === 'P1' ? 'F59E0B' : T.textMuted
+
+  for (let i = 0; i < sorted.length; i++) {
+    const row = Math.floor(i / cols)
+    const col = i % cols
+    const x = M + col * (cardW + gap)
+    const y = topY + row * (cardH + gap)
+    const it = sorted[i]
+    const pColor = priorityColor(it.priority)
+
+    drawCard(slide, x, y, cardW, cardH)
+    // Override the left strip color with priority color
+    slide.addShape('rect' as const, {
+      x, y, w: 0.08, h: cardH,
+      fill: { color: pColor }, line: { type: 'none' },
+    })
+
+    // Priority + category badges
+    slide.addText(it.priority, {
+      x: x + 0.25, y: y + 0.2, w: 0.5, h: 0.28,
+      fontFace: FH, fontSize: 10, bold: true, charSpacing: 3, color: pColor, margin: 0,
+    })
+    slide.addText(it.category.toUpperCase(), {
+      x: x + 0.85, y: y + 0.22, w: cardW - 1.1, h: 0.25,
+      fontFace: FH, fontSize: 9, bold: true, charSpacing: 3, color: T.textMuted, margin: 0,
+    })
+
+    // Keyword + product
+    slide.addText(`"${truncate(it.keyword, 50)}"`, {
+      x: x + 0.25, y: y + 0.55, w: cardW - 0.5, h: 0.35,
+      fontFace: FH, fontSize: 14, bold: true, color: T.textPrimary, margin: 0,
+    })
+    const posLine = `${it.productName ? truncate(it.productName, 40) : ''}${it.curPosition != null ? ` · pos ${it.curPosition}` : ''}${it.movement != null ? ` · ${it.movement > 0 ? `▲${it.movement}` : `▼${Math.abs(it.movement)}`}` : ''}`
+    slide.addText(posLine, {
+      x: x + 0.25, y: y + 0.92, w: cardW - 0.5, h: 0.25,
+      fontFace: FB, fontSize: 10, italic: true, color: T.textMuted, margin: 0,
+    })
+
+    // Recommendation body
+    slide.addText(it.recommendation, {
+      x: x + 0.25, y: y + 1.25, w: cardW - 0.5, h: cardH - 1.45,
+      fontFace: FB, fontSize: 11, color: T.textPrimary, valign: 'top', margin: 0,
+    })
+  }
+
+  drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+}
+
+// ── v2 Slide — Experiments (Start / Stop / Continue) ──────────────────────
+// 3-column layout mirroring the in-tools Kanban so an exec sees the same
+// thing on the slide as in the dashboard.
+function buildExperimentsSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
+  drawSlideHeader(slide, 'Experiments — Start / Stop / Continue', 'Monthly bets')
+
+  const e = r.experiments
+  if (!e || (e.start.length === 0 && e.continue.length === 0 && e.stop.length === 0)) {
+    drawCard(slide, M, 1.5, SLIDE_W - 2 * M, 5)
+    slide.addText('No experiments tracked for this period yet. Mimir is waiting at /experiments to help generate ideas.', {
+      x: M + 0.4, y: 2.5, w: SLIDE_W - 2 * M - 0.8, h: 0.6,
+      fontFace: FB, fontSize: 14, color: T.textMuted, italic: true, align: 'center', margin: 0,
+    })
+    drawFooter(slide, idx, total, r.monthLabel, r.siteName)
+    return
+  }
+
+  const gap = 0.2
+  const totalW = SLIDE_W - 2 * M
+  const colW = (totalW - gap * 2) / 3
+  const colH = SLIDE_H - 1.45 - 0.7
+  const topY = 1.45
+
+  const columns: { label: string; icon: string; tint: string; items: { title: string; sub?: string; tail?: string }[] }[] = [
+    {
+      label: 'Start',
+      icon: '🌱',
+      tint: T.gainGreen,
+      items: e.start.map(it => ({
+        title: it.title,
+        sub:   it.hypothesis ?? undefined,
+        tail:  [it.category, it.source === 'mimir' ? '🪶 Mimir' : null].filter(Boolean).join(' · '),
+      })),
+    },
+    {
+      label: 'Continue',
+      icon: '🔄',
+      tint: '60A5FA',
+      items: e.continue.map(it => ({
+        title: it.title,
+        sub:   it.success_metric ?? it.hypothesis ?? undefined,
+        tail:  [
+          it.category,
+          it.target_value != null && it.current_value != null ? `${it.current_value}/${it.target_value}` : null,
+        ].filter(Boolean).join(' · '),
+      })),
+    },
+    {
+      label: 'Stop',
+      icon: '🛑',
+      tint: T.lossRed,
+      items: e.stop.map(it => ({
+        title: it.title,
+        sub:   it.decision_notes ?? undefined,
+        tail:  [it.outcome, it.category].filter(Boolean).join(' · '),
+      })),
+    },
+  ]
+
+  for (let c = 0; c < columns.length; c++) {
+    const col = columns[c]
+    const x = M + c * (colW + gap)
+    drawCard(slide, x, topY, colW, colH)
+
+    // Column header
+    slide.addText(`${col.icon}  ${col.label.toUpperCase()}  ·  ${col.items.length}`, {
+      x: x + 0.25, y: topY + 0.15, w: colW - 0.5, h: 0.32,
+      fontFace: FH, fontSize: 12, bold: true, charSpacing: 3, color: col.tint, margin: 0,
+    })
+
+    // Up to 5 items per column to keep slide readable
+    const items = col.items.slice(0, 5)
+    const startY = topY + 0.55
+    const itemH  = (colH - 0.7) / Math.max(5, items.length || 1)
+    for (let i = 0; i < items.length; i++) {
+      const ix = x + 0.25
+      const iy = startY + i * itemH
+      const it = items[i]
+      slide.addText(truncate(it.title, 80), {
+        x: ix, y: iy, w: colW - 0.5, h: 0.32,
+        fontFace: FH, fontSize: 12, bold: true, color: T.textPrimary, margin: 0,
+      })
+      if (it.sub) {
+        slide.addText(truncate(it.sub, 130), {
+          x: ix, y: iy + 0.32, w: colW - 0.5, h: itemH - 0.62,
+          fontFace: FB, fontSize: 9.5, color: T.textMuted, valign: 'top', margin: 0,
+        })
+      }
+      if (it.tail) {
+        slide.addText(it.tail, {
+          x: ix, y: iy + itemH - 0.3, w: colW - 0.5, h: 0.25,
+          fontFace: FB, fontSize: 9, italic: true, color: T.textDim, margin: 0,
+        })
+      }
+    }
+
+    if (col.items.length > 5) {
+      slide.addText(`+ ${col.items.length - 5} more`, {
+        x: x + 0.25, y: topY + colH - 0.4, w: colW - 0.5, h: 0.25,
+        fontFace: FB, fontSize: 10, italic: true, color: T.textDim, margin: 0,
+      })
+    }
   }
 
   drawFooter(slide, idx, total, r.monthLabel, r.siteName)

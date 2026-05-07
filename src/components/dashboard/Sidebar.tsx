@@ -16,6 +16,7 @@ const navItems = [
       { label: 'Pipeline Journey', href: '/command-center/pipeline',       icon: '🗺️' },
       { label: 'Command Center',  href: '/command-center',                 icon: '🤖' },
       { label: 'Action Items',    href: '/gsc/action-items',               icon: '✅' },
+      { label: 'Experiments',     href: '/experiments',                    icon: '🧪' },
       { label: 'Notifications',   href: '/notifications',                  icon: '🔔' },
     ],
   },
