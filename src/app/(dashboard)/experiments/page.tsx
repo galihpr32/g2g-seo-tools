@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
+import PromoteToKbButton from '@/components/agents/PromoteToKbButton'
 
 interface Experiment {
   id:               string
@@ -58,6 +59,24 @@ interface ChatMessage {
   content: string
   ts?:     string
   proposals?: MimirProposal[]
+}
+
+interface EvidenceCard {
+  experiment: {
+    id:             string
+    title:          string
+    status:         string
+    baseline_value: number | null
+    target_value:   number | null
+    current_value:  number | null
+    period_started: string
+  }
+  card: {
+    id:             string
+    recommendation: 'continue' | 'stop' | 'inconclusive'
+    rationale:      string
+    confidence:     number
+  }
 }
 
 const CAT_COLORS: Record<string, string> = {
@@ -127,6 +146,23 @@ function ExperimentCard({ exp, onTransition, onDelete }: {
         </div>
       )}
 
+      {/* Stagnant flag: experiment hasn't seen current_value movement in 14d.
+          We approximate "stagnant" using updated_at since the weekly cron
+          ONLY writes when the value changes meaningfully (>0.05 diff). So if
+          updated_at hasn't advanced in 14 days, the metric isn't moving. */}
+      {exp.status === 'continue' && exp.current_value != null && (() => {
+        const ageDays = (Date.now() - new Date(exp.updated_at).getTime()) / 86400_000
+        if (ageDays >= 14) {
+          return (
+            <div className="mb-2 px-2 py-1 bg-amber-500/10 border border-amber-500/30 rounded text-[10px] text-amber-300 flex items-center gap-1.5">
+              <span>⚠️</span>
+              <span>Stagnant — metric unchanged for {Math.floor(ageDays)}d. Candidate to stop.</span>
+            </div>
+          )
+        }
+        return null
+      })()}
+
       {(exp.linked_keywords.length > 0 || exp.linked_pages.length > 0) && (
         <div className="flex flex-wrap gap-1 mb-2">
           {exp.linked_keywords.slice(0, 4).map(kw => (
@@ -142,6 +178,23 @@ function ExperimentCard({ exp, onTransition, onDelete }: {
         <div className="mt-2 px-2 py-1.5 bg-red-500/5 border border-red-500/20 rounded text-[11px]">
           <p className="text-red-300 uppercase tracking-wider text-[9px] mb-0.5">Lesson learned ({exp.outcome ?? 'n/a'})</p>
           <p className="text-gray-300">{exp.decision_notes}</p>
+        </div>
+      )}
+
+      {/* When experiment ended SUCCESS, surface "Promote to KB" — this is the
+          codification step that turns a validated bet into a permanent rule. */}
+      {exp.status === 'stop' && exp.outcome === 'success' && (
+        <div className="mt-2 flex justify-end">
+          <PromoteToKbButton
+            source="experiment_promote"
+            experimentId={exp.id}
+            defaultTitle={`Validated: ${exp.title}`}
+            defaultRuleText={[
+              exp.hypothesis ? `Hypothesis: ${exp.hypothesis}` : null,
+              exp.decision_notes ? `Lesson: ${exp.decision_notes}` : null,
+            ].filter(Boolean).join('\n\n') || ''}
+            defaultPatternKind="winning"
+          />
         </div>
       )}
 
@@ -487,6 +540,10 @@ export default function ExperimentsPage() {
   const [experiments,  setExperiments]  = useState<Experiment[]>([])
   const [loading,      setLoading]      = useState(true)
   const [showManual,   setShowManual]   = useState(false)
+  const [prepLoading,  setPrepLoading]  = useState(false)
+  const [prepCards,    setPrepCards]    = useState<EvidenceCard[] | null>(null)
+  const [prepSummary,  setPrepSummary]  = useState<{ continueCount: number; stopCount: number; inconclusiveCount: number } | null>(null)
+  const [prepError,    setPrepError]    = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -500,7 +557,7 @@ export default function ExperimentsPage() {
     finally { setLoading(false) }
   }, [siteSlug])
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+   
   useEffect(() => { load() }, [load])
 
   async function handleManualAdd(data: Partial<Experiment>) {
@@ -550,6 +607,28 @@ export default function ExperimentsPage() {
     await load()
   }
 
+  // Pre-meeting prep — Mimir analyzes all active experiments + recommends
+  // continue/stop/inconclusive per item. Used by Head before end-of-month
+  // decision meeting.
+  async function runPrepMeeting() {
+    setPrepLoading(true); setPrepError(null); setPrepCards(null); setPrepSummary(null)
+    try {
+      const res = await fetch('/api/experiments/prep-meeting', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ site: siteSlug }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`)
+      setPrepCards(d.evidenceCards ?? [])
+      setPrepSummary(d.summary ?? null)
+    } catch (e) {
+      setPrepError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setPrepLoading(false)
+    }
+  }
+
   // Group by status
   const grouped = useMemo(() => ({
     start:    experiments.filter(e => e.status === 'start'),
@@ -566,17 +645,79 @@ export default function ExperimentsPage() {
             Start / Stop / Continue framework — test ideas one period at a time. Mimir helps you generate evidence-grounded proposals.
           </p>
         </div>
-        <button
-          onClick={() => setShowManual(s => !s)}
-          className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition"
-        >
-          + Add manually
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={runPrepMeeting}
+            disabled={prepLoading}
+            className="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-sm font-semibold px-4 py-2 rounded-lg transition flex items-center gap-1.5"
+            title="Mimir analyzes all active experiments + recommends continue/stop"
+          >
+            {prepLoading ? '🪶 Mimir thinking…' : '🪶 Pre-Meeting Prep'}
+          </button>
+          <button
+            onClick={() => setShowManual(s => !s)}
+            className="bg-red-700 hover:bg-red-600 text-white text-sm font-semibold px-4 py-2 rounded-lg transition"
+          >
+            + Add manually
+          </button>
+        </div>
       </div>
 
       {showManual && (
         <div className="mb-6 max-w-3xl">
           <ManualAddForm onSave={handleManualAdd} onCancel={() => setShowManual(false)} />
+        </div>
+      )}
+
+      {/* Pre-meeting prep — evidence cards from Mimir */}
+      {prepError && (
+        <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-xs text-red-300">
+          ⚠️ {prepError}
+        </div>
+      )}
+      {prepCards && (
+        <div className="mb-6 bg-gradient-to-r from-amber-500/5 to-transparent border border-amber-500/30 rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-white font-semibold text-sm flex items-center gap-2">
+              🪶 Mimir&apos;s Pre-Meeting Recommendations
+            </h2>
+            {prepSummary && (
+              <p className="text-[11px] text-gray-400">
+                <span className="text-blue-300">{prepSummary.continueCount} continue</span> ·{' '}
+                <span className="text-red-300">{prepSummary.stopCount} stop</span> ·{' '}
+                <span className="text-gray-400">{prepSummary.inconclusiveCount} inconclusive</span>
+              </p>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {prepCards.map(c => {
+              const recColor =
+                c.card.recommendation === 'continue' ? 'border-blue-500/40 bg-blue-500/5' :
+                c.card.recommendation === 'stop'     ? 'border-red-500/40 bg-red-500/5'   :
+                                                       'border-gray-700 bg-gray-800/30'
+              const recBadge =
+                c.card.recommendation === 'continue' ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'  :
+                c.card.recommendation === 'stop'     ? 'bg-red-500/15 text-red-300 border-red-500/30'      :
+                                                       'bg-gray-700/40 text-gray-400 border-gray-700'
+              return (
+                <div key={c.experiment.id} className={`rounded-lg p-3 border ${recColor}`}>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${recBadge}`}>
+                      {c.card.recommendation}
+                    </span>
+                    <span className="text-[10px] text-gray-500">⚡{c.card.confidence}/5</span>
+                  </div>
+                  <p className="text-white font-medium text-xs mb-1">{c.experiment.title}</p>
+                  {(c.experiment.baseline_value != null || c.experiment.current_value != null) && (
+                    <p className="text-[10px] text-gray-500 mb-2">
+                      {c.experiment.baseline_value ?? '?'} → {c.experiment.current_value ?? '?'} (target {c.experiment.target_value ?? '?'})
+                    </p>
+                  )}
+                  <p className="text-[11px] text-gray-300 leading-relaxed">{c.card.rationale}</p>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
 

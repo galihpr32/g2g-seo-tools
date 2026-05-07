@@ -92,8 +92,14 @@ export interface MimirChatMessage {
 }
 
 // ─── System prompt ───────────────────────────────────────────────────────────
+//
+// Exported as `buildExperimentsCouncilPrompt` so the generic
+// /api/mimir/chat route (Level B) can reuse the experiments-mode persona
+// while passing through `loadMimirCouncilContext` for the data block.
+// Internal alias `buildSystemPrompt` kept so the legacy
+// `chatWithMimirCouncil` call below doesn't change.
 
-function buildSystemPrompt(c: MimirCouncilContext): string {
+export function buildExperimentsCouncilPrompt(c: MimirCouncilContext): string {
   const active = c.activeExperiments?.length
     ? c.activeExperiments.map(e => `  • [${e.status.toUpperCase()}] ${e.title} (since ${e.period})${e.hypothesis ? ` — ${e.hypothesis}` : ''}`).join('\n')
     : '  (none yet)'
@@ -205,7 +211,7 @@ export async function chatWithMimirCouncil(opts: {
   const res = await anthropic.messages.create({
     model:      MIMIR_MODEL,
     max_tokens: 2400,
-    system:     buildSystemPrompt(context),
+    system:     buildExperimentsCouncilPrompt(context),
     messages:   anthropicMessages,
   })
 
@@ -251,6 +257,73 @@ function clampInt(n: unknown, lo: number, hi: number): number {
   const v = Number(n)
   if (Number.isNaN(v)) return lo
   return Math.max(lo, Math.min(hi, Math.round(v)))
+}
+
+// ─── Duplicate filter ───────────────────────────────────────────────────────
+//
+// Mimir occasionally re-proposes ideas similar to existing experiments
+// (especially when the user prompts twice with similar context). We filter
+// out fuzzy matches against active + past experiments BEFORE returning to
+// the UI, so the user doesn't see a duplicate "Add as experiment" button.
+//
+// Algorithm: tokenize lowercased title, drop stopwords, compute Jaccard
+// similarity between proposal token-set and existing-title token-set. Hard
+// reject if ≥ 0.7 (configurable).
+
+const STOPWORDS = new Set([
+  'a','an','the','and','or','to','of','for','in','on','at','with','by','from','as',
+  'is','was','are','were','be','been','being','have','has','had','do','does','did',
+  'this','that','these','those','it','its','our','your','their','my','i','we',
+  'kw','keyword','page','pages','seo','add','test','optimize','improve','update',
+])
+
+function tokenize(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length >= 3 && !STOPWORDS.has(t))
+  )
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0
+  let intersection = 0
+  for (const t of a) if (b.has(t)) intersection++
+  const union = a.size + b.size - intersection
+  return union === 0 ? 0 : intersection / union
+}
+
+/**
+ * Filter out proposals that are >threshold similar to any title in
+ * `existingTitles`. Returns { kept, rejected } so the caller can show the
+ * user "1 proposal filtered as duplicate of …".
+ */
+export function filterDuplicateProposals(
+  proposals: ExperimentProposal[],
+  existingTitles: string[],
+  threshold = 0.7,
+): { kept: ExperimentProposal[]; rejected: Array<{ proposal: ExperimentProposal; matchedTitle: string; similarity: number }> } {
+  if (existingTitles.length === 0) return { kept: proposals, rejected: [] }
+  const existingTokens = existingTitles.map(t => ({ title: t, tokens: tokenize(t) }))
+
+  const kept: ExperimentProposal[] = []
+  const rejected: Array<{ proposal: ExperimentProposal; matchedTitle: string; similarity: number }> = []
+
+  for (const p of proposals) {
+    const pTokens = tokenize(p.title)
+    let topMatch: { title: string; similarity: number } = { title: '', similarity: 0 }
+    for (const existing of existingTokens) {
+      const sim = jaccardSimilarity(pTokens, existing.tokens)
+      if (sim > topMatch.similarity) topMatch = { title: existing.title, similarity: sim }
+    }
+    if (topMatch.similarity >= threshold) {
+      rejected.push({ proposal: p, matchedTitle: topMatch.title, similarity: topMatch.similarity })
+    } else {
+      kept.push(p)
+    }
+  }
+  return { kept, rejected }
 }
 
 // ─── Context loader — pulls everything Mimir needs from the DB ──────────────

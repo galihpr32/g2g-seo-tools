@@ -68,6 +68,29 @@ export const HERMOD_SKIP_DOMAINS: readonly string[] = [
   'medium.com',           // hard to outreach individual authors
   'wikipedia.org',
   'wikia.com', 'fandom.com',
+  // ── Gaming-marketplace direct competitors ────────────────────────────
+  // We'd never write a guestpost on a competitor's site. Hardcoded here
+  // (instead of relying on the user-managed `competitors` table) because
+  // these are universally-known competitors — every G2G/OG operator
+  // recognizes them. Hardcoding is also defense-in-depth: even if the
+  // competitors table is empty for a freshly-onboarded brand, Hermod
+  // still excludes them.
+  'g2g.com', 'offgamers.com',
+  'overgear.com',
+  'playerauctions.com',
+  'eldorado.gg',
+  'g2a.com',
+  'kinguin.net',
+  'mmoga.com',
+  'igvault.com', 'igvault.io',
+  'gameflip.com',
+  'dmarket.com',
+  'mmoexp.com',
+  'leveldash.com',
+  'ssegold.com',
+  'mygames4.com',
+  'cdkeys.com',
+  'instant-gaming.com',
   // Search engines / portals (you can't pitch Google)
   'google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com',
   // Video / streaming

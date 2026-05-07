@@ -14,6 +14,16 @@ interface SignalEntry {
   [key: string]: unknown
 }
 
+interface PastWork {
+  id:              string
+  kind:            'brief' | 'action'
+  status:          string
+  created_at:      string
+  published_at?:   string | null
+  primary_keyword?: string | null
+  page?:           string | null
+}
+
 interface Opportunity {
   id:               string
   topic:            string
@@ -32,6 +42,8 @@ interface Opportunity {
   heimdall_signals: SignalEntry[]
   loki_signals:     SignalEntry[]
   odin_signals:     SignalEntry[]
+  /** Enriched server-side: past briefs/action items in last 90d for same topic */
+  pastWork?:        PastWork[]
 }
 
 interface Props {
@@ -387,6 +399,27 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
                             {OUTPUT_TYPE_CONFIG[opp.output_type]?.icon} {OUTPUT_TYPE_CONFIG[opp.output_type]?.label}
                           </span>
                         )}
+                        {/* Dedup badge — shown when this topic has been worked on
+                            in the last 90 days. Color-coded by past status:
+                              published → green (already shipped — likely don't redo)
+                              other     → amber (in progress — coordinate or skip) */}
+                        {opp.pastWork && opp.pastWork.length > 0 && (() => {
+                          const hasPublished = opp.pastWork.some(p => p.kind === 'brief' && (p.status === 'published' || !!p.published_at))
+                          const color = hasPublished
+                            ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700/40'
+                            : 'bg-amber-900/40 text-amber-300 border-amber-700/40'
+                          const label = hasPublished
+                            ? `↺ Already shipped (${opp.pastWork.length})`
+                            : `⚠ In progress (${opp.pastWork.length})`
+                          return (
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${color}`}
+                              title={`Found ${opp.pastWork.length} past brief/action item(s) for this topic in the last 90 days. Expand the row to see them.`}
+                            >
+                              {label}
+                            </span>
+                          )
+                        })()}
                       </div>
                       {opp.target_url && (
                         <p className="text-xs text-gray-500 truncate mt-0.5 max-w-sm">{opp.target_url}</p>
@@ -477,6 +510,49 @@ export default function OpportunitiesClient({ initialOpportunities, statusCounts
                           </div>
                         )}
                       </div>
+
+                      {/* Past work — dedup detail. Only shown when there's a match. */}
+                      {opp.pastWork && opp.pastWork.length > 0 && (
+                        <div className="mt-4 pt-4 border-t border-gray-800">
+                          <p className="text-xs font-bold text-amber-400 uppercase tracking-wider mb-2">
+                            ↺ Previously worked on (last 90 days)
+                          </p>
+                          <ul className="space-y-1.5">
+                            {opp.pastWork.map(pw => (
+                              <li key={`${pw.kind}-${pw.id}`} className="flex items-center gap-2 text-xs">
+                                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700 flex-shrink-0">
+                                  {pw.kind === 'brief' ? '📝 Brief' : '✅ Action'}
+                                </span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0 ${
+                                  pw.status === 'published' ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700/40' :
+                                  pw.status === 'done'      ? 'bg-green-900/40 text-green-300 border-green-700/40'      :
+                                                              'bg-gray-800 text-gray-400 border-gray-700'
+                                }`}>
+                                  {pw.status}
+                                </span>
+                                <span className="text-gray-300 truncate flex-1">
+                                  {pw.primary_keyword ?? pw.page ?? '(no title)'}
+                                </span>
+                                <span className="text-gray-600 text-[10px] flex-shrink-0">
+                                  {timeAgo(pw.published_at ?? pw.created_at)}
+                                </span>
+                                {pw.kind === 'brief' && (
+                                  <a
+                                    href={`/content/briefs/${pw.id}`}
+                                    onClick={e => e.stopPropagation()}
+                                    className="text-blue-400 hover:text-blue-300 text-[10px] flex-shrink-0"
+                                  >
+                                    open →
+                                  </a>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                          <p className="text-[10px] text-gray-600 mt-2 italic">
+                            Auto-detected based on topic/keyword match. Verify whether this opportunity is truly a duplicate before queuing a new brief.
+                          </p>
+                        </div>
+                      )}
 
                       {/* Actions */}
                       <div className="flex flex-wrap items-center gap-2 mt-4 pt-4 border-t border-gray-800">

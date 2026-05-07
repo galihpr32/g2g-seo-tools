@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId, canSeeTeamPerformance } from '@/lib/workspace'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import RetroDraftButton from '@/components/team/RetroDraftButton'
 
 export const revalidate = 300
 
@@ -334,11 +335,14 @@ export default async function TeamPerformancePage() {
   return (
     <div className="p-8 max-w-6xl">
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">👥 Team Performance</h1>
-        <p className="text-gray-400 text-sm mt-1">
-          Action item progress and brief output per team member
-        </p>
+      <div className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">👥 Team Performance</h1>
+          <p className="text-gray-400 text-sm mt-1">
+            Action item progress and brief output per team member
+          </p>
+        </div>
+        <RetroDraftButton />
       </div>
 
       {/* ── Overall summary cards ─────────────────────────────────────── */}

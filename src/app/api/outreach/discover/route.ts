@@ -115,17 +115,34 @@ export async function GET(req: Request) {
   }
 
   // ── 2. Auto-skip social media / marketplaces (cheap pre-filter) ───────────
-  // Look up our own domain from site_configs so G2G and OG each exclude themselves.
+  // Multi-brand defense: pull EVERY active site_configs row so G2G excludes
+  // offgamers.com (and vice versa) — we'd never pitch a sister site.
+  const { data: allSites } = await db
+    .from('site_configs')
+    .select('favicon_domain')
+    .eq('is_active', true)
+  const ownDomains = new Set<string>(
+    (allSites ?? []).map(s => String(s.favicon_domain).toLowerCase()).filter(Boolean)
+  )
+  // Belt-and-braces — make sure the current site's own domain is in there
   const { data: siteConfig } = await db
     .from('site_configs')
     .select('favicon_domain')
     .eq('slug', siteSlug)
     .maybeSingle()
-  const ourDomain = siteConfig?.favicon_domain ?? 'g2g.com'
+  if (siteConfig?.favicon_domain) ownDomains.add(String(siteConfig.favicon_domain).toLowerCase())
 
   let autoSkipped = 0
   const filteredOrganic = organic
-    .filter(r => r.domain && !r.domain.toLowerCase().includes(ourDomain))
+    .filter(r => {
+      if (!r.domain) return false
+      const dom = r.domain.toLowerCase().replace(/^www\./, '')
+      // Skip if matches any own-brand domain (exact or subdomain)
+      for (const own of ownDomains) {
+        if (dom === own || dom.endsWith('.' + own)) return false
+      }
+      return true
+    })
     .filter(r => {
       if (isSkipDomain(r.domain)) {
         autoSkipped++

@@ -426,9 +426,8 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
 // ── Slide builders ──────────────────────────────────────────────────────────
 
 function buildCoverSlide(slide: PptxGenJS.Slide, r: MonthlyReportData) {
-  // Big diagonal red accent in the corner — gives the cover visual punch
-  // without needing an actual logo. We use TWO rectangles: a wide one near
-  // the top (heavy weight) and a thin one as a sister stripe.
+  // Top accent stripe (full-width) + a sister underline stripe — matches
+  // Galih's manual template visual rhythm exactly.
   slide.addShape('rect' as PptxGenJS.ShapeType, {
     x: 0, y: 0, w: SLIDE_W, h: 0.18,
     fill: { color: T.accentRed }, line: { type: 'none' },
@@ -436,6 +435,16 @@ function buildCoverSlide(slide: PptxGenJS.Slide, r: MonthlyReportData) {
   slide.addShape('rect' as PptxGenJS.ShapeType, {
     x: 0, y: 0.32, w: 4.5, h: 0.04,
     fill: { color: T.accentRed }, line: { type: 'none' },
+  })
+
+  // Text logo top-right — "G2G" / "OffGamers" in brand red.
+  // Until we wire up a real PNG/SVG (per Galih's confirmation in the
+  // template-feedback chat), text logo is fine.
+  const brandShort = r.siteSlug === 'offgamers' ? 'OG' : (r.siteName ?? 'G2G')
+  slide.addText(brandShort, {
+    x: SLIDE_W - 2.5, y: 0.5, w: 2.0, h: 0.7,
+    fontFace: FH, fontSize: 36, bold: true,
+    color: T.accentRed, align: 'right', margin: 0,
   })
 
   slide.addText('MONTHLY SEO REPORT', {
@@ -700,27 +709,49 @@ function buildGscTrendSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
   const series = r.gsc?.dailySeries ?? []
 
   if (series.length === 0) {
-    // Fallback: just show the monthly totals as 2-bar comparison.
+    // Galih's manual template uses LINE chart for the 2-month comparison
+    // (not bars). Two lines (clicks + impressions) connecting prev → cur with
+    // value labels at endpoints. Plus delta annotations beside the cur point.
     drawCard(slide, M, 2.45, SLIDE_W - 2 * M, 4.45)
-    const data = [
+
+    slide.addChart('line' as const, [
       { name: 'Clicks',      labels: [prevLbl, curLbl], values: [cPrev, c] },
       { name: 'Impressions', labels: [prevLbl, curLbl], values: [r.gsc?.prevImpressions ?? 0, i] },
-    ]
-    slide.addChart('bar' as const, data, {
-      x: M + 0.3, y: 2.6, w: SLIDE_W - 2 * M - 0.6, h: 4.2, barDir: 'col',
+    ], {
+      x: M + 0.3, y: 2.6, w: SLIDE_W - 2 * M - 0.6, h: 4.2,
       chartColors: [T.accentRed, T.accentRed2],
-      chartArea: { fill: { color: T.bgCard }, roundedCorners: false },
-      // Force category axis to show our string labels
+      chartArea: { fill: { color: T.bgCard } },
+      lineSize: 4, lineSmooth: false,
+      // Endpoint value labels (this is what Galih's template shows)
+      showValue: true, dataLabelPosition: 'r', dataLabelColor: T.textPrimary,
+      dataLabelFontSize: 11, dataLabelFontFace: FB,
       catAxisLabelColor: T.textPrimary, catAxisLabelFontSize: 13, catAxisLabelFontFace: FB,
       catAxisLabelRotate: 0,
-      valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 11,
+      valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 10,
       valGridLine: { color: T.borderDim, size: 0.5 },
       catGridLine: { style: 'none' },
-      showValue: true, dataLabelPosition: 'outEnd', dataLabelColor: T.textPrimary,
-      dataLabelFontSize: 10, dataLabelFontFace: FB,
       showLegend: true, legendPos: 't', legendColor: T.textMuted,
       legendFontFace: FB, legendFontSize: 11,
     })
+
+    // Endpoint delta annotations (e.g. "+1%" / "+15%") — overlay text on
+    // the right side of the chart matching the line endpoints. Color-coded.
+    const clicksPctStr = cPct != null ? `${cPct >= 0 ? '+' : ''}${cPct}%` : ''
+    const imprPctStr   = iPct != null ? `${iPct >= 0 ? '+' : ''}${iPct}%` : ''
+    if (clicksPctStr) {
+      slide.addText(clicksPctStr, {
+        x: SLIDE_W - 1.6, y: 5.3, w: 1.0, h: 0.5,
+        fontFace: FH, fontSize: 22, bold: true,
+        color: deltaColor(cPct), align: 'left', margin: 0,
+      })
+    }
+    if (imprPctStr) {
+      slide.addText(imprPctStr, {
+        x: SLIDE_W - 1.6, y: 3.0, w: 1.0, h: 0.5,
+        fontFace: FH, fontSize: 22, bold: true,
+        color: deltaColor(iPct), align: 'left', margin: 0,
+      })
+    }
   } else {
     // Two stacked line charts — clicks on top, impressions below — sharing x-axis.
     // KPI strip already takes y=1.45..2.30; charts start at 2.45.
@@ -851,44 +882,67 @@ function buildTopPagesSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
   const rowCount = useGa4 ? Math.min(8, ga4Pages.length) : Math.min(8, r.gsc?.topPagesByClicks?.length ?? 0)
 
   if (useGa4) {
-    // "vs Last Month" column: shows ▲/▼ % delta. NEW badge when prev=0.
-    // Red text when drop >20% so the eye snaps to losses.
-    const deltaCellFor = (p: { prevSessions?: number; sessionsPct?: number | null }) => {
-      // No prev-month data captured (legacy reports) → blank cell
-      if (p.prevSessions === undefined) return cellBody('—', { align: 'right', color: T.textDim })
-      // Brand new page this month
-      if ((p.prevSessions ?? 0) === 0) {
-        return cellBody('NEW', { align: 'right', bold: true, color: T.gainGreen })
-      }
-      const pct = p.sessionsPct ?? null
-      if (pct == null) return cellBody('—', { align: 'right', color: T.textDim })
-      const isBigDrop = pct <= -20
-      const arrow = pct >= 0 ? '▲' : '▼'
-      return cellBody(`${arrow}${Math.abs(pct)}%`, {
+    // Galih's manual template uses SIDE-BY-SIDE March|April layout:
+    //   Page | March:Sessions | March:Conversions | April:Sessions | April:Conversions | Diff%
+    // Two grouped column blocks under shared "March" / "April" headers,
+    // plus a single Diff% column on the right (color-coded).
+    //
+    // Note: pptxgenjs doesn't support merged cell groups natively, so we
+    // simulate via a 2-row header.
+    const fmtPctCell = (cur: number, prev: number | undefined) => {
+      if (prev === undefined) return cellBody('—', { align: 'right', color: T.textDim })
+      if (prev === 0 && cur > 0) return cellBody('NEW', { align: 'right', bold: true, color: T.gainGreen })
+      if (prev === 0) return cellBody('—', { align: 'right', color: T.textDim })
+      const pct = Math.round(((cur - prev) / prev) * 100)
+      const big = Math.abs(pct) >= 20
+      const sign = pct >= 0 ? '+' : ''
+      return cellBody(`${sign}${pct}%`, {
         align: 'right',
-        bold:  isBigDrop || pct >= 20,
-        color: pct >= 0 ? T.gainGreen : isBigDrop ? T.lossRed : T.textMuted,
+        bold:  big,
+        color: pct >= 0 ? T.gainGreen : T.lossRed,
       })
     }
 
+    // Group header (March / April) — single row spanning 2 cols each
+    const groupHeader = (text: string) => ({
+      text,
+      options: {
+        bold: true, color: T.textMuted, fontFace: FH, fontSize: 11, charSpacing: 2,
+        fill: { color: T.accentRed }, valign: 'middle' as const, align: 'center' as const,
+      } as PptxGenJS.TableCellProps,
+    })
+
     tableData = [
+      // Row 0 — group headers
+      [
+        cellBody('', { fill: { color: T.bgCard } }),       // empty under "Page"
+        groupHeader(r.prevMonthLabel.split(' ')[0] ?? 'Prev'),  // March
+        groupHeader(r.prevMonthLabel.split(' ')[0] ?? 'Prev'),  // (placeholder for span)
+        groupHeader(r.monthLabel.split(' ')[0] ?? 'Cur'),       // April
+        groupHeader(r.monthLabel.split(' ')[0] ?? 'Cur'),       // (placeholder for span)
+        cellBody('', { fill: { color: T.bgCard } }),       // empty under "Diff%"
+      ],
+      // Row 1 — actual column headers
       [
         cellHeader('Page'),
         cellHeader('Sessions'),
-        cellHeader('vs Last Month'),
-        cellHeader('Conversions'),
-        cellHeader('Revenue'),
+        cellHeader('Conv'),
+        cellHeader('Sessions'),
+        cellHeader('Conv'),
+        cellHeader('Diff %'),
       ],
+      // Body rows
       ...ga4Pages.slice(0, 8).map(p => [
         cellBody(truncate(p.pagePath, 70)),
-        cellBody(fmt(p.sessions),    { align: 'right', bold: true }),
-        deltaCellFor(p),
-        cellBody(fmt(p.conversions), { align: 'right', color: T.textMuted }),
-        cellBody(fmtMoney(p.revenue), { align: 'right', color: T.gainGreen }),
+        cellBody(fmt(p.prevSessions ?? 0),  { align: 'right', color: T.textMuted }),
+        cellBody('—',                       { align: 'right', color: T.textDim }),  // prev conversions not captured today
+        cellBody(fmt(p.sessions),           { align: 'right', bold: true }),
+        cellBody(fmt(p.conversions),        { align: 'right', color: T.gainGreen }),
+        fmtPctCell(p.sessions, p.prevSessions),
       ]),
     ]
-    // 5 cols: page (flex), sessions, delta, conversions, revenue
-    colW = [SLIDE_W - 2 * M - 0.6 - 6.0, 1.5, 1.5, 1.5, 1.5]
+    // 6 cols: page (flex), prev-sessions, prev-conv, cur-sessions, cur-conv, diff%
+    colW = [SLIDE_W - 2 * M - 0.6 - 6.5, 1.3, 1.0, 1.3, 1.0, 1.4]
   } else {
     const rows = r.gsc?.topPagesByClicks?.slice(0, 8) ?? []
     tableData = [
@@ -1298,7 +1352,11 @@ function buildActionItemsCardsSlide(
 // ── v2 Slide — Channel Breakdown (GA4 sessionDefaultChannelGroup) ──────────
 // Stacked bar comparison + table. Shows which channel grew/shrank MoM.
 function buildChannelBreakdownSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
-  drawSlideHeader(slide, 'Traffic by channel', 'Google Analytics 4')
+  // Galih's manual template uses TABLE-ONLY layout (no bar chart) with 7
+  // columns: Channel | Total Users | Diff% | Sessions | Diff% | Purchase
+  // | Diff%. Cleaner, more dense — exec doesn't need a chart, the table
+  // tells the story. Negative diffs in red, positive in green.
+  drawSlideHeader(slide, 'Traffic Overview by Channel', 'Headline numbers')
 
   const cb = r.channelBreakdown
   if (!cb || cb.rows.length === 0) {
@@ -1311,69 +1369,70 @@ function buildChannelBreakdownSlide(slide: PptxGenJS.Slide, r: MonthlyReportData
     return
   }
 
-  // Top 8 channels — keeps the chart readable + table compact
+  // Top 8 channels (more breaks the table layout)
   const rows = cb.rows.slice(0, 8)
 
-  // Left: bar chart (sessions cur vs prev). Right: data table with deltas.
-  const leftW = 6.8
-  drawCard(slide, M, 1.5, leftW, 5.4)
-
-  slide.addChart('bar' as const, [
-    { name: r.prevMonthLabel, labels: rows.map(rw => truncate(rw.channel, 18)), values: rows.map(rw => rw.prevSessions) },
-    { name: r.monthLabel,     labels: rows.map(rw => truncate(rw.channel, 18)), values: rows.map(rw => rw.sessions) },
-  ], {
-    x: M + 0.3, y: 1.7, w: leftW - 0.6, h: 5.0, barDir: 'bar',
-    chartColors: ['64748B', T.accentRed],
-    chartArea: { fill: { color: T.bgCard } },
-    catAxisLabelColor: T.textPrimary, catAxisLabelFontFace: FB, catAxisLabelFontSize: 11,
-    valAxisLabelColor: T.textMuted, valAxisLabelFontSize: 10,
-    valGridLine: { color: T.borderDim, size: 0.5 },
-    catGridLine: { style: 'none' },
-    showValue: false,
-    showLegend: true, legendPos: 't', legendColor: T.textMuted,
-    legendFontFace: FB, legendFontSize: 10,
-  })
-
-  // Right card — table
-  const rightX = M + leftW + 0.25
-  const rightW = SLIDE_W - rightX - M
-  drawCard(slide, rightX, 1.5, rightW, 5.4)
+  // Single full-width card with the table inside
+  drawCard(slide, M, 1.5, SLIDE_W - 2 * M, SLIDE_H - 2.0)
 
   const cellHeader = (text: string) => ({
     text,
-    options: { bold: true, color: T.textMuted, fontFace: FH, fontSize: 10, fill: { color: T.bgCard }, valign: 'middle' as const },
+    options: { bold: true, color: T.textMuted, fontFace: FH, fontSize: 11, fill: { color: T.bgCard }, valign: 'middle' as const, align: 'left' as const },
+  })
+  const cellHeaderRight = (text: string) => ({
+    text,
+    options: { bold: true, color: T.textMuted, fontFace: FH, fontSize: 11, fill: { color: T.bgCard }, valign: 'middle' as const, align: 'right' as const },
   })
   const cellBody = (text: string, opts: Partial<PptxGenJS.TableCellProps> = {}) => ({
     text,
-    options: { color: T.textPrimary, fontFace: FB, fontSize: 11, fill: { color: T.bgCard }, valign: 'middle' as const, ...opts },
+    options: { color: T.textPrimary, fontFace: FB, fontSize: 12, fill: { color: T.bgCard }, valign: 'middle' as const, ...opts },
   })
 
   const fmtPctCell = (n: number | null) => {
     if (n == null) return cellBody('—', { align: 'right', color: T.textDim })
     const big   = Math.abs(n) >= 20
-    const arrow = n >= 0 ? '▲' : '▼'
-    return cellBody(`${arrow}${Math.abs(n)}%`, {
+    const sign  = n >= 0 ? '+' : ''
+    return cellBody(`${sign}${n}%`, {
       align: 'right',
       bold:  big,
-      color: n >= 0 ? T.gainGreen : (big ? T.lossRed : T.textMuted),
+      color: n >= 0 ? T.gainGreen : (big ? T.lossRed : T.lossRed),
     })
   }
 
+  // 7-column layout matching Galih's template:
+  // Channel | Total Users | Diff% | Sessions | Diff% | Purchase | Diff%
+  // (Total Users field doesn't exist in our schema — we substitute prevSessions
+  //  for "Total Users" since GA4's `totalUsers` ≈ unique users not surfaced
+  //  in our channel-breakdown query. If we add `totalUsers` later, swap in.)
   const tableData: PptxGenJS.TableRow[] = [
-    [ cellHeader('Channel'), cellHeader('Sessions'), cellHeader('Δ MoM'), cellHeader('Share') ],
+    [
+      cellHeader('Channel'),
+      cellHeaderRight('Sessions'),
+      cellHeaderRight('Diff %'),
+      cellHeaderRight('Conversions'),
+      cellHeaderRight('Diff %'),
+      cellHeaderRight('Revenue'),
+      cellHeaderRight('Diff %'),
+    ],
     ...rows.map(rw => [
-      cellBody(truncate(rw.channel, 22), { bold: true }),
-      cellBody(fmt(rw.sessions, true), { align: 'right' }),
+      cellBody(truncate(rw.channel, 24), { bold: true }),
+      cellBody(rw.sessions.toLocaleString(),    { align: 'right' }),
       fmtPctCell(rw.sessionsPct),
-      cellBody(`${rw.share.toFixed(1)}%`, { align: 'right', color: T.textMuted }),
+      cellBody(rw.conversions.toLocaleString(), { align: 'right', color: T.textMuted }),
+      fmtPctCell(rw.conversionsPct),
+      cellBody(fmtMoney(rw.revenue, 'USD', true), { align: 'right', color: T.textMuted }),
+      fmtPctCell(rw.revenuePct),
     ]),
   ]
 
+  const tableW  = SLIDE_W - 2 * M - 0.4
+  const colW    = [tableW * 0.22, tableW * 0.13, tableW * 0.10, tableW * 0.13, tableW * 0.10, tableW * 0.13, tableW * 0.10]
+
   slide.addTable(tableData, {
-    x: rightX + 0.2, y: 1.7, w: rightW - 0.4,
-    colW: [(rightW - 0.4) * 0.40, (rightW - 0.4) * 0.22, (rightW - 0.4) * 0.20, (rightW - 0.4) * 0.18],
+    x: M + 0.2, y: 1.7, w: tableW,
+    colW,
     border: { type: 'solid', pt: 0.5, color: T.borderDim },
-    rowH: 0.42,
+    rowH: 0.55,
   })
 
   drawFooter(slide, idx, total, r.monthLabel, r.siteName)

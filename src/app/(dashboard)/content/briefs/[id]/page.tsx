@@ -6,6 +6,7 @@ import BriefQualityReview, { type TyrBreakdown } from '@/components/agents/Brief
 import BriefActionBar from '@/components/agents/BriefActionBar'
 import FinalContentPanel from '@/components/agents/FinalContentPanel'
 import OutreachAnchorEditor from '@/components/agents/OutreachAnchorEditor'
+import PromoteToKbButton from '@/components/agents/PromoteToKbButton'
 
 // Disable revalidate caching on this page so writers see freshly-generated
 // final content immediately after assembly without a stale 30s window.
@@ -149,11 +150,37 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
 
       {/* Tyr quality review (auto-shown if reviewed) */}
       <BriefQualityReview
+        briefId={id}
         score={brief.tyr_score as number | null}
         status={brief.tyr_status as string | null}
         reviewedAt={brief.tyr_reviewed_at as string | null}
         breakdown={brief.tyr_breakdown as TyrBreakdown | null}
+        hideSuggestion={brief.status === 'published'}
       />
+
+      {/* Promote to KB — surface for ANY brief (writer might spot a useful
+          pattern even on a borderline brief). Renders inline next to other
+          actions, not full-width. */}
+      <div className="my-4 flex items-center gap-3 px-1">
+        <PromoteToKbButton
+          source="brief_promote"
+          briefId={id}
+          defaultTitle={brief.primary_keyword
+            ? `Pattern from "${brief.primary_keyword as string}" brief`
+            : 'Pattern from this brief'}
+          defaultRuleText={
+            brief.tyr_score && (brief.tyr_score as number) >= 80
+              ? `[from a Tyr ${brief.tyr_score}/100 brief] `
+              : ''
+          }
+          defaultPatternKind={
+            (brief.tyr_score && (brief.tyr_score as number) >= 80) ? 'winning' : 'generic'
+          }
+        />
+        <span className="text-xs text-gray-500">
+          Spot a pattern worth codifying? Send it to the KB review queue.
+        </span>
+      </div>
 
       {/* ── Final Content (the writer's surface) ────────────────────────────
           Hosts the assembled article body, inline edit, translate dropdown,

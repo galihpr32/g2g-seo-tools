@@ -18,6 +18,7 @@ const navItems = [
       { label: 'Action Items',    href: '/gsc/action-items',               icon: '✅' },
       { label: 'Experiments',     href: '/experiments',                    icon: '🧪' },
       { label: 'Notifications',   href: '/notifications',                  icon: '🔔' },
+      { label: 'Feedback',        href: '/feedback',                       icon: '🐛' },
     ],
   },
   {
@@ -30,6 +31,7 @@ const navItems = [
       { label: 'Content Studio',     href: '/content/studio',          icon: '📝' },
       { label: 'Product Content',    href: '/content/products',        icon: '📦' },
       { label: 'Knowledge Base',     href: '/knowledge-base',          icon: '🧠' },
+      { label: 'KB Proposals',       href: '/knowledge-base/proposals', icon: '💡' },
       { label: 'Game Trends',        href: '/content/trends',          icon: '🎮' },
       { label: 'News Signals',       href: '/content/news-signals',    icon: '📰' },
       { label: 'Keyword Map',        href: '/content/keyword-map',          icon: '🗺️' },
@@ -48,6 +50,7 @@ const navItems = [
       { label: 'SERP & Share of Voice', href: '/competitive/serp-tracker',  icon: '📊' },
       { label: 'Competitors',           href: '/competitive/competitors',   icon: '👁️' },
       { label: 'Page Analyzer',         href: '/competitive/page-analyzer', icon: '🔎' },
+      { label: 'Backlink Gap',          href: '/competitive/backlink-gap',  icon: '🕵️' },
     ],
   },
   {
@@ -55,6 +58,9 @@ const navItems = [
     defaultOpen: false,
     items: [
       { label: 'Clicks Drop Alert',   href: '/gsc/ranking-drop',        icon: '📉' },
+      { label: 'Site Health Overview', href: '/site-health',            icon: '🛡️' },
+      { label: 'Schema Health',       href: '/site-health/schema',      icon: '🧬' },
+      { label: 'PageSpeed (PSI)',     href: '/site-health/psi',         icon: '⚡' },
       { label: 'Top Product Tracker', href: '/gsc/product-rankings',    icon: '🎯' },
       { label: 'Index Coverage',      href: '/gsc/index-coverage',      icon: '🔍' },
       { label: 'Core Web Vitals',     href: '/gsc/core-web-vitals',     icon: '⚡' },

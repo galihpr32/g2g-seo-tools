@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import OpportunitiesClient from './OpportunitiesClient'
+import MimirPanel from '@/components/agents/MimirPanel'
 
 export default async function OpportunitiesPage() {
   const supabase = await createClient()
@@ -25,8 +26,90 @@ export default async function OpportunitiesPage() {
     .order('updated_at', { ascending: false })
     .limit(200)
 
+  // ── Dedup detection ──────────────────────────────────────────────────────
+  // For each opportunity, look up past briefs / action items with the same
+  // topic_slug or matching primary_keyword in the last 90 days. Surface as
+  // "previously worked on" badge — prevents the user from re-queuing the
+  // same brief. This was a specific Galih ask in the deep-dive feedback.
+  const since90d = new Date(Date.now() - 90 * 86400_000).toISOString()
+  const slugs    = Array.from(new Set((opportunities ?? []).map(o => o.topic_slug).filter(Boolean)))
+
+  const { data: pastBriefs } = slugs.length > 0
+    ? await db
+        .from('seo_content_briefs')
+        .select('id, primary_keyword, page, status, published_at, created_at, content_outline')
+        .eq('owner_user_id', effectiveOwnerId)
+        .gte('created_at', since90d)
+    : { data: [] }
+
+  const { data: pastActions } = await db
+    .from('seo_action_items')
+    .select('id, page, action_type, status, created_at, completed_at')
+    .eq('owner_user_id', effectiveOwnerId)
+    .gte('created_at', since90d)
+    .limit(500)
+
+  // Index past work by topic-slug-ish (lowercase keyword match)
+  type PastWork = { id: string; kind: 'brief' | 'action'; status: string; created_at: string; published_at?: string | null; primary_keyword?: string | null; page?: string | null }
+  const pastWorkByTopic = new Map<string, PastWork[]>()
+  function tokenize(s: string): string {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  }
+  for (const b of pastBriefs ?? []) {
+    const key = tokenize(String(b.primary_keyword ?? ''))
+    if (!key) continue
+    const arr = pastWorkByTopic.get(key) ?? []
+    arr.push({
+      id: String(b.id),
+      kind: 'brief',
+      status: String(b.status ?? '?'),
+      created_at: String(b.created_at),
+      published_at: b.published_at as string | null,
+      primary_keyword: b.primary_keyword as string | null,
+      page: b.page as string | null,
+    })
+    pastWorkByTopic.set(key, arr)
+  }
+  for (const a of pastActions ?? []) {
+    const key = tokenize(String(a.page ?? ''))
+    if (!key) continue
+    const arr = pastWorkByTopic.get(key) ?? []
+    arr.push({
+      id: String(a.id),
+      kind: 'action',
+      status: String(a.status ?? '?'),
+      created_at: String(a.created_at),
+      page: a.page as string | null,
+    })
+    pastWorkByTopic.set(key, arr)
+  }
+
+  // Attach `pastWork` array to each opportunity. We match on topic_slug.
+  const enrichedOpportunities = (opportunities ?? []).map(o => {
+    const slugKey = tokenize(String(o.topic_slug ?? ''))
+    const topicKey = tokenize(String(o.topic ?? ''))
+    const pastWork: PastWork[] = []
+    for (const k of [slugKey, topicKey].filter(Boolean)) {
+      const matches = pastWorkByTopic.get(k) ?? []
+      for (const m of matches) {
+        if (!pastWork.find(p => p.id === m.id && p.kind === m.kind)) pastWork.push(m)
+      }
+    }
+    // Also fuzzy: substring match on primary_keyword vs topic
+    if (pastWork.length === 0 && topicKey.length >= 4) {
+      for (const [key, matches] of pastWorkByTopic.entries()) {
+        if (key.includes(topicKey) || topicKey.includes(key)) {
+          for (const m of matches) {
+            if (!pastWork.find(p => p.id === m.id && p.kind === m.kind)) pastWork.push(m)
+          }
+        }
+      }
+    }
+    return { ...o, pastWork: pastWork.slice(0, 5) }
+  })
+
   // Count stats for header
-  const allStatuses = (opportunities ?? []).reduce<Record<string, number>>((acc, o) => {
+  const allStatuses = enrichedOpportunities.reduce<Record<string, number>>((acc, o) => {
     acc[o.status] = (acc[o.status] ?? 0) + 1
     return acc
   }, {})
@@ -44,12 +127,18 @@ export default async function OpportunitiesPage() {
               Signals from Detection agents grouped by topic. Pick an opportunity, choose an output type, and queue a brief or outreach action.
             </p>
           </div>
-          <a
-            href="/command-center"
-            className="text-sm text-gray-500 hover:text-gray-300 transition whitespace-nowrap mt-1"
-          >
-            ← Command Center
-          </a>
+          <div className="flex items-center gap-2 mt-1 flex-shrink-0">
+            <MimirPanel
+              pageContext={{ kind: 'opportunities' }}
+              trigger="🪶 Ask Mimir"
+            />
+            <a
+              href="/command-center"
+              className="text-sm text-gray-500 hover:text-gray-300 transition whitespace-nowrap"
+            >
+              ← Command Center
+            </a>
+          </div>
         </div>
 
         {/* Pipeline hint */}
@@ -67,7 +156,7 @@ export default async function OpportunitiesPage() {
       </div>
 
       <OpportunitiesClient
-        initialOpportunities={opportunities ?? []}
+        initialOpportunities={enrichedOpportunities}
         statusCounts={allStatuses}
       />
     </div>

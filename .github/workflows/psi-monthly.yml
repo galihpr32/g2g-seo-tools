@@ -1,0 +1,34 @@
+name: Monthly PageSpeed Insights
+
+on:
+  schedule:
+    # 1st of month, 05:00 UTC (12:00 WIB) — pairs nicely with monthly report
+    - cron: '0 5 1 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: psi-monthly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Trigger /api/cron/psi-monthly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 600 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/psi-monthly")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

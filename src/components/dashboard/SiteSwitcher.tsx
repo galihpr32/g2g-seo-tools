@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { getSiteSlugFromPath } from '@/lib/sites'
+import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
 interface Site {
   slug: string
@@ -25,8 +25,12 @@ export default function SiteSwitcher() {
   const router   = useRouter()
   const [open, setOpen] = useState(false)
 
-  // Detect current site from URL (e.g. /offgamers/reports/weekly → offgamers)
-  const currentSlug = getSiteSlugFromPath(pathname, SITES.map(s => s.slug))
+  // Source of truth = the same hook that every other client component uses
+  // when calling APIs. Previously this read pathname only, which lied when
+  // the user was on a non-prefixed page (e.g. /experiments) but cookie said
+  // 'offgamers' — causing UI to display G2G while data layer pulled OffGamers.
+  // Bug fix 2026-05-08 (Mimir cross-site contamination).
+  const currentSlug = useSiteSlug()
   const currentSite = SITES.find(s => s.slug === currentSlug) ?? SITES[0]
 
   function switchSite(slug: string) {
@@ -36,6 +40,7 @@ export default function SiteSwitcher() {
     // Persist active site so server-side (OAuth callback, API routes) knows which site
     // the user is working on. Both cookie (server-readable) and localStorage (client-readable).
     try {
+      // eslint-disable-next-line react-hooks/immutability -- intentional browser global write
       document.cookie = `active-site=${slug}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`
       localStorage.setItem('active-site', slug)
     } catch { /* ignore */ }

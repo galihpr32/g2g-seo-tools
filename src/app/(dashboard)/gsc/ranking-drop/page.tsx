@@ -4,6 +4,7 @@ import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics, getDateRange, detectRankingDrops } from '@/lib/gsc/client'
 import { RankingDropTable } from './RankingDropTable'
 import type { PageDropWithQueries } from './RankingDropTable'
+import MimirPanel from '@/components/agents/MimirPanel'
 
 export const revalidate = 1800
 
@@ -207,6 +208,10 @@ export default async function RankingDropPage() {
           <p className="text-gray-400 text-sm mt-1">Pages with &gt;15% week-over-week drop in organic clicks</p>
         </div>
         <div className="flex items-center gap-2">
+          <MimirPanel
+            pageContext={{ kind: 'ranking_drops' }}
+            trigger="🪶 Ask Mimir"
+          />
           <span className="text-xs text-gray-500 bg-gray-800 px-3 py-1.5 rounded-full">
             {today}
           </span>

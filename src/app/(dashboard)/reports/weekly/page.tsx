@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
+import MimirPanel from '@/components/agents/MimirPanel'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -561,6 +562,12 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {report && (
+            <MimirPanel
+              pageContext={{ kind: 'weekly_report', id: report.id }}
+              trigger="🪶 Ask Mimir"
+            />
+          )}
           {report && (
             <button
               onClick={() => window.print()}

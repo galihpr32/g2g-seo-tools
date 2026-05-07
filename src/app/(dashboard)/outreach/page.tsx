@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import HermodFindingsPanel from '@/components/agents/HermodFindingsPanel'
+import OutreachFunnel from '@/components/outreach/OutreachFunnel'
+import LogReplyButton from '@/components/outreach/LogReplyButton'
 
 // ── Opener Modal ──────────────────────────────────────────────────────────────
 function OpenerModal({ prospect, onClose }: {
@@ -9,6 +11,7 @@ function OpenerModal({ prospect, onClose }: {
   onClose:  () => void
 }) {
   const [tone,    setTone]    = useState<'professional' | 'casual' | 'direct'>('professional')
+  const [mode,    setMode]    = useState<'opener' | 'full'>('opener')
   const [loading, setLoading] = useState(false)
   const [subject, setSubject] = useState('')
   const [opener,  setOpener]  = useState('')
@@ -24,12 +27,13 @@ function OpenerModal({ prospect, onClose }: {
       const res  = await fetch(`/api/outreach/prospects/${prospect.id}/generate-opener`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ tone }),
+        body:    JSON.stringify({ tone, mode }),
       })
-      const data = await res.json() as { ok: boolean; subject?: string; opener?: string; error?: string }
+      const data = await res.json() as { ok: boolean; subject?: string; opener?: string; body?: string; error?: string }
       if (!data.ok) throw new Error(data.error ?? 'Generation failed')
       setSubject(data.subject ?? '')
-      setOpener(data.opener  ?? '')
+      // For full mode, response uses `body` instead of `opener` — store both in `opener` state for display
+      setOpener((mode === 'full' ? data.body : data.opener) ?? '')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed')
     } finally {
@@ -67,21 +71,39 @@ function OpenerModal({ prospect, onClose }: {
             {prospect.source_keyword && <p>🔑 Keyword: "{prospect.source_keyword}"</p>}
           </div>
 
-          {/* Tone selector */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-2">Tone</label>
-            <div className="flex gap-2">
-              {(['professional', 'casual', 'direct'] as const).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setTone(t)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                    tone === t ? 'bg-red-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {t === 'professional' ? '🤝' : t === 'casual' ? '😊' : '⚡'} {t}
-                </button>
-              ))}
+          {/* Mode + tone selectors */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">Mode</label>
+              <div className="flex gap-2">
+                {(['opener', 'full'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                      mode === m ? 'bg-purple-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {m === 'opener' ? '✂️ Opener only' : '📧 Full email'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">Tone</label>
+              <div className="flex gap-2">
+                {(['professional', 'casual', 'direct'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setTone(t)}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                      tone === t ? 'bg-red-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {t === 'professional' ? '🤝' : t === 'casual' ? '😊' : '⚡'} {t}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -91,7 +113,9 @@ function OpenerModal({ prospect, onClose }: {
             disabled={loading}
             className="w-full py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center justify-center gap-2"
           >
-            {loading ? <><span className="animate-spin">⟳</span> Bragi is writing…</> : '✨ Generate Opener'}
+            {loading
+              ? <><span className="animate-spin">⟳</span> Bragi is writing…</>
+              : mode === 'full' ? '✨ Generate Full Email' : '✨ Generate Opener'}
           </button>
 
           {error && <p className="text-sm text-red-400">{error}</p>}
@@ -113,10 +137,12 @@ function OpenerModal({ prospect, onClose }: {
                 <p className="text-white text-sm">{subject}</p>
               </div>
 
-              {/* Opener */}
+              {/* Opener / Full body */}
               <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Email opener</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    {mode === 'full' ? 'Full email body' : 'Email opener'}
+                  </label>
                   <button
                     onClick={() => copy('opener')}
                     className="text-[10px] text-gray-500 hover:text-gray-300 transition"
@@ -132,11 +158,11 @@ function OpenerModal({ prospect, onClose }: {
                 onClick={() => copy('both')}
                 className="w-full py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs rounded-lg transition"
               >
-                {copied === 'both' ? '✓ Copied!' : '⎘ Copy subject + opener'}
+                {copied === 'both' ? '✓ Copied!' : `⎘ Copy subject + ${mode === 'full' ? 'body' : 'opener'}`}
               </button>
 
               <p className="text-[10px] text-gray-600 text-center">
-                Bragi generated this opener. Review before sending — personalise the greeting and add your name.
+                Bragi generated this {mode === 'full' ? 'email' : 'opener'}. Review before sending — {mode === 'full' ? 'fill placeholders, double-check facts' : 'personalise the greeting and add your name'}.
               </p>
             </div>
           )}
@@ -861,6 +887,8 @@ function TrackerTable({ prospects, counts, onEdit, onDelete, onCheck, checking, 
                         </button>
                       )}
 
+                      <LogReplyButton prospectId={p.id} variant="compact" />
+
                       <button
                         onClick={() => onEdit(p)}
                         className="px-2 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded transition"
@@ -998,6 +1026,11 @@ export default function OutreachPage() {
         >
           + Add Manually
         </button>
+      </div>
+
+      {/* Funnel — pulse view at top */}
+      <div className="mb-6">
+        <OutreachFunnel defaultDays={90} />
       </div>
 
       {/* Tabs */}

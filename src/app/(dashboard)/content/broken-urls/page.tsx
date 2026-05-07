@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import { classifyBrokenUrl, CLASSIFICATION_STYLES } from '@/lib/broken-url-classifier'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -98,11 +99,90 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
+// ── Create Action Item button ────────────────────────────────────────────
+// Posts to /api/content/broken-urls/create-action and surfaces success/dup.
+
+function CreateActionItemButton({ url, classification, evidence, historicalImpressions }: {
+  url:                    string
+  classification:         string
+  evidence:               string
+  historicalImpressions?: number
+}) {
+  const [busy,    setBusy]    = useState(false)
+  const [result,  setResult]  = useState<'created' | 'duplicate' | null>(null)
+  const [error,   setError]   = useState<string | null>(null)
+  const [actionId, setActionId] = useState<string | null>(null)
+
+  async function handleCreate(e: React.MouseEvent) {
+    e.stopPropagation()
+    setBusy(true); setError(null); setResult(null)
+    try {
+      const res = await fetch('/api/content/broken-urls/create-action', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          url,
+          classification,
+          evidence,
+          historical_impressions: historicalImpressions,
+        }),
+      })
+      const d = await res.json()
+      if (!res.ok || !d.ok) throw new Error(d.error ?? `HTTP ${res.status}`)
+      setActionId(d.action_item_id)
+      setResult(d.duplicate ? 'duplicate' : 'created')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-2.5 flex items-center gap-2 flex-wrap">
+      <button
+        onClick={handleCreate}
+        disabled={busy || result !== null}
+        className={`text-[11px] font-semibold px-2.5 py-1 rounded transition ${
+          result === 'created'
+            ? 'bg-green-700/20 text-green-300 border border-green-700/40'
+            : result === 'duplicate'
+              ? 'bg-amber-700/20 text-amber-300 border border-amber-700/40'
+              : 'bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50'
+        }`}
+      >
+        {busy             ? 'Creating…'
+          : result === 'created'   ? '✓ Action Item created'
+          : result === 'duplicate' ? 'ℹ Already exists'
+          : '✅ Create Action Item'}
+      </button>
+      {actionId && (
+        <a
+          href={`/gsc/action-items/${actionId}`}
+          onClick={e => e.stopPropagation()}
+          className="text-[11px] text-blue-400 hover:text-blue-300"
+        >
+          View →
+        </a>
+      )}
+      {error && <span className="text-[11px] text-red-400">⚠️ {error}</span>}
+    </div>
+  )
+}
+
 // ── BrokenCard ────────────────────────────────────────────────────────────────
 function BrokenCard({ page: p }: { page: BrokenPage }) {
   const [expanded, setExpanded] = useState(false)
   const is5xx = p.status_code >= 500
   const hasHistory = p.historical_impressions > 0
+
+  // Auto-classify — used for badge + suggested action
+  const classification = useMemo(() => classifyBrokenUrl({
+    status_code:           p.status_code,
+    historical_impressions: p.historical_impressions,
+    is_lost_page:          false,   // BrokenPage = currently 4xx/5xx; LostPage uses different flow
+  }), [p.status_code, p.historical_impressions])
+  const clsStyle = CLASSIFICATION_STYLES[classification.classification]
 
   return (
     <div className={`border rounded-xl overflow-hidden transition ${
@@ -115,10 +195,18 @@ function BrokenCard({ page: p }: { page: BrokenPage }) {
         {/* Status code */}
         <div className="flex-shrink-0">{statusBadge(p.status_code)}</div>
 
+        {/* Classification */}
+        <span
+          className={`flex-shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${clsStyle.class}`}
+          title={classification.reason}
+        >
+          {clsStyle.emoji} {clsStyle.label}
+        </span>
+
         {/* Path + title */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-white text-xs font-medium font-mono truncate max-w-[360px]">{p.path}</span>
+            <span className="text-white text-xs font-medium font-mono truncate max-w-[320px]">{p.path}</span>
             <CopyButton text={p.url} />
             {p.inlinks_count > 0 && (
               <span className="text-[10px] text-yellow-400 flex-shrink-0">
@@ -178,6 +266,12 @@ function BrokenCard({ page: p }: { page: BrokenPage }) {
                     ? `This URL had ${fmtNum(p.historical_impressions)} impressions before going dark. Set up a 301 redirect in your CMS to preserve link equity.`
                     : 'Set up a 301 redirect in your CMS, or remove all internal links pointing to this URL.'}
               </p>
+              <CreateActionItemButton
+                url={p.url}
+                classification={classification.classification}
+                evidence={`HTTP ${p.status_code} · ${p.inlinks_count} internal links · ${p.historical_impressions} impressions in last 90d`}
+                historicalImpressions={p.historical_impressions}
+              />
             </div>
           </div>
 

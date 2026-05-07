@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
+import MimirPanel from '@/components/agents/MimirPanel'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -448,6 +449,201 @@ function ChannelBreakdownSection({ cb, curLabel, prevLabel }: { cb: ChannelBreak
   )
 }
 
+// ── v2 — Key Takeaways card grid (mirrors PPTX slide 4) ──────────────────
+//
+// Galih's PPTX template uses a 2x3 grid of cards with colored top stripes:
+// yellow=watch, red=decline, green=gain. Each card has an icon, a trend
+// badge top-right, a bold headline, and 2-3 sentences of body.
+//
+// Source: split ai_narrative by paragraph and classify each via keyword
+// sentiment heuristic. This is "good enough for v1" without an extra LLM
+// call. When narrative_highlights JSONB is set on the report (future
+// enhancement), prefer that.
+
+interface NarrativeHighlight {
+  trend:    'up' | 'down' | 'flat' | 'warning'
+  headline: string
+  body:     string
+  icon:     string
+}
+
+const TREND_THEME: Record<NarrativeHighlight['trend'], { stripe: string; badge: string; label: string }> = {
+  up:      { stripe: 'bg-green-500',  badge: 'bg-green-500/15 text-green-300 border-green-500/30',   label: 'GAIN'    },
+  down:    { stripe: 'bg-red-500',    badge: 'bg-red-500/15 text-red-300 border-red-500/30',         label: 'DECLINE' },
+  warning: { stripe: 'bg-amber-500',  badge: 'bg-amber-500/15 text-amber-300 border-amber-500/30',   label: 'WATCH'   },
+  flat:    { stripe: 'bg-gray-500',   badge: 'bg-gray-700/40 text-gray-400 border-gray-700',          label: 'FLAT'    },
+}
+
+function classifyTrend(text: string): NarrativeHighlight['trend'] {
+  const t = text.toLowerCase()
+  // Strong positive signals
+  if (/\b(grew|growth|gain|rose|increase|improved|exceeded|outperformed|wins?|landed)\b|\+\d|up \d+/.test(t)) return 'up'
+  // Strong negative signals
+  if (/\b(declined|drop|dropped|lost|fell|decrease|down \d+|missed|failed|stalled|underperformed|−\d|-\d+%)\b/.test(t)) return 'down'
+  // Watch signals
+  if (/\b(divergence|unreliable|broken|issue|investigate|concerning|risk|caution|monitor)\b/.test(t)) return 'warning'
+  return 'flat'
+}
+
+function extractHeadline(paragraph: string): { headline: string; body: string; icon: string } {
+  const sentences = paragraph.split(/(?<=[.!?])\s+/)
+  const headline = sentences[0]?.trim() ?? paragraph.slice(0, 80)
+  const body     = sentences.slice(1).join(' ').trim() || paragraph.slice(headline.length).trim()
+  // Pick icon by trend keyword
+  const t = paragraph.toLowerCase()
+  let icon = '📊'
+  if (/\brevenue|sales|conversion/.test(t))               icon = '💰'
+  else if (/\btraffic|sessions|click/.test(t))            icon = '🚀'
+  else if (/\bdrop|decline|fell|lost/.test(t))            icon = '📉'
+  else if (/\bgrew|gain|rose|improved/.test(t))           icon = '📈'
+  else if (/\btool|api|integration|broken/.test(t))       icon = '🛠️'
+  else if (/\bcompet|rival|market share/.test(t))         icon = '⚔️'
+  else if (/\bcontent|brief|article|page/.test(t))        icon = '📝'
+  else if (/\binvestigate|monitor|watch|risk/.test(t))    icon = '⚠️'
+  return { headline: headline.replace(/[.!?]+$/, ''), body, icon }
+}
+
+function deriveHighlights(narrative: string): NarrativeHighlight[] {
+  const paragraphs = narrative.split(/\n\n+/).map(p => p.trim()).filter(Boolean).slice(0, 6)
+  return paragraphs.map(p => {
+    const { headline, body, icon } = extractHeadline(p)
+    return {
+      trend:    classifyTrend(p),
+      headline,
+      body:     body.length > 320 ? body.slice(0, 317) + '…' : body,
+      icon,
+    }
+  })
+}
+
+function KeyTakeawaysSection({ narrative, monthLabel }: { narrative: string; monthLabel: string }) {
+  const highlights = useMemo(() => deriveHighlights(narrative), [narrative])
+  if (highlights.length === 0) return null
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-red-400 font-semibold">Key Takeaways</p>
+          <h3 className="text-lg font-bold text-white mt-0.5">What happened in {monthLabel}</h3>
+        </div>
+        <span className="text-[10px] text-gray-600">Auto-derived from AI narrative</span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {highlights.map((h, i) => {
+          const theme = TREND_THEME[h.trend]
+          return (
+            <article key={i} className="bg-gray-800/60 rounded-lg overflow-hidden border border-gray-800">
+              <div className={`h-1 ${theme.stripe}`} />
+              <div className="p-3">
+                <div className="flex items-start justify-between mb-2">
+                  <span className="text-xl">{h.icon}</span>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${theme.badge}`}>
+                    {theme.label}
+                  </span>
+                </div>
+                <h4 className="text-white font-semibold text-sm leading-tight mb-1.5">{h.headline}</h4>
+                {h.body && <p className="text-gray-400 text-xs leading-relaxed">{h.body}</p>}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── v2 — Action Plan card grid (mirrors PPTX slide 8) ──────────────────────
+//
+// Galih's PPTX shows action items as numbered cards in 2-col grid with
+// category labels (FOUNDATION / GROWTH / DEFENSE / VELOCITY) + P0/P1/P2
+// priority badges. The existing /reports/monthly page already has an
+// `<ActionPlan raw={...} />` numbered list — this replaces it with a card
+// grid mirroring the PPTX. We parse the markdown action plan via the same
+// regex used in pptx-builder.
+
+interface ActionItemCard {
+  number:   number
+  title:    string
+  body:     string
+  priority: 'P0' | 'P1' | 'P2'
+  category: string
+}
+
+function parseActionPlanCards(raw: string): ActionItemCard[] {
+  const lines = raw.split('\n').filter(l => l.trim())
+  const cards: ActionItemCard[] = []
+  let current: ActionItemCard | null = null
+
+  for (const line of lines) {
+    // Match "1. **Title** — body" or "1. Title — body"
+    const numMatch = line.match(/^(\d+)\.\s+\**([^*—\-]+?)\**\s*[—\-–]\s*(.+)$/)
+    if (numMatch) {
+      if (current) cards.push(current)
+      const [, numStr, title, body] = numMatch
+      // Heuristic priority + category
+      const lc = (title + ' ' + body).toLowerCase()
+      const priority: 'P0' | 'P1' | 'P2' =
+        /\b(critical|urgent|blocking|must|p0|asap)\b/.test(lc) ? 'P0' :
+        /\b(important|recover|fix|resolve|p1)\b/.test(lc)      ? 'P1' :
+                                                                 'P2'
+      const category =
+        /\b(diagnose|measure|tracking|tooling|integrate|infra)\b/.test(lc) ? 'FOUNDATION' :
+        /\b(launch|new|create|build|expand)\b/.test(lc)                    ? 'GROWTH'    :
+        /\b(refresh|recover|defend|investigate|protect)\b/.test(lc)        ? 'DEFENSE'   :
+        /\b(execute|ship|clear|backlog|velocity)\b/.test(lc)               ? 'VELOCITY'  :
+                                                                              'EXECUTE'
+      current = { number: parseInt(numStr, 10), title: title.trim(), body: body.trim(), priority, category }
+    } else if (current) {
+      current.body += ' ' + line.trim()
+    }
+  }
+  if (current) cards.push(current)
+  return cards
+}
+
+const PRIORITY_THEME: Record<ActionItemCard['priority'], string> = {
+  P0: 'bg-red-500/15 text-red-300 border-red-500/30',
+  P1: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+  P2: 'bg-gray-700/40 text-gray-400 border-gray-700',
+}
+
+function ActionPlanCardsSection({ raw }: { raw: string }) {
+  const cards = useMemo(() => parseActionPlanCards(raw), [raw])
+  if (cards.length === 0) {
+    // Fallback to existing prose-based ActionPlan
+    return <ActionPlan raw={raw} />
+  }
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      {cards.map(c => {
+        const stripe = c.priority === 'P0' ? 'bg-red-500' : c.priority === 'P1' ? 'bg-amber-500' : 'bg-gray-500'
+        const badge  = PRIORITY_THEME[c.priority]
+        return (
+          <article key={c.number} className="bg-gray-800/60 rounded-lg overflow-hidden border border-gray-800">
+            <div className="flex items-stretch">
+              <div className={`w-1.5 ${stripe} flex-shrink-0`} />
+              <div className="flex-1 p-3 min-w-0">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-700 text-white text-xs font-bold flex-shrink-0">
+                    {c.number}
+                  </span>
+                  <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">{c.category}</span>
+                  <span className={`ml-auto text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${badge}`}>
+                    {c.priority}
+                  </span>
+                </div>
+                <h4 className="text-white font-semibold text-sm leading-tight mb-1">{c.title}</h4>
+                <p className="text-gray-400 text-xs leading-relaxed">{c.body}</p>
+              </div>
+            </div>
+          </article>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── v2 — Tracked-product ranking analysis card ────────────────────────────
 function RankingAnalysisSection({ tr }: { tr: TrackedRankings }) {
   const buckets = [
@@ -667,9 +863,23 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
         body:    JSON.stringify({ id: selectedId }),
       })
       if (!res.ok) {
-        // Error responses are JSON
-        const data = await res.json().catch(() => ({})) as { error?: string }
-        setPptxError(data.error ?? 'Failed to export PPTX')
+        // Try JSON first (our /api route returns JSON errors). If that fails
+        // (e.g. Vercel platform-level error like 504 timeout returns HTML),
+        // fall back to text body. Either way, surface the REAL message + HTTP
+        // status so the user knows what happened.
+        const ct = res.headers.get('content-type') ?? ''
+        let detail = ''
+        if (ct.includes('application/json')) {
+          const data = await res.json().catch(() => null) as { error?: string } | null
+          detail = data?.error ?? ''
+        }
+        if (!detail) {
+          // Read text — Vercel error pages, body too short, etc.
+          detail = (await res.text().catch(() => '')).trim().slice(0, 500)
+        }
+        setPptxError(detail
+          ? `HTTP ${res.status}: ${detail}`
+          : `HTTP ${res.status}: PPTX export failed (no error body returned)`)
         return
       }
       // Success — stream is the raw PPTX binary. Trigger browser download.
@@ -743,6 +953,12 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {report && (
+            <MimirPanel
+              pageContext={{ kind: 'monthly_report', id: report.id }}
+              trigger="🪶 Ask Mimir"
+            />
+          )}
           {report && (
             <button
               onClick={() => window.print()}
@@ -1354,15 +1570,23 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
                 )}
               </div>
 
-              {/* ── AI Action Plan ── */}
+              {/* ── Key Takeaways (mirrors PPTX slide 4 — card grid) ── */}
+              {report.ai_narrative && (
+                <KeyTakeawaysSection
+                  narrative={report.ai_narrative}
+                  monthLabel={d.monthLabel}
+                />
+              )}
+
+              {/* ── AI Action Plan — card grid (mirrors PPTX slide 8) ── */}
               {report.ai_action_plan && (
                 <div className="bg-gradient-to-br from-red-950/30 to-gray-900 border border-red-800/30 rounded-xl p-6">
                   <div className="flex items-center gap-2 mb-5">
                     <span className="text-base">🎯</span>
-                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Monthly Action Plan</h3>
-                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">AI-recommended</span>
+                    <h3 className="text-sm font-semibold text-white uppercase tracking-wider">Recommended Action Plan</h3>
+                    <span className="text-[10px] text-gray-600 bg-gray-800 px-2 py-0.5 rounded-full">AI-recommended · Next month</span>
                   </div>
-                  <ActionPlan raw={report.ai_action_plan} />
+                  <ActionPlanCardsSection raw={report.ai_action_plan} />
                 </div>
               )}
 

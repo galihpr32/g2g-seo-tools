@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getSiteUrlForSlug, buildCategoryUrl } from '@/lib/agents/site-helpers'
+import { isSkipDomain } from '@/lib/agents/hermod-domain-eval'
 import { logClaudeUsage } from '@/lib/api-logger'
 import { persistFindingsBulk } from '@/lib/agents/findings'
 
@@ -118,7 +119,20 @@ export async function runHermod(
       return { summary, actionsQueued: 0 }
     }
 
-    // 2. Skip-list: ourDomain, competitors, existing prospects, pending hermod actions
+    // 2. Skip-list: ALL own brand domains, competitors, existing prospects, pending hermod actions
+    // ── Multi-brand defense: when running for G2G we still exclude
+    //    offgamers.com (and vice versa), because we'd never pitch a sister
+    //    site as a guestpost target. Pull every active site_config row.
+    const { data: allSites } = await db
+      .from('site_configs')
+      .select('favicon_domain')
+      .eq('is_active', true)
+    const ownDomains: string[] = (allSites ?? [])
+      .map(s => String(s.favicon_domain).toLowerCase())
+      .filter(Boolean)
+    // ourDomain (current site) MUST be in the list — fall back if site_configs query empty
+    if (!ownDomains.includes(ourDomain)) ownDomains.push(ourDomain)
+
     const { data: competitors } = await db
       .from('competitors')
       .select('domain')
@@ -130,7 +144,7 @@ export async function runHermod(
       .eq('owner_user_id', ownerId)
 
     const skipDomains = new Set<string>([
-      ourDomain,
+      ...ownDomains,
       ...((competitors ?? []).map(c => String(c.domain).toLowerCase())),
       ...((existingProspects ?? []).map(p => String(p.domain).toLowerCase())),
     ])
@@ -187,14 +201,23 @@ export async function runHermod(
         .slice(0, 10)
 
       // 4. Candidate domains
+      // Two-layer skip: per-account `skipDomains` Set (own brands +
+      // competitors + existing prospects) AND the global HERMOD_SKIP_DOMAINS
+      // hardcoded list (gaming marketplaces, social walled gardens, etc.).
+      // Both must pass for a domain to become a candidate. The hardcoded list
+      // catches well-known competitors even when the user-managed
+      // `competitors` table is empty.
+      const isCandidate = (dom: string) =>
+        !skipDomains.has(dom) && !isSkipDomain(dom)
+
       const candidateDomains: { domain: string; position: number; title?: string; url?: string; source: 'serp' | 'loki' }[] = []
       for (const row of serpRows) {
         const dom = row.domain.toLowerCase()
-        if (!skipDomains.has(dom)) {
+        if (isCandidate(dom)) {
           candidateDomains.push({ domain: dom, position: row.position, title: row.title, url: row.url, source: 'serp' })
         }
       }
-      if (competitorDomain && !skipDomains.has(competitorDomain) && !candidateDomains.find(c => c.domain === competitorDomain)) {
+      if (competitorDomain && isCandidate(competitorDomain) && !candidateDomains.find(c => c.domain === competitorDomain)) {
         candidateDomains.push({
           domain:   competitorDomain,
           position: Number(d.competitor_position ?? 5),
