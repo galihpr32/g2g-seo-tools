@@ -789,6 +789,11 @@ export default function PipelineJourneyPage() {
   const [filterAssignee, setFilterAssignee] = useState<string>('all')   // 'all' | 'unassigned' | userId
   const [sortBy,         setSortBy]         = useState<'updated' | 'clicks' | 'sv' | 'created'>('updated')
 
+  // List size + dismissed visibility — server caps at 1000, "all" maps to that.
+  type ListLimit = '60' | '100' | '200' | '500' | 'all'
+  const [listLimit,        setListLimit]        = useState<ListLimit>('60')
+  const [includeDismissed, setIncludeDismissed] = useState(false)
+
   // Active site slug — drives which brand's pipeline we're viewing.
   // Reactive: re-runs fetchData when SiteSwitcher updates the cookie.
   const siteSlug = useSiteSlug()
@@ -796,7 +801,12 @@ export default function PipelineJourneyPage() {
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
-      const res  = await fetch(`/api/pipeline-journey?site=${siteSlug}&limit=60`)
+      const params = new URLSearchParams({
+        site:  siteSlug,
+        limit: listLimit,
+      })
+      if (includeDismissed) params.set('includeDismissed', '1')
+      const res  = await fetch(`/api/pipeline-journey?${params.toString()}`)
       if (!res.ok) return
       const json = await res.json()
       const journey: JourneyItem[] = json.journey ?? []
@@ -813,7 +823,7 @@ export default function PipelineJourneyPage() {
       }
     } catch { /* silent */ }
     finally { setLoading(false) }
-  }, [siteSlug])
+  }, [siteSlug, listLimit, includeDismissed])
 
   // Manual "process stuck" trigger — loops until all stuck briefs are cleared.
   // process-briefs handles 1 brief per invocation (within Hobby's 60s limit).
@@ -1087,9 +1097,36 @@ export default function PipelineJourneyPage() {
           <option value="sv">Highest search volume</option>
         </select>
 
-        {(filterAgent !== 'all' || filterOutput !== 'all' || filterAssignee !== 'all' || sortBy !== 'updated') && (
+        <span className="text-gray-700">·</span>
+        <span className="text-gray-500 mr-1">Show:</span>
+        <select
+          value={listLimit}
+          onChange={e => setListLimit(e.target.value as ListLimit)}
+          className="bg-gray-900 border border-gray-800 rounded-md px-2 py-1 text-white focus:outline-none focus:border-gray-600"
+          title="How many opportunities to fetch from the server"
+        >
+          <option value="60">Last 60</option>
+          <option value="100">Last 100</option>
+          <option value="200">Last 200</option>
+          <option value="500">Last 500</option>
+          <option value="all">All (max 1000)</option>
+        </select>
+
+        <button
+          onClick={() => setIncludeDismissed(d => !d)}
+          className={`px-2 py-1 rounded-md border transition ${
+            includeDismissed
+              ? 'bg-red-500/10 border-red-500/30 text-red-300'
+              : 'bg-gray-900 border-gray-800 text-gray-500 hover:text-gray-300 hover:border-gray-600'
+          }`}
+          title="Include opportunities you've previously dismissed"
+        >
+          {includeDismissed ? '✓ Including dismissed' : '🗑 Include dismissed'}
+        </button>
+
+        {(filterAgent !== 'all' || filterOutput !== 'all' || filterAssignee !== 'all' || sortBy !== 'updated' || listLimit !== '60' || includeDismissed) && (
           <button
-            onClick={() => { setFilterAgent('all'); setFilterOutput('all'); setFilterAssignee('all'); setSortBy('updated') }}
+            onClick={() => { setFilterAgent('all'); setFilterOutput('all'); setFilterAssignee('all'); setSortBy('updated'); setListLimit('60'); setIncludeDismissed(false) }}
             className="ml-auto text-gray-500 hover:text-red-400 transition"
           >
             ✕ Clear filters
