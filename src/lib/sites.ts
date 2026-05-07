@@ -1,35 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { headers, cookies } from 'next/headers'
 
-const KNOWN_SLUGS = ['g2g', 'offgamers']
-
-/**
- * Resolve the active site slug INSIDE A SERVER COMPONENT.
- *
- * Reads the `x-active-site` header that middleware injects on every
- * request. Falls back to the `active-site` cookie when the header is
- * missing (e.g. during dev with no middleware), then to default.
- *
- * Use this in any RSC that needs to filter data by site:
- *
- *   import { getActiveSiteSlug } from '@/lib/sites'
- *   const slug = await getActiveSiteSlug()
- *   const { data: rows } = await db.from('foo').select('*').eq('site_slug', slug)
- *
- * For API routes, prefer `resolveSiteSlugFromRequest(req)` instead — it
- * accepts the Request object and reads the same cookie.
- */
-export async function getActiveSiteSlug(): Promise<string> {
-  const h = await headers()
-  const headerSlug = h.get('x-active-site')
-  if (headerSlug && KNOWN_SLUGS.includes(headerSlug)) return headerSlug
-
-  const c = await cookies()
-  const cookieSlug = c.get('active-site')?.value
-  if (cookieSlug && KNOWN_SLUGS.includes(cookieSlug)) return cookieSlug
-
-  return 'g2g'
-}
+// NOTE: This module is imported from BOTH client and server code (e.g.
+// `useSiteSlug` client hook uses `getSiteSlugFromPath`). DO NOT import
+// `next/headers` or `next/cookies` here — those are server-only and will
+// fail the client build with "depends on next/headers" errors.
+// Server-only helpers live in `sites-server.ts`.
 
 export interface SiteConfig {
   id: string

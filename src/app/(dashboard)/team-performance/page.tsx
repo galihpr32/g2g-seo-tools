@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId, canSeeTeamPerformance } from '@/lib/workspace'
-import { getActiveSiteSlug } from '@/lib/sites'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import RetroDraftButton from '@/components/team/RetroDraftButton'

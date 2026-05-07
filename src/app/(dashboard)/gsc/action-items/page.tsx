@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getActiveSiteSlug } from '@/lib/sites'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 import { ActionItemsTable, type ActionItem, type BriefSummary } from './ActionItemsTable'
 
 export const revalidate = 60

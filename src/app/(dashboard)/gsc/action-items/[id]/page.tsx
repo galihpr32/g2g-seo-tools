@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { getActiveSiteSlug } from '@/lib/sites'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 import { notFound } from 'next/navigation'
 import { BriefViewer } from './BriefViewer'
 

@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getActiveSiteSlug } from '@/lib/sites'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 import NotificationsClient from './NotificationsClient'
 
 export const revalidate = 30
