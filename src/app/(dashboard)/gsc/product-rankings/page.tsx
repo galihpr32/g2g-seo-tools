@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
 // ── CSV Import helpers ─────────────────────────────────────────────────────────
 
@@ -335,9 +336,89 @@ function ProductForm({ initial, onSave, onCancel }: {
   )
 }
 
+// ── Ranking history — single keyword sparkline + current pill ────────────────
+interface KeywordSnapshot { date: string; position: number | null; url: string | null }
+interface KeywordHistory  { keyword: string; snapshots: KeywordSnapshot[] }
+
+function PositionPill({ position }: { position: number | null | undefined }) {
+  if (position == null) return <span className="text-[10px] text-gray-600">—</span>
+  const color =
+    position <= 3   ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+    position <= 10  ? 'bg-blue-500/15 text-blue-400 border-blue-500/30'   :
+    position <= 30  ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
+                      'bg-gray-700/50 text-gray-400 border-gray-700'
+  return (
+    <span className={`inline-flex items-center justify-center w-7 h-6 rounded-md text-[11px] font-bold border ${color}`}>
+      {position}
+    </span>
+  )
+}
+
+// Tiny inline sparkline — last 14 snapshots, lower = better so we invert the
+// y axis. SVG keeps the page lightweight (no charting lib for ~3px/point).
+function MiniSparkline({ snapshots }: { snapshots: KeywordSnapshot[] }) {
+  const points = snapshots.slice(-14).filter(s => s.position != null) as Required<KeywordSnapshot>[]
+  if (points.length < 2) return <span className="text-[10px] text-gray-600">no history</span>
+
+  const maxPos = Math.max(...points.map(p => p.position!)) || 1
+  const minPos = Math.min(...points.map(p => p.position!)) || 1
+  const w = 80, h = 18
+  const pad = 1
+  // Invert y: lower position (better) = top of chart
+  const xStep = (w - pad * 2) / Math.max(1, points.length - 1)
+  const range = Math.max(1, maxPos - minPos)
+  const path = points.map((p, i) => {
+    const x = pad + i * xStep
+    const y = pad + ((p.position! - minPos) / range) * (h - pad * 2)
+    return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
+  }).join(' ')
+
+  // Trend colour: green if last point is BETTER (lower) than first, red if worse
+  const trendColor = points[points.length - 1].position! <= points[0].position!
+    ? 'stroke-green-400' : 'stroke-red-400'
+
+  return (
+    <svg width={w} height={h} className="inline-block align-middle" aria-hidden>
+      <path d={path} fill="none" strokeWidth={1.5} className={trendColor} />
+    </svg>
+  )
+}
+
+function ProductRankingsRow({ history }: { history: KeywordHistory[] }) {
+  if (history.length === 0) return null
+  return (
+    <div className="mt-3 border-t border-gray-800 pt-3 space-y-1">
+      <p className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Daily SERP rankings (last 30d)</p>
+      <div className="grid grid-cols-1 gap-1">
+        {history.map(h => {
+          const last = h.snapshots[h.snapshots.length - 1]
+          const first = h.snapshots[0]
+          const diff = (last?.position != null && first?.position != null)
+            ? first.position - last.position    // positive = improved (lower number)
+            : null
+          return (
+            <div key={h.keyword} className="flex items-center gap-2 text-xs">
+              <span className="text-gray-300 truncate flex-1 min-w-0" title={h.keyword}>{h.keyword}</span>
+              <MiniSparkline snapshots={h.snapshots} />
+              <PositionPill position={last?.position} />
+              {diff != null && diff !== 0 && (
+                <span className={`text-[10px] font-semibold w-8 text-right ${diff > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {diff > 0 ? `▲${diff}` : `▼${Math.abs(diff)}`}
+                </span>
+              )}
+              {(diff == null || diff === 0) && <span className="w-8" />}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── Product Card ──────────────────────────────────────────────────────────────
-function ProductCard({ product, onDelete, onEdit }: {
+function ProductCard({ product, history, onDelete, onEdit }: {
   product: TrackedProduct
+  history: KeywordHistory[]
   onDelete: (id: string) => void
   onEdit: (p: TrackedProduct) => void
 }) {
@@ -379,7 +460,7 @@ function ProductCard({ product, onDelete, onEdit }: {
         </div>
       </div>
 
-      {product.keywords.length > 0 && (
+      {product.keywords.length > 0 && history.length === 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {product.keywords.map(kw => (
             <span key={kw} className="text-xs bg-gray-800 text-gray-300 px-2 py-0.5 rounded-full">{kw}</span>
@@ -390,13 +471,19 @@ function ProductCard({ product, onDelete, onEdit }: {
       {product.notes && (
         <p className="text-xs text-gray-500 mt-2">{product.notes}</p>
       )}
+
+      {/* Live ranking history — populated daily by /api/cron/keyword-rankings.
+          Falls back to chip list (above) when no history rows exist yet. */}
+      <ProductRankingsRow history={history} />
     </div>
   )
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function ProductRankingsPage() {
+  const siteSlug = useSiteSlug()
   const [products, setProducts] = useState<TrackedProduct[]>([])
+  const [rankings, setRankings] = useState<Record<string, KeywordHistory[]>>({})
   const [loading, setLoading]   = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingProduct, setEditingProduct] = useState<TrackedProduct | null>(null)
@@ -405,16 +492,37 @@ export default function ProductRankingsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/products')
-      if (res.ok) {
-        const { products } = await res.json()
+      // Two queries in parallel:
+      //  - /api/products = the canonical product list (needed to render even
+      //    if no rankings exist yet — first day after onboarding)
+      //  - /api/products/rankings = 30-day position history per keyword. We
+      //    intentionally don't pass `country` here so each product's market
+      //    column drives which country's snapshots come back.
+      const [pRes, rRes] = await Promise.all([
+        fetch(`/api/products?site=${siteSlug}`),
+        fetch(`/api/products/rankings?site=${siteSlug}&days=30`),
+      ])
+      if (pRes.ok) {
+        const { products } = await pRes.json()
         setProducts(products)
+      }
+      if (rRes.ok) {
+        const { products: rp } = await rRes.json() as { products: { id: string; history: KeywordHistory[] }[] }
+        const map: Record<string, KeywordHistory[]> = {}
+        for (const p of rp ?? []) map[p.id] = p.history ?? []
+        setRankings(map)
       }
     } catch { /* silent */ }
     finally { setLoading(false) }
-  }, [])
+  }, [siteSlug])
 
   useEffect(() => { load() }, [load])
+
+  // How many keywords have at least one snapshot? Drives the info banner.
+  const totalSnapshots = useMemo(
+    () => Object.values(rankings).reduce((s, v) => s + v.reduce((a, b) => a + b.snapshots.length, 0), 0),
+    [rankings]
+  )
 
   async function handleSave(data: Omit<TrackedProduct, 'id' | 'created_at'>) {
     if (editingProduct) {
@@ -517,6 +625,7 @@ export default function ProductRankingsPage() {
             <ProductCard
               key={p.id}
               product={p}
+              history={rankings[p.id] ?? []}
               onDelete={id => setProducts(prev => prev.filter(x => x.id !== id))}
               onEdit={p => { setEditingProduct(p); setShowForm(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
             />
@@ -533,6 +642,7 @@ export default function ProductRankingsPage() {
               <ProductCard
                 key={p.id}
                 product={p}
+                history={rankings[p.id] ?? []}
                 onDelete={id => setProducts(prev => prev.filter(x => x.id !== id))}
                 onEdit={p => { setEditingProduct(p); setShowForm(false) }}
               />
@@ -541,14 +651,27 @@ export default function ProductRankingsPage() {
         </div>
       )}
 
-      {/* Info banner */}
+      {/* Info banner — adapts based on whether we already have ranking data
+          or not. Pre-cron, says "first snapshot tomorrow morning".
+          Post-cron, summarises how many snapshots are loaded. */}
       {!loading && products.length > 0 && (
-        <div className="mt-6 bg-blue-500/5 border border-blue-500/20 rounded-xl p-4">
-          <p className="text-blue-300 text-xs font-medium mb-1">📊 Daily position checks coming soon</p>
-          <p className="text-gray-500 text-xs">
-            Position data via DataForSEO SERP API will be pulled automatically each morning and displayed here.
-            The tracked keywords above will be used to check rankings on Google {products[0] ? `(${SERP_COUNTRIES.find(c => c.code === products[0].market)?.label ?? 'US'})` : ''}.
-          </p>
+        <div className={`mt-6 rounded-xl p-4 border ${totalSnapshots > 0 ? 'bg-green-500/5 border-green-500/20' : 'bg-blue-500/5 border-blue-500/20'}`}>
+          {totalSnapshots > 0 ? (
+            <>
+              <p className="text-green-300 text-xs font-medium mb-1">✅ Daily DataForSEO tracking active</p>
+              <p className="text-gray-500 text-xs">
+                {totalSnapshots} ranking snapshots loaded from the past 30 days. Cron runs at 04:00 UTC (11:00 WIB) daily; today&apos;s snapshot lands by 11:30 WIB.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-blue-300 text-xs font-medium mb-1">📊 First snapshot lands tomorrow</p>
+              <p className="text-gray-500 text-xs">
+                Daily DataForSEO position checks run automatically at 04:00 UTC (11:00 WIB). You&apos;ll see sparklines + position pills here once the cron has at least one day of data.
+                Each product is checked in its configured market: {products[0] ? `${SERP_COUNTRIES.find(c => c.code === products[0].market)?.label ?? 'US'}` : 'US'} (and others).
+              </p>
+            </>
+          )}
         </div>
       )}
     </div>

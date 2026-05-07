@@ -40,7 +40,8 @@ export default function SiteSwitcher() {
       localStorage.setItem('active-site', slug)
     } catch { /* ignore */ }
 
-    // Strip the current site prefix if present, then prepend new site
+    // Strip the current site prefix if present so we can compute the
+    // brand-agnostic path. e.g. `/g2g/reports/weekly` → `/reports/weekly`.
     let base = pathname
     const slugs = SITES.map(s => s.slug)
     const parts = pathname.split('/').filter(Boolean)
@@ -48,11 +49,24 @@ export default function SiteSwitcher() {
       base = '/' + parts.slice(1).join('/')
     }
 
-    // Determine where to land for the new site
+    // Two routing modes:
+    //   1. Site-aware paths (`/reports/*`) have a `[site]/...` dynamic
+    //      route — we re-prefix with the new slug so the new file/route
+    //      handler loads.
+    //   2. Every other page reads `useSiteSlug()` (cookie) on render —
+    //      we stay on the SAME path and trigger a refresh so the new
+    //      cookie value is picked up. Used to force-redirect users to
+    //      `/reports/weekly` here, which lost their context every switch.
     const isSiteAware = SITE_AWARE_PATHS.some(p => base.startsWith(p) || base === p)
-    const target = isSiteAware ? `/${slug}${base}` : `/${slug}/reports/weekly`
-
-    router.push(target)
+    if (isSiteAware) {
+      router.push(`/${slug}${base}`)
+    } else {
+      // Same path, but force a re-render so server components see the new
+      // active-site cookie. router.refresh() refetches RSC data; combined
+      // with the cookie update above, the page renders for the new brand.
+      router.push(base)
+      router.refresh()
+    }
   }
 
   // On mount: stamp the cookie so server-side always knows the active site
