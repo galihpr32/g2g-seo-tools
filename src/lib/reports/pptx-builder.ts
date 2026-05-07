@@ -98,13 +98,19 @@ export interface MonthlyReportData {
     sovEstimated:       boolean
   }
 
+  // Both naming conventions accepted — the monthly_reports.report_data
+  // shape uses totalActive/newThisMonth (route writes those) but earlier
+  // sample fixtures used activeCount/newThisMonthCount. Builder normalises
+  // via a `??` fallback below so either shape feeds the slide.
   backlinks?: {
     activeCount?:        number
+    totalActive?:        number
     newThisMonthCount?:  number
+    newThisMonth?:       number
     totalCostThisMonth?: number
     totalCostAllTime?:   number
-    costsByCurrency?:    Record<string, number>
-    avgPositionImprovement?: number
+    costsByCurrency?:    Record<string, number> | { currency: string; total: number }[]
+    avgPositionImprovement?: number | null
   }
 }
 
@@ -120,6 +126,12 @@ export interface BuildPptxInput {
    *  slide renders as a 2x4 grid of priority cards instead of a numbered
    *  list. Falls back to numbered list if absent. */
   actionItems?: ActionItemCard[]
+  /** Optional per-brand color override. Defaults to G2G's red palette.
+   *  - `accent`  drives card strips, headers, badges (default 'DC2626')
+   *  - `accent2` drives chart line/bar highlights (default 'F87171')
+   *  Both values are 6-char hex (no #). Leaving fields undefined keeps
+   *  defaults so callers can pass `{ accent: 'XYZ' }` without the second. */
+  theme?: { accent?: string; accent2?: string }
 }
 
 export interface NarrativeHighlight {
@@ -146,7 +158,13 @@ export interface ActionItemCard {
 
 // ── Theme ───────────────────────────────────────────────────────────────────
 
-const T = {
+// Default theme — G2G branded (dark + red).
+// The two `accent*` colors can be overridden per build via
+// `BuildPptxInput.theme` so other brands (OG → blue, etc.) reuse the same
+// dark layout with their own accent. Property names retain the legacy
+// `accentRed*` for backwards compatibility — they hold whatever brand
+// accent is active for the current build.
+const DEFAULT_THEME = {
   bgPrimary:   '0F1218',
   bgCard:      '1A1F2A',
   bgHero:      '0B0E13',
@@ -158,7 +176,8 @@ const T = {
   borderDim:   '27303F',
   gainGreen:   '10B981',
   lossRed:     'EF4444',
-} as const
+}
+const T = { ...DEFAULT_THEME }   // mutable on purpose — see applyTheme()
 
 const FH = 'Trebuchet MS'   // Header font
 const FB = 'Calibri'        // Body font
@@ -256,6 +275,15 @@ function drawFooter(slide: PptxGenJS.Slide, slideNum: number, total: number, mon
 export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buffer> {
   const { reportData: r, aiNarrative, aiActionPlan, narrativeHighlights, actionItems } = input
 
+  // Apply per-brand theme override (if any) on the shared T object. We
+  // restore defaults in the finally block at the end so that the next
+  // build (potentially a different brand) doesn't inherit our colours.
+  // This is sequential-only safe — if two parallel calls race, one may
+  // see the other's theme momentarily. In practice monthly/weekly
+  // generation isn't parallel, so this trade-off is fine.
+  if (input.theme?.accent)  T.accentRed  = input.theme.accent
+  if (input.theme?.accent2) T.accentRed2 = input.theme.accent2
+
   const pres = new PptxGenJS()
   pres.layout = 'LAYOUT_WIDE'
   pres.title  = `${r.siteName} Monthly Report — ${r.monthLabel}`
@@ -292,7 +320,9 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
   }
 
   // Backlinks
-  if (r.backlinks && (r.backlinks.activeCount || r.backlinks.newThisMonthCount)) {
+  const blActive  = r.backlinks?.activeCount       ?? r.backlinks?.totalActive       ?? 0
+  const blNew     = r.backlinks?.newThisMonthCount  ?? r.backlinks?.newThisMonth      ?? 0
+  if (r.backlinks && (blActive || blNew)) {
     buildFns.push((s, i, t) => buildBacklinksSlide(s, r, i, t))
   }
 
@@ -304,15 +334,21 @@ export async function buildMonthlyReportPptx(input: BuildPptxInput): Promise<Buf
   }
 
   const total = buildFns.length
-  for (let i = 0; i < buildFns.length; i++) {
-    const slide = pres.addSlide()
-    slide.background = { color: i === 0 ? T.bgHero : T.bgPrimary }
-    await buildFns[i](slide, i + 1, total)
-  }
+  try {
+    for (let i = 0; i < buildFns.length; i++) {
+      const slide = pres.addSlide()
+      slide.background = { color: i === 0 ? T.bgHero : T.bgPrimary }
+      await buildFns[i](slide, i + 1, total)
+    }
 
-  // Render to Node Buffer
-  const arr = await pres.write({ outputType: 'nodebuffer' })
-  return arr as Buffer
+    // Render to Node Buffer
+    const arr = await pres.write({ outputType: 'nodebuffer' })
+    return arr as Buffer
+  } finally {
+    // Restore theme defaults so the next call starts from a clean slate.
+    // Always runs — including if pres.write throws.
+    Object.assign(T, DEFAULT_THEME)
+  }
 }
 
 // ── Slide builders ──────────────────────────────────────────────────────────
@@ -418,10 +454,12 @@ function buildExecKpisSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: n
     })
   }
   if (kpis.length < 4 && r.backlinks) {
+    const blActiveK = r.backlinks.activeCount ?? r.backlinks.totalActive ?? 0
+    const blNewK    = r.backlinks.newThisMonthCount ?? r.backlinks.newThisMonth ?? 0
     kpis.push({
       label: 'Active backlinks',
-      value: fmt(r.backlinks.activeCount),
-      delta: `+${fmt(r.backlinks.newThisMonthCount)} new`,
+      value: fmt(blActiveK),
+      delta: `+${fmt(blNewK)} new`,
       deltaColor: T.gainGreen,
       sub: `${fmtMoney(r.backlinks.totalCostThisMonth)} spent`,
     })
@@ -807,12 +845,15 @@ function buildCompetitiveSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx
 function buildBacklinksSlide(slide: PptxGenJS.Slide, r: MonthlyReportData, idx: number, total: number) {
   drawSlideHeader(slide, 'Backlink portfolio', 'Off-page')
 
-  const bl = r.backlinks!
+  const bl     = r.backlinks!
+  // Normalise field-name variants (totalActive vs activeCount, etc.)
+  const active = bl.activeCount       ?? bl.totalActive  ?? 0
+  const fresh  = bl.newThisMonthCount ?? bl.newThisMonth ?? 0
 
   // 3 KPI cards
   const cards = [
-    { label: 'Active backlinks',      value: fmt(bl.activeCount), sub: 'live as of report date' },
-    { label: 'New this month',        value: `+${fmt(bl.newThisMonthCount)}`, sub: 'acquired during period' },
+    { label: 'Active backlinks',      value: fmt(active), sub: 'live as of report date' },
+    { label: 'New this month',        value: `+${fmt(fresh)}`, sub: 'acquired during period' },
     { label: 'Spend this month',      value: fmtMoney(bl.totalCostThisMonth), sub: `${fmtMoney(bl.totalCostAllTime)} all-time` },
   ]
 
