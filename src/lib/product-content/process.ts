@@ -301,13 +301,23 @@ export async function processProductRow(
   } catch (e) {
     console.error(`[process] failed for ${row.relation_id}:`, e)
 
+    // Surface the actual error message into the DB so the Details modal can
+    // show it. Without this, status='failed' shows up with no error visible
+    // (the bug Galih hit on 2026-05-08: "ini juga kalo ada failed, bisa
+    // tolong diinfoin ga failednya di mana?"). Drive-API throws, Anthropic
+    // 5xx, JSON.parse errors, anything before/after EN doc try-block — all
+    // land here and need to be persisted.
+    const errMsg = e instanceof Error ? e.message : String(e)
+
     // Mark BOTH columns failed since ID translates from EN — if EN bombs, ID can't proceed
     await db
       .from('product_content_queue')
       .update({
-        status:    'failed',
-        id_status: 'failed',
-        updated_at: new Date().toISOString(),
+        status:              'failed',
+        id_status:           'failed',
+        generation_error:    errMsg,
+        id_generation_error: errMsg,
+        updated_at:          new Date().toISOString(),
       })
       .eq('owner_user_id', row.owner_user_id)
       .eq('relation_id', row.relation_id)
@@ -321,7 +331,7 @@ export async function processProductRow(
       } catch { /* best-effort */ }
     }
 
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    return { ok: false, error: errMsg }
   }
 }
 

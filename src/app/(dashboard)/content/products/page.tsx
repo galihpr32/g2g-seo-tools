@@ -87,8 +87,11 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
         <div className="p-5 space-y-5">
           {/* Failure details — surfaces the exact reason content gen / Drive
                doc creation failed. Most common causes: Drive API not enabled,
-               GOOGLE_DRIVE_FOLDER_ID missing or service-account-without-access. */}
-          {(item.status === 'failed' || item.id_status === 'failed') && (item.generation_error || item.id_generation_error) && (
+               GOOGLE_DRIVE_FOLDER_ID missing or service-account-without-access.
+               Show whenever an error column is populated, regardless of status —
+               that way stale "generated" rows that have a leftover error from a
+               prior attempt still surface it instead of silently looking fine. */}
+          {(item.generation_error || item.id_generation_error) && (
             <section className="bg-red-900/20 border border-red-800/40 rounded-lg p-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-2">⚠ Why this row failed</h3>
               {item.generation_error && (
@@ -582,6 +585,19 @@ export default function ProductContentPage() {
             className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition"
           >
             📜 History
+          </button>
+          <button
+            onClick={async () => {
+              const res = await fetch('/api/products/auto-content/recheck', { method: 'POST' })
+              const data = await res.json().catch(() => ({}))
+              if (!res.ok) { alert(`Recheck failed: ${data.error ?? res.status}`); return }
+              alert(`Found ${data.resetEn ?? 0} EN + ${data.resetId ?? 0} ID stale rows (status="generated" but no doc URL). Reset to pending — auto-process will pick them up in the next ~5 min tick.`)
+              await fetchItems()
+            }}
+            title="Reset rows that say 'generated' but have no Google Doc URL — they'll re-process on the next auto-tick"
+            className="px-3 py-2 bg-amber-900/40 hover:bg-amber-900/60 text-amber-200 text-sm rounded-lg transition border border-amber-800/40"
+          >
+            🔄 Recheck Stale
           </button>
           <button
             onClick={async () => {
