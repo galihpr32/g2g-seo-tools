@@ -18,6 +18,12 @@ export const maxDuration = 30
  * back via /api/products/auto-content/csv-import without translation.
  */
 
+// Sheet column layout mirrors the Google Sheet exactly so CSV-imported rows
+// land in the same column positions when round-tripped through Excel.
+//   A · Brand Name    · F · EN File URL    · H · ID File URL
+//   B · Category      · G · EN Status      · I · ID Status
+//   C · Relation ID   · D · Main Keyword
+//   E · Secondary Keywords
 const HEADERS = [
   'Brand Name',
   'Category',
@@ -25,7 +31,9 @@ const HEADERS = [
   'Main Keyword',
   'Secondary Keywords',
   'EN File URL',
-  'Status',
+  'EN Status',
+  'ID File URL',
+  'ID Status',
   'Generated At',
   'Uploaded At',
   'Created At',
@@ -57,7 +65,9 @@ export async function GET(req: Request) {
       'Main Keyword':       'buy example brand gift card',
       'Secondary Keywords': 'example brand voucher, example brand code',
       'EN File URL':        '',
-      'Status':             'To Do',
+      'EN Status':          'To Do',
+      'ID File URL':        '',
+      'ID Status':          'To Do',
       'Generated At':       '',
       'Uploaded At':        '',
       'Created At':         '',
@@ -71,10 +81,10 @@ export async function GET(req: Request) {
     })
   }
 
-  // mode === 'data' — dump current queue
+  // mode === 'data' — dump current queue (both EN + ID artefacts)
   const { data: rows, error } = await db
     .from('product_content_queue')
-    .select('relation_id, product_name, category, main_keyword, secondary_keywords, google_doc_url, status, generated_at, uploaded_at, created_at')
+    .select('relation_id, product_name, category, main_keyword, secondary_keywords, google_doc_url, status, id_google_doc_url, id_status, generated_at, uploaded_at, created_at')
     .eq('owner_user_id', ownerId)
     .order('created_at', { ascending: false })
     .limit(5000)
@@ -88,7 +98,9 @@ export async function GET(req: Request) {
     'Main Keyword':       r.main_keyword ?? '',
     'Secondary Keywords': r.secondary_keywords ?? '',
     'EN File URL':        r.google_doc_url ?? '',
-    'Status':             r.status ?? '',
+    'EN Status':          r.status ?? '',
+    'ID File URL':        r.id_google_doc_url ?? '',
+    'ID Status':          r.id_status ?? '',
     'Generated At':       fmt(r.generated_at),
     'Uploaded At':        fmt(r.uploaded_at),
     'Created At':         fmt(r.created_at),
