@@ -62,31 +62,62 @@ export interface ProductDocContent {
  * The doc is placed in GOOGLE_DRIVE_FOLDER_ID (if configured) so humans can access it.
  * Returns the Google Doc URL (https://docs.google.com/document/d/{id}/edit).
  */
+/**
+ * Wrap a Google API call so its failure carries a stage tag in the message.
+ * Lets the UI / Vercel logs pinpoint exactly which step broke (Drive create
+ * vs Docs batch-update vs Permission grant) without grep-ing stack traces.
+ */
+function tag(stage: string, err: unknown): Error {
+  const raw = err instanceof Error ? err.message : String(err)
+  // Extract Google's structured error if present — they nest under
+  // err.errors[0].message (already in raw via .message), but sometimes the
+  // full body lives in err.response.data.error.message — try to get it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = err as any
+  const apiBody = e?.response?.data?.error?.message ?? e?.errors?.[0]?.message ?? null
+  const detail = apiBody ?? raw
+  return new Error(`[stage:${stage}] ${detail}`)
+}
+
 export async function createProductDoc(content: ProductDocContent): Promise<string> {
-  const auth  = getAuth()
-  const drive = google.drive({ version: 'v3', auth })
-  const docs  = google.docs({ version: 'v1', auth })
+  let auth, drive, docs
+  try {
+    auth  = getAuth()
+    drive = google.drive({ version: 'v3', auth })
+    docs  = google.docs({ version: 'v1', auth })
+  } catch (e) {
+    throw tag('auth', e)
+  }
 
   const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID
+  if (!folderId) {
+    // Without a folder the doc lands in the service-account's root drive
+    // (no UI access). Surface this loudly so users fix env vars before
+    // generating 100 unreadable docs.
+    throw new Error('[stage:config] GOOGLE_DRIVE_FOLDER_ID is not set in Vercel env vars. Set it to the Drive folder ID where docs should land (folder must be shared with the service account as Editor).')
+  }
 
   // ── 1. Create an empty Google Doc ─────────────────────────────────────────
   // Language tag in title makes ID vs EN versions easy to spot in Drive.
   const langTag = content.language === 'id' ? '[ID]' : '[EN]'
   const title = `[G2G] ${langTag} ${content.productName}`
 
-  const fileRes = await drive.files.create({
-    supportsAllDrives: true,
-    requestBody: {
-      name:     title,
-      mimeType: 'application/vnd.google-apps.document',
-      // Place in configured folder if available
-      ...(folderId ? { parents: [folderId] } : {}),
-    },
-    fields: 'id',
-  })
-
-  const docId = fileRes.data.id
-  if (!docId) throw new Error('Failed to create Google Doc — no ID returned')
+  let docId: string | null | undefined
+  try {
+    const fileRes = await drive.files.create({
+      supportsAllDrives: true,
+      requestBody: {
+        name:     title,
+        mimeType: 'application/vnd.google-apps.document',
+        parents:  [folderId],
+      },
+      fields: 'id',
+    })
+    docId = fileRes.data.id
+  } catch (e) {
+    throw tag('drive_create', e)
+  }
+  if (!docId) throw new Error('[stage:drive_create] Drive returned no file ID — possible folder ID typo or service-account access denied.')
 
   // ── 2. Strip HTML tags for plain-text body (Docs API doesn't accept HTML) ─
   // We write structured sections with clear headers so it's human-readable.
@@ -143,30 +174,38 @@ export async function createProductDoc(content: ProductDocContent): Promise<stri
     content.marketingDescription,
   ].join('\n')
 
-  await docs.documents.batchUpdate({
-    documentId: docId,
-    requestBody: {
-      requests: [
-        {
-          insertText: {
-            location: { index: 1 },
-            text: body,
+  try {
+    await docs.documents.batchUpdate({
+      documentId: docId,
+      requestBody: {
+        requests: [
+          {
+            insertText: {
+              location: { index: 1 },
+              text: body,
+            },
           },
-        },
-      ],
-    },
-  })
+        ],
+      },
+    })
+  } catch (e) {
+    throw tag('docs_batchupdate', e)
+  }
 
   // ── 4. Make the file readable by anyone with the link ──────────────────────
   // This allows the G2G team to open the link from the sheet without needing
   // to be added to the service account's drive individually.
-  await drive.permissions.create({
-    fileId: docId,
-    requestBody: {
-      role: 'reader',
-      type: 'anyone',
-    },
-  })
+  try {
+    await drive.permissions.create({
+      fileId: docId,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
+    })
+  } catch (e) {
+    throw tag('drive_permission', e)
+  }
 
   return `https://docs.google.com/document/d/${docId}/edit`
 }
