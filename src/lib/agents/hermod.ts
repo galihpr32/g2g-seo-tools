@@ -258,14 +258,20 @@ export async function runHermod(
       }))
       await persistFindingsBulk(db, discoveredFindings)
 
-      // 5. Top 2 candidates per keyword, personalised by Claude.
-      // Master pitch lookup (one per keyword, reused across both candidates).
+      // 5. Top N candidates per keyword, personalised by Claude.
+      // Master pitch lookup (one per keyword, reused across all candidates).
+      // Bumped from 2 → 4 per keyword, total 8 → 15 (Sprint 13 ask):
+      // Specialist 2 was running out of fresh prospects mid-week. Wider top-N
+      // also gives the team room to filter out anchor-text mismatches without
+      // dropping the whole pipeline to zero.
+      const PER_KEYWORD_CAP = 4
+      const TOTAL_ACTIONS_CAP = 15
       const masterPitch = await loadMasterPitch(db, ownerId, keyword).catch(err => {
         warnings.push(`master pitch lookup failed for "${keyword}": ${err instanceof Error ? err.message : String(err)}`)
         return null
       })
-      for (const candidate of candidateDomains.slice(0, 2)) {
-        if (actionsQueued >= 8) break
+      for (const candidate of candidateDomains.slice(0, PER_KEYWORD_CAP)) {
+        if (actionsQueued >= TOTAL_ACTIONS_CAP) break
         skipDomains.add(candidate.domain)
 
         const angle = await buildPersonalisedAngle({

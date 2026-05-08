@@ -555,6 +555,31 @@ export default function ProductContentPage() {
           >
             📜 History
           </button>
+          <button
+            onClick={async () => {
+              if (!confirm('Clear ALL pending/generating/failed product rows? Already-uploaded rows are protected. This is irreversible.')) return
+              const res = await fetch('/api/products/auto-content/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+              const data = await res.json().catch(() => ({}))
+              if (!res.ok) { alert(`Clear failed: ${data.error ?? res.status}`); return }
+              alert(`Cleared ${data.deleted ?? 0} rows. ${data.kept ? `${data.kept} uploaded rows kept.` : ''} Re-import or re-sync to start fresh.`)
+              await fetchItems()
+            }}
+            title="Wipe all queue rows except already-uploaded ones, so you can restart fresh"
+            className="px-3 py-2 bg-red-900/40 hover:bg-red-900/60 text-red-200 text-sm rounded-lg transition border border-red-800/40"
+          >
+            🗑 Clear All
+          </button>
+        </div>
+      </div>
+
+      {/* ── Auto-process info banner ──────────────────────────────────── */}
+      <div className="mb-4 bg-emerald-900/15 border border-emerald-800/40 rounded-lg px-4 py-2.5 flex items-center gap-3 text-xs">
+        <span className="text-emerald-400 text-base">⚡</span>
+        <div className="flex-1 text-emerald-100">
+          <span className="font-semibold">Auto-process is on.</span>{' '}
+          <span className="text-emerald-200/80">
+            Pending rows are picked up every ~5 minutes and processed in batches of 8 per run. No need to click Sync repeatedly — just upload, then refresh this page periodically.
+          </span>
         </div>
       </div>
 
@@ -778,6 +803,32 @@ export default function ProductContentPage() {
         {selected.size > 0 && (
           <div className="flex items-center gap-2 ml-auto">
             <span className="text-sm text-gray-400">{selected.size} selected</span>
+            {/* Process selected — runs the auto-content generator on all picked
+                 rows immediately (instead of waiting for the 5-min cron tick).
+                 Visible whenever the selection contains any pending/failed rows. */}
+            {filteredItems.some(i => selected.has(i.relation_id) && (i.status === 'pending' || i.status === 'failed')) && (
+              <button
+                onClick={async () => {
+                  const targetIds = filteredItems
+                    .filter(i => selected.has(i.relation_id) && (i.status === 'pending' || i.status === 'failed'))
+                    .map(i => i.id)
+                  if (targetIds.length === 0) return
+                  if (targetIds.length > 7 && !confirm(`Process ${targetIds.length} rows now? This may take ~${Math.ceil(targetIds.length * 0.25)} min and could hit the 60s function ceiling. Recommended max per click: 5-7.`)) return
+                  const res = await fetch('/api/products/auto-content/process-row', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids: targetIds }),
+                  })
+                  const d = await res.json().catch(() => ({}))
+                  if (!res.ok) alert(`Process failed: ${d.error ?? res.status}`)
+                  else alert(`Processed: ${d.succeeded ?? 0} succeeded · ${d.failed ?? 0} failed`)
+                  setSelected(new Set())
+                  await fetchItems()
+                }}
+                className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-sm rounded-lg transition"
+              >
+                ⚡ Process Selected
+              </button>
+            )}
             <button
               onClick={() => handleUpload(false)}
               disabled={uploading}
@@ -837,9 +888,10 @@ export default function ProductContentPage() {
                   key={item.id}
                   className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition ${i % 2 === 0 ? '' : 'bg-gray-900/50'}`}
                 >
-                  {/* Checkbox */}
+                  {/* Checkbox — selectable for any non-uploading status so the
+                       multi-select bulk action works for pending rows too. */}
                   <td className="px-3 py-2.5">
-                    {(item.status === 'generated' || item.status === 'failed') && (
+                    {item.status !== 'uploading' && item.status !== 'generating' && (
                       <input
                         type="checkbox"
                         checked={selected.has(item.relation_id)}
@@ -942,6 +994,26 @@ export default function ProductContentPage() {
                           className="px-2 py-1 text-xs text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded transition"
                         >
                           Details
+                        </button>
+                      )}
+                      {/* Per-row "Generate now" — manual trigger for pending/failed rows.
+                           Cron picks them up automatically every 5 min, but this lets
+                           users push individual rows to the front of the queue. */}
+                      {(item.status === 'pending' || item.status === 'failed') && (
+                        <button
+                          onClick={async () => {
+                            const res = await fetch('/api/products/auto-content/process-row', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ ids: [item.id] }),
+                            })
+                            const d = await res.json().catch(() => ({}))
+                            if (!res.ok) alert(`Failed: ${d.error ?? res.status}`)
+                            await fetchItems()
+                          }}
+                          className="px-2 py-1 text-xs text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded transition"
+                          title="Generate this row now (skip the cron wait)"
+                        >
+                          ⚡ Generate
                         </button>
                       )}
                     </div>

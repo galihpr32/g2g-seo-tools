@@ -1,0 +1,38 @@
+name: Product Content Auto-Process
+
+on:
+  schedule:
+    # Every 5 minutes — processes a batch of pending rows per owner.
+    # Picks up new rows uploaded via CSV import or sheet sync without
+    # the user needing to click "Sync" again.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: product-content-auto
+  # Cancel in progress: a fresh tick should not pile up if the previous
+  # run is still working. The cron route is idempotent — picking up
+  # 'generating' rows that get stuck is handled by recoverStuckRows().
+  cancel-in-progress: true
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Trigger /api/cron/product-content-auto
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 320 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/product-content-auto")
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"
