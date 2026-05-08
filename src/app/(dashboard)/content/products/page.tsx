@@ -25,6 +25,10 @@ interface ProductItem {
   cms_mkt_status:        string | null
   cms_seo_error:         string | null
   cms_mkt_error:         string | null
+  generation_error:      string | null
+  id_generation_error:   string | null
+  id_status:             Status | null
+  id_google_doc_url:     string | null
   generated_at:          string | null
   uploaded_at:           string | null
   updated_at:            string
@@ -81,6 +85,30 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
         </div>
 
         <div className="p-5 space-y-5">
+          {/* Failure details — surfaces the exact reason content gen / Drive
+               doc creation failed. Most common causes: Drive API not enabled,
+               GOOGLE_DRIVE_FOLDER_ID missing or service-account-without-access. */}
+          {(item.status === 'failed' || item.id_status === 'failed') && (item.generation_error || item.id_generation_error) && (
+            <section className="bg-red-900/20 border border-red-800/40 rounded-lg p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-2">⚠ Why this row failed</h3>
+              {item.generation_error && (
+                <div className="mb-2">
+                  <p className="text-[10px] uppercase text-red-300/70 mb-1">EN generation</p>
+                  <p className="text-xs text-red-100 bg-red-950/40 rounded px-2 py-1.5 font-mono break-all">{item.generation_error}</p>
+                </div>
+              )}
+              {item.id_generation_error && (
+                <div>
+                  <p className="text-[10px] uppercase text-red-300/70 mb-1">ID translation</p>
+                  <p className="text-xs text-red-100 bg-red-950/40 rounded px-2 py-1.5 font-mono break-all">{item.id_generation_error}</p>
+                </div>
+              )}
+              <p className="text-[10px] text-red-300/60 mt-2 italic">
+                Common fixes: enable Drive API in GCP, set <code className="bg-red-950/40 px-1 rounded">GOOGLE_DRIVE_FOLDER_ID</code> in Vercel env, share that folder with the service account as Editor.
+              </p>
+            </section>
+          )}
+
           {/* Keywords */}
           {(item.main_keyword || item.secondary_keywords) && (
             <section>

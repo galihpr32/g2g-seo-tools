@@ -167,8 +167,12 @@ export async function processProductRow(
     const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
     const parsed  = JSON.parse(jsonStr) as Record<string, string>
 
-    // 3. Create EN Google Doc (best-effort)
+    // 3. Create EN Google Doc — REQUIRED for status='generated'.
+    // If this fails the row goes to status='failed' with the error captured
+    // in generation_error so users can debug (Drive API not enabled, folder
+    // permission denied, etc.) without crawling Vercel function logs.
     let enDocUrl = ''
+    let enDocError: string | null = null
     try {
       enDocUrl = await createProductDoc({
         productName,
@@ -184,6 +188,7 @@ export async function processProductRow(
         language:             'en',
       })
     } catch (docErr) {
+      enDocError = docErr instanceof Error ? docErr.message : String(docErr)
       console.error(`[process] EN doc failed for ${row.relation_id}:`, docErr)
     }
 
@@ -231,11 +236,15 @@ export async function processProductRow(
       idWarning = `Translate exception: ${txErr instanceof Error ? txErr.message : String(txErr)}`
     }
 
+    const enSucceeded = !!enDocUrl   // No URL → row failed (drive API or folder access)
     const idGenSucceeded = !!(idBundle && idDocUrl)
     // Avoid TS complaint on object index
     const idB = idBundle as null | { meta_title: string; meta_description: string; meta_keywords: string; marketing_title: string; marketing_description: string }
 
     // 5. Save EN + ID content to DB
+    // EN status reflects whether a usable Doc URL was produced. Without it,
+    // the team has no artifact to upload — calling that "generated" was the
+    // bug users reported on 2026-05-08.
     await db
       .from('product_content_queue')
       .update({
@@ -248,8 +257,9 @@ export async function processProductRow(
         main_keyword:          mainKeyword,
         secondary_keywords:    secondaryKwStr,
         google_doc_url:        enDocUrl || null,
-        status:                'generated',
-        generated_at:          new Date().toISOString(),
+        status:                enSucceeded ? 'generated' : 'failed',
+        generated_at:          enSucceeded ? new Date().toISOString() : null,
+        generation_error:      enSucceeded ? null : (enDocError ?? 'EN Google Doc creation returned empty URL — check Drive API + GOOGLE_DRIVE_FOLDER_ID.'),
         // ID fields
         id_meta_title:            idB?.meta_title            ?? null,
         id_meta_description:      idB?.meta_description      ?? null,
@@ -259,6 +269,7 @@ export async function processProductRow(
         id_google_doc_url:        idDocUrl || null,
         id_status:                idGenSucceeded ? 'generated' : 'failed',
         id_generated_at:          idGenSucceeded ? new Date().toISOString() : null,
+        id_generation_error:      idGenSucceeded ? null : (idWarning ?? null),
         updated_at:               new Date().toISOString(),
       })
       .eq('owner_user_id', row.owner_user_id)
@@ -271,7 +282,7 @@ export async function processProductRow(
           mainKeyword,
           secondaryKeyword: secondaryKwStr,
           enFileName:       enDocUrl || '',
-          status:           SHEET_STATUS.GENERATED,
+          status:           enSucceeded ? SHEET_STATUS.GENERATED : SHEET_STATUS.FAILED,
           idFileName:       idDocUrl || '',
           idStatus:         idGenSucceeded ? SHEET_STATUS.GENERATED : SHEET_STATUS.FAILED,
         })
@@ -281,9 +292,10 @@ export async function processProductRow(
     }
 
     return {
-      ok:        true,
+      ok:        enSucceeded,
       enDocUrl:  enDocUrl || undefined,
       idDocUrl:  idDocUrl || undefined,
+      error:     enSucceeded ? undefined : (enDocError ?? 'EN doc URL was empty'),
       warning:   idWarning ?? undefined,
     }
   } catch (e) {
