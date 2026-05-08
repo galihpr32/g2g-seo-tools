@@ -52,6 +52,9 @@ export interface ProductDocContent {
   metaKeywords:         string
   marketingTitle:       string
   marketingDescription: string   // HTML string
+  /** 'en' (default) or 'id' — controls doc title prefix only. The content
+   *  is whatever the caller passes in; this flag does NOT translate. */
+  language?:            'en' | 'id'
 }
 
 /**
@@ -67,7 +70,9 @@ export async function createProductDoc(content: ProductDocContent): Promise<stri
   const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID
 
   // ── 1. Create an empty Google Doc ─────────────────────────────────────────
-  const title = `[G2G] ${content.productName}`
+  // Language tag in title makes ID vs EN versions easy to spot in Drive.
+  const langTag = content.language === 'id' ? '[ID]' : '[EN]'
+  const title = `[G2G] ${langTag} ${content.productName}`
 
   const fileRes = await drive.files.create({
     supportsAllDrives: true,

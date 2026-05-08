@@ -7,6 +7,7 @@ import { buildCategoryInstructions } from '@/lib/g2g-category-prompts'
 import { createProductDoc } from '@/lib/google/drive'
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { logApiUsage } from '@/lib/api-logger'
+import { translateProductContent } from '@/lib/agents/product-translator'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 120
@@ -129,7 +130,7 @@ export async function POST(req: Request) {
     )
 
   // ── Generate content for each product ─────────────────────────────────────
-  const results: { relationId: string; ok: boolean; error?: string }[] = []
+  const results: { relationId: string; ok: boolean; error?: string; warning?: string }[] = []
 
   for (const row of toProcess) {
     try {
@@ -175,7 +176,7 @@ export async function POST(req: Request) {
       const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
       const parsed  = JSON.parse(jsonStr)
 
-      // ── Create Google Doc (dual-output backup) ────────────────────────────
+      // ── Create EN Google Doc (dual-output backup) ─────────────────────────
       let googleDocUrl = ''
       try {
         googleDocUrl = await createProductDoc({
@@ -189,16 +190,69 @@ export async function POST(req: Request) {
           metaKeywords:         parsed.meta_keywords         ?? '',
           marketingTitle:       parsed.marketing_title       ?? row.productName,
           marketingDescription: parsed.marketing_description ?? '',
+          language:             'en',
         })
       } catch (docErr) {
         // Google Doc creation is best-effort — log but don't fail the whole product
-        console.error(`[auto-content] Google Doc creation failed for ${row.relationId}:`, docErr)
+        console.error(`[auto-content] EN Google Doc creation failed for ${row.relationId}:`, docErr)
       }
 
-      // ── Save to DB ────────────────────────────────────────────────────────
+      // ── Translate to Indonesian + create ID Google Doc ────────────────────
+      // Done after EN doc so an EN-only success still writes back to F+G even
+      // if translation fails. ID failure is non-fatal — the product is still
+      // "Generated" for EN; ID column gets "Failed" status so the team can
+      // retry just the translation step later.
+      let idDocUrl = ''
+      let idBundle: { meta_title: string; meta_description: string; meta_keywords: string; marketing_title: string; marketing_description: string } | null = null
+      let idTranslationError: string | null = null
+      try {
+        const tx = await translateProductContent({
+          productName: row.productName,
+          category:    row.category,
+          mainKeyword,
+          english: {
+            meta_title:            parsed.meta_title            ?? '',
+            meta_description:      parsed.meta_description      ?? '',
+            meta_keywords:         parsed.meta_keywords         ?? '',
+            marketing_title:       parsed.marketing_title       ?? row.productName,
+            marketing_description: parsed.marketing_description ?? '',
+          },
+        }, supabase, ownerId)
+
+        if (tx.ok && tx.bundle) {
+          idBundle = tx.bundle
+          try {
+            idDocUrl = await createProductDoc({
+              productName:          row.productName,
+              category:             row.category,
+              relationId:           row.relationId,
+              mainKeyword,
+              secondaryKeyword:     secondaryKwStr,
+              metaTitle:            tx.bundle.meta_title,
+              metaDescription:      tx.bundle.meta_description,
+              metaKeywords:         tx.bundle.meta_keywords,
+              marketingTitle:       tx.bundle.marketing_title,
+              marketingDescription: tx.bundle.marketing_description,
+              language:             'id',
+            })
+          } catch (docErr) {
+            idTranslationError = `ID doc create failed: ${docErr instanceof Error ? docErr.message : String(docErr)}`
+            console.error(`[auto-content] ID Google Doc failed for ${row.relationId}:`, docErr)
+          }
+        } else {
+          idTranslationError = tx.error ?? 'Translation returned no bundle'
+        }
+      } catch (txErr) {
+        idTranslationError = `Translate exception: ${txErr instanceof Error ? txErr.message : String(txErr)}`
+        console.error(`[auto-content] ID translation failed for ${row.relationId}:`, txErr)
+      }
+
+      // ── Save EN + ID content to DB ────────────────────────────────────────
+      const idGenSucceeded = !!(idBundle && idDocUrl)
       await db
         .from('product_content_queue')
         .update({
+          // EN fields
           meta_title:            parsed.meta_title            ?? '',
           meta_description:      parsed.meta_description      ?? '',
           meta_keywords:         parsed.meta_keywords         ?? '',
@@ -209,38 +263,62 @@ export async function POST(req: Request) {
           google_doc_url:        googleDocUrl || null,
           status:                'generated',
           generated_at:          new Date().toISOString(),
-          updated_at:            new Date().toISOString(),
+          // ID fields (null if translation failed; team can retry later)
+          id_meta_title:            idBundle?.meta_title            ?? null,
+          id_meta_description:      idBundle?.meta_description      ?? null,
+          id_meta_keywords:         idBundle?.meta_keywords         ?? null,
+          id_marketing_title:       idBundle?.marketing_title       ?? null,
+          id_marketing_description: idBundle?.marketing_description ?? null,
+          id_google_doc_url:        idDocUrl || null,
+          id_status:                idGenSucceeded ? 'generated' : 'failed',
+          id_generated_at:          idGenSucceeded ? new Date().toISOString() : null,
+          updated_at:               new Date().toISOString(),
         })
         .eq('owner_user_id', ownerId)
         .eq('relation_id', row.relationId)
 
-      // ── Write back to Google Sheet ────────────────────────────────────────
+      // ── Write back to Google Sheet (cols D-I) ─────────────────────────────
       try {
         await writeProductRow(spreadsheetId, sheetName, row.rowIndex, {
           mainKeyword,
           secondaryKeyword: secondaryKwStr,
           enFileName:       googleDocUrl || '',
           status:           SHEET_STATUS.GENERATED,
+          idFileName:       idDocUrl || '',
+          idStatus:         idGenSucceeded ? SHEET_STATUS.GENERATED : SHEET_STATUS.FAILED,
         })
       } catch (sheetErr) {
         // Sheet write-back is best-effort — don't fail the product
         console.error(`[auto-content] Sheet write-back failed for row ${row.rowIndex}:`, sheetErr)
       }
 
-      results.push({ relationId: row.relationId, ok: true })
+      results.push({
+        relationId: row.relationId,
+        ok:         true,
+        // Surface ID errors in the summary so the operator knows which rows
+        // need a translation retry without losing the EN success.
+        ...(idTranslationError ? { warning: `ID: ${idTranslationError}` } : {}),
+      })
     } catch (e) {
       console.error(`[auto-content] failed for ${row.relationId}:`, e)
 
+      // EN generation failed → ID can't proceed since it translates from EN.
+      // Mark both columns as failed so the team knows to retry the whole row.
       await db
         .from('product_content_queue')
-        .update({ status: 'failed', updated_at: new Date().toISOString() })
+        .update({
+          status:    'failed',
+          id_status: 'failed',
+          updated_at: new Date().toISOString(),
+        })
         .eq('owner_user_id', ownerId)
         .eq('relation_id', row.relationId)
 
-      // Mark as Failed in sheet too
+      // Mark as Failed in sheet too — both EN (G) and ID (I) columns
       try {
         await writeProductRow(spreadsheetId, sheetName, row.rowIndex, {
-          status: SHEET_STATUS.FAILED,
+          status:   SHEET_STATUS.FAILED,
+          idStatus: SHEET_STATUS.FAILED,
         })
       } catch { /* best-effort */ }
 

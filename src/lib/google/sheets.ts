@@ -16,9 +16,9 @@
 //   D (4) — Main Keyword     (agent fills this in)
 //   E (5) — Secondary Keyword(agent fills this in)
 //   F (6) — EN File Name     (agent writes Google Doc URL here)
-//   G (7) — Status           (agent updates: "To Do" → "Generated")
-//   H (8) — ID File Name     (Indonesian version — not touched by agent)
-//   I (9) — ID Status        (Indonesian version — not touched by agent)
+//   G (7) — EN Status        (agent updates: "To Do" → "Generated")
+//   H (8) — ID File Name     (agent writes translated ID Google Doc URL)
+//   I (9) — ID Status        (agent updates: "Generated" / "Failed")
 
 import { google } from 'googleapis'
 
@@ -31,6 +31,8 @@ export const SHEET_COLS = {
   secondaryKeyword: 'E',
   enFileName:       'F',
   status:           'G',
+  idFileName:       'H',
+  idStatus:         'I',
 } as const
 
 // Status values used in the sheet
@@ -83,7 +85,9 @@ export interface ProductRow {
   mainKeyword:       string   // may be empty — agent fills it in
   secondaryKeyword:  string   // may be empty — agent fills it in
   enFileName:        string   // may be empty or existing Google Doc URL
-  sheetStatus:       string   // "To Do", "Generated", etc.
+  sheetStatus:       string   // "To Do", "Generated", etc. (column G — EN status)
+  idFileName:        string   // may be empty or existing Indonesian Google Doc URL
+  idStatus:          string   // "To Do", "Generated", etc. (column I — ID status)
   rowIndex:          number   // 1-based row number in the sheet
 }
 
@@ -108,6 +112,11 @@ const HEADER_PATTERNS: Record<keyof Omit<ProductRow, 'rowIndex'>, string[]> = {
   enFileName:       ['en file', 'english file', 'en doc', 'doc url', 'google doc'],
   // CRITICAL: prefer "Status" headers that don't say "ID" / "Indonesian"
   sheetStatus:      ['en status', 'status'],
+  // ID = Indonesian (the language code, not the column "Relation ID"). Match
+  // headers that include "ID file" or "Indonesian file"; explicitly skip
+  // anything containing "relation" so we never confuse with the relationId col.
+  idFileName:       ['id file', 'indonesian file', 'id doc', 'indonesian doc'],
+  idStatus:         ['id status', 'indonesian status'],
 }
 
 interface ColumnIndex { [field: string]: number }
@@ -123,7 +132,15 @@ function resolveColumns(headerRow: string[]): ColumnIndex {
       const cell = norm[i]
       if (!cell) continue
       // Skip Indonesian-status columns when resolving the EN status field
-      if (field === 'sheetStatus' && (cell.includes('id ') || cell.includes('indonesian'))) continue
+      if (field === 'sheetStatus' && (cell.includes('id status') || cell.includes('indonesian'))) continue
+      // Skip "Relation ID" column when resolving id-file-name / id-status
+      // (both the column "Relation ID" and Indonesian-language cols start
+      // with "id" — only match Indonesian when "id file" / "id status" /
+      // "indonesian" appears explicitly)
+      if ((field === 'idFileName' || field === 'idStatus') && cell.includes('relation')) continue
+      // Skip generic "id" matches that aren't Indonesian — relationId field
+      // shouldn't bind to "ID file" / "ID status"
+      if (field === 'relationId' && (cell.includes('id file') || cell.includes('id status') || cell.includes('indonesian'))) continue
       for (const pat of patterns) {
         if (cell === pat) {
           // Exact match wins immediately
@@ -176,7 +193,12 @@ export async function readProductSheet(
   const cell = (row: unknown[], field: keyof Omit<ProductRow, 'rowIndex'>): string => {
     const idx = useHeaderMode
       ? (colIdx[field] ?? -1)
-      : ({ productName: 0, category: 1, relationId: 2, mainKeyword: 3, secondaryKeyword: 4, enFileName: 5, sheetStatus: 6 }[field])
+      : ({
+          productName: 0, category: 1, relationId: 2,
+          mainKeyword: 3, secondaryKeyword: 4,
+          enFileName: 5, sheetStatus: 6,
+          idFileName: 7, idStatus: 8,
+        }[field])
     if (idx === undefined || idx < 0) return ''
     return (row[idx] ?? '').toString().trim()
   }
@@ -190,6 +212,8 @@ export async function readProductSheet(
       secondaryKeyword: cell(row, 'secondaryKeyword'),
       enFileName:       cell(row, 'enFileName'),
       sheetStatus:      cell(row, 'sheetStatus') || SHEET_STATUS.TODO,
+      idFileName:       cell(row, 'idFileName'),
+      idStatus:         cell(row, 'idStatus') || SHEET_STATUS.TODO,
       rowIndex:         startRow + i,
     }))
     .filter(r => r.productName && r.relationId)
@@ -201,8 +225,10 @@ export async function readProductSheet(
 export interface ProductRowUpdate {
   mainKeyword?:      string
   secondaryKeyword?: string
-  enFileName?:       string   // Google Doc URL
-  status?:           string   // SHEET_STATUS.*
+  enFileName?:       string   // English Google Doc URL (col F)
+  status?:           string   // EN status (col G) — SHEET_STATUS.*
+  idFileName?:       string   // Indonesian Google Doc URL (col H)
+  idStatus?:         string   // ID status (col I) — SHEET_STATUS.*
 }
 
 /**
@@ -264,6 +290,28 @@ export async function writeProductRow(
     )
   }
 
+  if (update.idFileName !== undefined) {
+    requests.push(
+      sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range:          `${sheetName}!H${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [[update.idFileName]] },
+      })
+    )
+  }
+
+  if (update.idStatus !== undefined) {
+    requests.push(
+      sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range:          `${sheetName}!I${rowIndex}`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [[update.idStatus]] },
+      })
+    )
+  }
+
   // Run all partial updates in parallel
   await Promise.all(requests)
 }
@@ -288,6 +336,8 @@ export async function batchWriteProductRows(
     if (row.secondaryKeyword !== undefined) updates.push({ range: `${sheetName}!E${row.rowIndex}`, values: [[row.secondaryKeyword]] })
     if (row.enFileName       !== undefined) updates.push({ range: `${sheetName}!F${row.rowIndex}`, values: [[row.enFileName]] })
     if (row.status           !== undefined) updates.push({ range: `${sheetName}!G${row.rowIndex}`, values: [[row.status]] })
+    if (row.idFileName       !== undefined) updates.push({ range: `${sheetName}!H${row.rowIndex}`, values: [[row.idFileName]] })
+    if (row.idStatus         !== undefined) updates.push({ range: `${sheetName}!I${row.rowIndex}`, values: [[row.idStatus]] })
     return updates
   })
 
