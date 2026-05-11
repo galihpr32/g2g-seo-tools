@@ -605,6 +605,18 @@ export default function SettingsPage() {
       {/* ── Connections tab ──────────────────────────────────────────────────── */}
       {activeTab === 'connections' && (
         <>
+          {/* Product Tiers shortcut — Sprint A foundation */}
+          <a
+            href="/settings/product-tiers"
+            className="bg-gray-900 border border-gray-800 hover:border-amber-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">🎯 Product Tiers</p>
+              <p className="text-gray-400 text-sm mt-0.5">Manage Tier 1 (top 10) + Tier 2 (next 25) products per brand — drives priority alerts, deeper Bragi prompts, hybrid review gates.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-amber-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>

@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import type { JourneyItem, PipelineStageInfo, BriefSummary, Actor, SignalReason } from '@/app/api/pipeline-journey/route'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
+import type { ProductTier, TierMap } from '@/lib/product-tiers'
+import { buildTierMap, resolveTierFromMap } from '@/lib/product-tiers'
 
 // ── Agent badge styling for "Why this opp" reasons ────────────────────────────
 const AGENT_STYLE: Record<SignalReason['agent'], { label: string; cls: string; emoji: string }> = {
@@ -609,11 +611,18 @@ function StageRow({
 
 // ── Opportunity card ──────────────────────────────────────────────────────────
 
-function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void }) {
+function OppCard({ item, onRefresh, tierMap }: { item: JourneyItem; onRefresh: () => void; tierMap: TierMap }) {
   const [expanded, setExpanded] = useState(false)
 
   const activeStage = STAGES[item.pipelineStage - 1] ?? STAGES[0]
   const c = COLOR[activeStage.color]
+
+  // Resolve tier (1/2/null) for the badge — uses URL + topic name fallback.
+  // Memoized via simple inline call; the resolver is cheap (Map lookups).
+  const tier = resolveTierFromMap(tierMap, {
+    url:         item.targetUrl,
+    productName: item.topic,
+  }).tier
 
   const chipLabel =
     item.isComplete  ? 'Complete' :
@@ -654,6 +663,20 @@ function OppCard({ item, onRefresh }: { item: JourneyItem; onRefresh: () => void
           </p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {tier != null && (
+            <span
+              title={tier === 1
+                ? 'Tier 1 — top 10 priority product (heavy backlink + outreach)'
+                : 'Tier 2 — next 25 priority product'}
+              className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                tier === 1
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                  : 'bg-blue-500/15  text-blue-300  border-blue-500/30'
+              }`}
+            >
+              T{tier}
+            </span>
+          )}
           {item.tyrScore != null && (
             <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
               (item.tyrScore ?? 0) >= 80 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' :
@@ -787,7 +810,14 @@ export default function PipelineJourneyPage() {
   const [filterAgent,    setFilterAgent]    = useState<'all' | 'heimdall' | 'loki' | 'odin'>('all')
   const [filterOutput,   setFilterOutput]   = useState<'all' | OutputTypeId>('all')
   const [filterAssignee, setFilterAssignee] = useState<string>('all')   // 'all' | 'unassigned' | userId
-  const [sortBy,         setSortBy]         = useState<'updated' | 'clicks' | 'sv' | 'created'>('updated')
+  const [filterTier,     setFilterTier]     = useState<'all' | '1' | '2' | 'tiered' | 'untiered'>('all')
+  const [sortBy,         setSortBy]         = useState<'updated' | 'clicks' | 'sv' | 'created' | 'tier'>('updated')
+
+  // Tier map for current site — fetched once + rebuilt on site switch. Used to
+  // tag every opp card with its T1/T2 badge and drive the tier filter dropdown.
+  const [tierMap, setTierMap] = useState<TierMap>({
+    byRelationId: new Map(), byUrl: new Map(), bySlug: new Map(), byName: new Map(), all: [],
+  })
 
   // List size + dismissed visibility — server caps at 1000, "all" maps to that.
   type ListLimit = '60' | '100' | '200' | '500' | 'all'
@@ -797,6 +827,19 @@ export default function PipelineJourneyPage() {
   // Active site slug — drives which brand's pipeline we're viewing.
   // Reactive: re-runs fetchData when SiteSwitcher updates the cookie.
   const siteSlug = useSiteSlug()
+
+  // Reload the tier map whenever the active brand changes — the list is
+  // per-(owner+site_slug), so it differs between G2G and OffGamers.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/product-tiers')
+      .then(r => (r.ok ? r.json() : { items: [] }))
+      .then((data: { items?: ProductTier[] }) => {
+        if (!cancelled) setTierMap(buildTierMap(data.items ?? []))
+      })
+      .catch(() => { /* silent — page works without tier data */ })
+    return () => { cancelled = true }
+  }, [siteSlug])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -926,6 +969,18 @@ export default function PipelineJourneyPage() {
       // Output type filter
       if (filterOutput !== 'all' && it.outputType !== filterOutput) return false
 
+      // Tier filter — resolved on the fly using tierMap
+      if (filterTier !== 'all') {
+        const t = resolveTierFromMap(tierMap, {
+          url:         it.targetUrl,
+          productName: it.topic,
+        }).tier
+        if (filterTier === 'tiered'   && t === null) return false
+        if (filterTier === 'untiered' && t !== null) return false
+        if (filterTier === '1'        && t !== 1)    return false
+        if (filterTier === '2'        && t !== 2)    return false
+      }
+
       // Assignee filter
       if (filterAssignee === 'unassigned') {
         if (it.assignedTo || it.approvedBy) return false
@@ -941,6 +996,15 @@ export default function PipelineJourneyPage() {
     // Sort
     return [...filtered].sort((a, b) => {
       switch (sortBy) {
+        case 'tier': {
+          const ta = resolveTierFromMap(tierMap, { url: a.targetUrl, productName: a.topic }).tier
+          const tb = resolveTierFromMap(tierMap, { url: b.targetUrl, productName: b.topic }).tier
+          // T1 above T2 above untiered; tie → fall back to updated_at desc
+          const ka = ta === 1 ? 0 : ta === 2 ? 1 : 2
+          const kb = tb === 1 ? 0 : tb === 2 ? 1 : 2
+          if (ka !== kb) return ka - kb
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+        }
         case 'clicks':
           return (b.droppedClicks ?? 0) - (a.droppedClicks ?? 0)
         case 'sv':
@@ -952,7 +1016,7 @@ export default function PipelineJourneyPage() {
           return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
       }
     })
-  }, [items, tab, search, filterAgent, filterOutput, filterAssignee, sortBy])
+  }, [items, tab, search, filterAgent, filterOutput, filterAssignee, filterTier, tierMap, sortBy])
 
   const tabs: { id: TabFilter; label: string; count: number }[] = [
     { id: 'all',          label: 'All',          count: stats.total },
@@ -1083,6 +1147,18 @@ export default function PipelineJourneyPage() {
             <option key={a.userId} value={a.userId}>{actorDisplayName(a.email)}</option>
           ))}
         </select>
+        <select
+          value={filterTier}
+          onChange={e => setFilterTier(e.target.value as typeof filterTier)}
+          className="bg-gray-900 border border-gray-800 rounded-md px-2 py-1 text-white focus:outline-none focus:border-gray-600"
+          title="Filter by product tier — top 10 (T1) and next 25 (T2) get priority alerts"
+        >
+          <option value="all">All tiers</option>
+          <option value="1">🥇 Tier 1 only</option>
+          <option value="2">🥈 Tier 2 only</option>
+          <option value="tiered">Tier 1 or 2</option>
+          <option value="untiered">Untiered (rest)</option>
+        </select>
 
         <span className="text-gray-700">·</span>
         <span className="text-gray-500 mr-1">Sort:</span>
@@ -1095,6 +1171,7 @@ export default function PipelineJourneyPage() {
           <option value="created">Newest first</option>
           <option value="clicks">Highest dropped clicks</option>
           <option value="sv">Highest search volume</option>
+          <option value="tier">Tier 1 → 2 → rest</option>
         </select>
 
         <span className="text-gray-700">·</span>
@@ -1124,9 +1201,9 @@ export default function PipelineJourneyPage() {
           {includeDismissed ? '✓ Including dismissed' : '🗑 Include dismissed'}
         </button>
 
-        {(filterAgent !== 'all' || filterOutput !== 'all' || filterAssignee !== 'all' || sortBy !== 'updated' || listLimit !== '60' || includeDismissed) && (
+        {(filterAgent !== 'all' || filterOutput !== 'all' || filterAssignee !== 'all' || filterTier !== 'all' || sortBy !== 'updated' || listLimit !== '60' || includeDismissed) && (
           <button
-            onClick={() => { setFilterAgent('all'); setFilterOutput('all'); setFilterAssignee('all'); setSortBy('updated'); setListLimit('60'); setIncludeDismissed(false) }}
+            onClick={() => { setFilterAgent('all'); setFilterOutput('all'); setFilterAssignee('all'); setFilterTier('all'); setSortBy('updated'); setListLimit('60'); setIncludeDismissed(false) }}
             className="ml-auto text-gray-500 hover:text-red-400 transition"
           >
             ✕ Clear filters
@@ -1162,7 +1239,7 @@ export default function PipelineJourneyPage() {
       ) : (
         <div className="space-y-2">
           {visible.map(item => (
-            <OppCard key={item.id} item={item} onRefresh={fetchData} />
+            <OppCard key={item.id} item={item} onRefresh={fetchData} tierMap={tierMap} />
           ))}
           {visible.length < items.length && (
             <p className="text-center text-xs text-gray-600 py-2">

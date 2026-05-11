@@ -11,9 +11,10 @@ const navItems = [
     group: 'PIPELINE',
     defaultOpen: true,
     items: [
-      { label: 'Dashboard',       href: '/dashboard',                      icon: '▦'  },
-      { label: 'Opportunities',    href: '/command-center/opportunities',   icon: '🎯' },
-      { label: 'Pipeline Journey', href: '/command-center/pipeline',       icon: '🗺️' },
+      { label: 'Dashboard',         href: '/dashboard',                    icon: '▦'  },
+      { label: 'Priority Products', href: '/priority-products',            icon: '🎯' },
+      { label: 'Opportunities',     href: '/command-center/opportunities', icon: '🔍' },
+      { label: 'Pipeline Journey',  href: '/command-center/pipeline',      icon: '🗺️' },
       { label: 'Command Center',  href: '/command-center',                 icon: '🤖' },
       { label: 'Action Items',    href: '/gsc/action-items',               icon: '✅' },
       { label: 'Experiments',     href: '/experiments',                    icon: '🧪' },
