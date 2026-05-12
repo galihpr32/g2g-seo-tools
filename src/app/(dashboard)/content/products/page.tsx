@@ -634,16 +634,15 @@ export default function ProductContentPage() {
         </div>
       </div>
 
-      {/* ── Workflow info banner (new sheet-as-database flow) ─────────── */}
+      {/* ── Workflow info banner (sheet-as-database flow) ─────────────── */}
       <div className="mb-4 bg-blue-900/15 border border-blue-800/40 rounded-lg px-4 py-2.5 flex items-start gap-3 text-xs">
-        <span className="text-blue-400 text-base leading-tight">📝</span>
+        <span className="text-blue-400 text-base leading-tight">⚡</span>
         <div className="flex-1 text-blue-100 space-y-1">
           <p>
-            <span className="font-semibold">New workflow:</span> the Google Sheet is the source of truth. No more Google Docs.
+            <span className="font-semibold">Auto-processing is on.</span> BDT types <code className="bg-blue-950/50 px-1 rounded">yes</code> in col E (&quot;Create now?&quot;), and the AI picks it up within ~5 minutes automatically.
           </p>
           <p className="text-blue-200/80">
-            BDT fills cols A-D (Brand, Category, Relation ID, Request Date), then writes <code className="bg-blue-950/50 px-1 rounded">yes</code> in col E (&quot;Create now?&quot;).
-            Click <strong>▶ Run All Pending</strong> — AI generates Meta + Marketing (8 H2 sections) + 5-7 FAQs across cols F-AG. Indonesian translations land in a separate <code className="bg-blue-950/50 px-1 rounded">ID</code> sheet tab (auto-created).
+            For urgent pushes, click <strong>▶ Run All Pending</strong> manually. AI generates Meta + Marketing (8 H2 sections) + 5-7 FAQs across cols F-AG. Indonesian translations land in a separate <code className="bg-blue-950/50 px-1 rounded">ID</code> sheet tab (auto-created).
             Col E updates to <code className="bg-blue-950/50 px-1 rounded">Generated</code> on success or <code className="bg-blue-950/50 px-1 rounded">Error: &lt;reason&gt;</code> on failure (not retriggerable).
           </p>
         </div>

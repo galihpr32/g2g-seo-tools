@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { processProductRow, type QueueRow, type SheetTarget } from '@/lib/product-content/process'
+import { getSheetColumnMap } from '@/lib/google/sheets'
 
 export const maxDuration = 60
 
@@ -72,9 +73,19 @@ export async function POST(req: Request) {
     .eq('owner_user_id', ownerId)
     .maybeSingle()
 
-  const sheet: SheetTarget | null = sheetConfig?.spreadsheet_id
-    ? { spreadsheetId: String(sheetConfig.spreadsheet_id), sheetName: String(sheetConfig.sheet_name ?? 'Sheet1') }
-    : null
+  let sheet: SheetTarget | null = null
+  if (sheetConfig?.spreadsheet_id) {
+    const spreadsheetId = String(sheetConfig.spreadsheet_id)
+    const sheetName     = String(sheetConfig.sheet_name ?? 'Sheet1')
+    let colMap: Record<string, number> | undefined
+    try {
+      const headerInfo = await getSheetColumnMap(spreadsheetId, sheetName)
+      colMap = headerInfo.colMap
+    } catch (e) {
+      console.warn('[process-row] getSheetColumnMap failed — using canonical positions:', e)
+    }
+    sheet = { spreadsheetId, sheetName, colMap }
+  }
 
   // Mark all picked rows 'generating' so the cron's recovery logic doesn't
   // also pick them up. updated_at is bumped so a 10-min-later cron sweep

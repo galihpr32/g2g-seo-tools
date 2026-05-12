@@ -367,16 +367,16 @@ function ProductCard({ row }: { row: ProductRow }) {
         {/* Quick actions */}
         <div className="flex flex-col gap-1.5 flex-shrink-0">
           <Link
+            href={`/priority-products/${row.id}`}
+            className="text-[11px] px-2.5 py-1 bg-amber-600 hover:bg-amber-700 border border-amber-700 rounded text-white text-center font-medium"
+          >
+            Rankings →
+          </Link>
+          <Link
             href={`/command-center/pipeline?q=${encodeURIComponent(row.productName)}`}
             className="text-[11px] px-2.5 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-gray-200 text-center"
           >
             View opps →
-          </Link>
-          <Link
-            href={`/content/topics/${encodeURIComponent(row.productName.toLowerCase().replace(/\s+/g, '-'))}`}
-            className="text-[11px] px-2.5 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-gray-200 text-center"
-          >
-            Topic detail →
           </Link>
         </div>
       </div>

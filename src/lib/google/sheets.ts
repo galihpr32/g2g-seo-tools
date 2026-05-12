@@ -176,6 +176,17 @@ const HEADER_PATTERNS: Record<string, string[]> = {
   faq7A: ['faq 7 a', 'faq 7 answer', 'faq7a', 'faq 7'],
 }
 
+/** Returns true when a cell looks like a URL (annotation/path row content),
+ *  not a column header. Used to skip the user's optional "Path" row at row 1
+ *  which sometimes contains CMS endpoint URLs like
+ *    https://crew-vue.g2g.com/offers/products/config/{{relation ID}}/seo
+ *  These URLs contain words like "products" / "relation id" / "faq" that
+ *  would otherwise mis-match the HEADER_PATTERNS and pull every field onto
+ *  the wrong column. */
+function isUrlLikeCell(cell: string): boolean {
+  return cell.startsWith('http://') || cell.startsWith('https://') || cell.includes('://')
+}
+
 /** Resolve which column index (0-based) maps to each field, based on header row. */
 function resolveColumns(headerRow: string[]): Record<string, number> {
   const norm = headerRow.map(h => (h ?? '').toString().trim().toLowerCase())
@@ -187,6 +198,9 @@ function resolveColumns(headerRow: string[]): Record<string, number> {
     for (let i = 0; i < norm.length; i++) {
       const cell = norm[i]
       if (!cell) continue
+      // Skip URL-shaped cells — annotation rows like "Path" sometimes contain
+      // hint URLs that would otherwise create false header matches.
+      if (isUrlLikeCell(cell)) continue
       for (const pat of patterns) {
         if (cell === pat) {
           // exact match wins immediately
@@ -204,6 +218,22 @@ function resolveColumns(headerRow: string[]): Record<string, number> {
     if (bestIdx !== -1) out[field] = bestIdx
   }
   return out
+}
+
+/** Strength score of a column-index map — higher = more confidence that this
+ *  row is the real header. Used to pick between row 1 and row 2 when the
+ *  sheet has an annotation row above the header. */
+function colIdxStrength(colIdx: Record<string, number>): number {
+  // The 5 BDT input columns (A-E) are the most reliable signal of a header
+  // row — they're tightly named ("Brand Name", "Create now?", etc.).
+  let score = 0
+  const required = ['productName', 'category', 'relationId', 'requestDate', 'createNow']
+  for (const k of required) if (colIdx[k] !== undefined) score += 2
+  // Optional content fields are nice-to-haves; they only add half-weight.
+  if (colIdx.metaTitle      !== undefined) score += 1
+  if (colIdx.marketingTitle !== undefined) score += 1
+  if (colIdx.faq1A          !== undefined) score += 1
+  return score
 }
 
 // ── Fallback positional mapping ───────────────────────────────────────────────
@@ -233,23 +263,41 @@ function positionalIndex(field: string): number {
 export async function readProductSheet(
   spreadsheetId: string,
   sheetName     = 'Sheet1',
-  startRow      = 2,
+  startRowHint  = 2,
   maxRows       = 500,
 ): Promise<ProductRow[]> {
   const auth   = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
 
-  const headerRange = `${sheetName}!${SHEET_RANGE_FULL.split(':').map(c => `${c}1`).join(':')}`
-  const bodyRange   = `${sheetName}!A${startRow}:AG${startRow + maxRows - 1}`
+  // Read the top 2 rows as candidate headers. Some Galih-flavoured sheets
+  // include a "Path" annotation row above the real header row; we score both
+  // and pick whichever yields the strongest match against HEADER_PATTERNS.
+  const headerProbeRange = `${sheetName}!A1:AG2`
+  const probeRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: headerProbeRange })
+  const row1 = (probeRes.data.values?.[0] ?? []) as string[]
+  const row2 = (probeRes.data.values?.[1] ?? []) as string[]
 
-  const [headerRes, bodyRes] = await Promise.all([
-    sheets.spreadsheets.values.get({ spreadsheetId, range: headerRange }),
-    sheets.spreadsheets.values.get({ spreadsheetId, range: bodyRange }),
-  ])
+  const colIdx1 = resolveColumns(row1)
+  const colIdx2 = resolveColumns(row2)
+  const strength1 = colIdxStrength(colIdx1)
+  const strength2 = colIdxStrength(colIdx2)
 
-  const headerRow = (headerRes.data.values?.[0] ?? []) as string[]
-  const colIdx    = resolveColumns(headerRow)
+  // Prefer row 1 unless row 2 scores strictly higher (avoids treating an
+  // empty row 1 as the header on truly-empty sheets).
+  let colIdx = colIdx1
+  let detectedHeaderRow = 1
+  if (strength2 > strength1) {
+    colIdx = colIdx2
+    detectedHeaderRow = 2
+  }
+
+  // Body starts the row after the header. If no header was detected at all
+  // (strength = 0 in both), fall back to the caller's hint.
+  const startRow = Math.max(startRowHint, detectedHeaderRow + 1)
   const useHeader = colIdx.productName !== undefined && colIdx.relationId !== undefined
+
+  const bodyRange = `${sheetName}!A${startRow}:AG${startRow + maxRows - 1}`
+  const bodyRes   = await sheets.spreadsheets.values.get({ spreadsheetId, range: bodyRange })
 
   const cell = (row: unknown[], field: string): string => {
     const idx = useHeader ? (colIdx[field] ?? -1) : positionalIndex(field)
@@ -310,57 +358,105 @@ export interface ProductRowUpdate {
   faqs?:              Array<{ q: string; a: string }>    // 5-7 entries
 }
 
-/** Convert a partial update into [range, value] pairs spanning cols A–AG. */
+/** Convert a 0-based column index into A1-style letter (0→A, 25→Z, 26→AA, 32→AG). */
+function colLetterFromIndex(idx: number): string {
+  let s = ''
+  let n = idx
+  while (n >= 0) {
+    s = String.fromCharCode(65 + (n % 26)) + s
+    n = Math.floor(n / 26) - 1
+  }
+  return s
+}
+
+/** Pick the column letter to write each field into. When a colMap is provided
+ *  (returned by getSheetColumnMap below), we map each field to the column
+ *  whose header text matched its pattern — that way the writer adapts to the
+ *  user's actual sheet layout, including extra annotation columns or
+ *  reordered fields. When colMap is omitted, fall back to the canonical
+ *  positional SHEET_COLS layout. */
+function resolveTargetColumn(field: keyof typeof SHEET_COLS, colMap?: Record<string, number>): string | null {
+  if (colMap && colMap[field] !== undefined) {
+    return colLetterFromIndex(colMap[field])
+  }
+  return SHEET_COLS[field] ?? null
+}
+
+/** Convert a partial update into [range, value] pairs spanning the sheet's
+ *  actual columns. Pass the colMap returned by getSheetColumnMap() to align
+ *  to whatever layout the user's sheet has; omit for the canonical layout. */
 function updateToCells(
   sheetName: string,
   rowIndex:  number,
   u:         ProductRowUpdate,
+  colMap?:   Record<string, number>,
 ): Array<{ range: string; values: string[][] }> {
   const out: Array<{ range: string; values: string[][] }> = []
-  const push = (col: string, v: string) =>
+  const push = (field: keyof typeof SHEET_COLS, v: string) => {
+    const col = resolveTargetColumn(field, colMap)
+    if (!col) return  // No column for this field on the user's sheet — skip silently.
     out.push({ range: `${sheetName}!${col}${rowIndex}`, values: [[v]] })
+  }
 
-  if (u.createNow        !== undefined) push(SHEET_COLS.createNow,        u.createNow)
-  if (u.mainKeyword      !== undefined) push(SHEET_COLS.mainKeyword,      u.mainKeyword)
-  if (u.secondaryKeyword !== undefined) push(SHEET_COLS.secondaryKeyword, u.secondaryKeyword)
-  if (u.metaTitle        !== undefined) push(SHEET_COLS.metaTitle,        u.metaTitle)
-  if (u.metaDescription  !== undefined) push(SHEET_COLS.metaDescription,  u.metaDescription)
-  if (u.metaKeyword      !== undefined) push(SHEET_COLS.metaKeyword,      u.metaKeyword)
-  if (u.marketingTitle   !== undefined) push(SHEET_COLS.marketingTitle,   u.marketingTitle)
+  if (u.createNow        !== undefined) push('createNow',        u.createNow)
+  if (u.mainKeyword      !== undefined) push('mainKeyword',      u.mainKeyword)
+  if (u.secondaryKeyword !== undefined) push('secondaryKeyword', u.secondaryKeyword)
+  if (u.metaTitle        !== undefined) push('metaTitle',        u.metaTitle)
+  if (u.metaDescription  !== undefined) push('metaDescription',  u.metaDescription)
+  if (u.metaKeyword      !== undefined) push('metaKeyword',      u.metaKeyword)
+  if (u.marketingTitle   !== undefined) push('marketingTitle',   u.marketingTitle)
 
   if (u.marketingSections !== undefined) {
-    const cols = [
-      SHEET_COLS.marketingSection1, SHEET_COLS.marketingSection2,
-      SHEET_COLS.marketingSection3, SHEET_COLS.marketingSection4,
-      SHEET_COLS.marketingSection5, SHEET_COLS.marketingSection6,
-      SHEET_COLS.marketingSection7, SHEET_COLS.marketingSection8,
+    const sectionFields: Array<keyof typeof SHEET_COLS> = [
+      'marketingSection1', 'marketingSection2', 'marketingSection3', 'marketingSection4',
+      'marketingSection5', 'marketingSection6', 'marketingSection7', 'marketingSection8',
     ]
     for (let i = 0; i < 8; i++) {
-      push(cols[i], u.marketingSections[i] ?? '')
+      push(sectionFields[i], u.marketingSections[i] ?? '')
     }
   }
 
   if (u.faqs !== undefined) {
-    const qCols = [SHEET_COLS.faq1Q, SHEET_COLS.faq2Q, SHEET_COLS.faq3Q, SHEET_COLS.faq4Q, SHEET_COLS.faq5Q, SHEET_COLS.faq6Q, SHEET_COLS.faq7Q]
-    const aCols = [SHEET_COLS.faq1A, SHEET_COLS.faq2A, SHEET_COLS.faq3A, SHEET_COLS.faq4A, SHEET_COLS.faq5A, SHEET_COLS.faq6A, SHEET_COLS.faq7A]
+    const qFields: Array<keyof typeof SHEET_COLS> = ['faq1Q', 'faq2Q', 'faq3Q', 'faq4Q', 'faq5Q', 'faq6Q', 'faq7Q']
+    const aFields: Array<keyof typeof SHEET_COLS> = ['faq1A', 'faq2A', 'faq3A', 'faq4A', 'faq5A', 'faq6A', 'faq7A']
+
     for (let i = 0; i < 7; i++) {
       const f = u.faqs[i] ?? { q: '', a: '' }
-      push(qCols[i], f.q)
-      push(aCols[i], f.a)
+      const qCol = resolveTargetColumn(qFields[i], colMap)
+      const aCol = resolveTargetColumn(aFields[i], colMap)
+
+      // SHEET FALLBACK: when the user's sheet has only ONE FAQ column per
+      // entry (e.g. their "FAQ 1" maps to faq1A but they have no separate
+      // "FAQ 1 Q" column), write the combined "Q: ...\nA: ..." into that
+      // single cell so neither piece is silently lost. This makes us
+      // compatible with sheets that haven't been migrated to the Q/A split.
+      if (qCol && aCol) {
+        out.push({ range: `${sheetName}!${qCol}${rowIndex}`, values: [[f.q]] })
+        out.push({ range: `${sheetName}!${aCol}${rowIndex}`, values: [[f.a]] })
+      } else if (aCol) {
+        const combined = f.q ? `Q: ${f.q}\nA: ${f.a}` : f.a
+        out.push({ range: `${sheetName}!${aCol}${rowIndex}`, values: [[combined]] })
+      } else if (qCol) {
+        const combined = f.a ? `Q: ${f.q}\nA: ${f.a}` : f.q
+        out.push({ range: `${sheetName}!${qCol}${rowIndex}`, values: [[combined]] })
+      }
     }
   }
 
   return out
 }
 
-/** Write a partial update to a specific row. */
+/** Write a partial update to a specific row. Pass `colMap` (from
+ *  getSheetColumnMap) to align writes to whatever layout the user's sheet
+ *  has — otherwise the canonical SHEET_COLS positions are used. */
 export async function writeProductRow(
   spreadsheetId: string,
   sheetName:     string,
   rowIndex:      number,
   update:        ProductRowUpdate,
+  colMap?:       Record<string, number>,
 ): Promise<void> {
-  const cells = updateToCells(sheetName, rowIndex, update)
+  const cells = updateToCells(sheetName, rowIndex, update, colMap)
   if (cells.length === 0) return
 
   const auth   = getAuth()
@@ -380,10 +476,11 @@ export async function batchWriteProductRows(
   spreadsheetId: string,
   sheetName:     string,
   rows:          Array<ProductRowUpdate & { rowIndex: number }>,
+  colMap?:       Record<string, number>,
 ): Promise<void> {
   if (!rows.length) return
 
-  const data = rows.flatMap(r => updateToCells(sheetName, r.rowIndex, r))
+  const data = rows.flatMap(r => updateToCells(sheetName, r.rowIndex, r, colMap))
   if (!data.length) return
 
   const auth   = getAuth()
@@ -396,6 +493,41 @@ export async function batchWriteProductRows(
       data,
     },
   })
+}
+
+/**
+ * Inspect the top 2 rows of a sheet to determine where each field maps. This
+ * is the same auto-detection logic readProductSheet runs internally; exposed
+ * so callers (e.g. the run-pending route) can pass the resolved colMap into
+ * the write functions, keeping all writes header-aware on a single
+ * detection.
+ *
+ * Returns:
+ *   colMap     — field name → 0-based column index (only fields with a header match)
+ *   headerRow  — 1-based row index of the detected header (1 or 2 typically)
+ *   bodyStart  — first body row (1-based) — usually headerRow + 1
+ */
+export async function getSheetColumnMap(
+  spreadsheetId: string,
+  sheetName:     string,
+): Promise<{ colMap: Record<string, number>; headerRow: number; bodyStart: number }> {
+  const auth   = getAuth()
+  const sheets = google.sheets({ version: 'v4', auth })
+
+  const probeRes = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${sheetName}!A1:AG2`,
+  })
+  const row1 = (probeRes.data.values?.[0] ?? []) as string[]
+  const row2 = (probeRes.data.values?.[1] ?? []) as string[]
+
+  const idx1 = resolveColumns(row1)
+  const idx2 = resolveColumns(row2)
+  const s1   = colIdxStrength(idx1)
+  const s2   = colIdxStrength(idx2)
+
+  if (s2 > s1) return { colMap: idx2, headerRow: 2, bodyStart: 3 }
+  return { colMap: idx1, headerRow: 1, bodyStart: 2 }
 }
 
 // ── Tab management ───────────────────────────────────────────────────────────
@@ -439,20 +571,21 @@ export async function ensureIdTab(
     },
   })
 
-  // Copy header row from EN tab to ID tab so columns stay aligned. We pull
-  // A1:AG1 from the source and paste it into the new tab.
+  // Copy rows 1-2 from EN to ID so both the optional "Path" annotation row
+  // AND the actual header row carry over — this keeps both tabs identical
+  // in shape for whichever downstream tool ingests them.
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${enSheetName}!A1:AG1`,
+    range: `${enSheetName}!A1:AG2`,
   })
-  const headers = headerRes.data.values?.[0] ?? []
+  const headerBlock = headerRes.data.values ?? []
 
-  if (headers.length > 0) {
+  if (headerBlock.length > 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${targetName}!A1:AG1`,
+      range: `${targetName}!A1:AG${headerBlock.length}`,
       valueInputOption: 'RAW',
-      requestBody: { values: [headers] },
+      requestBody: { values: headerBlock },
     })
   }
 
@@ -468,13 +601,14 @@ export async function findRowByRelationId(
   relationId:    string,
   startRow:      number = 2,
   maxRows:       number = 500,
+  relationIdCol: string = SHEET_COLS.relationId,
 ): Promise<number> {
   const auth   = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
 
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${sheetName}!${SHEET_COLS.relationId}${startRow}:${SHEET_COLS.relationId}${startRow + maxRows - 1}`,
+    range: `${sheetName}!${relationIdCol}${startRow}:${relationIdCol}${startRow + maxRows - 1}`,
   })
   const rows = res.data.values ?? []
   for (let i = 0; i < rows.length; i++) {

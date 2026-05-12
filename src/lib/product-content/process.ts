@@ -43,6 +43,11 @@ export interface QueueRow {
 export interface SheetTarget {
   spreadsheetId: string
   sheetName:     string
+  /** Optional. When set, writeProductRow aligns to the user's actual column
+   *  layout (e.g. extra annotation columns or single-cell FAQs). When omitted,
+   *  the canonical SHEET_COLS layout is used. Populate via getSheetColumnMap()
+   *  in the sync route + pass through here. */
+  colMap?:       Record<string, number>
 }
 
 export interface ProcessResult {
@@ -322,7 +327,7 @@ export async function processProductRow(
           marketingTitle:    en.marketingTitle,
           marketingSections: en.marketingSections,
           faqs:              en.faqs,
-        })
+        }, sheet.colMap)
       } catch (sheetErr) {
         console.error(`[process] EN sheet write-back failed for row ${row.sheet_row}:`, sheetErr)
       }
@@ -396,7 +401,7 @@ async function persistFailure(
     try {
       await writeProductRow(sheet.spreadsheetId, sheet.sheetName, row.sheet_row, {
         createNow: formatErrorStatus(msg),
-      })
+      }, sheet.colMap)
     } catch { /* best-effort */ }
   }
 }
