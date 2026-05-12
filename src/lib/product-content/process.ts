@@ -109,10 +109,11 @@ PRODUCT DETAILS:
 - Primary Keyword:     ${opts.mainKeyword}
 - Secondary Keywords:  ${opts.secondaryKeyword || '(none — derive from product context)'}
 
-OUTPUT STRUCTURE — strict:
+OUTPUT STRUCTURE — strict, mirrors a real product page top-to-bottom:
 1. SEO meta (3 fields: meta_title ≤60 chars, meta_description ≤110 chars, meta_keyword comma-separated 5-8 terms)
 2. Marketing H1 title — punchy, 50-80 chars, ${opts.mainKeyword} prominent
-3. EIGHT marketing sections — each is ONE <h2> + body paragraphs in HTML. Pick eight relevant topics for the category:
+3. Marketing intro — a 40-60 word lead paragraph that sits BETWEEN the H1 and the first H2 section. Plain prose (no HTML), no heading. Hooks the reader: name the product + state the core value prop + tease what's below. ${opts.mainKeyword} should appear naturally once.
+4. EIGHT marketing sections — each is ONE <h2> + body paragraphs in HTML. Pick eight relevant topics for the category:
    • For Accounts: What is, Why Buy on G2G, Account Features, How It Works, Pricing, Safety & Verification, Payment Options, Customer Support
    • For Currency/Coins: What is, Why Buy, How to Order, Delivery Speed, Pricing & Best Sellers, Security, Payment Methods, Buyer Reviews
    • For Gift Cards: About, Where to Use, How to Redeem, Why Buy on G2G, Denominations, Instant Delivery, Security, FAQ Closing
@@ -120,7 +121,7 @@ OUTPUT STRUCTURE — strict:
    • For Boosting: Service Overview, Why Choose G2G, How Boost Works, Account Safety, Pricing Tiers, Boost Speed, Payment, Support
    • Default: pick 8 logical sections that explain product + trust + flow + pricing + delivery + support
    Each section is FULL HTML in a single string: "<h2>Section Title</h2><p>Paragraph 1.</p><p>Paragraph 2.</p>" — use <ul>/<ol>/<strong> where they add value.
-4. FIVE to SEVEN FAQ Q/A pairs — questions real buyers ask. Each Q is one sentence; each A is 1-2 short paragraphs in plain prose (NO HTML in answers).
+5. FIVE to SEVEN FAQ Q/A pairs — questions real buyers ask. Each Q is one sentence; each A is 1-2 short paragraphs in plain prose (NO HTML in answers).
 
 WRITING RULES:
 - Use ${opts.mainKeyword} naturally 3-5 times across the full content (NOT keyword-stuff).
@@ -136,6 +137,7 @@ Return ONLY a JSON object (no markdown fences, no commentary). EXACT shape:
   "meta_description": "string ≤110 chars",
   "meta_keyword":     "kw1, kw2, kw3, kw4, kw5",
   "marketing_title":  "H1 title string",
+  "marketing_intro":  "40-60 word lead paragraph in plain prose (no HTML, no heading).",
   "marketing_sections": [
     "<h2>...</h2><p>...</p>",
     "<h2>...</h2><p>...</p>",
@@ -212,6 +214,7 @@ async function generateEnContent(
         metaDescription:   String(parsed.meta_description),
         metaKeyword:       String(parsed.meta_keyword ?? ''),
         marketingTitle:    String(parsed.marketing_title),
+        marketingIntro:    String(parsed.marketing_intro ?? ''),
         marketingSections: sections.slice(0, 8),
         faqs:              faqs.slice(0, 7),
       },
@@ -290,8 +293,9 @@ export async function processProductRow(
         meta_description:     en.metaDescription,
         meta_keywords:        en.metaKeyword,        // legacy column name, plural
         marketing_title:      en.marketingTitle,
-        marketing_sections:   en.marketingSections,  // NEW jsonb
-        faqs:                 en.faqs,               // NEW jsonb
+        marketing_intro:      en.marketingIntro,     // NEW lead paragraph
+        marketing_sections:   en.marketingSections,
+        faqs:                 en.faqs,
         main_keyword:         mainKeyword,
         secondary_keywords:   secondaryKeyword,
         status:               'generated',
@@ -303,6 +307,7 @@ export async function processProductRow(
         id_meta_description:  idBundle?.metaDescription ?? null,
         id_meta_keywords:     idBundle?.metaKeyword     ?? null,
         id_marketing_title:   idBundle?.marketingTitle  ?? null,
+        id_marketing_intro:   idBundle?.marketingIntro  ?? null,
         id_marketing_sections: idBundle?.marketingSections ?? [],
         id_faqs:               idBundle?.faqs           ?? [],
         id_status:            idBundle ? 'generated' : 'failed',
@@ -325,6 +330,7 @@ export async function processProductRow(
           metaDescription:   en.metaDescription,
           metaKeyword:       en.metaKeyword,
           marketingTitle:    en.marketingTitle,
+          marketingIntro:    en.marketingIntro,
           marketingSections: en.marketingSections,
           faqs:              en.faqs,
         }, sheet.colMap)
@@ -347,6 +353,7 @@ export async function processProductRow(
           metaDescription:   idBundle.metaDescription,
           metaKeyword:       idBundle.metaKeyword,
           marketingTitle:    idBundle.marketingTitle,
+          marketingIntro:    idBundle.marketingIntro,
           marketingSections: idBundle.marketingSections,
           faqs:              idBundle.faqs,
         }

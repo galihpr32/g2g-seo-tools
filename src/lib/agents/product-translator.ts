@@ -20,7 +20,8 @@ export interface ProductContentBundle {
   metaTitle:          string
   metaDescription:    string
   metaKeyword:        string                          // comma-separated string
-  marketingTitle:     string
+  marketingTitle:     string                          // H1
+  marketingIntro:     string                          // Lead paragraph after H1, before sections
   marketingSections:  string[]                        // length 8 (HTML)
   faqs:               Array<{ q: string; a: string }> // length 5-7
 }
@@ -47,14 +48,15 @@ CATEGORY: ${input.category}
 PRIMARY KEYWORD (English, keep as proper noun): ${input.mainKeyword}
 
 TRANSLATION RULES:
-1. Keep the structure identical: same 8 marketing_sections, same number of FAQs (${input.english.faqs.length}).
+1. Keep the structure identical: same marketing_intro lead paragraph, same 8 marketing_sections, same number of FAQs (${input.english.faqs.length}).
 2. Keep gaming proper nouns / brand terms in English: "WoW Gold", "Diablo Items", "PSN Card", "Steam Wallet", game titles.
 3. Keep the primary keyword IN meta_title and meta_description (Indonesian users search the English brand term).
 4. meta_description: keep under 160 characters. Natural Indonesian, not stiff word-for-word.
-5. marketing_sections: PRESERVE all HTML tags (<h2>, <p>, <ul>, <li>, <strong>, <ol>, <a>) intact. Only translate the text inside tags.
-6. faqs: translate question + answer naturally. Keep brand terms English.
-7. Currency / price formatting: leave any USD or numeric values exactly as-is.
-8. Tone: friendly + trustworthy. Use "kamu" (informal you), not "Anda" — matches the gaming audience.
+5. marketing_intro: 40-60 word lead paragraph, plain prose, NO HTML tags.
+6. marketing_sections: PRESERVE all HTML tags (<h2>, <p>, <ul>, <li>, <strong>, <ol>, <a>) intact. Only translate the text inside tags.
+7. faqs: translate question + answer naturally. Keep brand terms English.
+8. Currency / price formatting: leave any USD or numeric values exactly as-is.
+9. Tone: friendly + trustworthy. Use "kamu" (informal you), not "Anda" — matches the gaming audience.
 
 ENGLISH SOURCE:
 ${JSON.stringify({
@@ -62,6 +64,7 @@ ${JSON.stringify({
   meta_description:    input.english.metaDescription,
   meta_keyword:        input.english.metaKeyword,
   marketing_title:     input.english.marketingTitle,
+  marketing_intro:     input.english.marketingIntro,
   marketing_sections:  input.english.marketingSections,
   faqs:                input.english.faqs,
 }, null, 2)}
@@ -72,6 +75,7 @@ Return ONLY a JSON object (no markdown fences, no commentary) with this exact sh
   "meta_description":   "...",
   "meta_keyword":       "...",
   "marketing_title":    "...",
+  "marketing_intro":    "Lead paragraph in Bahasa Indonesia, 40-60 words, plain prose.",
   "marketing_sections": [ "<h2>...</h2><p>...</p>", "...", "...", "...", "...", "...", "...", "..." ],
   "faqs": [
     { "q": "...", "a": "..." }
@@ -130,6 +134,7 @@ export async function translateProductContent(
         metaDescription:   String(parsed.meta_description),
         metaKeyword:       String(parsed.meta_keyword ?? ''),
         marketingTitle:    String(parsed.marketing_title),
+        marketingIntro:    String(parsed.marketing_intro ?? ''),
         marketingSections: sections.slice(0, 8),
         faqs,
       },

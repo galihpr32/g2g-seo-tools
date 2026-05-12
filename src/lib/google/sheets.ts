@@ -32,7 +32,13 @@
 
 import { google } from 'googleapis'
 
-// ── Column mapping (33 cols A-AG) ─────────────────────────────────────────────
+// ── Column mapping (34 cols A-AH) ─────────────────────────────────────────────
+// Layout reflects a real product-page outline:
+//   H-J  meta (3 fields)         K  marketing_title (H1)
+//   L    marketing_intro (lead)  M-T  8 H2 sections
+//   U-AH 7 FAQs split Q/A (14 cells)
+// Sheets that use the older single-cell FAQ layout (1 col per FAQ at U-AA)
+// are handled transparently via the writer's single-cell fallback.
 export const SHEET_COLS = {
   productName:       'A',
   category:          'B',
@@ -45,28 +51,30 @@ export const SHEET_COLS = {
   metaDescription:   'I',
   metaKeyword:       'J',
   marketingTitle:    'K',
-  // Marketing description: 8 sections, each cell is one H2 + body in HTML
-  marketingSection1: 'L',
-  marketingSection2: 'M',
-  marketingSection3: 'N',
-  marketingSection4: 'O',
-  marketingSection5: 'P',
-  marketingSection6: 'Q',
-  marketingSection7: 'R',
-  marketingSection8: 'S',
+  // Lead paragraph — sits between H1 and the first H2. Plain prose, ~40-60 words.
+  marketingIntro:    'L',
+  // 8 H2 sections (each cell = one H2 + body in HTML)
+  marketingSection1: 'M',
+  marketingSection2: 'N',
+  marketingSection3: 'O',
+  marketingSection4: 'P',
+  marketingSection5: 'Q',
+  marketingSection6: 'R',
+  marketingSection7: 'S',
+  marketingSection8: 'T',
   // FAQ 1-7 split: Q in one cell, A in next. Min 5 wajib, 6+7 optional.
-  faq1Q: 'T',  faq1A: 'U',
-  faq2Q: 'V',  faq2A: 'W',
-  faq3Q: 'X',  faq3A: 'Y',
-  faq4Q: 'Z',  faq4A: 'AA',
-  faq5Q: 'AB', faq5A: 'AC',
-  faq6Q: 'AD', faq6A: 'AE',
-  faq7Q: 'AF', faq7A: 'AG',
+  faq1Q: 'U',  faq1A: 'V',
+  faq2Q: 'W',  faq2A: 'X',
+  faq3Q: 'Y',  faq3A: 'Z',
+  faq4Q: 'AA', faq4A: 'AB',
+  faq5Q: 'AC', faq5A: 'AD',
+  faq6Q: 'AE', faq6A: 'AF',
+  faq7Q: 'AG', faq7A: 'AH',
 } as const
 
 // Wildcard column index used everywhere we want to read/write the full row.
-// A:AG = 33 cols.
-export const SHEET_RANGE_FULL = 'A:AG'
+// A:AH = 34 cols.
+export const SHEET_RANGE_FULL = 'A:AH'
 
 // ── Trigger / status values written to col E ─────────────────────────────────
 export const SHEET_STATUS = {
@@ -129,8 +137,9 @@ export interface ProductRow {
   metaTitle:          string
   metaDescription:    string
   metaKeyword:        string
-  marketingTitle:     string
-  marketingSections:  string[]   // length 8
+  marketingTitle:     string     // H1
+  marketingIntro:     string     // Lead paragraph after H1, before sections
+  marketingSections:  string[]   // length 8 (one H2+body per cell)
   faqs:               Array<{ q: string; a: string }>  // length 5-7
   rowIndex:           number     // 1-based row number in the sheet
 }
@@ -150,6 +159,11 @@ const HEADER_PATTERNS: Record<string, string[]> = {
   metaDescription:   ['meta description', 'meta descriptions', 'meta descriptions en', 'meta desc'],
   metaKeyword:       ['meta keyword', 'meta keywords'],
   marketingTitle:    ['marketing title', 'h1', 'en marketing title'],
+  // Lead paragraph — matches the "no-number" Marketing Description header that
+  // sits before the numbered section columns. We deliberately don't include
+  // "marketing description (1)" or similar here so this pattern only catches
+  // the bare-suffix column.
+  marketingIntro:    ['en marketing description', 'marketing description', 'marketing intro', 'lead paragraph', 'intro paragraph'],
   marketingSection1: ['marketing description (1)', 'en marketing description (1)', 'h2 section1', 'section 1'],
   marketingSection2: ['marketing description (2)', 'en marketing description (2)', 'h2 section2', 'section 2'],
   marketingSection3: ['marketing description (3)', 'en marketing description (3)', 'h2 section3', 'section 3'],
@@ -241,19 +255,20 @@ function colIdxStrength(colIdx: Record<string, number>): number {
 // layout defined in SHEET_COLS. Useful for fresh sheets where the user hasn't
 // added a header row yet, and for the auto-created ID tab.
 function positionalIndex(field: string): number {
-  // A=0, B=1, ..., Z=25, AA=26, AB=27, ..., AG=32
+  // A=0, B=1, ..., Z=25, AA=26, ..., AH=33
   const map: Record<string, number> = {
     productName: 0, category: 1, relationId: 2, requestDate: 3, createNow: 4,
     mainKeyword: 5, secondaryKeyword: 6,
     metaTitle: 7, metaDescription: 8, metaKeyword: 9,
     marketingTitle: 10,
-    marketingSection1: 11, marketingSection2: 12, marketingSection3: 13,
-    marketingSection4: 14, marketingSection5: 15, marketingSection6: 16,
-    marketingSection7: 17, marketingSection8: 18,
-    faq1Q: 19, faq1A: 20, faq2Q: 21, faq2A: 22,
-    faq3Q: 23, faq3A: 24, faq4Q: 25, faq4A: 26,
-    faq5Q: 27, faq5A: 28, faq6Q: 29, faq6A: 30,
-    faq7Q: 31, faq7A: 32,
+    marketingIntro: 11,    // L — lead paragraph
+    marketingSection1: 12, marketingSection2: 13, marketingSection3: 14,
+    marketingSection4: 15, marketingSection5: 16, marketingSection6: 17,
+    marketingSection7: 18, marketingSection8: 19,
+    faq1Q: 20, faq1A: 21, faq2Q: 22, faq2A: 23,
+    faq3Q: 24, faq3A: 25, faq4Q: 26, faq4A: 27,
+    faq5Q: 28, faq5A: 29, faq6Q: 30, faq6A: 31,
+    faq7Q: 32, faq7A: 33,
   }
   return map[field] ?? -1
 }
@@ -272,7 +287,7 @@ export async function readProductSheet(
   // Read the top 2 rows as candidate headers. Some Galih-flavoured sheets
   // include a "Path" annotation row above the real header row; we score both
   // and pick whichever yields the strongest match against HEADER_PATTERNS.
-  const headerProbeRange = `${sheetName}!A1:AG2`
+  const headerProbeRange = `${sheetName}!A1:AH2`
   const probeRes = await sheets.spreadsheets.values.get({ spreadsheetId, range: headerProbeRange })
   const row1 = (probeRes.data.values?.[0] ?? []) as string[]
   const row2 = (probeRes.data.values?.[1] ?? []) as string[]
@@ -296,7 +311,7 @@ export async function readProductSheet(
   const startRow = Math.max(startRowHint, detectedHeaderRow + 1)
   const useHeader = colIdx.productName !== undefined && colIdx.relationId !== undefined
 
-  const bodyRange = `${sheetName}!A${startRow}:AG${startRow + maxRows - 1}`
+  const bodyRange = `${sheetName}!A${startRow}:AH${startRow + maxRows - 1}`
   const bodyRes   = await sheets.spreadsheets.values.get({ spreadsheetId, range: bodyRange })
 
   const cell = (row: unknown[], field: string): string => {
@@ -319,6 +334,7 @@ export async function readProductSheet(
       metaDescription:  cell(row, 'metaDescription'),
       metaKeyword:      cell(row, 'metaKeyword'),
       marketingTitle:   cell(row, 'marketingTitle'),
+      marketingIntro:   cell(row, 'marketingIntro'),
       marketingSections: [
         cell(row, 'marketingSection1'),
         cell(row, 'marketingSection2'),
@@ -353,7 +369,8 @@ export interface ProductRowUpdate {
   metaTitle?:         string
   metaDescription?:   string
   metaKeyword?:       string
-  marketingTitle?:    string
+  marketingTitle?:    string                            // H1
+  marketingIntro?:    string                            // Lead paragraph (col L)
   marketingSections?: string[]                          // 8 entries (HTML each)
   faqs?:              Array<{ q: string; a: string }>    // 5-7 entries
 }
@@ -405,6 +422,7 @@ function updateToCells(
   if (u.metaDescription  !== undefined) push('metaDescription',  u.metaDescription)
   if (u.metaKeyword      !== undefined) push('metaKeyword',      u.metaKeyword)
   if (u.marketingTitle   !== undefined) push('marketingTitle',   u.marketingTitle)
+  if (u.marketingIntro   !== undefined) push('marketingIntro',   u.marketingIntro)
 
   if (u.marketingSections !== undefined) {
     const sectionFields: Array<keyof typeof SHEET_COLS> = [
@@ -516,7 +534,7 @@ export async function getSheetColumnMap(
 
   const probeRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${sheetName}!A1:AG2`,
+    range: `${sheetName}!A1:AH2`,
   })
   const row1 = (probeRes.data.values?.[0] ?? []) as string[]
   const row2 = (probeRes.data.values?.[1] ?? []) as string[]
@@ -576,14 +594,14 @@ export async function ensureIdTab(
   // in shape for whichever downstream tool ingests them.
   const headerRes = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${enSheetName}!A1:AG2`,
+    range: `${enSheetName}!A1:AH2`,
   })
   const headerBlock = headerRes.data.values ?? []
 
   if (headerBlock.length > 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${targetName}!A1:AG${headerBlock.length}`,
+      range: `${targetName}!A1:AH${headerBlock.length}`,
       valueInputOption: 'RAW',
       requestBody: { values: headerBlock },
     })
@@ -636,8 +654,8 @@ export async function appendProductRow(
   const auth   = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
 
-  // Build a 33-column row array with the base values + update values
-  const cells: string[] = new Array(33).fill('')
+  // Build a 34-column row array with the base values + update values
+  const cells: string[] = new Array(34).fill('')
   cells[positionalIndex('productName')]      = baseRow.productName
   cells[positionalIndex('category')]         = baseRow.category
   cells[positionalIndex('relationId')]       = baseRow.relationId
@@ -649,6 +667,7 @@ export async function appendProductRow(
   if (update.metaDescription   !== undefined) cells[positionalIndex('metaDescription')]   = update.metaDescription
   if (update.metaKeyword       !== undefined) cells[positionalIndex('metaKeyword')]       = update.metaKeyword
   if (update.marketingTitle    !== undefined) cells[positionalIndex('marketingTitle')]    = update.marketingTitle
+  if (update.marketingIntro    !== undefined) cells[positionalIndex('marketingIntro')]    = update.marketingIntro
   if (update.marketingSections !== undefined) {
     for (let i = 0; i < 8; i++) cells[positionalIndex(`marketingSection${i + 1}`)] = update.marketingSections[i] ?? ''
   }
@@ -662,7 +681,7 @@ export async function appendProductRow(
 
   const res = await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range:           `${sheetName}!A:AG`,
+    range:           `${sheetName}!A:AH`,
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [cells] },

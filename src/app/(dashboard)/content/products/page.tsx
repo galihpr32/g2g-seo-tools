@@ -21,6 +21,8 @@ interface ProductItem {
   meta_description:      string | null
   meta_keywords:         string | null
   marketing_title:       string | null
+  /** Lead paragraph between H1 and the first H2 section (new flow). */
+  marketing_intro:       string | null
   /** Legacy single-blob HTML — replaced by marketing_sections in the new flow. */
   marketing_description: string | null
   /** Structured marketing body — 8 HTML strings, one per H2 section (new flow). */
@@ -169,6 +171,12 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
                 <label className="block text-xs text-gray-500 mb-1">H1 (Marketing Title)</label>
                 <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.marketing_title || <span className="text-gray-500 italic">—</span>}</p>
               </div>
+              {item.marketing_intro && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Lead paragraph (after H1)</label>
+                  <p className="text-sm text-gray-200 bg-gray-800 rounded-lg px-3 py-2 leading-relaxed">{item.marketing_intro}</p>
+                </div>
+              )}
               {item.marketing_sections && item.marketing_sections.length > 0 ? (
                 item.marketing_sections.map((s, i) => (
                   s ? (
