@@ -1,11 +1,12 @@
-name: Product Content Auto-Process
+name: Product Content Auto-Process (DISABLED)
+
+# DISABLED 2026-05-12: Product Content moved to a manual-trigger sheet-as-database
+# flow. The "Create now?" column in the Google Sheet is now the trigger; Galih
+# clicks "Run All Pending" in the UI when ready. Auto-cron no longer runs.
+# Keeping the file with workflow_dispatch only so it can be re-enabled by
+# restoring the schedule block if we ever revert.
 
 on:
-  schedule:
-    # Every 5 minutes — processes a batch of pending rows per owner.
-    # Picks up new rows uploaded via CSV import or sheet sync without
-    # the user needing to click "Sync" again.
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 concurrency:
