@@ -147,12 +147,20 @@ export default function PriorityProductsPage() {
             Priority alerts, deeper Bragi prompts, and weekly action plans run on every tiered product.
           </p>
         </div>
-        <Link
-          href="/settings/product-tiers"
-          className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition border border-gray-700"
-        >
-          ⚙ Manage tier list →
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/priority-products/rankings"
+            className="px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition"
+          >
+            📊 Rankings Dashboard →
+          </Link>
+          <Link
+            href="/settings/product-tiers"
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition border border-gray-700"
+          >
+            ⚙ Manage tier list →
+          </Link>
+        </div>
       </div>
 
       {/* KPI strip */}
