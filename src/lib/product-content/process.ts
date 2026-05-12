@@ -78,15 +78,19 @@ export function buildProductUrl(category: string, productName: string): string {
 }
 
 /**
- * Compose the literal product page title written to col K.
+ * Compose the product page title written to col K.
  *
- * Format per Galih's spec 2026-05-12: "{Brand Name}+{Category}".
- * The "+" is intentional — the CMS uses this as a structured slug, not as a
- * human-facing title. The marketing H1 lives in col L wrapped in <h1> tags
- * (see composeMarketingIntroBlock below).
+ * Format per Galih's spec 2026-05-12 (revised): plain "{Brand Name} {Category}"
+ * with a space separator — e.g. "Below the Crown Accounts", "Caromble! Accounts".
+ * Used by the CMS as the page-title slug. Marketing H1 lives separately in
+ * col L wrapped in <h1> tags (see composeMarketingIntroBlock).
  */
 function composeProductPageTitle(brand: string, category: string): string {
-  return `${brand}+${category}`
+  const b = brand.trim()
+  const c = category.trim()
+  if (!b) return c
+  if (!c) return b
+  return `${b} ${c}`
 }
 
 /**
