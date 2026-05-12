@@ -9,7 +9,7 @@ import { resolveSiteSlugFromRequest } from '@/lib/sites'
  * Body: { csv: string, replace?: boolean }
  *
  * Parses a CSV with the following header row (case-insensitive, any order):
- *   Tier, Product Name, Relation ID, URL, Notes
+ *   Tier, Product Name, Category, Relation ID, URL, Notes
  *
  * Required columns: Tier + Product Name. Others optional.
  * If `replace=true`, deletes ALL existing tier entries for this owner+site
@@ -34,11 +34,12 @@ export async function POST(req: Request) {
   if (rows.length === 0) return NextResponse.json({ error: 'No data rows found' }, { status: 400 })
 
   const header = rows[0].map(s => s.trim().toLowerCase())
-  const colTier   = header.findIndex(h => h === 'tier')
-  const colName   = header.findIndex(h => h === 'product name' || h === 'product_name' || h === 'name')
-  const colRelId  = header.findIndex(h => h === 'relation id' || h === 'relation_id')
-  const colUrl    = header.findIndex(h => h === 'url')
-  const colNotes  = header.findIndex(h => h === 'notes')
+  const colTier     = header.findIndex(h => h === 'tier')
+  const colName     = header.findIndex(h => h === 'product name' || h === 'product_name' || h === 'name')
+  const colCategory = header.findIndex(h => h === 'category')
+  const colRelId    = header.findIndex(h => h === 'relation id' || h === 'relation_id')
+  const colUrl      = header.findIndex(h => h === 'url')
+  const colNotes    = header.findIndex(h => h === 'notes')
 
   if (colTier < 0 || colName < 0) {
     return NextResponse.json({
@@ -64,12 +65,13 @@ export async function POST(req: Request) {
     const row = rows[i]
     const rowNum = i + 1   // human-friendly (1-indexed including header)
 
-    const tierRaw = (row[colTier] ?? '').trim()
-    const tier    = tierRaw === '1' ? 1 : tierRaw === '2' ? 2 : null
-    const name    = (row[colName] ?? '').trim()
-    const relId   = colRelId >= 0 ? (row[colRelId] ?? '').trim() : ''
-    const url     = colUrl   >= 0 ? (row[colUrl]   ?? '').trim() : ''
-    const notes   = colNotes >= 0 ? (row[colNotes] ?? '').trim() : ''
+    const tierRaw  = (row[colTier] ?? '').trim()
+    const tier     = tierRaw === '1' ? 1 : tierRaw === '2' ? 2 : null
+    const name     = (row[colName] ?? '').trim()
+    const category = colCategory >= 0 ? (row[colCategory] ?? '').trim() : ''
+    const relId    = colRelId    >= 0 ? (row[colRelId]    ?? '').trim() : ''
+    const url      = colUrl      >= 0 ? (row[colUrl]      ?? '').trim() : ''
+    const notes    = colNotes    >= 0 ? (row[colNotes]    ?? '').trim() : ''
 
     if (!tier)         { errors.push({ row: rowNum, reason: 'Tier must be 1 or 2' }); continue }
     if (!name)         { errors.push({ row: rowNum, reason: 'Product Name is required' }); continue }
@@ -79,9 +81,10 @@ export async function POST(req: Request) {
       site_slug:     siteSlug,
       tier,
       product_name:  name,
-      relation_id:   relId || null,
-      url:           url   || null,
-      notes:         notes || null,
+      category:      category || null,
+      relation_id:   relId    || null,
+      url:           url      || null,
+      notes:         notes    || null,
       updated_at:    new Date().toISOString(),
     }
 

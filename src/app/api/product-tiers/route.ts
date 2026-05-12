@@ -15,6 +15,7 @@ import { resolveSiteSlugFromRequest } from '@/lib/sites'
 interface TierBody {
   tier:         1 | 2
   product_name: string
+  category?:    string | null
   relation_id?: string | null
   url?:         string | null
   notes?:       string | null
@@ -22,7 +23,7 @@ interface TierBody {
 
 function normalizeBody(body: TierBody): {
   ok:    true
-  data:  Required<Omit<TierBody, 'tier' | 'product_name'>> & { tier: 1 | 2; product_name: string }
+  data:  { tier: 1 | 2; product_name: string; category: string | null; relation_id: string | null; url: string | null; notes: string | null }
 } | { ok: false; error: string } {
   if (body.tier !== 1 && body.tier !== 2) return { ok: false, error: 'tier must be 1 or 2' }
   if (!body.product_name?.trim())         return { ok: false, error: 'product_name is required' }
@@ -34,6 +35,7 @@ function normalizeBody(body: TierBody): {
     data: {
       tier:         body.tier,
       product_name: body.product_name.trim(),
+      category:     body.category?.trim() || null,
       relation_id:  body.relation_id?.trim() || null,
       url:          body.url?.trim() || null,
       notes:        body.notes?.trim() || null,
@@ -62,12 +64,31 @@ export async function GET(req: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   // Compact stats for header cards on the admin page.
-  const t1 = (data ?? []).filter(r => r.tier === 1).length
-  const t2 = (data ?? []).filter(r => r.tier === 2).length
+  // Galih's model: each CATEGORY has its own Top 10 (Tier 1) + Next 25 (Tier 2).
+  // So caps are per-category, not global. Stats reflect that.
+  const rows = data ?? []
+  const t1   = rows.filter(r => r.tier === 1).length
+  const t2   = rows.filter(r => r.tier === 2).length
+
+  // Per-category × per-tier breakdown.
+  // byCategoryTier[category] = { t1, t2, total }
+  const byCategoryTier: Record<string, { t1: number; t2: number; total: number }> = {}
+  for (const r of rows) {
+    const k = r.category?.trim() || 'Uncategorized'
+    byCategoryTier[k] ??= { t1: 0, t2: 0, total: 0 }
+    if (r.tier === 1) byCategoryTier[k].t1 += 1
+    else              byCategoryTier[k].t2 += 1
+    byCategoryTier[k].total += 1
+  }
 
   return NextResponse.json({
-    items: data ?? [],
-    stats: { tier1: t1, tier2: t2, total: (data ?? []).length },
+    items: rows,
+    stats: {
+      tier1: t1, tier2: t2, total: rows.length,
+      // Legacy global byCategory (count only) — kept for backward compat.
+      byCategory: Object.fromEntries(Object.entries(byCategoryTier).map(([k, v]) => [k, v.total])),
+      byCategoryTier,
+    },
   })
 }
 

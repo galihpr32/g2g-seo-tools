@@ -15,6 +15,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 interface PatchBody {
   tier?:         1 | 2
   product_name?: string
+  category?:     string | null
   relation_id?:  string | null
   url?:          string | null
   notes?:        string | null
@@ -43,6 +44,7 @@ export async function PUT(
     patch.tier = body.tier
   }
   if (body.product_name !== undefined) patch.product_name = body.product_name.trim()
+  if (body.category !== undefined)     patch.category     = body.category?.trim() || null
   if (body.relation_id !== undefined)  patch.relation_id  = body.relation_id?.trim() || null
   if (body.url !== undefined)          patch.url          = body.url?.trim() || null
   if (body.notes !== undefined)        patch.notes        = body.notes?.trim() || null

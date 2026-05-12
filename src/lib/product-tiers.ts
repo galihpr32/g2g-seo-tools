@@ -22,12 +22,33 @@ export interface ProductTier {
   site_slug:     string
   tier:          1 | 2
   product_name:  string
+  /** Free-form grouping label (e.g. "Game Coins", "Accounts"). Null = un-bucketed.
+   *  Used by the admin UI + Priority Products page to group products into
+   *  per-category sections within each tier. */
+  category:      string | null
   relation_id:   string | null
   url:           string | null
   notes:         string | null
   created_at:    string
   updated_at:    string
 }
+
+/** Curated preset list for the category dropdown. Free text is also accepted —
+ *  this just gives common G2G categories one-click access. Keep aligned with
+ *  the segments in g2g-category-prompts.ts so urls/prompts stay consistent. */
+export const TIER_CATEGORY_PRESETS = [
+  'Game Accounts',
+  'Game Coins',
+  'Game Keys',
+  'Gift Cards',
+  'Top Up',
+  'Boosting',
+  'Items',
+  'GamePal',
+  'Software',
+  'Telco',
+  'Other',
+] as const
 
 export interface TierMatch {
   relationId?:  string | null
@@ -86,7 +107,7 @@ export async function loadTierMap(
 ): Promise<TierMap> {
   const { data, error } = await db
     .from('product_tiers')
-    .select('id, owner_user_id, site_slug, tier, product_name, relation_id, url, notes, created_at, updated_at')
+    .select('id, owner_user_id, site_slug, tier, product_name, category, relation_id, url, notes, created_at, updated_at')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
 

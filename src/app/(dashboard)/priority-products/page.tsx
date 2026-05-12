@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
+import { TIER_CATEGORY_PRESETS } from '@/lib/product-tiers'
 
 /**
  * /priority-products — the "war room" page for Tier 1 + Tier 2 products.
@@ -15,10 +16,13 @@ import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
  * renders. No client-side number crunching beyond filter+search.
  */
 
+const UNCATEGORIZED = 'Uncategorized'
+
 interface ProductRow {
   id:               string
   tier:             1 | 2
   productName:      string
+  category:         string | null
   relationId:       string | null
   url:              string | null
   notes:            string | null
@@ -59,9 +63,10 @@ export default function PriorityProductsPage() {
   const [summary, setSummary] = useState<Summary>(EMPTY_SUMMARY)
   const [loading, setLoading] = useState(true)
 
-  const [filterTier,   setFilterTier]   = useState<'all' | '1' | '2'>('all')
-  const [filterHealth, setFilterHealth] = useState<'all' | 'critical' | 'attention' | 'monitor' | 'healthy'>('all')
-  const [search,       setSearch]       = useState('')
+  const [filterTier,     setFilterTier]     = useState<'all' | '1' | '2'>('all')
+  const [filterHealth,   setFilterHealth]   = useState<'all' | 'critical' | 'attention' | 'monitor' | 'healthy'>('all')
+  const [filterCategory, setFilterCategory] = useState<string>('all')
+  const [search,         setSearch]         = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -82,15 +87,53 @@ export default function PriorityProductsPage() {
     return rows.filter(r => {
       if (filterTier !== 'all'   && String(r.tier) !== filterTier)   return false
       if (filterHealth !== 'all' && r.health !== filterHealth)        return false
+      if (filterCategory !== 'all') {
+        const c = r.category?.trim() || UNCATEGORIZED
+        if (c !== filterCategory) return false
+      }
       if (!s) return true
-      return [r.productName, r.relationId, r.url, r.notes]
+      return [r.productName, r.category, r.relationId, r.url, r.notes]
         .filter(Boolean)
         .some(v => (v as string).toLowerCase().includes(s))
     })
-  }, [rows, filterTier, filterHealth, search])
+  }, [rows, filterTier, filterHealth, filterCategory, search])
 
-  const t1Rows = visible.filter(r => r.tier === 1)
-  const t2Rows = visible.filter(r => r.tier === 2)
+  // Unique categories present across ALL rows (not just filtered) so the
+  // dropdown stays consistent as you slice.
+  const categoryOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const r of rows) set.add(r.category?.trim() || UNCATEGORIZED)
+    return Array.from(set).sort()
+  }, [rows])
+
+  /** Group rows by CATEGORY first, then split each group into Tier 1 / Tier 2
+   *  subsections. This matches Galih's mental model: each category has its
+   *  own Top 10 (T1) + Next 25 (T2). The display becomes:
+   *    Game Accounts
+   *      Tier 1 (top 10)  → rows
+   *      Tier 2 (next 25) → rows
+   *    Game Coins
+   *      ...
+   */
+  const categoryGroups = useMemo(() => {
+    const groups: Record<string, { t1: ProductRow[]; t2: ProductRow[] }> = {}
+    for (const r of visible) {
+      const k = r.category?.trim() || UNCATEGORIZED
+      groups[k] ??= { t1: [], t2: [] }
+      if (r.tier === 1) groups[k].t1.push(r)
+      else              groups[k].t2.push(r)
+    }
+    const presetOrder = new Map<string, number>(TIER_CATEGORY_PRESETS.map((p, i) => [p, i]))
+    const keys = Object.keys(groups).sort((a, b) => {
+      if (a === UNCATEGORIZED) return 1
+      if (b === UNCATEGORIZED) return -1
+      const ia = presetOrder.get(a) ?? Infinity
+      const ib = presetOrder.get(b) ?? Infinity
+      if (ia !== ib) return ia - ib
+      return a.localeCompare(b)
+    })
+    return keys.map(k => ({ category: k, ...groups[k] }))
+  }, [visible])
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -99,8 +142,9 @@ export default function PriorityProductsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white mb-1">🎯 Priority Products</h1>
           <p className="text-sm text-gray-400">
-            War room for the top 35 products on <strong className="text-white">{siteSlug.toUpperCase()}</strong>.
-            Tier 1 (top 10) + Tier 2 (next 25) get priority alerts, deeper Bragi prompts, and weekly action plans.
+            War room for top-priority products on <strong className="text-white">{siteSlug.toUpperCase()}</strong>.
+            Each category has its own <strong className="text-amber-300">Tier 1 (top 10)</strong> + <strong className="text-blue-300">Tier 2 (next 25)</strong>.
+            Priority alerts, deeper Bragi prompts, and weekly action plans run on every tiered product.
           </p>
         </div>
         <Link
@@ -148,6 +192,14 @@ export default function PriorityProductsPage() {
           <option value="monitor">👀 Monitor</option>
           <option value="healthy">✓ Healthy</option>
         </select>
+        <select
+          value={filterCategory}
+          onChange={e => setFilterCategory(e.target.value)}
+          className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600"
+        >
+          <option value="all">All categories</option>
+          {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
       </div>
 
       {loading ? (
@@ -165,8 +217,14 @@ export default function PriorityProductsPage() {
         </div>
       ) : (
         <div className="space-y-6">
-          {t1Rows.length > 0 && <TierSection label="Tier 1 — Top 10 Priority" accent="#f59e0b" rows={t1Rows} />}
-          {t2Rows.length > 0 && <TierSection label="Tier 2 — Next 25"         accent="#3b82f6" rows={t2Rows} />}
+          {categoryGroups.map(g => (
+            <CategorySection
+              key={g.category}
+              category={g.category}
+              t1Rows={g.t1}
+              t2Rows={g.t2}
+            />
+          ))}
           {visible.length === 0 && (
             <p className="text-sm text-gray-500 text-center py-8">No products match these filters.</p>
           )}
@@ -178,17 +236,71 @@ export default function PriorityProductsPage() {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function TierSection({ label, accent, rows }: { label: string; accent: string; rows: ProductRow[] }) {
+/**
+ * One category section. Header shows the category name + T1/T2 coverage
+ * counts. Then two subsections: Tier 1 (top 10) and Tier 2 (next 25).
+ * Empty subsections collapse to a single "0 products" hint so Galih sees
+ * which categories still need filling.
+ */
+function CategorySection({ category, t1Rows, t2Rows }: {
+  category: string
+  t1Rows:   ProductRow[]
+  t2Rows:   ProductRow[]
+}) {
+  const T1_CAP = 10
+  const T2_CAP = 25
+  return (
+    <section className="bg-gray-950/30 border border-gray-800 rounded-xl p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 className="text-base font-bold text-white">{category}</h2>
+        <div className="flex items-center gap-3 text-[11px]">
+          <span className={t1Rows.length > T1_CAP ? 'text-red-400' : 'text-amber-300'}>
+            T1: {t1Rows.length}/{T1_CAP}
+          </span>
+          <span className={t2Rows.length > T2_CAP ? 'text-red-400' : 'text-blue-300'}>
+            T2: {t2Rows.length}/{T2_CAP}
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <TierSubsection
+          label="Tier 1 — Top 10"
+          accent="#f59e0b"
+          rows={t1Rows}
+          emptyHint={`No Tier 1 products tagged in ${category} yet — add ${T1_CAP} top performers.`}
+        />
+        <TierSubsection
+          label="Tier 2 — Next 25"
+          accent="#3b82f6"
+          rows={t2Rows}
+          emptyHint={`No Tier 2 products tagged in ${category} yet.`}
+        />
+      </div>
+    </section>
+  )
+}
+
+function TierSubsection({ label, accent, rows, emptyHint }: {
+  label:     string
+  accent:    string
+  rows:      ProductRow[]
+  emptyHint: string
+}) {
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="w-1 h-4 rounded" style={{ backgroundColor: accent }} />
-        <h2 className="text-xs font-bold uppercase tracking-wider" style={{ color: accent }}>{label}</h2>
-        <span className="text-xs text-gray-500">· {rows.length} product{rows.length !== 1 ? 's' : ''}</span>
+      <div className="flex items-baseline gap-2 mb-2 px-1">
+        <div className="w-1 h-3 rounded" style={{ backgroundColor: accent }} />
+        <h3 className="text-[10px] font-bold uppercase tracking-wider" style={{ color: accent }}>{label}</h3>
+        <span className="text-[10px] text-gray-500">· {rows.length}</span>
       </div>
-      <div className="space-y-2">
-        {rows.map(r => <ProductCard key={r.id} row={r} />)}
-      </div>
+      {rows.length === 0 ? (
+        <p className="text-[11px] text-gray-600 italic px-1.5 py-2">{emptyHint}</p>
+      ) : (
+        <div className="space-y-2">
+          {rows.map(r => <ProductCard key={r.id} row={r} />)}
+        </div>
+      )}
     </div>
   )
 }

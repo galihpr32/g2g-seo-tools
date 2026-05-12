@@ -29,6 +29,7 @@ interface ProductRow {
   id:           string
   tier:         1 | 2
   productName:  string
+  category:     string | null
   relationId:   string | null
   url:          string | null
   notes:        string | null
@@ -69,11 +70,11 @@ export async function GET(req: Request) {
   // ── 1. Tier list ────────────────────────────────────────────────────────────
   const { data: tiersRaw } = await db
     .from('product_tiers')
-    .select('id, tier, product_name, relation_id, url, notes')
+    .select('id, tier, product_name, category, relation_id, url, notes')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
 
-  const tiers = (tiersRaw ?? []) as Pick<ProductTier, 'id' | 'tier' | 'product_name' | 'relation_id' | 'url' | 'notes'>[]
+  const tiers = (tiersRaw ?? []) as Pick<ProductTier, 'id' | 'tier' | 'product_name' | 'category' | 'relation_id' | 'url' | 'notes'>[]
   if (tiers.length === 0) {
     return NextResponse.json({
       products: [],
@@ -298,6 +299,7 @@ export async function GET(req: Request) {
         id:           t.id,
         tier:         t.tier,
         productName:  t.product_name,
+        category:     t.category ?? null,
         relationId:   t.relation_id ?? null,
         url:          t.url ?? null,
         notes:        t.notes ?? null,
