@@ -1,37 +1,43 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { writeProductRow, SHEET_STATUS } from '@/lib/google/sheets'
-import { buildCategoryInstructions } from '@/lib/g2g-category-prompts'
-import { createProductDoc } from '@/lib/google/drive'
+import {
+  writeProductRow,
+  SHEET_STATUS,
+  formatErrorStatus,
+  ensureIdTab,
+  findRowByRelationId,
+  appendProductRow,
+} from '@/lib/google/sheets'
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { logApiUsage } from '@/lib/api-logger'
-import { translateProductContent } from '@/lib/agents/product-translator'
+import { translateProductContent, type ProductContentBundle } from '@/lib/agents/product-translator'
 
 /**
- * Single source of truth for generating product content (EN + ID).
+ * Sheet-as-database Product Content processor (2026-05-12 refactor).
  *
- * Used by:
- *   - /api/products/auto-content/sync         — sheet-driven manual sync
- *   - /api/cron/product-content-auto          — scheduled background processor
- *   - /api/products/auto-content/process-row  — per-row "Process now" action
+ * Flow per row:
+ *   1. Fetch keywords from DataForSEO (main + 4-5 secondary)
+ *   2. Generate structured EN content via Claude — 8 H2 sections + 5-7 FAQ Q/A
+ *   3. Translate EN → Indonesian (same structure)
+ *   4. Save both to DB (mirror) + write back to sheet:
+ *        EN tab: cols F-AG on the original row
+ *        ID tab: matching row (by Relation ID); auto-create tab if missing
+ *   5. Update col E on EN tab to "Generated" or "Error: <stage-tagged>"
  *
- * Idempotent: caller is responsible for setting status='generating' before
- * invocation. We update DB to 'generated' or 'failed' on completion.
+ * No Google Drive doc creation — sheet is the canonical store.
  */
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const CLAUDE_MODEL = 'claude-haiku-4-5-20251001'
 
 export interface QueueRow {
-  id:                string
-  owner_user_id:     string
-  relation_id:       string
-  product_name:      string
-  category:          string | null
-  url:               string | null
-  sheet_row:         number | null
-  main_keyword:      string | null
-  secondary_keywords: string | null
+  id:              string
+  owner_user_id:   string
+  relation_id:     string
+  product_name:    string
+  category:        string | null
+  request_date:    string | null
+  sheet_row:       number | null
 }
 
 export interface SheetTarget {
@@ -43,32 +49,30 @@ export interface ProcessResult {
   ok:        boolean
   error?:    string
   warning?:  string
-  /** Per-row stat returned to the caller for summary display. */
-  enDocUrl?: string
-  idDocUrl?: string
+  bundle?:   ProductContentBundle
 }
 
-// ─── Helpers — kept here so both sync + cron use identical logic ─────────────
+// ─── Helpers — kept here so both manual button + cron use identical logic ────
 
 export function buildProductUrl(category: string, productName: string): string {
   const cat = (category ?? '').toLowerCase().trim()
   const slug = (productName ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
   let segment = 'product'
-  if (cat.includes('gift') || cat.includes('payment card')) segment = 'gift-card'
-  else if (cat.includes('account')) segment = 'accounts'
+  if (cat.includes('gift') || cat.includes('payment card'))            segment = 'gift-card'
+  else if (cat.includes('account'))                                     segment = 'accounts'
   else if (cat.includes('video game') || cat.includes('game key') || cat.includes('cd key')) segment = 'cd-key'
-  else if (cat.includes('software') || cat.includes('app')) segment = 'software'
-  else if (cat.includes('boost')) segment = 'boosting'
+  else if (cat.includes('software') || cat.includes('app'))             segment = 'software'
+  else if (cat.includes('boost'))                                       segment = 'boosting'
   else if (cat.includes('currency') || cat.includes('coin') || cat.includes('gold') || cat.includes('top up') || cat.includes('topup')) segment = 'game-coins'
-  else if (cat.includes('item')) segment = 'game-items'
-  else if (cat.includes('gamepal') || cat.includes('lfg')) segment = 'gamepal'
-  else if (cat.includes('telco')) segment = 'telco'
+  else if (cat.includes('item'))                                        segment = 'game-items'
+  else if (cat.includes('gamepal') || cat.includes('lfg'))              segment = 'gamepal'
+  else if (cat.includes('telco'))                                       segment = 'telco'
 
   return `https://www.g2g.com/${segment}/${slug}`
 }
 
-export function extractGameName(productName: string): string {
+function extractGameName(productName: string): string {
   const suffixes = [
     'coins', 'currency', 'gold', 'credits', 'gems', 'tokens',
     'account', 'accounts', 'boosting', 'boost', 'power leveling',
@@ -82,261 +86,323 @@ export function extractGameName(productName: string): string {
   return name.trim() || productName
 }
 
+// ─── Structured prompt ───────────────────────────────────────────────────────
+
 function buildPrompt(opts: {
-  categoryInstructions: string
-  productName:  string
-  category:     string
-  url:          string
-  mainKeyword:  string
-  secondaryKws: string
+  productName:      string
+  category:         string
+  url:              string
+  mainKeyword:      string
+  secondaryKeyword: string
 }): string {
-  return `${opts.categoryInstructions}
+  return `You are writing G2G.com product page content. G2G is a global gaming marketplace where players buy/sell game accounts, currency, items, boosting services, gift cards, and keys.
 
 PRODUCT DETAILS:
 - Product Name: ${opts.productName}
-- Category: ${opts.category}
-- URL: ${opts.url}
-- Primary Keyword: ${opts.mainKeyword}
-- Secondary Keywords: ${opts.secondaryKws || 'none'}
+- Category:     ${opts.category}
+- URL:          ${opts.url}
+- Primary Keyword:     ${opts.mainKeyword}
+- Secondary Keywords:  ${opts.secondaryKeyword || '(none — derive from product context)'}
 
-Generate the complete product page content following ALL the instructions above.
+OUTPUT STRUCTURE — strict:
+1. SEO meta (3 fields: meta_title ≤60 chars, meta_description ≤110 chars, meta_keyword comma-separated 5-8 terms)
+2. Marketing H1 title — punchy, 50-80 chars, ${opts.mainKeyword} prominent
+3. EIGHT marketing sections — each is ONE <h2> + body paragraphs in HTML. Pick eight relevant topics for the category:
+   • For Accounts: What is, Why Buy on G2G, Account Features, How It Works, Pricing, Safety & Verification, Payment Options, Customer Support
+   • For Currency/Coins: What is, Why Buy, How to Order, Delivery Speed, Pricing & Best Sellers, Security, Payment Methods, Buyer Reviews
+   • For Gift Cards: About, Where to Use, How to Redeem, Why Buy on G2G, Denominations, Instant Delivery, Security, FAQ Closing
+   • For Game Keys: About, Activation Region, How It Works, Pricing, Instant Delivery, Verified Sellers, Payment Methods, Support
+   • For Boosting: Service Overview, Why Choose G2G, How Boost Works, Account Safety, Pricing Tiers, Boost Speed, Payment, Support
+   • Default: pick 8 logical sections that explain product + trust + flow + pricing + delivery + support
+   Each section is FULL HTML in a single string: "<h2>Section Title</h2><p>Paragraph 1.</p><p>Paragraph 2.</p>" — use <ul>/<ol>/<strong> where they add value.
+4. FIVE to SEVEN FAQ Q/A pairs — questions real buyers ask. Each Q is one sentence; each A is 1-2 short paragraphs in plain prose (NO HTML in answers).
 
-Return a JSON object with these exact fields:
+WRITING RULES:
+- Use ${opts.mainKeyword} naturally 3-5 times across the full content (NOT keyword-stuff).
+- Tone: friendly, trustworthy, action-oriented. Speak to a gamer, not a corporate buyer.
+- Include 1-2 "G2G.com" mentions per section where natural.
+- Mention safety / escrow / verified sellers where relevant.
+- Never invent specific prices or guarantees we can't keep.
+- Never use forbidden phrases: "in conclusion", "in this article", "let's dive in", "look no further".
+
+Return ONLY a JSON object (no markdown fences, no commentary). EXACT shape:
 {
-  "meta_title": "SEO title ≤60 chars",
-  "meta_description": "SEO description ≤110 chars",
-  "meta_keywords": "keyword1, keyword2, keyword3",
-  "marketing_title": "Product page H1 title",
-  "marketing_description": "Full HTML product description using <br><br> between paragraphs, following the section structure above"
+  "meta_title":       "string ≤60 chars",
+  "meta_description": "string ≤110 chars",
+  "meta_keyword":     "kw1, kw2, kw3, kw4, kw5",
+  "marketing_title":  "H1 title string",
+  "marketing_sections": [
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>",
+    "<h2>...</h2><p>...</p>"
+  ],
+  "faqs": [
+    { "q": "Question 1?", "a": "Answer 1." },
+    { "q": "Question 2?", "a": "Answer 2." },
+    { "q": "Question 3?", "a": "Answer 3." },
+    { "q": "Question 4?", "a": "Answer 4." },
+    { "q": "Question 5?", "a": "Answer 5." }
+  ]
+}`
 }
 
-No markdown fences. Only valid JSON.`
-}
+// ─── Generate EN content via Claude ──────────────────────────────────────────
 
-// ─── Main ────────────────────────────────────────────────────────────────────
-
-export async function processProductRow(
-  row:      QueueRow,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db:       SupabaseClient<any, any, any>,
+async function generateEnContent(
+  opts: {
+    productName:      string
+    category:         string
+    url:              string
+    mainKeyword:      string
+    secondaryKeyword: string
+  },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: SupabaseClient<any, any, any>,
-  sheet:    SheetTarget | null,
+  ownerId:  string,
+): Promise<{ ok: true; bundle: ProductContentBundle } | { ok: false; error: string }> {
+  let raw = ''
+  try {
+    const prompt = buildPrompt(opts)
+    const msg = await anthropic.messages.create({
+      model:      CLAUDE_MODEL,
+      max_tokens: 8192,
+      messages:   [{ role: 'user', content: prompt }],
+    })
+    logApiUsage(supabase, ownerId, {
+      api: 'claude', endpoint: 'product_auto_content_structured',
+      triggeredBy: 'other', callCount: 1,
+    })
+
+    raw = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : '{}'
+    const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
+    const parsed  = JSON.parse(jsonStr) as Record<string, unknown>
+
+    if (typeof parsed.meta_title       !== 'string') return { ok: false, error: '[stage:gen] missing meta_title in AI output' }
+    if (typeof parsed.meta_description !== 'string') return { ok: false, error: '[stage:gen] missing meta_description' }
+    if (typeof parsed.marketing_title  !== 'string') return { ok: false, error: '[stage:gen] missing marketing_title' }
+    if (!Array.isArray(parsed.marketing_sections))   return { ok: false, error: '[stage:gen] missing marketing_sections array' }
+    if (!Array.isArray(parsed.faqs))                  return { ok: false, error: '[stage:gen] missing faqs array' }
+
+    const sections = (parsed.marketing_sections as unknown[]).map(s => String(s ?? ''))
+    while (sections.length < 8) sections.push('')
+
+    const faqs = (parsed.faqs as unknown[]).map(f => {
+      const obj = f as Record<string, unknown>
+      return { q: String(obj.q ?? ''), a: String(obj.a ?? '') }
+    }).filter(f => f.q.trim() && f.a.trim())
+
+    if (faqs.length < 5) {
+      return { ok: false, error: `[stage:gen] only ${faqs.length} valid FAQs returned (min 5)` }
+    }
+
+    return {
+      ok: true,
+      bundle: {
+        metaTitle:         String(parsed.meta_title),
+        metaDescription:   String(parsed.meta_description),
+        metaKeyword:       String(parsed.meta_keyword ?? ''),
+        marketingTitle:    String(parsed.marketing_title),
+        marketingSections: sections.slice(0, 8),
+        faqs:              faqs.slice(0, 7),
+      },
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    // Distinguish parse errors (most common — Claude returned non-JSON) from
+    // API errors so the stage tag tells us where to look.
+    if (e instanceof SyntaxError) {
+      return { ok: false, error: `[stage:parse] ${msg} — first 200 chars of output: ${raw.slice(0, 200)}` }
+    }
+    return { ok: false, error: `[stage:anthropic] ${msg}` }
+  }
+}
+
+// ─── Main processor ──────────────────────────────────────────────────────────
+
+export async function processProductRow(
+  row: QueueRow,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:  SupabaseClient<any, any, any>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: SupabaseClient<any, any, any>,
+  sheet: SheetTarget | null,
 ): Promise<ProcessResult> {
   try {
     const productName = row.product_name
     const category    = row.category ?? ''
-    const productUrl  = row.url ?? buildProductUrl(category, productName)
+    const productUrl  = buildProductUrl(category, productName)
 
-    // 1. Resolve keywords (use existing or fetch from DataForSEO)
-    let mainKeyword    = row.main_keyword       || productName
-    let secondaryKwStr = row.secondary_keywords || ''
-
-    if (!row.main_keyword) {
-      try {
-        const suggestions = await getKeywordSuggestions(productName, 2840, 'en', 10)
-        if (suggestions.length) {
-          mainKeyword    = suggestions[0].keyword
-          secondaryKwStr = suggestions.slice(1, 6).map(s => s.keyword).join(', ')
-        }
-      } catch { /* non-critical — fallback to product name */ }
-    }
-
-    // 2. Generate EN content via Haiku
-    const categoryInstructions = buildCategoryInstructions(productUrl, extractGameName(productName), mainKeyword)
-    const prompt = buildPrompt({
-      categoryInstructions,
-      productName,
-      category,
-      url: productUrl,
-      mainKeyword,
-      secondaryKws: secondaryKwStr,
-    })
-
-    const msg = await anthropic.messages.create({
-      model:      CLAUDE_MODEL,
-      max_tokens: 4096,
-      messages:   [{ role: 'user', content: prompt }],
-    })
-    logApiUsage(supabase, row.owner_user_id, {
-      api: 'claude', endpoint: 'product_auto_content',
-      triggeredBy: 'other', callCount: 1,
-    })
-
-    const raw     = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : '{}'
-    const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
-    const parsed  = JSON.parse(jsonStr) as Record<string, string>
-
-    // 3. Create EN Google Doc — REQUIRED for status='generated'.
-    // If this fails the row goes to status='failed' with the error captured
-    // in generation_error so users can debug (Drive API not enabled, folder
-    // permission denied, etc.) without crawling Vercel function logs.
-    let enDocUrl = ''
-    let enDocError: string | null = null
+    // ── 1. Fetch keywords from DataForSEO ────────────────────────────────────
+    let mainKeyword     = productName
+    let secondaryKeyword = ''
     try {
-      enDocUrl = await createProductDoc({
-        productName,
-        category,
-        relationId:           row.relation_id,
-        mainKeyword,
-        secondaryKeyword:     secondaryKwStr,
-        metaTitle:            parsed.meta_title            ?? '',
-        metaDescription:      parsed.meta_description      ?? '',
-        metaKeywords:         parsed.meta_keywords         ?? '',
-        marketingTitle:       parsed.marketing_title       ?? productName,
-        marketingDescription: parsed.marketing_description ?? '',
-        language:             'en',
-      })
-    } catch (docErr) {
-      enDocError = docErr instanceof Error ? docErr.message : String(docErr)
-      console.error(`[process] EN doc failed for ${row.relation_id}:`, docErr)
+      const suggestions = await getKeywordSuggestions(extractGameName(productName), 2840, 'en', 10)
+      if (suggestions.length) {
+        mainKeyword      = suggestions[0].keyword
+        secondaryKeyword = suggestions.slice(1, 6).map(s => s.keyword).join(', ')
+      }
+    } catch (kwErr) {
+      // Non-blocking — fall back to product name as main keyword.
+      console.warn(`[process] DataForSEO keyword fetch failed for ${row.relation_id}:`, kwErr)
     }
 
-    // 4. Translate to Indonesian + create ID doc
-    let idDocUrl = ''
-    let idBundle: ReturnType<typeof Object> | null = null
+    // ── 2. Generate EN content (structured: 8 sections + 5-7 FAQs) ──────────
+    const enResult = await generateEnContent({
+      productName, category, url: productUrl, mainKeyword, secondaryKeyword,
+    }, supabase, row.owner_user_id)
+
+    if (!enResult.ok) {
+      await persistFailure(db, row, enResult.error, sheet)
+      return { ok: false, error: enResult.error }
+    }
+    const en = enResult.bundle
+
+    // ── 3. Translate to Indonesian (same structure) ──────────────────────────
+    let idBundle: ProductContentBundle | null = null
     let idWarning: string | null = null
     try {
       const tx = await translateProductContent({
-        productName,
-        category,
-        mainKeyword,
-        english: {
-          meta_title:            parsed.meta_title            ?? '',
-          meta_description:      parsed.meta_description      ?? '',
-          meta_keywords:         parsed.meta_keywords         ?? '',
-          marketing_title:       parsed.marketing_title       ?? productName,
-          marketing_description: parsed.marketing_description ?? '',
-        },
+        productName, category, mainKeyword,
+        english: en,
       }, supabase, row.owner_user_id)
-
-      if (tx.ok && tx.bundle) {
-        idBundle = tx.bundle
-        try {
-          idDocUrl = await createProductDoc({
-            productName,
-            category,
-            relationId:           row.relation_id,
-            mainKeyword,
-            secondaryKeyword:     secondaryKwStr,
-            metaTitle:            tx.bundle.meta_title,
-            metaDescription:      tx.bundle.meta_description,
-            metaKeywords:         tx.bundle.meta_keywords,
-            marketingTitle:       tx.bundle.marketing_title,
-            marketingDescription: tx.bundle.marketing_description,
-            language:             'id',
-          })
-        } catch (docErr) {
-          idWarning = `ID doc create failed: ${docErr instanceof Error ? docErr.message : String(docErr)}`
-        }
-      } else {
-        idWarning = tx.error ?? 'Translation returned no bundle'
-      }
+      if (tx.ok && tx.bundle) idBundle = tx.bundle
+      else                     idWarning = tx.error ?? 'Translation returned no bundle'
     } catch (txErr) {
-      idWarning = `Translate exception: ${txErr instanceof Error ? txErr.message : String(txErr)}`
+      idWarning = `Translation exception: ${txErr instanceof Error ? txErr.message : String(txErr)}`
     }
 
-    const enSucceeded = !!enDocUrl   // No URL → row failed (drive API or folder access)
-    const idGenSucceeded = !!(idBundle && idDocUrl)
-    // Avoid TS complaint on object index
-    const idB = idBundle as null | { meta_title: string; meta_description: string; meta_keywords: string; marketing_title: string; marketing_description: string }
-
-    // 5. Save EN + ID content to DB
-    // EN status reflects whether a usable Doc URL was produced. Without it,
-    // the team has no artifact to upload — calling that "generated" was the
-    // bug users reported on 2026-05-08.
+    // ── 4. Save EN + ID to DB ────────────────────────────────────────────────
     await db
       .from('product_content_queue')
       .update({
-        // EN fields
-        meta_title:            parsed.meta_title            ?? '',
-        meta_description:      parsed.meta_description      ?? '',
-        meta_keywords:         parsed.meta_keywords         ?? '',
-        marketing_title:       parsed.marketing_title       ?? productName,
-        marketing_description: parsed.marketing_description ?? '',
-        main_keyword:          mainKeyword,
-        secondary_keywords:    secondaryKwStr,
-        google_doc_url:        enDocUrl || null,
-        status:                enSucceeded ? 'generated' : 'failed',
-        generated_at:          enSucceeded ? new Date().toISOString() : null,
-        generation_error:      enSucceeded ? null : (enDocError ?? 'EN Google Doc creation returned empty URL — check Drive API + GOOGLE_DRIVE_FOLDER_ID.'),
-        // ID fields
-        id_meta_title:            idB?.meta_title            ?? null,
-        id_meta_description:      idB?.meta_description      ?? null,
-        id_meta_keywords:         idB?.meta_keywords         ?? null,
-        id_marketing_title:       idB?.marketing_title       ?? null,
-        id_marketing_description: idB?.marketing_description ?? null,
-        id_google_doc_url:        idDocUrl || null,
-        id_status:                idGenSucceeded ? 'generated' : 'failed',
-        id_generated_at:          idGenSucceeded ? new Date().toISOString() : null,
-        id_generation_error:      idGenSucceeded ? null : (idWarning ?? null),
-        updated_at:               new Date().toISOString(),
+        // EN payload
+        meta_title:           en.metaTitle,
+        meta_description:     en.metaDescription,
+        meta_keywords:        en.metaKeyword,        // legacy column name, plural
+        marketing_title:      en.marketingTitle,
+        marketing_sections:   en.marketingSections,  // NEW jsonb
+        faqs:                 en.faqs,               // NEW jsonb
+        main_keyword:         mainKeyword,
+        secondary_keywords:   secondaryKeyword,
+        status:               'generated',
+        generated_at:         new Date().toISOString(),
+        generation_error:     null,
+        google_doc_url:       null,                  // explicit clear (legacy)
+        // ID payload
+        id_meta_title:        idBundle?.metaTitle       ?? null,
+        id_meta_description:  idBundle?.metaDescription ?? null,
+        id_meta_keywords:     idBundle?.metaKeyword     ?? null,
+        id_marketing_title:   idBundle?.marketingTitle  ?? null,
+        id_marketing_sections: idBundle?.marketingSections ?? [],
+        id_faqs:               idBundle?.faqs           ?? [],
+        id_status:            idBundle ? 'generated' : 'failed',
+        id_generated_at:      idBundle ? new Date().toISOString() : null,
+        id_generation_error:  idWarning,
+        id_google_doc_url:    null,                  // explicit clear
+        updated_at:           new Date().toISOString(),
       })
       .eq('owner_user_id', row.owner_user_id)
       .eq('relation_id', row.relation_id)
 
-    // 6. Write back to sheet (D-I) — only if a sheet target was provided
+    // ── 5. Write back to EN sheet tab ────────────────────────────────────────
     if (sheet && row.sheet_row) {
       try {
         await writeProductRow(sheet.spreadsheetId, sheet.sheetName, row.sheet_row, {
+          createNow:         SHEET_STATUS.GENERATED,
           mainKeyword,
-          secondaryKeyword: secondaryKwStr,
-          enFileName:       enDocUrl || '',
-          status:           enSucceeded ? SHEET_STATUS.GENERATED : SHEET_STATUS.FAILED,
-          idFileName:       idDocUrl || '',
-          idStatus:         idGenSucceeded ? SHEET_STATUS.GENERATED : SHEET_STATUS.FAILED,
+          secondaryKeyword,
+          metaTitle:         en.metaTitle,
+          metaDescription:   en.metaDescription,
+          metaKeyword:       en.metaKeyword,
+          marketingTitle:    en.marketingTitle,
+          marketingSections: en.marketingSections,
+          faqs:              en.faqs,
         })
       } catch (sheetErr) {
-        console.error(`[process] sheet write-back failed for row ${row.sheet_row}:`, sheetErr)
+        console.error(`[process] EN sheet write-back failed for row ${row.sheet_row}:`, sheetErr)
       }
     }
 
-    return {
-      ok:        enSucceeded,
-      enDocUrl:  enDocUrl || undefined,
-      idDocUrl:  idDocUrl || undefined,
-      error:     enSucceeded ? undefined : (enDocError ?? 'EN doc URL was empty'),
-      warning:   idWarning ?? undefined,
-    }
-  } catch (e) {
-    console.error(`[process] failed for ${row.relation_id}:`, e)
-
-    // Surface the actual error message into the DB so the Details modal can
-    // show it. Without this, status='failed' shows up with no error visible
-    // (the bug Galih hit on 2026-05-08: "ini juga kalo ada failed, bisa
-    // tolong diinfoin ga failednya di mana?"). Drive-API throws, Anthropic
-    // 5xx, JSON.parse errors, anything before/after EN doc try-block — all
-    // land here and need to be persisted.
-    const errMsg = e instanceof Error ? e.message : String(e)
-
-    // Mark BOTH columns failed since ID translates from EN — if EN bombs, ID can't proceed
-    await db
-      .from('product_content_queue')
-      .update({
-        status:              'failed',
-        id_status:           'failed',
-        generation_error:    errMsg,
-        id_generation_error: errMsg,
-        updated_at:          new Date().toISOString(),
-      })
-      .eq('owner_user_id', row.owner_user_id)
-      .eq('relation_id', row.relation_id)
-
-    if (sheet && row.sheet_row) {
+    // ── 6. Write to ID sheet tab (auto-create + match by Relation ID) ───────
+    if (sheet && idBundle) {
       try {
-        await writeProductRow(sheet.spreadsheetId, sheet.sheetName, row.sheet_row, {
-          status:   SHEET_STATUS.FAILED,
-          idStatus: SHEET_STATUS.FAILED,
-        })
-      } catch { /* best-effort */ }
+        const idTab = await ensureIdTab(sheet.spreadsheetId, sheet.sheetName)
+        const idRowIndex = await findRowByRelationId(sheet.spreadsheetId, idTab, row.relation_id)
+
+        const idUpdate = {
+          createNow:         SHEET_STATUS.GENERATED,
+          mainKeyword,                                                  // same kw (Indonesian users search EN brand terms)
+          secondaryKeyword,
+          metaTitle:         idBundle.metaTitle,
+          metaDescription:   idBundle.metaDescription,
+          metaKeyword:       idBundle.metaKeyword,
+          marketingTitle:    idBundle.marketingTitle,
+          marketingSections: idBundle.marketingSections,
+          faqs:              idBundle.faqs,
+        }
+
+        if (idRowIndex > 0) {
+          await writeProductRow(sheet.spreadsheetId, idTab, idRowIndex, idUpdate)
+        } else {
+          await appendProductRow(sheet.spreadsheetId, idTab, {
+            productName: row.product_name,
+            category:    row.category ?? '',
+            relationId:  row.relation_id,
+            requestDate: row.request_date ?? '',
+          }, idUpdate)
+        }
+      } catch (idSheetErr) {
+        // Non-blocking — EN tab already has the success status.
+        console.error(`[process] ID sheet write failed for ${row.relation_id}:`, idSheetErr)
+      }
     }
 
+    return { ok: true, bundle: en, warning: idWarning ?? undefined }
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e)
+    console.error(`[process] failed for ${row.relation_id}:`, e)
+    await persistFailure(db, row, errMsg, sheet)
     return { ok: false, error: errMsg }
   }
 }
 
+// ─── Failure persistence helper ──────────────────────────────────────────────
+
+async function persistFailure(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:    SupabaseClient<any, any, any>,
+  row:   QueueRow,
+  msg:   string,
+  sheet: SheetTarget | null,
+): Promise<void> {
+  await db
+    .from('product_content_queue')
+    .update({
+      status:              'failed',
+      id_status:           'failed',
+      generation_error:    msg,
+      id_generation_error: msg,
+      updated_at:          new Date().toISOString(),
+    })
+    .eq('owner_user_id', row.owner_user_id)
+    .eq('relation_id', row.relation_id)
+
+  if (sheet && row.sheet_row) {
+    try {
+      await writeProductRow(sheet.spreadsheetId, sheet.sheetName, row.sheet_row, {
+        createNow: formatErrorStatus(msg),
+      })
+    } catch { /* best-effort */ }
+  }
+}
+
 /**
- * Reset stuck-state rows: anything in status='generating' for >10 minutes is
+ * Reset stuck rows: anything in status='generating' for >10 minutes is
  * treated as a crashed worker. Move it back to 'pending' so the next
  * processing pass picks it up.
  */

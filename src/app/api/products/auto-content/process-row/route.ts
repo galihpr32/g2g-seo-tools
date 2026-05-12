@@ -38,10 +38,12 @@ export async function POST(req: Request) {
     limit?:        number
   }
 
-  // Resolve which rows to process
+  // Resolve which rows to process. The processProductRow API now fetches
+  // keywords from DataForSEO itself, so we no longer need to carry
+  // main_keyword / secondary_keywords on the row.
   let rowsQuery = db
     .from('product_content_queue')
-    .select('id, owner_user_id, relation_id, product_name, category, url, sheet_row, main_keyword, secondary_keywords')
+    .select('id, owner_user_id, relation_id, product_name, category, sheet_row, request_date')
     .eq('owner_user_id', ownerId)
 
   if (body.ids?.length) {

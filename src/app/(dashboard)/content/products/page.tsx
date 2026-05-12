@@ -12,14 +12,21 @@ interface ProductItem {
   category:              string
   url:                   string
   sheet_row:             number
+  request_date:          string | null
   main_keyword:          string | null
   secondary_keywords:    string | null
+  /** Legacy — was Google Doc URL. Always null in the new sheet-as-database flow. */
   google_doc_url:        string | null
   meta_title:            string | null
   meta_description:      string | null
   meta_keywords:         string | null
   marketing_title:       string | null
+  /** Legacy single-blob HTML — replaced by marketing_sections in the new flow. */
   marketing_description: string | null
+  /** Structured marketing body — 8 HTML strings, one per H2 section (new flow). */
+  marketing_sections:    string[] | null
+  /** Q/A pairs, 5-7 entries (new flow). */
+  faqs:                  Array<{ q: string; a: string }> | null
   status:                Status
   cms_seo_status:        string | null
   cms_mkt_status:        string | null
@@ -29,6 +36,8 @@ interface ProductItem {
   id_generation_error:   string | null
   id_status:             Status | null
   id_google_doc_url:     string | null
+  id_marketing_sections: string[] | null
+  id_faqs:               Array<{ q: string; a: string }> | null
   generated_at:          string | null
   uploaded_at:           string | null
   updated_at:            string
@@ -133,21 +142,6 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
             </section>
           )}
 
-          {/* Google Doc link */}
-          {item.google_doc_url && (
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Backup Doc</h3>
-              <a
-                href={item.google_doc_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 bg-gray-800 rounded-lg px-3 py-2 transition"
-              >
-                📄 Open Google Doc ↗
-              </a>
-            </section>
-          )}
-
           {/* SEO fields */}
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">SEO Fields</h3>
@@ -167,23 +161,55 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
             </div>
           </section>
 
-          {/* Marketing fields */}
+          {/* Marketing fields — H1 + 8 structured H2 sections (new flow) */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Marketing Fields</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Marketing Content</h3>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Marketing Title (H1)</label>
+                <label className="block text-xs text-gray-500 mb-1">H1 (Marketing Title)</label>
                 <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.marketing_title || <span className="text-gray-500 italic">—</span>}</p>
               </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Marketing Description (HTML)</label>
-                <div
-                  className="text-sm text-gray-300 bg-gray-800 rounded-lg px-3 py-2 max-h-80 overflow-y-auto prose prose-invert prose-sm max-w-none"
-                  dangerouslySetInnerHTML={{ __html: item.marketing_description ?? '<span class="text-gray-500 italic">—</span>' }}
-                />
-              </div>
+              {item.marketing_sections && item.marketing_sections.length > 0 ? (
+                item.marketing_sections.map((s, i) => (
+                  s ? (
+                    <div key={i}>
+                      <label className="block text-xs text-gray-500 mb-1">Section {i + 1}</label>
+                      <div
+                        className="text-sm text-gray-200 bg-gray-800 rounded-lg px-3 py-2 max-h-48 overflow-y-auto prose prose-invert prose-sm max-w-none"
+                        dangerouslySetInnerHTML={{ __html: s }}
+                      />
+                    </div>
+                  ) : null
+                ))
+              ) : item.marketing_description ? (
+                // Backward compat: render legacy single-blob HTML if no sections yet
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Marketing Description (legacy)</label>
+                  <div
+                    className="text-sm text-gray-300 bg-gray-800 rounded-lg px-3 py-2 max-h-80 overflow-y-auto prose prose-invert prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{ __html: item.marketing_description }}
+                  />
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 italic px-2">No marketing content generated yet.</p>
+              )}
             </div>
           </section>
+
+          {/* FAQs — 5-7 Q/A pairs (new flow) */}
+          {item.faqs && item.faqs.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">FAQs ({item.faqs.length})</h3>
+              <div className="space-y-2">
+                {item.faqs.map((f, i) => (
+                  <div key={i} className="bg-gray-800 rounded-lg px-3 py-2">
+                    <p className="text-sm text-white font-medium mb-1">Q{i + 1}: {f.q}</p>
+                    <p className="text-sm text-gray-300">{f.a}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* CMS status */}
           {(item.cms_seo_status || item.cms_mkt_status) && (
@@ -370,13 +396,17 @@ export default function ProductContentPage() {
   useEffect(() => { fetchItems() }, [fetchItems])
 
   async function handleSync() {
+    // "Run All Pending" — scans the Google Sheet for rows where col E
+    // ("Create now?") = "yes" and processes each one. Writes structured
+    // content back to the sheet (EN + ID tabs) and updates col E to
+    // "Generated" or "Error: <stage-tagged>" per row.
     setSyncing(true)
     setSyncResult(null)
     try {
       const res = await fetch('/api/products/auto-content/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      const data = await res.json() as { synced?: number; failed?: number; message?: string; error?: string }
+      const data = await res.json() as { processed?: number; succeeded?: number; failed?: number; skipped?: number; message?: string; error?: string }
       setSyncResult({
-        synced:  data.synced ?? 0,
+        synced:  data.succeeded ?? 0,
         failed:  data.failed ?? 0,
         message: data.message ?? data.error ?? null,
       })
@@ -543,12 +573,13 @@ export default function ProductContentPage() {
           <button
             onClick={handleSync}
             disabled={syncing}
+            title='Scan the Google Sheet for rows with col E "Create now?" = "yes" and generate content for each. Writes structured output back to the sheet (EN + ID tabs).'
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center gap-2"
           >
             {syncing ? (
-              <><span className="animate-spin">⟳</span> Syncing…</>
+              <><span className="animate-spin">⟳</span> Running…</>
             ) : (
-              <>🔄 Sync from Sheet</>
+              <>▶ Run All Pending</>
             )}
           </button>
 
@@ -588,19 +619,6 @@ export default function ProductContentPage() {
           </button>
           <button
             onClick={async () => {
-              const res = await fetch('/api/products/auto-content/recheck', { method: 'POST' })
-              const data = await res.json().catch(() => ({}))
-              if (!res.ok) { alert(`Recheck failed: ${data.error ?? res.status}`); return }
-              alert(`Found ${data.resetEn ?? 0} EN + ${data.resetId ?? 0} ID stale rows (status="generated" but no doc URL). Reset to pending — auto-process will pick them up in the next ~5 min tick.`)
-              await fetchItems()
-            }}
-            title="Reset rows that say 'generated' but have no Google Doc URL — they'll re-process on the next auto-tick"
-            className="px-3 py-2 bg-amber-900/40 hover:bg-amber-900/60 text-amber-200 text-sm rounded-lg transition border border-amber-800/40"
-          >
-            🔄 Recheck Stale
-          </button>
-          <button
-            onClick={async () => {
               if (!confirm('Clear ALL pending/generating/failed product rows? Already-uploaded rows are protected. This is irreversible.')) return
               const res = await fetch('/api/products/auto-content/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
               const data = await res.json().catch(() => ({}))
@@ -616,14 +634,18 @@ export default function ProductContentPage() {
         </div>
       </div>
 
-      {/* ── Auto-process info banner ──────────────────────────────────── */}
-      <div className="mb-4 bg-emerald-900/15 border border-emerald-800/40 rounded-lg px-4 py-2.5 flex items-center gap-3 text-xs">
-        <span className="text-emerald-400 text-base">⚡</span>
-        <div className="flex-1 text-emerald-100">
-          <span className="font-semibold">Auto-process is on.</span>{' '}
-          <span className="text-emerald-200/80">
-            Pending rows are picked up every ~5 minutes and processed in batches of 8 per run. No need to click Sync repeatedly — just upload, then refresh this page periodically.
-          </span>
+      {/* ── Workflow info banner (new sheet-as-database flow) ─────────── */}
+      <div className="mb-4 bg-blue-900/15 border border-blue-800/40 rounded-lg px-4 py-2.5 flex items-start gap-3 text-xs">
+        <span className="text-blue-400 text-base leading-tight">📝</span>
+        <div className="flex-1 text-blue-100 space-y-1">
+          <p>
+            <span className="font-semibold">New workflow:</span> the Google Sheet is the source of truth. No more Google Docs.
+          </p>
+          <p className="text-blue-200/80">
+            BDT fills cols A-D (Brand, Category, Relation ID, Request Date), then writes <code className="bg-blue-950/50 px-1 rounded">yes</code> in col E (&quot;Create now?&quot;).
+            Click <strong>▶ Run All Pending</strong> — AI generates Meta + Marketing (8 H2 sections) + 5-7 FAQs across cols F-AG. Indonesian translations land in a separate <code className="bg-blue-950/50 px-1 rounded">ID</code> sheet tab (auto-created).
+            Col E updates to <code className="bg-blue-950/50 px-1 rounded">Generated</code> on success or <code className="bg-blue-950/50 px-1 rounded">Error: &lt;reason&gt;</code> on failure (not retriggerable).
+          </p>
         </div>
       </div>
 
