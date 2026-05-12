@@ -803,7 +803,13 @@ export default function PipelineJourneyPage() {
   const [tab,          setTab]          = useState<TabFilter>('all')
   const [loading,      setLoading]      = useState(true)
   const [lastFetched,  setLastFetched]  = useState<Date | null>(null)
-  const [search,       setSearch]       = useState('')
+  // Seed search from URL ?q= so deep links from Priority Products
+  // ("View opps →") land already filtered to that product's topic.
+  const [search,       setSearch]       = useState(() => {
+    if (typeof window === 'undefined') return ''
+    const params = new URLSearchParams(window.location.search)
+    return params.get('q') ?? ''
+  })
   const [processing,   setProcessing]   = useState(false)
   const [processMsg,   setProcessMsg]   = useState<string | null>(null)
   // Tema 1.2 controls

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import { TIER_MARKETS, TIER_MARKET_CODES, type TierMarket } from '@/lib/ranking-tracker'
@@ -82,6 +82,17 @@ interface ApiBundle {
   markets:     readonly string[]
 }
 
+// Shape returned by /api/priority-products/[id] — used to populate the
+// expanded leaderboard row inline.
+interface ProductDetailBundle {
+  leaderboard: Array<{
+    keyword:   string
+    is_main:   boolean
+    positions: Record<string, { position: number | null; url: string | null; snapshot_date: string | null }>
+  }>
+  markets: string[]
+}
+
 const RANGE_LABELS: Record<string, string> = {
   '1d':  '1 day',
   '1w':  '1 week',
@@ -103,6 +114,37 @@ export default function RankingsDashboardPage() {
   const [category, setCategory] = useState<string>('all')
   const [range,    setRange]    = useState<string>('1w')
   const [search,   setSearch]   = useState('')
+
+  // Expanded row state — which products show their keyword × market leaderboard
+  // inline. Lazy-loaded from /api/priority-products/[id] on first expand.
+  const [expanded,  setExpanded]  = useState<Set<string>>(new Set())
+  const [detailCache, setDetailCache] = useState<Record<string, ProductDetailBundle>>({})
+  const [detailLoading, setDetailLoading] = useState<Set<string>>(new Set())
+
+  async function toggleExpand(productId: string) {
+    const next = new Set(expanded)
+    if (next.has(productId)) {
+      next.delete(productId)
+      setExpanded(next)
+      return
+    }
+    next.add(productId)
+    setExpanded(next)
+
+    if (detailCache[productId]) return  // already loaded
+
+    setDetailLoading(prev => new Set(prev).add(productId))
+    try {
+      const res = await fetch(`/api/priority-products/${productId}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const body: ProductDetailBundle = await res.json()
+      setDetailCache(prev => ({ ...prev, [productId]: body }))
+    } catch (e) {
+      console.error('Failed to load detail for', productId, e)
+    } finally {
+      setDetailLoading(prev => { const n = new Set(prev); n.delete(productId); return n })
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -278,32 +320,66 @@ export default function RankingsDashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredProducts.map(p => (
-                    <tr key={p.id} className="border-t border-gray-800 hover:bg-gray-800/30">
-                      <td className="px-3 py-2.5">
-                        <p className="text-white font-medium truncate">{p.productName}</p>
-                        {p.url && <p className="text-[10px] text-gray-500 truncate">{p.url}</p>}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
-                          p.tier === 1 ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                        }`}>T{p.tier}</span>
-                      </td>
-                      <td className="px-3 py-2.5 text-gray-400 hidden md:table-cell text-xs">{p.category ?? '—'}</td>
-                      <td className="px-3 py-2.5 text-right text-gray-200">{p.kwCount}</td>
-                      <td className="px-3 py-2.5 text-right">
-                        <PositionCell position={p.avgPosition} />
-                      </td>
-                      <td className="px-3 py-2.5 text-right text-gray-200 hidden md:table-cell">{p.top3}</td>
-                      <td className="px-3 py-2.5 text-right text-gray-200 hidden md:table-cell">{p.top10}</td>
-                      <td className="px-3 py-2.5 text-right">
-                        <DeltaPill delta={p.wowDelta} />
-                      </td>
-                      <td className="px-3 py-2.5 text-right">
-                        <Link href={`/priority-products/${p.id}`} className="text-xs text-blue-400 hover:text-blue-300">Rankings →</Link>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredProducts.map(p => {
+                    const isOpen = expanded.has(p.id)
+                    const detail = detailCache[p.id]
+                    const isLoading = detailLoading.has(p.id)
+                    return (
+                      <Fragment key={p.id}>
+                        <tr
+                          className="border-t border-gray-800 hover:bg-gray-800/30 cursor-pointer"
+                          onClick={() => toggleExpand(p.id)}
+                        >
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`text-gray-500 text-xs transition-transform inline-block ${isOpen ? 'rotate-90' : ''}`}>▸</span>
+                              <div className="min-w-0">
+                                <p className="text-white font-medium truncate">{p.productName}</p>
+                                {p.url && <p className="text-[10px] text-gray-500 truncate">{p.url}</p>}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                              p.tier === 1 ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                            }`}>T{p.tier}</span>
+                          </td>
+                          <td className="px-3 py-2.5 text-gray-400 hidden md:table-cell text-xs">{p.category ?? '—'}</td>
+                          <td className="px-3 py-2.5 text-right text-gray-200">{p.kwCount}</td>
+                          <td className="px-3 py-2.5 text-right">
+                            <PositionCell position={p.avgPosition} />
+                          </td>
+                          <td className="px-3 py-2.5 text-right text-gray-200 hidden md:table-cell">{p.top3}</td>
+                          <td className="px-3 py-2.5 text-right text-gray-200 hidden md:table-cell">{p.top10}</td>
+                          <td className="px-3 py-2.5 text-right">
+                            <DeltaPill delta={p.wowDelta} />
+                          </td>
+                          <td className="px-3 py-2.5 text-right">
+                            <Link
+                              href={`/priority-products/${p.id}`}
+                              onClick={e => e.stopPropagation()}
+                              className="text-xs text-blue-400 hover:text-blue-300"
+                            >Detail →</Link>
+                          </td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="bg-gray-950/40 border-t border-gray-800/50">
+                            <td colSpan={9} className="px-4 py-3">
+                              {isLoading ? (
+                                <p className="text-xs text-gray-500 italic">Loading keyword breakdown…</p>
+                              ) : !detail || detail.leaderboard.length === 0 ? (
+                                <p className="text-xs text-gray-500 italic">
+                                  No keyword data yet. <Link href={`/priority-products/${p.id}`} className="text-blue-400 hover:text-blue-300">Open detail page</Link> to add keywords.
+                                </p>
+                              ) : (
+                                <KeywordLeaderboard rows={detail.leaderboard} markets={detail.markets} />
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             )}
@@ -478,6 +554,51 @@ function PositionCell({ position }: { position: number | null }) {
     <span className={`inline-flex items-center justify-center min-w-[36px] px-1.5 py-0.5 rounded border text-xs font-medium ${cls}`}>
       #{position.toFixed(1)}
     </span>
+  )
+}
+
+/**
+ * Inline keyword × market mini-leaderboard shown when a product row is
+ * expanded in the dashboard. Compact version of the full leaderboard from
+ * /priority-products/[id] — main keyword highlighted, all 5 markets in a row.
+ */
+function KeywordLeaderboard({ rows, markets }: {
+  rows:    Array<{ keyword: string; is_main: boolean; positions: Record<string, { position: number | null; url: string | null; snapshot_date: string | null }> }>
+  markets: string[]
+}) {
+  return (
+    <div className="bg-gray-950/60 rounded border border-gray-800 overflow-hidden">
+      <table className="w-full text-xs">
+        <thead className="bg-gray-800/30 text-gray-500 text-[9px] uppercase tracking-wider">
+          <tr>
+            <th className="text-left px-3 py-1.5">Keyword</th>
+            {markets.map(m => (
+              <th key={m} className="text-center px-2 py-1.5 w-14">{m.toUpperCase()}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => (
+            <tr key={r.keyword} className="border-t border-gray-800/50">
+              <td className="px-3 py-1.5">
+                <div className="flex items-center gap-1.5">
+                  {r.is_main && <span className="text-amber-400 text-[9px]">★</span>}
+                  <span className="text-gray-200">{r.keyword}</span>
+                </div>
+              </td>
+              {markets.map(m => {
+                const p = r.positions[m]?.position ?? null
+                return (
+                  <td key={m} className="text-center px-2 py-1.5">
+                    <PositionCell position={p} />
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

@@ -368,13 +368,24 @@ function PositionCell({ position }: { position: number | null }) {
 }
 
 function GscChart({ points }: { points: GscPoint[] }) {
+  // Custom hover tooltip — tracks mouse-over data point + shows date/clicks/pos
+  const [hover, setHover] = useState<{ idx: number; x: number; y: number } | null>(null)
+
   if (points.length === 0) return <p className="text-xs text-gray-500 py-8 text-center">No GSC data for this URL yet.</p>
 
-  const w = 600, h = 180
-  const padding = 32
+  // Summary stats above chart — quick-glance numbers
+  const totalClicks = points.reduce((s, p) => s + p.clicks, 0)
+  const positionsArr = points.map(p => p.position).filter((p): p is number => p != null && p > 0)
+  const avgPos = positionsArr.length ? +(positionsArr.reduce((s, p) => s + p, 0) / positionsArr.length).toFixed(1) : null
+  const latestPos = points[points.length - 1]?.position ?? null
+  const firstPos  = points.find(p => p.position != null)?.position ?? null
+  const posDelta  = (latestPos != null && firstPos != null) ? +(firstPos - latestPos).toFixed(1) : null
+
+  const w = 600, h = 200
+  const padding = 36
   const maxClicks = Math.max(1, ...points.map(p => p.clicks))
   const positions = points.map(p => p.position ?? 100).filter(p => p > 0)
-  const maxPos = positions.length ? Math.max(...positions) : 100
+  const maxPos = positions.length ? Math.max(...positions, 30) : 30
 
   // Clicks bars
   const barW = (w - padding * 2) / Math.max(points.length, 1)
@@ -383,36 +394,151 @@ function GscChart({ points }: { points: GscPoint[] }) {
     return { x: padding + i * barW, y: h - padding - bh, w: Math.max(1, barW - 1), h: bh }
   })
 
-  // Position line (inverted — pos 1 is at top)
+  // Position line (inverted — pos 1 is at top of plot area)
   const posPoints = points.map((p, i) => {
     const x = padding + i * barW + barW / 2
-    const yNorm = p.position == null ? null : 1 - (1 / Math.min(p.position, maxPos))   // pos 1 → top
-    const y = yNorm == null ? null : padding + yNorm * (h - padding * 2)
+    const y = p.position == null ? null : padding + ((p.position - 1) / Math.max(maxPos - 1, 1)) * (h - padding * 2)
     return { x, y, position: p.position }
   })
   const linePath = posPoints
     .filter(p => p.y != null)
-    .map((p, idx, arr) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y!.toFixed(1)}`)
+    .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y!.toFixed(1)}`)
     .join(' ')
 
+  // Y-axis tick values for clicks (left side) — 0, half, max
+  const yTicks = [
+    { label: maxClicks.toString(), y: padding },
+    { label: Math.round(maxClicks / 2).toString(), y: padding + (h - padding * 2) / 2 },
+    { label: '0', y: h - padding },
+  ]
+  // Position ticks on right side (inverted scale)
+  const posTicks = [
+    { pos: 1,         y: padding },
+    { pos: Math.round(maxPos / 2), y: padding + (h - padding * 2) / 2 },
+    { pos: maxPos,    y: h - padding },
+  ]
+
+  // X-axis labels — first, mid, last
+  const xLabels = points.length > 0 ? [
+    { idx: 0,                          label: shortDate(points[0].date) },
+    { idx: Math.floor(points.length / 2), label: shortDate(points[Math.floor(points.length / 2)].date) },
+    { idx: points.length - 1,           label: shortDate(points[points.length - 1].date) },
+  ] : []
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
-      {/* Clicks bars */}
-      {clickBars.map((b, i) => <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="rgba(59, 130, 246, 0.4)" />)}
-      {/* Position line */}
-      {linePath && <path d={linePath} fill="none" stroke="#f59e0b" strokeWidth="1.5" />}
-      {/* Legend */}
-      <g transform={`translate(${padding}, 12)`}>
-        <rect x={0}  y={0} width={10} height={6} fill="rgba(59, 130, 246, 0.4)" />
-        <text x={14} y={6} fontSize="9" fill="#9ca3af">clicks</text>
-        <line x1={50} y1={3} x2={62} y2={3} stroke="#f59e0b" strokeWidth="1.5" />
-        <text x={66} y={6} fontSize="9" fill="#9ca3af">avg position</text>
-      </g>
-    </svg>
+    <div>
+      {/* Summary numbers above chart — always visible */}
+      <div className="grid grid-cols-3 gap-2 mb-3 text-[10px]">
+        <div className="bg-gray-800/40 rounded px-2 py-1.5">
+          <p className="text-gray-500 uppercase tracking-wider">Total clicks</p>
+          <p className="text-blue-300 font-semibold text-sm">{fmtNum(totalClicks)}</p>
+        </div>
+        <div className="bg-gray-800/40 rounded px-2 py-1.5">
+          <p className="text-gray-500 uppercase tracking-wider">Avg position</p>
+          <p className="text-amber-300 font-semibold text-sm">{avgPos != null ? `#${avgPos.toFixed(1)}` : '—'}</p>
+        </div>
+        <div className="bg-gray-800/40 rounded px-2 py-1.5">
+          <p className="text-gray-500 uppercase tracking-wider">Δ over period</p>
+          <p className={`font-semibold text-sm ${
+            posDelta == null ? 'text-gray-500' : posDelta > 0 ? 'text-emerald-300' : posDelta < 0 ? 'text-red-300' : 'text-gray-300'
+          }`}>
+            {posDelta == null ? '—' : posDelta > 0 ? `↑ ${posDelta.toFixed(1)}` : posDelta < 0 ? `↓ ${Math.abs(posDelta).toFixed(1)}` : 'flat'}
+          </p>
+        </div>
+      </div>
+
+      <div className="relative">
+        <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet"
+             onMouseLeave={() => setHover(null)}>
+          {/* Y-axis ticks left (clicks) */}
+          {yTicks.map((t, i) => (
+            <g key={`yL-${i}`}>
+              <line x1={padding} y1={t.y} x2={w - padding} y2={t.y} stroke="rgba(255,255,255,0.04)" />
+              <text x={padding - 4} y={t.y + 3} fontSize="8" fill="#6b7280" textAnchor="end">{t.label}</text>
+            </g>
+          ))}
+          {/* Y-axis ticks right (position) */}
+          {posTicks.map((t, i) => (
+            <text key={`yR-${i}`} x={w - padding + 4} y={t.y + 3} fontSize="8" fill="#f59e0b80" textAnchor="start">#{t.pos}</text>
+          ))}
+          {/* X-axis labels */}
+          {xLabels.map((l, i) => {
+            const x = padding + l.idx * barW + barW / 2
+            return <text key={`xL-${i}`} x={x} y={h - padding + 12} fontSize="8" fill="#6b7280" textAnchor="middle">{l.label}</text>
+          })}
+
+          {/* Clicks bars + invisible hit areas */}
+          {clickBars.map((b, i) => {
+            const p = points[i]
+            return (
+              <g key={i}>
+                <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="rgba(59, 130, 246, 0.4)" />
+                {/* Larger hit area for hover */}
+                <rect
+                  x={b.x} y={padding} width={Math.max(b.w, 4)} height={h - padding * 2}
+                  fill="transparent"
+                  onMouseEnter={() => setHover({ idx: i, x: b.x + b.w / 2, y: padding })}
+                >
+                  <title>{`${p.date}\nClicks: ${fmtNum(p.clicks)} · Position: ${p.position?.toFixed(1) ?? '—'}`}</title>
+                </rect>
+              </g>
+            )
+          })}
+          {/* Position line + point markers */}
+          {linePath && <path d={linePath} fill="none" stroke="#f59e0b" strokeWidth="1.5" />}
+          {posPoints.map((p, i) => p.y != null && (
+            <circle key={i} cx={p.x} cy={p.y} r={2} fill="#f59e0b">
+              <title>{`${points[i].date} · pos #${p.position?.toFixed(1) ?? '—'}`}</title>
+            </circle>
+          ))}
+
+          {/* Hover crosshair */}
+          {hover && (
+            <line x1={hover.x} y1={padding} x2={hover.x} y2={h - padding}
+                  stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="2 2" pointerEvents="none" />
+          )}
+
+          {/* Legend */}
+          <g transform={`translate(${padding}, 14)`}>
+            <rect x={0}  y={0} width={10} height={6} fill="rgba(59, 130, 246, 0.4)" />
+            <text x={14} y={6} fontSize="9" fill="#9ca3af">clicks</text>
+            <line x1={50} y1={3} x2={62} y2={3} stroke="#f59e0b" strokeWidth="1.5" />
+            <text x={66} y={6} fontSize="9" fill="#9ca3af">position</text>
+          </g>
+        </svg>
+
+        {/* Tooltip card overlaid */}
+        {hover && points[hover.idx] && (
+          <div
+            className="absolute pointer-events-none bg-gray-950 border border-gray-700 rounded shadow-xl px-2.5 py-1.5 text-[11px]"
+            style={{
+              left:  `${(hover.x / w) * 100}%`,
+              top:   '8px',
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <p className="text-gray-400 text-[10px]">{points[hover.idx].date}</p>
+            <p className="text-blue-300">clicks: <span className="font-semibold">{fmtNum(points[hover.idx].clicks)}</span></p>
+            <p className="text-amber-300">pos: <span className="font-semibold">{points[hover.idx].position?.toFixed(1) ?? '—'}</span></p>
+            <p className="text-gray-500">impr: {fmtNum(points[hover.idx].impressions)}</p>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
+function shortDate(iso: string): string {
+  return iso.slice(5) // "MM-DD"
+}
+function fmtNum(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
+  return String(n)
+}
+
 function DfsChart({ history, keywords, market }: { history: Record<string, HistoryPoint[]>; keywords: KeywordRow[]; market: string }) {
+  const [hover, setHover] = useState<{ keyword: string; date: string; position: number | null; x: number; y: number } | null>(null)
+
   // Filter to the chosen market. One line per keyword (main + secondary).
   const series = useMemo(() => {
     return keywords.map(kw => ({
@@ -426,7 +552,7 @@ function DfsChart({ history, keywords, market }: { history: Record<string, Histo
     return <p className="text-xs text-gray-500 py-8 text-center">No SERP snapshots yet. Run the weekly cron to populate.</p>
   }
 
-  const w = 600, h = 180, padding = 32
+  const w = 600, h = 200, padding = 36
   // Y axis: position 1 at top, position 30 at bottom (anything beyond → off-chart)
   const yMax = 30
   const allDates = Array.from(new Set(series.flatMap(s => s.points.map(p => p.date)))).sort()
@@ -440,40 +566,124 @@ function DfsChart({ history, keywords, market }: { history: Record<string, Histo
   // Color palette
   const palette = ['#f59e0b', '#3b82f6', '#ec4899', '#10b981', '#a855f7', '#06b6d4', '#eab308', '#f87171']
 
+  // Summary: count of "currently ranking" keywords in top 3 / top 10 / top 20
+  const latestPositions = series.map(s => {
+    const last = s.points[s.points.length - 1]
+    return last?.position ?? null
+  }).filter((p): p is number => p != null)
+  const t3 = latestPositions.filter(p => p <= 3).length
+  const t10 = latestPositions.filter(p => p <= 10).length
+  const t20 = latestPositions.filter(p => p <= 20).length
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
-      {/* Gridlines */}
-      {[1, 5, 10, 20, 30].map(p => {
-        const y = yOf(p)
-        return (
-          <g key={p}>
-            <line x1={padding} y1={y} x2={w - padding} y2={y} stroke="rgba(255,255,255,0.05)" strokeDasharray="2 3" />
-            <text x={4} y={y + 3} fontSize="8" fill="#6b7280">#{p}</text>
+    <div>
+      {/* Latest-snapshot summary above chart */}
+      <div className="grid grid-cols-3 gap-2 mb-3 text-[10px]">
+        <div className="bg-gray-800/40 rounded px-2 py-1.5">
+          <p className="text-gray-500 uppercase tracking-wider">Top 3</p>
+          <p className="text-emerald-300 font-semibold text-sm">{t3} kw{t3 !== 1 ? 's' : ''}</p>
+        </div>
+        <div className="bg-gray-800/40 rounded px-2 py-1.5">
+          <p className="text-gray-500 uppercase tracking-wider">Top 10</p>
+          <p className="text-blue-300 font-semibold text-sm">{t10} kw{t10 !== 1 ? 's' : ''}</p>
+        </div>
+        <div className="bg-gray-800/40 rounded px-2 py-1.5">
+          <p className="text-gray-500 uppercase tracking-wider">Top 20</p>
+          <p className="text-amber-300 font-semibold text-sm">{t20} kw{t20 !== 1 ? 's' : ''}</p>
+        </div>
+      </div>
+
+      <div className="relative">
+        <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet"
+             onMouseLeave={() => setHover(null)}>
+          {/* Gridlines + Y-axis labels */}
+          {[1, 3, 10, 20, 30].map(p => {
+            const y = yOf(p)
+            return (
+              <g key={p}>
+                <line x1={padding} y1={y} x2={w - padding} y2={y} stroke="rgba(255,255,255,0.06)" strokeDasharray="2 3" />
+                <text x={padding - 4} y={y + 3} fontSize="8" fill="#6b7280" textAnchor="end">#{p}</text>
+              </g>
+            )
+          })}
+          {/* X-axis labels — first, mid, last date */}
+          {allDates.length > 0 && [
+            { idx: 0, label: shortDate(allDates[0]) },
+            { idx: Math.floor(allDates.length / 2), label: shortDate(allDates[Math.floor(allDates.length / 2)]) },
+            { idx: allDates.length - 1, label: shortDate(allDates[allDates.length - 1]) },
+          ].map((l, i) => (
+            <text key={`xD-${i}`} x={xOf(allDates[l.idx])} y={h - padding + 12} fontSize="8" fill="#6b7280" textAnchor="middle">{l.label}</text>
+          ))}
+
+          {/* Lines + point markers (hover targets) */}
+          {series.map((s, idx) => {
+            const color = s.is_main ? '#f59e0b' : palette[(idx + 1) % palette.length]
+            const path = s.points
+              .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.date).toFixed(1)} ${yOf(p.position).toFixed(1)}`)
+              .join(' ')
+            return (
+              <g key={s.keyword}>
+                <path d={path} fill="none" stroke={color} strokeWidth={s.is_main ? 2 : 1.25} opacity={s.is_main ? 1 : 0.8} />
+                {/* Point markers with hover hit area */}
+                {s.points.map((p, i) => {
+                  const x = xOf(p.date)
+                  const y = yOf(p.position)
+                  return (
+                    <g key={i}>
+                      <circle cx={x} cy={y} r={2.5} fill={color}>
+                        <title>{`${s.keyword} · ${p.date} · ${p.position == null ? 'not ranking' : '#' + p.position}`}</title>
+                      </circle>
+                      {/* Larger hit area */}
+                      <circle
+                        cx={x} cy={y} r={8} fill="transparent"
+                        onMouseEnter={() => setHover({ keyword: s.keyword, date: p.date, position: p.position, x, y })}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </g>
+                  )
+                })}
+              </g>
+            )
+          })}
+
+          {/* Hover crosshair */}
+          {hover && (
+            <line x1={hover.x} y1={padding} x2={hover.x} y2={h - padding}
+                  stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="2 2" pointerEvents="none" />
+          )}
+
+          {/* Legend */}
+          <g transform={`translate(${padding}, 14)`}>
+            {series.slice(0, 4).map((s, idx) => {
+              const color = s.is_main ? '#f59e0b' : palette[(idx + 1) % palette.length]
+              return (
+                <g key={s.keyword} transform={`translate(${idx * 120}, 0)`}>
+                  <line x1={0} y1={3} x2={10} y2={3} stroke={color} strokeWidth={s.is_main ? 2 : 1.25} />
+                  <text x={14} y={6} fontSize="9" fill="#9ca3af">{s.keyword.length > 16 ? s.keyword.slice(0, 16) + '…' : s.keyword}</text>
+                </g>
+              )
+            })}
+            {series.length > 4 && <text x={480} y={6} fontSize="9" fill="#6b7280">+{series.length - 4} more</text>}
           </g>
-        )
-      })}
-      {/* Lines */}
-      {series.map((s, idx) => {
-        const color = s.is_main ? '#f59e0b' : palette[(idx + 1) % palette.length]
-        const path = s.points
-          .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(p.date).toFixed(1)} ${yOf(p.position).toFixed(1)}`)
-          .join(' ')
-        return <path key={s.keyword} d={path} fill="none" stroke={color} strokeWidth={s.is_main ? 2 : 1.25} opacity={s.is_main ? 1 : 0.8} />
-      })}
-      {/* Legend */}
-      <g transform={`translate(${padding}, 12)`}>
-        {series.slice(0, 4).map((s, idx) => {
-          const color = s.is_main ? '#f59e0b' : palette[(idx + 1) % palette.length]
-          return (
-            <g key={s.keyword} transform={`translate(${idx * 120}, 0)`}>
-              <line x1={0} y1={3} x2={10} y2={3} stroke={color} strokeWidth={s.is_main ? 2 : 1.25} />
-              <text x={14} y={6} fontSize="9" fill="#9ca3af">{s.keyword.length > 16 ? s.keyword.slice(0, 16) + '…' : s.keyword}</text>
-            </g>
-          )
-        })}
-        {series.length > 4 && <text x={480} y={6} fontSize="9" fill="#6b7280">+{series.length - 4} more</text>}
-      </g>
-    </svg>
+        </svg>
+
+        {/* Custom tooltip overlay */}
+        {hover && (
+          <div
+            className="absolute pointer-events-none bg-gray-950 border border-gray-700 rounded shadow-xl px-2.5 py-1.5 text-[11px]"
+            style={{
+              left:  `${(hover.x / w) * 100}%`,
+              top:   '8px',
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <p className="text-white font-medium">{hover.keyword.length > 30 ? hover.keyword.slice(0, 30) + '…' : hover.keyword}</p>
+            <p className="text-gray-400 text-[10px]">{hover.date}</p>
+            <p className="text-amber-300">pos: <span className="font-semibold">{hover.position == null ? 'not ranking' : `#${hover.position}`}</span></p>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
