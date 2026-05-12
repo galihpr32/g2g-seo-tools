@@ -91,6 +91,28 @@ export async function GET(req: Request) {
 
   const allRows: RankingRow[] = []
 
+  // Checkpoint-upsert helper. Even with concurrency=8 the run can take a
+  // few minutes on big workloads — if Vercel ever does kill us mid-loop, the
+  // already-collected rows survive in the DB. Idempotent via the upsert
+  // unique key (tracked_product_id, keyword, country_code, snapshot_date).
+  async function flushPending(rows: RankingRow[]) {
+    const CHUNK = 200
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK)
+      const { error } = await db
+        .from('keyword_ranking_history')
+        .upsert(chunk, {
+          onConflict: 'tracked_product_id,keyword,country_code,snapshot_date',
+          ignoreDuplicates: false,
+        })
+      if (error) {
+        stats.errors.push({ product: '*', keyword: '*', error: `chunk upsert ${i}: ${error.message}` })
+      } else {
+        stats.rows_written += chunk.length
+      }
+    }
+  }
+
   for (const site of sites) {
     stats.sites_processed++
     const siteSlug = String(site.slug)
@@ -117,24 +139,38 @@ export async function GET(req: Request) {
       const market = String(product.market ?? 'us')
       const preset = getCountryPreset(market)
 
-      // Sequential per-keyword to avoid DFS concurrency limits + give graceful
-      // back-off when one fails. Total time = ~1.5s × keyword count, so 50
-      // products × 5 keywords = ~6 minutes worst case. Hence maxDuration=300.
-      for (const keyword of keywords) {
-        stats.keywords_checked++
-        try {
-          const serp = await getSerpData(keyword, preset.dfsLocationCode, preset.dfsLanguageCode, 100)
+      // Parallelize DFS SERP calls in CONCURRENCY-sized batches. Pre-fix this
+      // loop was sequential (~1.5s × keyword count) and 504-timed-out around
+      // 150 keywords. With concurrency=8 the same workload completes in ~1/8
+      // the wall time. DataForSEO's account-level rate limit is around 30
+      // req/s for SERP Live, so 8 concurrent is well under threshold.
+      const CONCURRENCY = 8
+      for (let i = 0; i < keywords.length; i += CONCURRENCY) {
+        const batch = keywords.slice(i, i + CONCURRENCY)
+        const settled = await Promise.allSettled(
+          batch.map(kw => getSerpData(kw, preset.dfsLocationCode, preset.dfsLanguageCode, 100)
+            .then(serp => ({ keyword: kw, serp }))),
+        )
 
-          // Find first organic result whose domain matches our own
-          const ownResult = serp.organicResults.find(r => normalizeHost(r.domain) === ownDomain)
-
-          // Capture SERP features alongside (useful for "did we lose the snippet?" analysis)
+        for (let j = 0; j < settled.length; j++) {
+          const keyword = batch[j]
+          stats.keywords_checked++
+          const r = settled[j]
+          if (r.status === 'rejected') {
+            stats.errors.push({
+              product: String(product.name),
+              keyword,
+              error:   r.reason instanceof Error ? r.reason.message : String(r.reason),
+            })
+            continue
+          }
+          const { serp } = r.value
+          const ownResult = serp.organicResults.find(o => normalizeHost(o.domain) === ownDomain)
           const serpFeatures = {
             has_paa:             serp.peopleAlsoAsk.length > 0,
             has_related:         serp.relatedSearches.length > 0,
-            organic_top10_count: serp.organicResults.filter(r => r.rank_absolute <= 10).length,
+            organic_top10_count: serp.organicResults.filter(o => o.rank_absolute <= 10).length,
           }
-
           if (ownResult) stats.keywords_ranked++
 
           allRows.push({
@@ -150,34 +186,21 @@ export async function GET(req: Request) {
             serp_features:      serpFeatures,
             raw:                ownResult ?? null,    // only the matching row, not 100 organic results (size)
           })
-        } catch (err) {
-          stats.errors.push({
-            product: String(product.name),
-            keyword,
-            error:  err instanceof Error ? err.message : String(err),
-          })
         }
       }
     }
+
+    // Checkpoint: flush this site's rows so partial progress survives a
+    // function timeout. Splice out what we just flushed so the next site
+    // starts fresh on allRows.
+    if (allRows.length > 0) {
+      await flushPending(allRows.splice(0))
+    }
   }
 
-  // Bulk upsert (chunked to keep payload <1MB)
-  const CHUNK = 200
-  for (let i = 0; i < allRows.length; i += CHUNK) {
-    const chunk = allRows.slice(i, i + CHUNK)
-    const { error } = await db
-      .from('keyword_ranking_history')
-      .upsert(chunk, {
-        onConflict: 'tracked_product_id,keyword,country_code,snapshot_date',
-        ignoreDuplicates: false,
-      })
-    if (error) {
-      // Don't fail the whole cron for a chunk error — log it and keep going.
-      // Worst case some keywords miss today's snapshot; tomorrow's run repairs.
-      stats.errors.push({ product: '*', keyword: '*', error: `chunk upsert ${i}: ${error.message}` })
-    } else {
-      stats.rows_written += chunk.length
-    }
+  // Final safety flush — should be a no-op if per-site flushes ran cleanly.
+  if (allRows.length > 0) {
+    await flushPending(allRows)
   }
 
   return NextResponse.json({
