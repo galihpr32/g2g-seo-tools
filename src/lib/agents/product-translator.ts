@@ -69,19 +69,41 @@ ${JSON.stringify({
   faqs:                input.english.faqs,
 }, null, 2)}
 
-Return ONLY a JSON object (no markdown fences, no commentary) with this exact shape:
-{
-  "meta_title":         "...",
-  "meta_description":   "...",
-  "meta_keyword":       "...",
-  "marketing_title":    "...",
-  "marketing_intro":    "Lead paragraph in Bahasa Indonesia, 40-60 words, plain prose.",
-  "marketing_sections": [ "<h2>...</h2><p>...</p>", "...", "...", "...", "...", "...", "...", "..." ],
-  "faqs": [
-    { "q": "...", "a": "..." }
-    /* ${input.english.faqs.length} entries total */
-  ]
-}`
+Call the submit_translation tool with the translated fields. Same structure as English — same field names, ID content.`
+}
+
+// Tool schema — using tool_use eliminates parse errors caused by unescaped
+// quotes in nested HTML content within a JSON string.
+const TRANSLATION_TOOL = {
+  name: 'submit_translation',
+  description: 'Submit the Indonesian translation as structured data.',
+  input_schema: {
+    type: 'object' as const,
+    required: ['meta_title', 'meta_description', 'meta_keyword', 'marketing_title', 'marketing_intro', 'marketing_sections', 'faqs'],
+    properties: {
+      meta_title:       { type: 'string' },
+      meta_description: { type: 'string' },
+      meta_keyword:     { type: 'string' },
+      marketing_title:  { type: 'string', description: 'H1 text in Bahasa Indonesia (no <h1> tags — caller wraps).' },
+      marketing_intro:  { type: 'string', description: 'Lead paragraph in plain ID prose, 40-60 words, no HTML.' },
+      marketing_sections: {
+        type: 'array',
+        items:    { type: 'string', description: '<h2 class="text-h5 q-ma-none">…</h2>… body … <br><br>' },
+        minItems: 8,
+        maxItems: 8,
+      },
+      faqs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['q', 'a'],
+          properties: { q: { type: 'string' }, a: { type: 'string' } },
+        },
+        minItems: 5,
+        maxItems: 7,
+      },
+    },
+  },
 }
 
 export async function translateProductContent(
@@ -94,7 +116,9 @@ export async function translateProductContent(
     const prompt = buildPrompt(input)
     const res = await anthropic.messages.create({
       model:      MODEL,
-      max_tokens: 8192,   // structured content with 8 sections + FAQs takes more tokens than the old flat blob
+      max_tokens: 8192,
+      tools:      [TRANSLATION_TOOL],
+      tool_choice: { type: 'tool', name: TRANSLATION_TOOL.name },
       messages:   [{ role: 'user', content: prompt }],
     })
 
@@ -108,11 +132,13 @@ export async function translateProductContent(
       })
     }
 
-    const text    = res.content[0]?.type === 'text' ? res.content[0].text.trim() : '{}'
-    const jsonStr = text.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
-    const parsed  = JSON.parse(jsonStr) as Record<string, unknown>
+    const toolUseBlock = res.content.find(c => c.type === 'tool_use')
+    if (!toolUseBlock || toolUseBlock.type !== 'tool_use') {
+      return { ok: false, error: 'Translation AI did not call the submit_translation tool' }
+    }
 
-    // Structural validation — protect downstream code from partial outputs.
+    const parsed = toolUseBlock.input as Record<string, unknown>
+
     if (typeof parsed.meta_title         !== 'string') return { ok: false, error: 'translation missing meta_title' }
     if (typeof parsed.meta_description   !== 'string') return { ok: false, error: 'translation missing meta_description' }
     if (typeof parsed.marketing_title    !== 'string') return { ok: false, error: 'translation missing marketing_title' }
@@ -120,7 +146,7 @@ export async function translateProductContent(
     if (!Array.isArray(parsed.faqs))                   return { ok: false, error: 'translation missing faqs array' }
 
     const sections = (parsed.marketing_sections as unknown[]).map(s => String(s ?? ''))
-    while (sections.length < 8) sections.push('')   // pad
+    while (sections.length < 8) sections.push('')
 
     const faqs = (parsed.faqs as unknown[]).map(f => {
       const obj = f as Record<string, unknown>

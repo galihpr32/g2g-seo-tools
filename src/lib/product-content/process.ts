@@ -77,6 +77,33 @@ export function buildProductUrl(category: string, productName: string): string {
   return `https://www.g2g.com/${segment}/${slug}`
 }
 
+/**
+ * Compose the literal product page title written to col K.
+ *
+ * Format per Galih's spec 2026-05-12: "{Brand Name}+{Category}".
+ * The "+" is intentional — the CMS uses this as a structured slug, not as a
+ * human-facing title. The marketing H1 lives in col L wrapped in <h1> tags
+ * (see composeMarketingIntroBlock below).
+ */
+function composeProductPageTitle(brand: string, category: string): string {
+  return `${brand}+${category}`
+}
+
+/**
+ * Compose the HTML block written to col L (Marketing Description).
+ *
+ * Format matches what Bragi outputs in the brief generator:
+ *   <h1 class="text-h4 q-ma-none">{H1 title}</h1>
+ *   {Intro paragraph in plain text}<br><br>
+ *
+ * The H1 inner text is the AI-generated marketing_title (50-80 char punchy
+ * title). The intro paragraph is the AI-generated marketing_intro (40-60
+ * words plain prose, no HTML).
+ */
+function composeMarketingIntroBlock(h1Title: string, introText: string): string {
+  return `<h1 class="text-h4 q-ma-none">${h1Title}</h1>${introText}<br><br>`
+}
+
 function extractGameName(productName: string): string {
   const suffixes = [
     'coins', 'currency', 'gold', 'credits', 'gems', 'tokens',
@@ -111,54 +138,72 @@ PRODUCT DETAILS:
 
 OUTPUT STRUCTURE — strict, mirrors a real product page top-to-bottom:
 1. SEO meta (3 fields: meta_title ≤60 chars, meta_description ≤110 chars, meta_keyword comma-separated 5-8 terms)
-2. Marketing H1 title — punchy, 50-80 chars, ${opts.mainKeyword} prominent
-3. Marketing intro — a 40-60 word lead paragraph that sits BETWEEN the H1 and the first H2 section. Plain prose (no HTML), no heading. Hooks the reader: name the product + state the core value prop + tease what's below. ${opts.mainKeyword} should appear naturally once.
-4. EIGHT marketing sections — each is ONE <h2> + body paragraphs in HTML. Pick eight relevant topics for the category:
+2. marketing_title — the H1 text (no <h1> tag — caller wraps it). Punchy, 50-80 chars, includes "${opts.mainKeyword}". Example: "Buy ${opts.productName} - Verified Sellers, Instant Delivery on G2G"
+3. marketing_intro — a 40-60 word lead paragraph that sits between the H1 and the first H2 section. PLAIN PROSE (no <p>/<h*>/<br> tags). Hooks the reader: name the product + core value prop + tease what's below. "${opts.mainKeyword}" should appear naturally once.
+4. EIGHT marketing sections — each item is FULL HTML in a single string, starting with <h2 class="text-h5 q-ma-none">Section Title</h2> then plain text paragraphs separated by <br><br>. Example: '<h2 class="text-h5 q-ma-none">Why Buy on G2G</h2>G2G connects you with verified sellers who...<br><br>Every transaction is protected by our escrow system...<br><br>'.
+   Pick eight relevant topics for the category:
    • For Accounts: What is, Why Buy on G2G, Account Features, How It Works, Pricing, Safety & Verification, Payment Options, Customer Support
    • For Currency/Coins: What is, Why Buy, How to Order, Delivery Speed, Pricing & Best Sellers, Security, Payment Methods, Buyer Reviews
    • For Gift Cards: About, Where to Use, How to Redeem, Why Buy on G2G, Denominations, Instant Delivery, Security, FAQ Closing
    • For Game Keys: About, Activation Region, How It Works, Pricing, Instant Delivery, Verified Sellers, Payment Methods, Support
    • For Boosting: Service Overview, Why Choose G2G, How Boost Works, Account Safety, Pricing Tiers, Boost Speed, Payment, Support
-   • Default: pick 8 logical sections that explain product + trust + flow + pricing + delivery + support
-   Each section is FULL HTML in a single string: "<h2>Section Title</h2><p>Paragraph 1.</p><p>Paragraph 2.</p>" — use <ul>/<ol>/<strong> where they add value.
-5. FIVE to SEVEN FAQ Q/A pairs — questions real buyers ask. Each Q is one sentence; each A is 1-2 short paragraphs in plain prose (NO HTML in answers).
+   • Default: pick 8 logical sections covering product + trust + flow + pricing + delivery + support
+   Use <strong>...</strong> for emphasis inside body. Use <ul><li>...</li></ul> for bullet lists. Avoid <p> wrapping — separate paragraphs with <br><br> only.
+5. FIVE to SEVEN FAQ Q/A pairs — questions real buyers ask. Each Q is one sentence; each A is 1-2 short paragraphs in PLAIN PROSE (no HTML at all).
 
 WRITING RULES:
-- Use ${opts.mainKeyword} naturally 3-5 times across the full content (NOT keyword-stuff).
+- Use "${opts.mainKeyword}" naturally 3-5 times across the full content (NOT keyword-stuff).
 - Tone: friendly, trustworthy, action-oriented. Speak to a gamer, not a corporate buyer.
 - Include 1-2 "G2G.com" mentions per section where natural.
 - Mention safety / escrow / verified sellers where relevant.
 - Never invent specific prices or guarantees we can't keep.
 - Never use forbidden phrases: "in conclusion", "in this article", "let's dive in", "look no further".
 
-Return ONLY a JSON object (no markdown fences, no commentary). EXACT shape:
-{
-  "meta_title":       "string ≤60 chars",
-  "meta_description": "string ≤110 chars",
-  "meta_keyword":     "kw1, kw2, kw3, kw4, kw5",
-  "marketing_title":  "H1 title string",
-  "marketing_intro":  "40-60 word lead paragraph in plain prose (no HTML, no heading).",
-  "marketing_sections": [
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>",
-    "<h2>...</h2><p>...</p>"
-  ],
-  "faqs": [
-    { "q": "Question 1?", "a": "Answer 1." },
-    { "q": "Question 2?", "a": "Answer 2." },
-    { "q": "Question 3?", "a": "Answer 3." },
-    { "q": "Question 4?", "a": "Answer 4." },
-    { "q": "Question 5?", "a": "Answer 5." }
-  ]
-}`
+Call the submit_product_content tool with the generated fields.`
 }
 
-// ─── Generate EN content via Claude ──────────────────────────────────────────
+// ─── Tool schema for structured output ───────────────────────────────────────
+// Using Anthropic tool_use bypasses the "Haiku returned unescaped quotes in
+// HTML inside a JSON string" class of parse errors entirely — the model
+// returns each field as a typed argument, properly serialized by the SDK.
+const PRODUCT_CONTENT_TOOL = {
+  name: 'submit_product_content',
+  description: 'Submit generated G2G product page content (meta + marketing + FAQs).',
+  input_schema: {
+    type: 'object' as const,
+    required: ['meta_title', 'meta_description', 'meta_keyword', 'marketing_title', 'marketing_intro', 'marketing_sections', 'faqs'],
+    properties: {
+      meta_title:       { type: 'string', description: 'SEO title ≤60 chars' },
+      meta_description: { type: 'string', description: 'SEO description ≤110 chars' },
+      meta_keyword:     { type: 'string', description: 'Comma-separated 5-8 keyword terms' },
+      marketing_title:  { type: 'string', description: 'H1 text only (no tags). 50-80 chars, includes primary keyword.' },
+      marketing_intro:  { type: 'string', description: 'Lead paragraph in plain prose, 40-60 words, no HTML tags.' },
+      marketing_sections: {
+        type: 'array',
+        description: 'Eight marketing sections, each one HTML string starting with <h2 class="text-h5 q-ma-none">…</h2> then body paragraphs separated by <br><br>.',
+        items:    { type: 'string' },
+        minItems: 8,
+        maxItems: 8,
+      },
+      faqs: {
+        type: 'array',
+        description: 'Five to seven FAQ Q/A pairs. Plain prose, no HTML.',
+        items: {
+          type: 'object',
+          required: ['q', 'a'],
+          properties: {
+            q: { type: 'string' },
+            a: { type: 'string' },
+          },
+        },
+        minItems: 5,
+        maxItems: 7,
+      },
+    },
+  },
+}
+
+// ─── Generate EN content via Claude (tool_use mode) ──────────────────────────
 
 async function generateEnContent(
   opts: {
@@ -172,12 +217,13 @@ async function generateEnContent(
   supabase: SupabaseClient<any, any, any>,
   ownerId:  string,
 ): Promise<{ ok: true; bundle: ProductContentBundle } | { ok: false; error: string }> {
-  let raw = ''
   try {
     const prompt = buildPrompt(opts)
     const msg = await anthropic.messages.create({
       model:      CLAUDE_MODEL,
       max_tokens: 8192,
+      tools:      [PRODUCT_CONTENT_TOOL],
+      tool_choice: { type: 'tool', name: PRODUCT_CONTENT_TOOL.name },
       messages:   [{ role: 'user', content: prompt }],
     })
     logApiUsage(supabase, ownerId, {
@@ -185,20 +231,26 @@ async function generateEnContent(
       triggeredBy: 'other', callCount: 1,
     })
 
-    raw = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : '{}'
-    const jsonStr = raw.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim()
-    const parsed  = JSON.parse(jsonStr) as Record<string, unknown>
+    // Find the tool_use block — model is forced to call submit_product_content
+    const toolUseBlock = msg.content.find(c => c.type === 'tool_use')
+    if (!toolUseBlock || toolUseBlock.type !== 'tool_use') {
+      const textPreview = msg.content.find(c => c.type === 'text')
+      const preview = textPreview && textPreview.type === 'text' ? textPreview.text.slice(0, 200) : '(no text)'
+      return { ok: false, error: `[stage:gen] AI did not call the tool — text preview: ${preview}` }
+    }
 
-    if (typeof parsed.meta_title       !== 'string') return { ok: false, error: '[stage:gen] missing meta_title in AI output' }
-    if (typeof parsed.meta_description !== 'string') return { ok: false, error: '[stage:gen] missing meta_description' }
-    if (typeof parsed.marketing_title  !== 'string') return { ok: false, error: '[stage:gen] missing marketing_title' }
-    if (!Array.isArray(parsed.marketing_sections))   return { ok: false, error: '[stage:gen] missing marketing_sections array' }
-    if (!Array.isArray(parsed.faqs))                  return { ok: false, error: '[stage:gen] missing faqs array' }
+    const input = toolUseBlock.input as Record<string, unknown>
 
-    const sections = (parsed.marketing_sections as unknown[]).map(s => String(s ?? ''))
+    if (typeof input.meta_title       !== 'string') return { ok: false, error: '[stage:gen] tool input missing meta_title' }
+    if (typeof input.meta_description !== 'string') return { ok: false, error: '[stage:gen] tool input missing meta_description' }
+    if (typeof input.marketing_title  !== 'string') return { ok: false, error: '[stage:gen] tool input missing marketing_title' }
+    if (!Array.isArray(input.marketing_sections))   return { ok: false, error: '[stage:gen] tool input missing marketing_sections array' }
+    if (!Array.isArray(input.faqs))                  return { ok: false, error: '[stage:gen] tool input missing faqs array' }
+
+    const sections = (input.marketing_sections as unknown[]).map(s => String(s ?? ''))
     while (sections.length < 8) sections.push('')
 
-    const faqs = (parsed.faqs as unknown[]).map(f => {
+    const faqs = (input.faqs as unknown[]).map(f => {
       const obj = f as Record<string, unknown>
       return { q: String(obj.q ?? ''), a: String(obj.a ?? '') }
     }).filter(f => f.q.trim() && f.a.trim())
@@ -210,22 +262,17 @@ async function generateEnContent(
     return {
       ok: true,
       bundle: {
-        metaTitle:         String(parsed.meta_title),
-        metaDescription:   String(parsed.meta_description),
-        metaKeyword:       String(parsed.meta_keyword ?? ''),
-        marketingTitle:    String(parsed.marketing_title),
-        marketingIntro:    String(parsed.marketing_intro ?? ''),
+        metaTitle:         String(input.meta_title),
+        metaDescription:   String(input.meta_description),
+        metaKeyword:       String(input.meta_keyword ?? ''),
+        marketingTitle:    String(input.marketing_title),
+        marketingIntro:    String(input.marketing_intro ?? ''),
         marketingSections: sections.slice(0, 8),
         faqs:              faqs.slice(0, 7),
       },
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    // Distinguish parse errors (most common — Claude returned non-JSON) from
-    // API errors so the stage tag tells us where to look.
-    if (e instanceof SyntaxError) {
-      return { ok: false, error: `[stage:parse] ${msg} — first 200 chars of output: ${raw.slice(0, 200)}` }
-    }
     return { ok: false, error: `[stage:anthropic] ${msg}` }
   }
 }
@@ -320,8 +367,15 @@ export async function processProductRow(
       .eq('relation_id', row.relation_id)
 
     // ── 5. Write back to EN sheet tab ────────────────────────────────────────
+    // Col K format: literal "{Brand}+{Category}" — used by the CMS as the
+    //   product-page title slug, NOT as the marketing H1.
+    // Col L format: full HTML block = <h1>marketing_title</h1>intro<br><br>
+    //   This becomes the lead element of the marketing endpoint payload,
+    //   matching Bragi's existing brief format.
     if (sheet && row.sheet_row) {
       try {
+        const enColK = composeProductPageTitle(row.product_name, row.category ?? '')
+        const enColL = composeMarketingIntroBlock(en.marketingTitle, en.marketingIntro)
         await writeProductRow(sheet.spreadsheetId, sheet.sheetName, row.sheet_row, {
           createNow:         SHEET_STATUS.GENERATED,
           mainKeyword,
@@ -329,8 +383,8 @@ export async function processProductRow(
           metaTitle:         en.metaTitle,
           metaDescription:   en.metaDescription,
           metaKeyword:       en.metaKeyword,
-          marketingTitle:    en.marketingTitle,
-          marketingIntro:    en.marketingIntro,
+          marketingTitle:    enColK,
+          marketingIntro:    enColL,
           marketingSections: en.marketingSections,
           faqs:              en.faqs,
         }, sheet.colMap)
@@ -345,6 +399,8 @@ export async function processProductRow(
         const idTab = await ensureIdTab(sheet.spreadsheetId, sheet.sheetName)
         const idRowIndex = await findRowByRelationId(sheet.spreadsheetId, idTab, row.relation_id)
 
+        const idColK = composeProductPageTitle(row.product_name, row.category ?? '')
+        const idColL = composeMarketingIntroBlock(idBundle.marketingTitle, idBundle.marketingIntro)
         const idUpdate = {
           createNow:         SHEET_STATUS.GENERATED,
           mainKeyword,                                                  // same kw (Indonesian users search EN brand terms)
@@ -352,8 +408,8 @@ export async function processProductRow(
           metaTitle:         idBundle.metaTitle,
           metaDescription:   idBundle.metaDescription,
           metaKeyword:       idBundle.metaKeyword,
-          marketingTitle:    idBundle.marketingTitle,
-          marketingIntro:    idBundle.marketingIntro,
+          marketingTitle:    idColK,
+          marketingIntro:    idColL,
           marketingSections: idBundle.marketingSections,
           faqs:              idBundle.faqs,
         }
