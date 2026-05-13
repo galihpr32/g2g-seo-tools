@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import ExportToSheetButton from '@/components/news-export/ExportToSheetButton'
+import TierOverlapSection from '@/components/news/TierOverlapSection'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface NewsSource {
@@ -17,6 +18,8 @@ interface NewsSource {
   notes:            string | null
 }
 
+interface ExtractedKeyword { phrase: string; relevance: 'high' | 'medium' | 'low' }
+
 interface NewsItem {
   id:                 string
   source_name:        string | null
@@ -28,6 +31,7 @@ interface NewsItem {
   scraped_at:         string | null
   scraped_word_count: number | null
   extraction_status:  string
+  extracted_keywords?: ExtractedKeyword[] | null
 }
 
 interface ExtractionRow {
@@ -74,6 +78,25 @@ export default function NewsSignalsPage() {
   const [loading, setLoading]             = useState(true)
   const [windowDays, setWindowDays]       = useState<7 | 14 | 30>(14)
   const [kbMatchedOnly, setKbMatchedOnly] = useState(true)
+
+  // Tier map — case-insensitive game name → tier (1|2). Populated once and
+  // reused for tier badges on rollup cards + tier-match coloring in timeline.
+  const [tierMap, setTierMap] = useState<Map<string, number>>(new Map())
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res  = await fetch('/api/priority-products?include=tier')
+        const data = await res.json() as { items?: Array<{ product_name: string; tier: number }> }
+        if (cancelled) return
+        const m = new Map<string, number>()
+        for (const t of data.items ?? []) m.set(String(t.product_name).toLowerCase(), Number(t.tier))
+        setTierMap(m)
+      } catch { /* silent */ }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   // Push state
   const [pushingGame, setPushingGame]     = useState<string | null>(null)
@@ -348,6 +371,9 @@ export default function NewsSignalsPage() {
             </div>
           ) : (
             <>
+              {/* Tier × News overlap — pinned section, shows only tier 1/2 products mentioned in news */}
+              <TierOverlapSection days={windowDays} />
+
               {/* By-game rollup */}
               <h2 className="text-white font-semibold text-sm mb-3">🎯 By-game rollup ({games.length} games over last {windowDays}d)</h2>
               <div className="space-y-2 mb-8">
@@ -355,11 +381,21 @@ export default function NewsSignalsPage() {
                   const dominant = Object.entries(g.type_breakdown).sort((a, b) => b[1] - a[1])[0]
                   const meetsThreshold = g.article_count >= 3 && g.kb_matched
                   const isPushed       = pushedGames.has(g.game_name_norm)
+                  const tierLevel      = tierMap.get(g.game_name.toLowerCase())
                   return (
-                    <div key={g.game_name_norm} className={`bg-gray-900 border rounded-xl p-4 ${meetsThreshold ? 'border-purple-500/30' : 'border-gray-800'}`}>
+                    <div key={g.game_name_norm} className={`bg-gray-900 border rounded-xl p-4 ${
+                      tierLevel === 1 ? 'border-amber-500/40' :
+                      tierLevel === 2 ? 'border-blue-500/40' :
+                      meetsThreshold  ? 'border-purple-500/30' : 'border-gray-800'
+                    }`}>
                       <div className="flex items-start justify-between gap-3 flex-wrap">
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            {tierLevel && (
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${tierLevel === 1 ? 'bg-amber-600 text-white' : 'bg-blue-600 text-white'}`}>
+                                T{tierLevel}
+                              </span>
+                            )}
                             <p className="text-white font-medium text-sm">{g.game_name}</p>
                             {g.kb_matched ? (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">✓ KB matched</span>
@@ -416,17 +452,49 @@ export default function NewsSignalsPage() {
                           <div className="flex items-center gap-2 text-[10px] text-gray-500 mb-1 flex-wrap">
                             <span className="px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700 text-gray-300">{it.source_name ?? '?'}</span>
                             {it.published_at && <span>{new Date(it.published_at).toLocaleDateString('id-ID', { month: 'short', day: 'numeric' })}</span>}
-                            {itemExtractions.map(e => (
-                              <span key={e.game_name_norm} className={`px-1.5 py-0.5 rounded ${e.kb_matched ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' : 'bg-gray-800 border border-gray-700 text-gray-400'}`}>
-                                {e.game_name} · {e.news_type}
-                              </span>
-                            ))}
+                            {itemExtractions.map(e => {
+                              const itemTier = tierMap.get(e.game_name.toLowerCase())
+                              return (
+                                <span
+                                  key={e.game_name_norm}
+                                  className={`px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${
+                                    itemTier === 1 ? 'bg-amber-500/15 border border-amber-500/40 text-amber-200' :
+                                    itemTier === 2 ? 'bg-blue-500/15  border border-blue-500/40  text-blue-200' :
+                                    e.kb_matched   ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-300' :
+                                                     'bg-gray-800 border border-gray-700 text-gray-400'
+                                  }`}
+                                >
+                                  {itemTier && <span className="font-bold">T{itemTier}</span>}
+                                  {e.game_name} · {e.news_type}
+                                </span>
+                              )
+                            })}
                           </div>
                           <a href={it.url} target="_blank" rel="noopener noreferrer" className="text-sm text-white hover:text-blue-300 transition truncate block">
                             {it.title}
                           </a>
                           {it.excerpt && (
                             <p className="text-xs text-gray-500 mt-1 line-clamp-2">{it.excerpt}</p>
+                          )}
+                          {/* Extracted keyword chips — Sprint NEWS_UI.3 */}
+                          {it.extracted_keywords && it.extracted_keywords.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1.5">
+                              {it.extracted_keywords.slice(0, 5).map((k, i) => (
+                                <span
+                                  key={i}
+                                  title={`Relevance: ${k.relevance}`}
+                                  className={`text-[9px] px-1 py-0.5 rounded border ${
+                                    k.relevance === 'high'
+                                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                                      : k.relevance === 'medium'
+                                      ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                                      : 'border-gray-700 bg-gray-800/40 text-gray-500'
+                                  }`}
+                                >
+                                  {k.relevance === 'high' ? '🟢' : k.relevance === 'medium' ? '🟡' : ''} {k.phrase}
+                                </span>
+                              ))}
+                            </div>
                           )}
                         </div>
                         <button

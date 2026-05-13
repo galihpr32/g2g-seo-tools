@@ -8,9 +8,11 @@ import {
   buildArticleGameRows,
   buildGameRollupRows,
   buildGameTrendsRows,
+  buildTierOverlapRows,
 } from '@/lib/news-export/row-builders'
+import { extractKeywordsForOwner } from '@/lib/news-export/keyword-extractor'
 
-export const maxDuration = 120
+export const maxDuration = 300
 
 /**
  * POST /api/news/export
@@ -65,25 +67,70 @@ export async function POST(req: Request) {
     }, { status: 400 })
   }
 
-  // ── 2. Build rows in parallel ───────────────────────────────────────────
+  // ── 2a. Keyword extraction (Sprint NEWS_EXPORT.16) ─────────────────────
+  // Lazy: extract for articles in window that don't have keywords yet.
+  // Idempotent — already-extracted articles are skipped. Cost is small
+  // (Haiku at ~$0.0001/article) and pays for itself in export richness.
+  // We pre-fetch tier names + a sample of catalog names so relevance can
+  // be scored without LLM round-trip.
   const t0 = Date.now()
+  let extractionStats = { scanned: 0, extracted: 0, skipped: 0, failed: 0 }
+  try {
+    const [tierRes, catalogRes] = await Promise.all([
+      db.from('product_tiers')
+        .select('product_name')
+        .eq('owner_user_id', ownerId)
+        .eq('site_slug', siteSlug),
+      db.from('g2g_products')
+        .select('brand_name')
+        .eq('is_active', true)
+        .limit(2000),
+    ])
+    const tierNames    = ((tierRes.data    ?? []) as Array<{ product_name: string }>).map(t => t.product_name)
+    const catalogNames = ((catalogRes.data ?? []) as Array<{ brand_name:   string }>).map(t => t.brand_name)
+    const extracted = await extractKeywordsForOwner(db, ownerId, {
+      days,
+      maxBatch: 50,
+      tierProductNames:  tierNames,
+      catalogBrandNames: catalogNames,
+    })
+    extractionStats = {
+      scanned:   extracted.scanned,
+      extracted: extracted.extracted,
+      skipped:   extracted.skipped,
+      failed:    extracted.failed,
+    }
+  } catch (e) {
+    console.warn('[news-export] keyword extraction phase failed (non-blocking):', e)
+  }
+
+  // ── 2b. Build rows in parallel ──────────────────────────────────────────
   let articleRows:  string[][] = []
   let rollupRows:   string[][] = []
   let trendsRows:   string[][] = []
+  let overlapRows:  string[][] = []
   try {
-    ;[articleRows, rollupRows, trendsRows] = await Promise.all([
+    ;[articleRows, rollupRows, trendsRows, overlapRows] = await Promise.all([
       buildArticleGameRows(db, ownerId, days),
       buildGameRollupRows(db, ownerId, siteSlug, days),
       buildGameTrendsRows(db),
+      buildTierOverlapRows(db, ownerId, siteSlug, days),
     ])
   } catch (e) {
     return NextResponse.json({ error: `Row build failed: ${e instanceof Error ? e.message : String(e)}` }, { status: 500 })
   }
 
-  // ── 3. Write 3 tabs ────────────────────────────────────────────────────
+  // ── 3. Write 4 tabs ────────────────────────────────────────────────────
+  // Tier-News-Overlap goes FIRST so it's the leftmost tab in the Sheet —
+  // the divisions consuming this export should see the highest-signal
+  // cross-ref before scrolling to the broader article list.
   const now = new Date()
   const tabs: Array<{ tab_name: string; rows: number }> = []
   const errors: string[] = []
+  try {
+    const r0 = await writeTabbedSnapshot(cfg.spreadsheet_id, dateStampedTabName('Tier-News-Overlap', now), overlapRows)
+    tabs.push({ tab_name: r0.tab_name, rows: r0.rows_written })
+  } catch (e) { errors.push(`Tier-News-Overlap: ${e instanceof Error ? e.message : String(e)}`) }
   try {
     const r1 = await writeTabbedSnapshot(cfg.spreadsheet_id, dateStampedTabName('News-Articles', now), articleRows)
     tabs.push({ tab_name: r1.tab_name, rows: r1.rows_written })
@@ -100,7 +147,10 @@ export async function POST(req: Request) {
   const rowsTotal = tabs.reduce((s, t) => s + t.rows, 0)
   const elapsedMs = Date.now() - t0
   const status = errors.length === 0 ? 'success' : (tabs.length > 0 ? 'partial' : 'error')
-  const summary = `${tabs.length}/${tabs.length + errors.length} tabs · ${rowsTotal} rows · ${(elapsedMs / 1000).toFixed(1)}s${errors.length ? ` · errors: ${errors.length}` : ''}`
+  const extractionTag = extractionStats.scanned > 0
+    ? ` · kw: +${extractionStats.extracted}/${extractionStats.scanned}`
+    : ''
+  const summary = `${tabs.length}/${tabs.length + errors.length} tabs · ${rowsTotal} rows${extractionTag} · ${(elapsedMs / 1000).toFixed(1)}s${errors.length ? ` · errors: ${errors.length}` : ''}`
 
   // ── 4. Record last run ──────────────────────────────────────────────────
   await db
@@ -117,9 +167,10 @@ export async function POST(req: Request) {
   return NextResponse.json({
     ok: errors.length === 0,
     tabs,
-    rows_total: rowsTotal,
-    elapsed_ms: elapsedMs,
+    rows_total:   rowsTotal,
+    elapsed_ms:   elapsedMs,
+    extraction:   extractionStats,
     errors,
-    sheet_id:   cfg.spreadsheet_id,
+    sheet_id:     cfg.spreadsheet_id,
   })
 }

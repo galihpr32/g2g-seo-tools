@@ -10,6 +10,7 @@ import {
   actionSuggestion,
   gameBuzzScore,
 } from './enrichment'
+import { formatKeywordsForCell, type ExtractedKeyword } from './keyword-extractor'
 
 // ─── Common ────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,8 @@ export const ARTICLE_GAME_HEADER = [
   'News Type',
   'Mention Count',
   'KB Match',
+  'Tier Match',          // Sprint NEWS_EXPORT.15 — T1/T2/None
+  'Extracted Keywords',  // Sprint NEWS_EXPORT.15 — Haiku-extracted topic phrases
   'Importance Score',
 ] as const
 
@@ -56,10 +59,10 @@ export async function buildArticleGameRows(
 ): Promise<string[][]> {
   const sinceIso = new Date(Date.now() - days * 86_400_000).toISOString()
 
-  // Pull recent items
+  // Pull recent items (now also includes extracted_keywords)
   const { data: items } = await db
     .from('news_items')
-    .select('id, source_name, url, title, excerpt, published_at, fetched_at')
+    .select('id, source_name, url, title, excerpt, published_at, fetched_at, extracted_keywords')
     .eq('owner_user_id', ownerId)
     .gte('fetched_at', sinceIso)
     .order('published_at', { ascending: false })
@@ -72,6 +75,16 @@ export async function buildArticleGameRows(
     .from('news_game_extractions')
     .select('news_item_id, game_name, news_type, mentions_count, kb_matched')
     .in('news_item_id', itemIds)
+
+  // Tier product lookup — case-insensitive map for fast tier-match check.
+  const { data: tierProducts } = await db
+    .from('product_tiers')
+    .select('product_name, tier')
+    .eq('owner_user_id', ownerId)
+  const tierMap = new Map<string, number>()
+  for (const t of (tierProducts ?? []) as Array<{ product_name: string; tier: number }>) {
+    tierMap.set(String(t.product_name).toLowerCase(), Number(t.tier))
+  }
 
   // Map article → extractions
   const byItem = new Map<string, Array<{ game_name: string; news_type: string | null; mentions_count: number; kb_matched: boolean }>>()
@@ -90,6 +103,10 @@ export async function buildArticleGameRows(
 
   for (const item of items) {
     const exts = byItem.get(item.id) ?? []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const keywords = (item as any).extracted_keywords as ExtractedKeyword[] | null
+    const keywordsCell = formatKeywordsForCell(keywords)
+
     // If no game extracted, still emit 1 row so the article isn't lost
     if (exts.length === 0) {
       rows.push([
@@ -104,6 +121,8 @@ export async function buildArticleGameRows(
         '',                        // news type
         '',                        // mention count
         '',                        // kb match
+        '',                        // tier match
+        keywordsCell,              // extracted keywords
         '',                        // importance score
       ])
       continue
@@ -115,6 +134,10 @@ export async function buildArticleGameRows(
         kbMatched:    ext.kb_matched,
         publishedAt:  item.published_at,
       })
+      // Tier match check — exact case-insensitive name compare
+      const tierBadge = tierMap.has(ext.game_name.toLowerCase())
+        ? `T${tierMap.get(ext.game_name.toLowerCase())}`
+        : ''
       rows.push([
         fmtDate(item.published_at),
         fmtDate(item.fetched_at),
@@ -127,6 +150,8 @@ export async function buildArticleGameRows(
         ext.news_type ?? '',
         String(ext.mentions_count),
         ext.kb_matched ? 'Yes' : 'No',
+        tierBadge,
+        keywordsCell,
         String(score),
       ])
     }
@@ -432,4 +457,136 @@ export async function buildGameTrendsRows(
   }
 
   return rows
+}
+
+// ─── Tab 4: Tier × News Overlap (Sprint NEWS_EXPORT.14) ────────────────────
+// Highest-signal tab — only articles that mention a game IN the user's
+// tier 1/2 product list. This is where SEO + marketing should act first.
+//
+// 1 row per (tier product × matching article). Same tier product can appear
+// multiple times if multiple articles mention it.
+
+export const TIER_OVERLAP_HEADER = [
+  'Tier',
+  'Tier Product',
+  'Category',
+  'Relation ID',
+  'Article Date',
+  'Source',
+  'Source Authority',
+  'Article Title',
+  'Article URL',
+  'News Type',
+  'Extracted Keywords',
+  'KB Match',
+  'Importance Score',
+  'Recommended Action',
+] as const
+
+export async function buildTierOverlapRows(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:       SupabaseClient<any, any, any>,
+  ownerId:  string,
+  siteSlug: string,
+  days:     number = 14,
+): Promise<string[][]> {
+  const sinceIso = new Date(Date.now() - days * 86_400_000).toISOString()
+
+  // 1. Pull tier products
+  const { data: tiers } = await db
+    .from('product_tiers')
+    .select('product_name, category, relation_id, tier, url')
+    .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
+  if (!tiers?.length) return [Array.from(TIER_OVERLAP_HEADER)]
+
+  // Build lowercase product-name → tier metadata index
+  interface TierMeta {
+    product_name: string
+    category:     string | null
+    relation_id:  string | null
+    tier:         number
+    url:          string | null
+  }
+  const tierByName = new Map<string, TierMeta>()
+  for (const t of tiers as TierMeta[]) {
+    tierByName.set(t.product_name.toLowerCase(), t)
+  }
+
+  // 2. Pull news items + extractions in the window
+  const { data: items } = await db
+    .from('news_items')
+    .select('id, source_name, url, title, published_at, extracted_keywords')
+    .eq('owner_user_id', ownerId)
+    .gte('fetched_at', sinceIso)
+    .order('published_at', { ascending: false })
+    .limit(1000)
+  if (!items?.length) return [Array.from(TIER_OVERLAP_HEADER)]
+
+  const itemIds = items.map(i => i.id)
+  const { data: exts } = await db
+    .from('news_game_extractions')
+    .select('news_item_id, game_name, news_type, mentions_count, kb_matched')
+    .in('news_item_id', itemIds)
+
+  const itemById = new Map(items.map(i => [i.id, i]))
+
+  // 3. Cross-join — every extraction whose game matches a tier product
+  const rows: string[][] = [Array.from(TIER_OVERLAP_HEADER)]
+  for (const ext of (exts ?? []) as Array<{
+    news_item_id: string; game_name: string; news_type: string | null; mentions_count: number; kb_matched: boolean
+  }>) {
+    const meta = tierByName.get(ext.game_name.toLowerCase())
+    if (!meta) continue  // not a tier product — skip
+
+    const item = itemById.get(ext.news_item_id)
+    if (!item) continue
+
+    const score = importanceScore({
+      sourceName:   item.source_name,
+      mentionCount: ext.mentions_count,
+      kbMatched:    ext.kb_matched,
+      publishedAt:  item.published_at,
+    })
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const keywords = (item as any).extracted_keywords as ExtractedKeyword[] | null
+    const keywordsCell = formatKeywordsForCell(keywords)
+
+    // Action suggestion specific to tier overlap context — biased toward
+    // "act now" since this is a high-value cross-ref by definition.
+    let action = 'Update brief'
+    if      (ext.news_type === 'release')                              action = 'Pitch new content for release'
+    else if (ext.news_type === 'event' || ext.news_type === 'sale')    action = 'Time-sensitive — refresh with event angle'
+    else if (ext.news_type === 'update' || ext.news_type === 'leak')   action = 'Update brief — add new keywords/section'
+    else if (ext.news_type === 'esports')                              action = 'Pitch esports-focused content'
+    else if (score >= 60)                                              action = 'High importance — review for brief'
+    else                                                                action = 'Monitor + queue for next brief'
+
+    rows.push([
+      `T${meta.tier}`,
+      meta.product_name,
+      meta.category ?? '',
+      meta.relation_id ?? '',
+      fmtDate(item.published_at),
+      String(item.source_name ?? ''),
+      String(sourceAuthority(item.source_name)),
+      truncate(item.title, 300),
+      String(item.url),
+      ext.news_type ?? '',
+      keywordsCell,
+      ext.kb_matched ? 'Yes' : 'No',
+      String(score),
+      action,
+    ])
+  }
+
+  // Sort by tier then by importance descending
+  const body = rows.slice(1).sort((a, b) => {
+    const tierCmp = a[0].localeCompare(b[0])
+    if (tierCmp !== 0) return tierCmp
+    return Number(b[12]) - Number(a[12])
+  })
+
+  return [Array.from(TIER_OVERLAP_HEADER), ...body]
 }

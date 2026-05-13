@@ -5,6 +5,7 @@ import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import { TIER_CATEGORY_PRESETS } from '@/lib/product-tiers'
 import CatalogPicker from '@/components/g2g/CatalogPicker'
 import BulkFromCatalogModal from '@/components/g2g/BulkFromCatalogModal'
+import PasteNamesModal from '@/components/g2g/PasteNamesModal'
 
 /**
  * /settings/product-tiers
@@ -68,6 +69,7 @@ export default function ProductTiersPage() {
 
   // Bulk-from-catalog modal state
   const [bulkCatalogOpen, setBulkCatalogOpen] = useState(false)
+  const [pasteNamesOpen,  setPasteNamesOpen]  = useState(false)
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -264,6 +266,13 @@ export default function ProductTiersPage() {
         >
           📚 Bulk from Catalog
         </button>
+        <button
+          onClick={() => setPasteNamesOpen(true)}
+          title="Paste a list of product names → auto-match relation_id + URL from canonical catalog"
+          className="px-3 py-2 bg-blue-700 hover:bg-blue-600 text-white text-sm rounded-lg transition"
+        >
+          📝 Paste Names
+        </button>
       </div>
 
       {/* Grouped table — one section per category. Tier badges still shown
@@ -408,6 +417,13 @@ export default function ProductTiersPage() {
       <BulkFromCatalogModal
         open={bulkCatalogOpen}
         onClose={() => setBulkCatalogOpen(false)}
+        onApplied={() => { void fetchList() }}
+      />
+
+      {/* Paste-names → auto-match modal (canonical CMS catalog) */}
+      <PasteNamesModal
+        open={pasteNamesOpen}
+        onClose={() => setPasteNamesOpen(false)}
         onApplied={() => { void fetchList() }}
       />
 
