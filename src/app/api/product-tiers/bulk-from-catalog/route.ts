@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
+import { mapToKbCanonical, type KbCategory } from '@/lib/category-mapping'
 
 export const maxDuration = 30
 
@@ -50,6 +51,23 @@ export async function POST(req: Request) {
   const catalogMap = new Map<string, { brand_name: string; service_name: string; is_active: boolean }>()
   for (const r of catalogRows ?? []) catalogMap.set(r.relation_id, r)
 
+  // ── Sprint UNIFY.5 — Load KB canonical categories for service_name → KB translation
+  // So tier rows get the KB canonical name (e.g. "Games/Key") instead of
+  // raw catalog "Activation Links". Stays consistent with the rest of the app.
+  const { data: kbRows } = await db
+    .from('knowledge_base_items')
+    .select('name, data')
+    .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
+    .eq('category', 'category')
+  const kbList: KbCategory[] = (kbRows ?? []).map(r => {
+    const d = (r.data ?? {}) as Record<string, unknown>
+    return {
+      name:                  String(r.name),
+      catalog_service_match: (d.catalog_service_match as string) ?? null,
+    }
+  })
+
   // ── Snapshot existing tier rows so we can label updates vs inserts ──────
   const { data: existing } = await db
     .from('product_tiers')
@@ -72,13 +90,18 @@ export async function POST(req: Request) {
       skipped.push({ relation_id: relationId, reason: 'product is inactive in catalog' })
       return []
     }
+    // Translate raw catalog service_name to KB canonical (fallback to raw
+    // if KB is empty or no match found). Sprint UNIFY.5.
+    const canonicalCategory = kbList.length
+      ? (mapToKbCanonical(row.service_name, kbList, 1) ?? row.service_name)
+      : row.service_name
     return [{
       owner_user_id: ownerId,
       site_slug:     siteSlug,
       tier,
       relation_id:   relationId,
       product_name:  row.brand_name,
-      category:      row.service_name,
+      category:      canonicalCategory,
       url:           null,
       notes:         null,
       updated_at:    now,

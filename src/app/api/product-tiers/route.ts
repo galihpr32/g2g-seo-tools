@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
+import { mapToKbCanonical, type KbCategory } from '@/lib/category-mapping'
 
 /**
  * GET  /api/product-tiers       — list all tiers for current site
@@ -105,6 +106,28 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({})) as TierBody
   const norm = normalizeBody(body)
   if (!norm.ok) return NextResponse.json({ error: norm.error }, { status: 400 })
+
+  // Sprint UNIFY.5 — Translate the submitted category to KB canonical if a
+  // close match exists. Keeps everything aligned with the team-curated list.
+  if (norm.data.category) {
+    const { data: kbRows } = await db
+      .from('knowledge_base_items')
+      .select('name, data')
+      .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
+      .eq('category', 'category')
+    if (kbRows?.length) {
+      const kbList: KbCategory[] = kbRows.map(r => {
+        const d = (r.data ?? {}) as Record<string, unknown>
+        return {
+          name:                  String(r.name),
+          catalog_service_match: (d.catalog_service_match as string) ?? null,
+        }
+      })
+      const canonical = mapToKbCanonical(norm.data.category, kbList, 1)
+      if (canonical) norm.data.category = canonical
+    }
+  }
 
   // If relation_id is set, upsert on the unique index — same product re-tagged
   // shouldn't create dupes. Otherwise plain insert.

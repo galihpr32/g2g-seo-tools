@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
-import { TIER_CATEGORY_PRESETS } from '@/lib/product-tiers'
+import { TIER_CATEGORY_PRESETS } from '@/lib/product-tiers'   // kept as fallback when KB fetch fails
 import CatalogPicker from '@/components/g2g/CatalogPicker'
 import BulkFromCatalogModal from '@/components/g2g/BulkFromCatalogModal'
 import PasteNamesModal from '@/components/g2g/PasteNamesModal'
@@ -55,6 +55,25 @@ export default function ProductTiersPage() {
   const [filterTier,     setFilterTier]     = useState<'all' | '1' | '2'>('all')
   const [filterCategory, setFilterCategory] = useState<string>('all')
   const [search, setSearch] = useState('')
+
+  // Sprint UNIFY.4 — Dynamic categories from KB. Single source of truth for
+  // names so tier admin, datalist, filter, and brief generator stay aligned.
+  // Falls back to TIER_CATEGORY_PRESETS hardcoded list if KB fetch fails.
+  const [kbCategories, setKbCategories] = useState<string[]>([...TIER_CATEGORY_PRESETS])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res  = await fetch('/api/knowledge-base/categories')
+        if (!res.ok) return
+        const data = await res.json() as { categories?: Array<{ name: string }> }
+        if (cancelled) return
+        const names = (data.categories ?? []).map(c => c.name).filter(Boolean)
+        if (names.length) setKbCategories(names)
+      } catch { /* silent — keep fallback */ }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   // Editor state — null = not editing, {} = creating new, populated = editing
   const [editing, setEditing] = useState<Partial<TierRow> | null>(null)
@@ -125,7 +144,7 @@ export default function ProductTiersPage() {
     }
     // Sort: known presets first in their declared order, custom categories
     // alphabetically, Uncategorized at the bottom.
-    const presetOrder = new Map<string, number>(TIER_CATEGORY_PRESETS.map((p, i) => [p, i]))
+    const presetOrder = new Map<string, number>(kbCategories.map((p, i) => [p, i]))
     const keys = Object.keys(groups).sort((a, b) => {
       if (a === UNCATEGORIZED) return 1
       if (b === UNCATEGORIZED) return -1
@@ -135,7 +154,7 @@ export default function ProductTiersPage() {
       return a.localeCompare(b)
     })
     return keys.map(k => ({ category: k, rows: groups[k] }))
-  }, [visible])
+  }, [visible, kbCategories])
 
   // ── Save ────────────────────────────────────────────────────────────────────
   async function save() {
@@ -388,7 +407,7 @@ export default function ProductTiersPage() {
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600"
                 />
                 <datalist id="tier-category-presets">
-                  {TIER_CATEGORY_PRESETS.map(c => <option key={c} value={c} />)}
+                  {kbCategories.map(c => <option key={c} value={c} />)}
                 </datalist>
                 <p className="text-[10px] text-gray-500 mt-1">Used to group products in the table + on Priority Products.</p>
               </div>
