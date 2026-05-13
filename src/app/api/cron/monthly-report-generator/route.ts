@@ -39,42 +39,51 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'NEXT_PUBLIC_APP_URL not configured' }, { status: 500 })
   }
 
-  const results: Record<string, unknown> = {}
+  // Iterate (owner × site) pairs so OG and G2G both get monthly reports.
+  const { data: sites } = await db
+    .from('site_configs')
+    .select('slug')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true })
+
+  const activeSlugs: string[] = (sites ?? []).map(s => s.slug as string)
+  if (activeSlugs.length === 0) activeSlugs.push('g2g')
+
+  const results: Record<string, Record<string, unknown>> = {}
+  let totalTriggered = 0
 
   for (const ownerId of uniqueOwners) {
-    try {
-      const { data: sites } = await db
-        .from('site_configs')
-        .select('slug')
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true })
+    results[ownerId] = {}
+    for (const siteSlug of activeSlugs) {
+      totalTriggered++
+      try {
+        const res = await fetch(`${appUrl}/api/reports/monthly`, {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${process.env.CRON_SECRET}`,
+          },
+          body: JSON.stringify({
+            owner_user_id: ownerId,
+            site:          siteSlug,
+            // No year/month → POST handler defaults to last completed calendar month
+          }),
+        })
 
-      const siteSlug = sites?.[0]?.slug as string | undefined ?? 'g2g'
-
-      const res = await fetch(`${appUrl}/api/reports/monthly`, {
-        method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${process.env.CRON_SECRET}`,
-        },
-        body: JSON.stringify({
-          owner_user_id: ownerId,
-          site:          siteSlug,
-          // No year/month → POST handler defaults to last completed calendar month
-        }),
-      })
-
-      const payload = await res.json().catch(() => null)
-      results[ownerId] = res.ok
-        ? { ok: true, reportId: (payload as { report?: { id?: string } } | null)?.report?.id ?? null }
-        : { ok: false, status: res.status, error: (payload as { error?: string } | null)?.error ?? 'unknown' }
-    } catch (err) {
-      results[ownerId] = { ok: false, error: err instanceof Error ? err.message : String(err) }
+        const payload = await res.json().catch(() => null)
+        results[ownerId][siteSlug] = res.ok
+          ? { ok: true, reportId: (payload as { report?: { id?: string } } | null)?.report?.id ?? null }
+          : { ok: false, status: res.status, error: (payload as { error?: string } | null)?.error ?? 'unknown' }
+      } catch (err) {
+        results[ownerId][siteSlug] = { ok: false, error: err instanceof Error ? err.message : String(err) }
+      }
     }
   }
 
   return NextResponse.json({
-    triggered: uniqueOwners.length,
+    triggered: totalTriggered,
+    owners:    uniqueOwners.length,
+    sites:     activeSlugs,
     results,
   })
 }

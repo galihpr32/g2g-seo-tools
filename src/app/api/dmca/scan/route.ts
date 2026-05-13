@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 60
 
@@ -9,15 +10,17 @@ export const maxDuration = 60
 // Scans all published briefs' content_draft for active DMCA terms.
 // Upserts hits into dmca_hits; marks existing hits as resolved if term no
 // longer appears in the content.
-export async function POST() {
+export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
-  // 1. Load all active DMCA terms for this owner
+  // 1. Load all active DMCA terms for this owner.
+  // Note: dmca_terms isn't site-scoped — terms apply across all brands.
   const { data: terms, error: termsErr } = await db
     .from('dmca_terms')
     .select('id, original_term')
@@ -29,11 +32,13 @@ export async function POST() {
     return NextResponse.json({ scanned: 0, hits: 0, resolved: 0 })
   }
 
-  // 2. Load all published briefs with content
+  // 2. Load all published briefs with content — scoped to the active brand
+  // so an OG-side scan doesn't churn through G2G content.
   const { data: briefs, error: briefsErr } = await db
     .from('seo_content_briefs')
     .select('id, content_draft')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .eq('status', 'published')
     .not('content_draft', 'is', null)
 

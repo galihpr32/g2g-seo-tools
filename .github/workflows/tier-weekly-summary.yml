@@ -1,0 +1,36 @@
+name: Weekly Tier Rankings Summary
+
+on:
+  schedule:
+    # Monday 03:00 UTC (= 10:00 WIB) — runs AFTER tier-serp-weekly (02:00 UTC)
+    # so the freshest snapshot is captured + persisted before we summarize.
+    # Posts ONE consolidated Slack message covering both brands.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: tier-weekly-summary
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/tier-weekly-summary
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 180 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/tier-weekly-summary")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

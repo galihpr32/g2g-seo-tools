@@ -1,5 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { slugify } from '@/lib/agents/site-helpers'
+import { findMatches } from '@/lib/g2g/fuzzy-match'
 
 /**
  * Saga Aggregator — Signal Grouping Engine
@@ -144,6 +145,17 @@ export async function runSagaAggregator(
   if (rawActions.length === 0) {
     return { opportunitiesCreated: 0, opportunitiesUpdated: 0, opportunitiesSkipped: 0, signalsProcessed: 0, summary: 'No recent signals to aggregate.' }
   }
+
+  // ── 1b. Load active G2G catalog once for inline fuzzy-matching ─────────
+  // Cheap (~14k rows × 60 bytes ≈ 1MB) and reused for every new opportunity
+  // we insert below. Falls back to "no matching" if the catalog is empty
+  // (admin hasn't imported the CSV yet) — opps still insert, just without
+  // matched_relation_id.
+  const { data: catalogRows } = await db
+    .from('g2g_products')
+    .select('relation_id, brand_name')
+    .eq('is_active', true)
+  const catalog = (catalogRows ?? []) as { relation_id: string; brand_name: string }[]
 
   // ── 2. Derive topic_slug per action and group ─────────────────────────────
   interface TopicGroup {
@@ -294,8 +306,11 @@ export async function runSagaAggregator(
       if (!updErr) opportunitiesUpdated++
 
     } else {
-      // Insert fresh opportunity
+      // Insert fresh opportunity — with inline fuzzy-match against catalog
+      // so the pipeline link to a real G2G product is in place from day one.
       const totalSignals = group.heimdallSignals.length + group.lokiSignals.length + group.odinSignals.length
+      const matches = catalog.length ? findMatches(group.topic, catalog, 0.55, 1) : []
+      const best    = matches[0] ?? null
 
       const { error: insErr } = await db
         .from('seo_opportunities')
@@ -315,6 +330,12 @@ export async function runSagaAggregator(
           created_at:       now,
           updated_at:       now,
           last_signal_at:   now,
+          // Catalog mapping (CATALOG.14): set when topic fuzzy-matches a
+          // catalog brand_name above threshold. matched_at is stamped either
+          // way so the backfill endpoint knows this row was already processed.
+          matched_relation_id: best ? best.relation_id              : null,
+          match_score:         best ? Number(best.score.toFixed(2)) : null,
+          matched_at:          now,
         })
 
       if (!insErr) opportunitiesCreated++

@@ -1,5 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 import NotificationsClient from './NotificationsClient'
 
 export const revalidate = 30
@@ -17,11 +19,21 @@ export default async function NotificationsPage() {
 
   const ownerId = user ? await getEffectiveOwnerId(supabase, user.id) : null
 
+  // Multi-brand-safe site_url (Sprint 12).
+  const activeSlug = await getActiveSiteSlug()
+  const dbAdmin = createServiceClient()
+  const { data: siteConfig } = await dbAdmin
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
   const { data: conn } = ownerId
-    ? await supabase.from('gsc_connections').select('site_url').eq('user_id', ownerId).single()
+    ? await supabase.from('gsc_connections').select('user_id').eq('user_id', ownerId).maybeSingle()
     : { data: null }
 
-  const siteUrl = conn?.site_url
+  const siteUrl  = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
+  const siteSlug = activeSlug
 
   let staleItems:     ActionItem[]   = []
   let unassignedItems: ActionItem[]  = []
@@ -37,7 +49,7 @@ export default async function NotificationsPage() {
       siteUrl
         ? supabase.from('seo_action_items')
             .select('id, page, action_type, status, notes, assigned_to, created_at, snapshot_date')
-            .eq('site_url', siteUrl).eq('status', 'in_progress')
+            .eq('site_url', siteUrl).eq('site_slug', siteSlug).eq('status', 'in_progress')
             .lt('created_at', staleThreshold).order('created_at', { ascending: true })
         : Promise.resolve({ data: [] }),
 
@@ -45,7 +57,7 @@ export default async function NotificationsPage() {
       siteUrl
         ? supabase.from('seo_action_items')
             .select('id, page, action_type, status, notes, assigned_to, created_at, snapshot_date')
-            .eq('site_url', siteUrl).eq('status', 'in_progress')
+            .eq('site_url', siteUrl).eq('site_slug', siteSlug).eq('status', 'in_progress')
             .is('assigned_to', null).order('created_at', { ascending: false })
         : Promise.resolve({ data: [] }),
 

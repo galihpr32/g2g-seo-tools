@@ -77,28 +77,63 @@ export async function GET(req: Request) {
 }
 
 async function handleGET(req: Request) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // Cron-internal call path: cron passes ?cron_secret=…&owner=… so we can run
+  // detection on behalf of an owner without an auth cookie. Required for the
+  // /api/cron/cannib-snapshot weekly persister.
+  const url = new URL(req.url)
+  const cronSecret = url.searchParams.get('cron_secret')
+  const cronOwner  = url.searchParams.get('owner')
+  const cronSite   = url.searchParams.get('site')
+  let ownerId: string
+  let siteSlug: string
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  if (cronSecret && cronOwner && cronSecret === process.env.CRON_SECRET) {
+    ownerId = cronOwner
+    // Cron must pass ?site= explicitly so we know which brand to scope to.
+    siteSlug = cronSite ?? 'g2g'
+  } else {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    ownerId = await getEffectiveOwnerId(supabase, user.id)
+    // Reads from query → body → cookie → default. Same priority middleware uses.
+    const { resolveSiteSlugFromRequest } = await import('@/lib/sites')
+    siteSlug = resolveSiteSlugFromRequest(req)
+  }
+
   const db = createServiceClient()
 
   const { searchParams } = new URL(req.url)
   const days    = parseInt(searchParams.get('days')     ?? '90')
   const minImpr = parseInt(searchParams.get('min_impr') ?? '10')
 
-  // ── 1. GSC connection ───────────────────────────────────────────────────────
-  const { data: conn } = await supabase
+  // ── 1. GSC connection (OAuth tokens) + site_url from active brand ──────────
+  // Tokens come from gsc_connections (one OAuth per user covers all GSC
+  // properties under that Google account). The site_url to filter for
+  // comes from site_configs.gsc_property based on active slug — NOT from
+  // gsc_connections.site_url which only stores the user's first OAuth site.
+  const { data: conn } = await db
     .from('gsc_connections')
     .select('*')
     .eq('user_id', ownerId)
     .single()
 
-  if (!conn?.access_token || !conn?.site_url) {
+  if (!conn?.access_token) {
     return NextResponse.json({ error: 'GSC not connected' }, { status: 422 })
   }
 
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (!siteConfig?.gsc_property) {
+    return NextResponse.json({ error: `No active site config for slug=${siteSlug}` }, { status: 422 })
+  }
+
+  const siteUrl = siteConfig.gsc_property
   const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
   // GSC API requires YYYY-MM-DD, NOT GA4-style relative strings like "90daysAgo".
   // Convert here so callers can keep using the friendly day-count param.
@@ -112,7 +147,7 @@ async function handleGET(req: Request) {
   // ── 2. Pull GSC query+page data ─────────────────────────────────────────────
   // This gives us: for each (query, page) pair, clicks/impressions/ctr/position
   const rows = (await getSearchAnalytics(
-    auth, conn.site_url, startDate, endDate,
+    auth, siteUrl, startDate, endDate,
     ['query', 'page'],
     10000   // 25k rows can timeout; 10k is enough for cannibalization detection
   )) ?? []

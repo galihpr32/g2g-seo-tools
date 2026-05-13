@@ -76,12 +76,23 @@ export async function GET(req: Request) {
   const endDateIso    = relToIso(rawEnd)
   const mapIdFilter   = searchParams.get('map_id') ?? null
 
-  // ── 1. Fetch GSC connection + GSC site URL ────────────────────────────────
+  // ── 1. Fetch GSC OAuth + brand-aware site URL ─────────────────────────────
+  // Sprint 12: gsc_connections only stores tokens; site_url comes from
+  // site_configs based on the active slug.
+  const { resolveSiteSlugFromRequest } = await import('@/lib/sites')
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const { data: conn } = await supabase
     .from('gsc_connections')
     .select('*')
     .eq('user_id', ownerId)
     .single()
+  const { data: brandSiteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  const brandSiteUrl = brandSiteConfig?.gsc_property ?? null
 
   // GA4 property ID — env var first, then per-site config (system/health also
   // does this dual-source lookup, otherwise users who configured GA4 inside
@@ -163,8 +174,8 @@ export async function GET(req: Request) {
     // GA4: Organic sessions per page
     propertyId ? getGA4OrganicSessionsByPage(auth, propertyId, startDate, endDate, 1000).catch(() => []) : Promise.resolve([]),
     // GSC: clicks + impressions + position per page (ISO dates required)
-    conn.site_url
-      ? getSearchAnalytics(auth, conn.site_url, startDateIso, endDateIso, ['page'], 5000).catch(() => [])
+    brandSiteUrl
+      ? getSearchAnalytics(auth, brandSiteUrl, startDateIso, endDateIso, ['page'], 5000).catch(() => [])
       : Promise.resolve([]),
   ])
 

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 10
 
@@ -74,6 +75,9 @@ export async function POST(req: Request) {
   const baseUrl = appUrl ?? (vercelUrl ? `https://${vercelUrl}` : 'http://localhost:3000')
 
   const cookie = req.headers.get('cookie') ?? ''
+  // Forward whichever site the user is currently on (cookie/query/body) so
+  // an OG user firing an agent via Mimir doesn't accidentally trigger G2G.
+  const siteSlug = resolveSiteSlugFromRequest(req)
 
   after(async () => {
     try {
@@ -83,7 +87,7 @@ export async function POST(req: Request) {
           'Content-Type': 'application/json',
           Cookie: cookie,
         },
-        body: JSON.stringify({ site: 'g2g' }),
+        body: JSON.stringify({ site: siteSlug }),
       })
       if (!res.ok) {
         const text = await res.text()

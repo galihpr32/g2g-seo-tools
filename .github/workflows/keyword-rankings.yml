@@ -1,0 +1,44 @@
+name: Daily Keyword Rankings
+
+# Daily SERP position check for every active tracked_product across all
+# active sites. Hits DataForSEO SERP Live and persists per-keyword
+# ranking history into keyword_ranking_history.
+#
+# Required repo secrets:
+#   APP_URL      — Vercel app URL (https://g2g-seo-tools.vercel.app)
+#   CRON_SECRET  — same value as Vercel CRON_SECRET env
+
+on:
+  schedule:
+    # 04:00 UTC = 11:00 WIB. Runs after gsc-daily (01:00 UTC) and bing-daily
+    # (23:30 UTC prev day) so morning briefing has full ranking context, but
+    # late enough that DFS isn't being hit during their peak hours.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: keyword-rankings
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/keyword-rankings
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 360 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/keyword-rankings")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

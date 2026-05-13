@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 /**
  * GET /api/opportunities
@@ -23,7 +24,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url)
   const status   = searchParams.get('status')   ?? 'active'   // 'active' = all except dismissed
-  const siteSlug = searchParams.get('site')      ?? 'g2g'
+  const siteSlug = resolveSiteSlugFromRequest(request)
   const sortBy   = searchParams.get('sort')      ?? 'updated_at'
   const limitVal = Math.min(parseInt(searchParams.get('limit') ?? '100'), 500)
 

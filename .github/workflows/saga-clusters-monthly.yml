@@ -1,0 +1,44 @@
+name: Monthly Saga Cluster Rebuild
+
+on:
+  schedule:
+    # 1st of month, 04:00 UTC (11:00 WIB) — runs BEFORE the monthly report
+    # so the report can reference fresh clusters in its narratives.
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: saga-clusters-monthly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Per-site invocation — each call's Sonnet pass takes 2-5 min, well
+      # within Vercel's 300s ceiling per request, but running both sites
+      # in parallel doubles the Anthropic concurrency hit. Sequential keeps
+      # us under any per-key TPM caps.
+      matrix:
+        site: [g2g, offgamers]
+      max-parallel: 1
+      fail-fast: false
+    steps:
+      - name: Trigger /api/cron/saga-clusters?site=${{ matrix.site }}
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 320 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/saga-clusters?site=${{ matrix.site }}")
+          echo "Response (${{ matrix.site }}):"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

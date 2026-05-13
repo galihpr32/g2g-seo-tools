@@ -43,14 +43,25 @@ export async function GET(req: Request) {
 
   const taskId = tasks?.[0]?.task_id ?? null
 
-  // ── 2. GSC connection ─────────────────────────────────────────────────────
+  // ── 2. GSC OAuth + brand-aware site URL ────────────────────────────────────
+  // Sprint 12: site_url comes from site_configs (active slug), NOT
+  // gsc_connections.site_url which is single-site per user.
+  const { resolveSiteSlugFromRequest } = await import('@/lib/sites')
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const { data: conn } = await supabase
     .from('gsc_connections')
     .select('*')
     .eq('user_id', ownerId)
     .single()
+  const { data: brandSiteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  const brandSiteUrl = brandSiteConfig?.gsc_property ?? null
 
-  const hasGSC     = !!(conn?.access_token && conn?.site_url)
+  const hasGSC     = !!(conn?.access_token && brandSiteUrl)
   const hasCrawl   = !!taskId
 
   if (!hasGSC && !hasCrawl) {
@@ -97,8 +108,8 @@ export async function GET(req: Request) {
     const sixtyOne = fmt(new Date(now - 61 * 86400000))
     const ninety   = fmt(new Date(now - 90 * 86400000))
     const [curr, hist] = await Promise.all([
-      getSearchAnalytics(auth, conn!.site_url, sevenAgo, yest, ['page'], 5000).catch(() => []),
-      getSearchAnalytics(auth, conn!.site_url, ninety,   sixtyOne, ['page'], 5000).catch(() => []),
+      getSearchAnalytics(auth, brandSiteUrl!, sevenAgo, yest, ['page'], 5000).catch(() => []),
+      getSearchAnalytics(auth, brandSiteUrl!, ninety,   sixtyOne, ['page'], 5000).catch(() => []),
     ])
     currentGSC  = curr.map(r => ({ page: r.keys?.[0] ?? '', clicks: r.clicks ?? 0, impressions: r.impressions ?? 0, position: r.position ?? 0 })).filter(r => r.page)
     historicalGSC = hist.map(r => ({ page: r.keys?.[0] ?? '', clicks: r.clicks ?? 0, impressions: r.impressions ?? 0, position: r.position ?? 0 })).filter(r => r.page)
