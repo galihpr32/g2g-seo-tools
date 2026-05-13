@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 import { notFound } from 'next/navigation'
 import { BriefViewer } from './BriefViewer'
 
@@ -14,15 +14,21 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
 
   if (!user) notFound()
 
-  const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
+  // getEffectiveOwnerId() is no longer needed here — we use the service
+  // client to bypass RLS, and ownership is verified via the action item's
+  // own site_slug check below.
   // Use service client to bypass RLS so workspace members can view owner's items
   const db = createServiceClient()
 
-  const { data: conn } = await db
-    .from('gsc_connections')
-    .select('site_url')
-    .eq('user_id', effectiveOwnerId)
-    .single()
+  // Multi-brand-safe site resolution (Sprint 12).
+  const activeSlug = await getActiveSiteSlug()
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  const siteUrl = siteConfig?.gsc_property ?? null
 
   // Load the action item — service client so members can see owner's items
   const { data: item } = await db
@@ -32,13 +38,17 @@ export default async function ActionItemBriefPage({ params }: { params: Promise<
     .single()
 
   if (!item) notFound()
+  // Strict cross-brand isolation: 404 if the item belongs to a different
+  // site than the one the user is currently viewing. Prevents leaking
+  // OffGamers items into a G2G context (and vice versa).
+  if (item.site_slug && item.site_slug !== activeSlug) notFound()
 
-  // Load GSC queries for this page (pre-populate keyword selector — avoids client-side URL mismatch)
-  const { data: gscPageQueries } = conn?.site_url
+  // Load GSC queries for this page — scoped to active site's gsc_property
+  const { data: gscPageQueries } = siteUrl
     ? await db
         .from('gsc_ranking_drop_queries')
         .select('query, clicks, impressions, ctr, position')
-        .eq('site_url', conn.site_url)
+        .eq('site_url', siteUrl)
         .eq('page', item.page)
         .order('clicks', { ascending: false })
         .limit(20)

@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getSiteConfig } from '@/lib/sites'
+import { getSiteConfig, resolveSiteSlugFromRequest } from '@/lib/sites'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
 import { getAgentInsights, formatInsightsForPrompt } from '@/lib/reports/agent-insights'
+import { analyzeTrackedRankings } from '@/lib/reports/ranking-analysis'
 import Anthropic from '@anthropic-ai/sdk'
 
 // CTR curve for SoV calculation (positions 1–10)
@@ -52,7 +53,7 @@ export async function GET(req: Request) {
   const db = createServiceClient()
   const { searchParams } = new URL(req.url)
   const id   = searchParams.get('id')
-  const site = searchParams.get('site') ?? 'g2g'
+  const site = resolveSiteSlugFromRequest(req)
 
   if (id) {
     const { data, error } = await db
@@ -106,7 +107,8 @@ export async function POST(req: Request) {
     }
 
     // ── Resolve site config ──────────────────────────────────────────────────
-    const siteSlug = (body.site as string) ?? 'g2g'
+    // Cookie/query/body all checked. Cron path passes body.site explicitly.
+    const siteSlug = resolveSiteSlugFromRequest(req, body)
     const siteConfig = await getSiteConfig(supabase, siteSlug)
     if (!siteConfig) {
       return NextResponse.json({ error: `Unknown site: ${siteSlug}` }, { status: 400 })
@@ -512,11 +514,32 @@ export async function POST(req: Request) {
     // ── Agent insights ───────────────────────────────────────────────────────
     // Aggregates agent_runs + agent_actions + briefs activity within the
     // report window. Failures non-fatal — captured in `agentInsights.warnings`.
-    const agentInsights = await getAgentInsights(db, ownerId, weekStart, weekEnd)
+    const agentInsights = await getAgentInsights(db, ownerId, weekStart, weekEnd, siteSlug)
       .catch(e => {
         console.warn('[weekly-report] agent insights failed:', e)
         return null
       })
+
+    // ── Tracked-product ranking analysis (DataForSEO history, week scope) ──
+    // No AI action plan on weekly — keeps cost down; the monthly report runs
+    // it. Surfacing the bucket counts + top movers is enough for a weekly
+    // pulse signal.
+    let trackedRankings: Awaited<ReturnType<typeof analyzeTrackedRankings>> | null = null
+    try {
+      trackedRankings = await analyzeTrackedRankings({
+        db,
+        ownerId,
+        siteSlug,
+        siteName:    siteConfig.display_name,
+        domain:      semrushDomain,
+        periodStart: weekStart,
+        periodEnd:   weekEnd,
+        periodDays:  7,
+        withActionPlan: false,
+      })
+    } catch (e) {
+      console.warn('[weekly-report] tracked rankings analysis failed:', e)
+    }
 
     // ── Base report data ─────────────────────────────────────────────────────
     const baseReportData = {
@@ -529,6 +552,7 @@ export async function POST(req: Request) {
       actionItems: actionItemsData,
       competitive: competitiveData,
       domainAuthority,
+      trackedRankings,
       agentInsights,
       generatedAt: new Date().toISOString(),
     }

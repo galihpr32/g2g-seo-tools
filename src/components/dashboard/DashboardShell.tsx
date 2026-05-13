@@ -3,6 +3,7 @@
 import { usePathname } from 'next/navigation'
 import Sidebar from './Sidebar'
 import AIAssistant from './AIAssistant'
+import BugReportButton from './BugReportButton'
 import OnboardingWizard from './OnboardingWizard'
 
 const KNOWN_SITES = ['g2g', 'offgamers']
@@ -21,6 +22,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         {children}
       </main>
       <AIAssistant />
+      <BugReportButton />
       <OnboardingWizard />
     </div>
   )

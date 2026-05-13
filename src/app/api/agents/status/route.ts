@@ -2,16 +2,20 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug         = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
-  // Get all agents for this owner
+  // Get all agents for this owner.
+  // Note: `agents` table itself isn't site-scoped — agent definitions are
+  // shared across brands. Per-brand stats live on agent_runs/agent_actions.
   const { data: agents, error: agentsErr } = await db
     .from('agents')
     .select('*')
@@ -21,11 +25,12 @@ export async function GET() {
     return NextResponse.json({ error: agentsErr.message }, { status: 500 })
   }
 
-  // Get pending actions grouped by agent
+  // Get pending actions grouped by agent (site-scoped).
   const { data: pendingActions, error: actionsErr } = await db
     .from('agent_actions')
     .select('agent_key')
     .eq('owner_user_id', effectiveOwnerId)
+    .eq('site_slug', siteSlug)
     .eq('status', 'pending')
 
   if (actionsErr) {

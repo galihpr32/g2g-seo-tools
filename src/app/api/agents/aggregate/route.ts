@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { runSagaAggregator } from '@/lib/agents/saga'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 /**
  * POST /api/agents/aggregate
@@ -21,13 +22,13 @@ export async function POST(request: Request) {
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
 
-  let siteSlug    = 'g2g'
   let windowHours = 72
+  let body: Record<string, unknown> = {}
   try {
-    const body  = await request.json()
-    if (body.site)        siteSlug    = String(body.site)
+    body = await request.json()
     if (body.windowHours) windowHours = Number(body.windowHours)
   } catch { /* body is optional */ }
+  const siteSlug = resolveSiteSlugFromRequest(request, body)
 
   try {
     const result = await runSagaAggregator(effectiveOwnerId, siteSlug, windowHours)

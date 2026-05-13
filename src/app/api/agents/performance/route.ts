@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 // GET /api/agents/performance
 // Returns per-agent stats for the last N days
@@ -10,7 +11,8 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
   const { searchParams } = new URL(req.url)
@@ -24,6 +26,7 @@ export async function GET(req: Request) {
     .from('agent_runs')
     .select('agent_key, status, findings_count, actions_queued, started_at, finished_at, error_message')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .gte('started_at', since)
     .order('started_at', { ascending: true })
 
@@ -32,6 +35,7 @@ export async function GET(req: Request) {
     .from('agent_actions')
     .select('agent_key, status, priority, created_at, approved_at')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .gte('created_at', since)
 
   // ── Build per-agent stats ─────────────────────────────────────────────────

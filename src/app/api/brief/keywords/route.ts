@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 
 export const maxDuration = 30
@@ -15,7 +14,6 @@ export async function GET(request: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
   const url = new URL(request.url)
@@ -30,19 +28,23 @@ export async function GET(request: Request) {
     .single()
   if (!item) return NextResponse.json({ error: 'Action item not found' }, { status: 404 })
 
-  // Load GSC connection
-  const { data: conn } = await db
-    .from('gsc_connections')
-    .select('site_url')
-    .eq('user_id', ownerId)
-    .single()
+  // Sprint 12: site_url comes from active brand's site_configs.
+  const { resolveSiteSlugFromRequest } = await import('@/lib/sites')
+  const siteSlug = resolveSiteSlugFromRequest(request)
+  const { data: brandSiteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  const siteUrl = brandSiteConfig?.gsc_property ?? null
 
   // Load GSC queries for this page
-  const { data: gscQueries } = conn?.site_url
+  const { data: gscQueries } = siteUrl
     ? await db
         .from('gsc_ranking_drop_queries')
         .select('query, clicks, impressions, ctr, position')
-        .eq('site_url', conn.site_url)
+        .eq('site_url', siteUrl)
         .eq('page', item.page)
         .order('clicks', { ascending: false })
         .limit(15)

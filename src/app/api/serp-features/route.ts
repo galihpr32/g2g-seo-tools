@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getDomainKeywordsWithFeatures, SERP_FEATURE_LABELS } from '@/lib/semrush/client'
-import { getSiteConfig } from '@/lib/sites'
+import { getSiteConfig, resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 30
 
@@ -14,7 +14,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const database  = searchParams.get('database') ?? 'us'
   const limit     = Math.min(parseInt(searchParams.get('limit') ?? '1000'), 2000)
-  const siteSlug  = searchParams.get('site') ?? 'g2g'
+  const siteSlug  = resolveSiteSlugFromRequest(req)
 
   const apiKey = process.env.SEMRUSH_API_KEY
   if (!apiKey || apiKey === 'placeholder') {

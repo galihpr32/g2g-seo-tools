@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 
 export const revalidate = 3600
 
@@ -12,11 +13,24 @@ export default async function IndexCoveragePage() {
   // Use service client so workspace members can read owner's snapshots (bypasses RLS)
   const db = createServiceClient()
 
+  // Multi-brand-safe site lookup. Reads active slug from middleware-injected
+  // header (or cookie fallback) → maps to gsc_property. Replaces the legacy
+  // gsc_connections.site_url lookup which only stored the user's first OAuth
+  // connection (always G2G), causing /offgamers/... to render G2G data.
+  const activeSlug = await getActiveSiteSlug()
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  // Also check the user actually has a GSC connection — if not, downstream
+  // queries return empty (we never silently fall back to a different site).
   const { data: conn } = effectiveOwnerId
-    ? await db.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
+    ? await db.from('gsc_connections').select('user_id').eq('user_id', effectiveOwnerId).maybeSingle()
     : { data: null }
 
-  const siteUrl = conn?.site_url
+  const siteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
 
   const { data: snapshots } = siteUrl
     ? await db
@@ -37,6 +51,9 @@ export default async function IndexCoveragePage() {
   const latest = snapshots?.[0]
   const previous = snapshots?.[1]
   const indexDiff = latest && previous ? latest.indexed_pages - previous.indexed_pages : null
+  // Error delta — used to surface "new errors since yesterday" as a prominent badge
+  const errorDiff = latest && previous ? (latest.errors ?? 0) - (previous.errors ?? 0) : null
+  const hasNewErrors = errorDiff !== null && errorDiff > 0
 
   return (
     <div className="p-8">
@@ -89,12 +106,27 @@ export default async function IndexCoveragePage() {
                 </p>
               )}
             </div>
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 relative">
               <p className="text-gray-400 text-xs uppercase tracking-wider mb-2">Crawl Errors</p>
               <p className={`text-3xl font-bold ${(latest?.errors ?? 0) > 0 ? 'text-red-400' : 'text-green-400'}`}>
                 {latest?.errors ?? 0}
               </p>
-              <p className="text-sm mt-1 text-gray-500">detected today</p>
+              {hasNewErrors ? (
+                <p className="text-sm mt-1 font-medium text-red-300">
+                  +{errorDiff} new since yesterday
+                </p>
+              ) : errorDiff !== null && errorDiff < 0 ? (
+                <p className="text-sm mt-1 text-emerald-400">
+                  {errorDiff} resolved vs yesterday
+                </p>
+              ) : (
+                <p className="text-sm mt-1 text-gray-500">detected today</p>
+              )}
+              {hasNewErrors && (
+                <span className="absolute top-3 right-3 text-[10px] font-bold uppercase tracking-wider bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full border border-red-500/40 animate-pulse">
+                  NEW
+                </span>
+              )}
             </div>
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
               <p className="text-gray-400 text-xs uppercase tracking-wider mb-2">Status</p>

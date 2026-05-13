@@ -1,0 +1,28 @@
+name: Weekly Cannibalization Snapshot
+
+on:
+  schedule:
+    # Every Monday at 03:00 UTC (10:00 WIB) — captures the prior week's cannib state
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: cannib-snapshot-weekly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/cannib-snapshot
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          curl --silent --show-error --fail-with-body \
+            --max-time 320 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/cannib-snapshot" | jq . 2>/dev/null || true
