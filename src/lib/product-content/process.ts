@@ -11,6 +11,7 @@ import {
 import { getKeywordSuggestions } from '@/lib/dataforseo/client'
 import { logApiUsage } from '@/lib/api-logger'
 import { translateProductContent, type ProductContentBundle } from '@/lib/agents/product-translator'
+import { attemptCmsUpload } from '@/lib/g2g/auto-upload'
 
 /**
  * Sheet-as-database Product Content processor (2026-05-12 refactor).
@@ -432,6 +433,41 @@ export async function processProductRow(
         // Non-blocking — EN tab already has the success status.
         console.error(`[process] ID sheet write failed for ${row.relation_id}:`, idSheetErr)
       }
+    }
+
+    // ── 7. Auto-upload to G2G CMS (non-blocking) ────────────────────────────
+    //   Fires after generation + sheet write-back so the sheet remains the
+    //   visible "what got done" log even if the CMS push fails. The upload
+    //   helper writes its own cms_upload_* columns and never throws.
+    try {
+      const uploadOutcome = await attemptCmsUpload(db, row.owner_user_id, {
+        relation_id:           row.relation_id,
+        owner_user_id:         row.owner_user_id,
+        meta_title:            en.metaTitle,
+        meta_description:      en.metaDescription,
+        meta_keywords:         en.metaKeyword,
+        marketing_title:       en.marketingTitle,
+        marketing_intro:       composeMarketingIntroBlock(en.marketingTitle, en.marketingIntro),
+        marketing_sections:    en.marketingSections,
+        faqs:                  en.faqs,
+        id_meta_title:         idBundle?.metaTitle       ?? null,
+        id_meta_description:   idBundle?.metaDescription ?? null,
+        id_meta_keywords:      idBundle?.metaKeyword     ?? null,
+        id_marketing_title:    idBundle?.marketingTitle  ?? null,
+        id_marketing_intro:    idBundle ? composeMarketingIntroBlock(idBundle.marketingTitle, idBundle.marketingIntro) : null,
+        id_marketing_sections: idBundle?.marketingSections ?? null,
+        id_faqs:                idBundle?.faqs            ?? null,
+        g2g_brand_id:          null,
+        g2g_service_id:        null,
+      })
+      if (uploadOutcome.attempted && !uploadOutcome.ok) {
+        console.warn(`[process] CMS upload non-success for ${row.relation_id}: ${uploadOutcome.status} ${uploadOutcome.error ?? ''}`)
+      }
+    } catch (upErr) {
+      // Defensive: attemptCmsUpload already has its own catch — but if the
+      // import itself blew up at runtime, we still don't want to lose the
+      // generation success.
+      console.error(`[process] CMS upload exception for ${row.relation_id}:`, upErr)
     }
 
     return { ok: true, bundle: en, warning: idWarning ?? undefined }

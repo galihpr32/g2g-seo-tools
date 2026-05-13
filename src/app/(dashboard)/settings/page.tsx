@@ -617,6 +617,18 @@ export default function SettingsPage() {
             <span className="text-gray-500 group-hover:text-amber-400 transition">→</span>
           </a>
 
+          {/* G2G CMS Token shortcut — manual weekly JWT refresh */}
+          <a
+            href="/settings/cms-token"
+            className="bg-gray-900 border border-gray-800 hover:border-blue-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">🔐 G2G CMS Token</p>
+              <p className="text-gray-400 text-sm mt-0.5">Paste a fresh admin JWT weekly — powers auto-upload of generated content into the G2G CMS (marketing + SEO + FAQ).</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-blue-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>
