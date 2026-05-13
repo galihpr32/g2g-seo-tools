@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
+import { resolveSlackWebhook } from '@/lib/slack/routing'
 
 export const maxDuration = 30
 
@@ -24,18 +25,32 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL
-  if (!webhookUrl) {
-    return NextResponse.json({
-      ok:      false,
-      message: 'SLACK_WEBHOOK_URL not configured. Skipping escalation.',
-    })
-  }
-
   const db = createSupabase(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
+
+  // Sprint MULTI.3 — pick first owner with daily_alerts mapping, else first
+  // GSC-connected owner, else env fallback inside resolveSlackWebhook.
+  const { data: firstRouteOwner } = await db
+    .from('slack_routing_config')
+    .select('owner_user_id')
+    .eq('notification_type', 'daily_alerts')
+    .eq('enabled', true)
+    .limit(1)
+    .maybeSingle()
+  const ownerForRoute = firstRouteOwner?.owner_user_id
+    ?? (await db.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
+    ?? null
+  const webhookUrl = ownerForRoute
+    ? await resolveSlackWebhook(db, ownerForRoute, 'daily_alerts')
+    : process.env.SLACK_WEBHOOK_URL ?? null
+  if (!webhookUrl) {
+    return NextResponse.json({
+      ok:      false,
+      message: 'No Slack webhook resolved (config + env both empty). Skipping escalation.',
+    })
+  }
 
   // Stale tech action items: >14 days old, not done, technical category
   // Heuristic for "technical": action_type contains 'fix' or matches known

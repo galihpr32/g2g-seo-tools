@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
+import { resolveSlackWebhook } from '@/lib/slack/routing'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const maxDuration = 15
 
@@ -15,8 +17,29 @@ export const maxDuration = 15
  * Slack notification fires on new submission (best-effort, non-blocking).
  */
 
-async function notifySlack(report: { id: string; title: string; submitter_email: string | null; severity: string; page_url: string | null }) {
-  const webhook = process.env.SLACK_WEBHOOK_URL
+async function notifySlack(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: SupabaseClient<any, any, any>,
+  report: { id: string; title: string; submitter_email: string | null; severity: string; page_url: string | null; site_slug: string | null; submitter_id: string },
+) {
+  // Sprint MULTI.3 — bug_reports route. Prefer (submitter × site) mapping,
+  // fall back to first admin with bug_reports config, then env.
+  let ownerForRoute: string | null = report.submitter_id
+  let webhook = await resolveSlackWebhook(db, ownerForRoute, 'bug_reports', { siteSlug: report.site_slug ?? undefined })
+  if (!webhook) {
+    const { data: firstOwner } = await db
+      .from('slack_routing_config')
+      .select('owner_user_id')
+      .eq('notification_type', 'bug_reports')
+      .eq('enabled', true)
+      .limit(1)
+      .maybeSingle()
+    ownerForRoute = firstOwner?.owner_user_id ?? null
+    if (ownerForRoute) {
+      webhook = await resolveSlackWebhook(db, ownerForRoute, 'bug_reports')
+    }
+  }
+  if (!webhook) webhook = process.env.SLACK_WEBHOOK_URL ?? null
   if (!webhook) return
   const sevColor = report.severity === 'high' ? '#EF4444' : report.severity === 'medium' ? '#F59E0B' : '#9CA3AF'
   const blocks = [
@@ -118,7 +141,7 @@ export async function POST(req: Request) {
             .slice(0, 3)
         : [],
     })
-    .select('id, title, severity, page_url')
+    .select('id, title, severity, page_url, site_slug')
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -127,11 +150,13 @@ export async function POST(req: Request) {
   ;(async () => {
     try {
       const { data: profile } = await db.from('profiles').select('email').eq('id', user.id).maybeSingle()
-      await notifySlack({
+      await notifySlack(db, {
         id:               String(data.id),
         title:            String(data.title),
         severity:         String(data.severity),
         page_url:         data.page_url as string | null,
+        site_slug:        (data.site_slug as string | null) ?? null,
+        submitter_id:     user.id,
         submitter_email:  (profile?.email as string | null) ?? null,
       })
     } catch (e) { console.warn('[feedback] slack notify wrapper failed:', e) }

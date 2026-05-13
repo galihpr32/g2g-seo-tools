@@ -1,11 +1,35 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { resolveSlackWebhook, type NotificationType } from '@/lib/slack/routing'
+
 export interface SlackBlock {
   type: string
   [key: string]: unknown
 }
 
-async function sendSlackMessage(blocks: SlackBlock[], text: string) {
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL
-  if (!webhookUrl || webhookUrl === 'placeholder') return false
+// Sprint MULTI.3 — when callers can supply routing context, look up the
+// per-(owner × site × type) webhook via slack_routing_config. Otherwise
+// preserve original behaviour by falling back to env SLACK_WEBHOOK_URL.
+export interface SlackRouteCtx {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db?:        SupabaseClient<any, any, any>
+  ownerId?:   string
+  type?:      NotificationType
+  siteSlug?:  string | null
+}
+
+async function resolveWebhookForCtx(ctx?: SlackRouteCtx): Promise<string | null> {
+  if (ctx?.db && ctx.ownerId && ctx.type) {
+    const url = await resolveSlackWebhook(ctx.db, ctx.ownerId, ctx.type, { siteSlug: ctx.siteSlug ?? undefined })
+    if (url && url !== 'placeholder') return url
+  }
+  const env = process.env.SLACK_WEBHOOK_URL
+  if (!env || env === 'placeholder') return null
+  return env
+}
+
+async function sendSlackMessage(blocks: SlackBlock[], text: string, ctx?: SlackRouteCtx) {
+  const webhookUrl = await resolveWebhookForCtx(ctx)
+  if (!webhookUrl) return false
 
   try {
     const res = await fetch(webhookUrl, {
@@ -26,7 +50,7 @@ export async function sendRankingDropAlert(drops: {
   positionChange: number
   currentClicks: number
   previousClicks: number
-}[]) {
+}[], ctx?: SlackRouteCtx) {
   if (drops.length === 0) return
 
   const rows = drops.slice(0, 10).map(d =>
@@ -49,7 +73,7 @@ export async function sendRankingDropAlert(drops: {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `G2G SEO Tools · ${new Date().toLocaleDateString('en-GB')}` }]
     }
-  ], `📉 ${drops.length} pages lost >15% clicks WoW`)
+  ], `📉 ${drops.length} pages lost >15% clicks WoW`, ctx)
 }
 
 export async function sendIndexCoverageAlert(data: {
@@ -57,7 +81,7 @@ export async function sendIndexCoverageAlert(data: {
   previousIndexed: number
   errors: number
   previousErrors: number
-}) {
+}, ctx?: SlackRouteCtx) {
   const indexDrop = data.previousIndexed - data.indexedPages
   const newErrors = data.errors - data.previousErrors
 
@@ -80,7 +104,7 @@ export async function sendIndexCoverageAlert(data: {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `G2G SEO Tools · ${new Date().toLocaleDateString('en-GB')}` }]
     }
-  ], `🔍 GSC Index Coverage issue detected`)
+  ], `🔍 GSC Index Coverage issue detected`, ctx)
 }
 
 export async function sendCWVAlert(degradations: {
@@ -88,7 +112,7 @@ export async function sendCWVAlert(degradations: {
   metric: string
   current: number
   previous: number
-}[]) {
+}[], ctx?: SlackRouteCtx) {
   if (degradations.length === 0) return
 
   const rows = degradations.map(d =>
@@ -108,5 +132,5 @@ export async function sendCWVAlert(degradations: {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `G2G SEO Tools · ${new Date().toLocaleDateString('en-GB')}` }]
     }
-  ], `⚡ Core Web Vitals degradation detected`)
+  ], `⚡ Core Web Vitals degradation detected`, ctx)
 }

@@ -11,6 +11,7 @@ import {
   type CmsBundle,
   type UploadResult,
 } from './cms-api'
+import { resolveSlackWebhook } from '@/lib/slack/routing'
 
 // Currently only G2G product CMS exists. If OffGamers ever ships a similar
 // admin we'd plumb site_slug down from the queue row, but today it's hardcoded.
@@ -254,7 +255,9 @@ async function maybeFireJwtExpiredAlert(
 
     if (recent) return  // we already shouted within the throttle window
 
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL
+    // Sprint MULTI.3 — cms_alerts route per (owner × site). The helper
+    // already falls back to SLACK_WEBHOOK_URL env when no config row exists.
+    const webhookUrl = await resolveSlackWebhook(db, ownerId, 'cms_alerts', { siteSlug })
     if (!webhookUrl) return
 
     const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/+$/, '')

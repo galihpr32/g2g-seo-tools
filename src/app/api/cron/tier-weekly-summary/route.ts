@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
 import { TIER_MARKETS, type TierMarket } from '@/lib/ranking-tracker'
+import { resolveSlackWebhook } from '@/lib/slack/routing'
 
 export const maxDuration = 120
 
@@ -157,9 +158,25 @@ export async function GET(req: Request) {
   }
 
   // ── 5. Format Slack message ───────────────────────────────────────────────
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL
+  // Sprint MULTI.3 — resolve via slack_routing_config. Cron runs across all
+  // owners but composes ONE consolidated message; route by first owner found
+  // who has a tier_summary mapping (most likely the SEO lead). Env fallback
+  // applies when no config exists, preserving current behaviour.
+  const { data: firstOwner } = await db
+    .from('slack_routing_config')
+    .select('owner_user_id')
+    .eq('notification_type', 'tier_summary')
+    .eq('enabled', true)
+    .limit(1)
+    .maybeSingle()
+  const ownerForRoute = firstOwner?.owner_user_id
+    ?? (await db.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
+    ?? null
+  const webhookUrl = ownerForRoute
+    ? await resolveSlackWebhook(db, ownerForRoute, 'tier_summary')
+    : process.env.SLACK_WEBHOOK_URL ?? null
   if (!webhookUrl) {
-    return NextResponse.json({ ok: true, message: 'SLACK_WEBHOOK_URL not set — summary computed but not delivered.', grid })
+    return NextResponse.json({ ok: true, message: 'No Slack webhook resolved (config + env both empty) — summary computed but not delivered.', grid })
   }
 
   // Build block sections per brand

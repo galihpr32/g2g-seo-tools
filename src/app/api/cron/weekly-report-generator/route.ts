@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
 import { buildWeeklyReportPptx, type WeeklyReportData } from '@/lib/reports/pptx-builder-weekly'
 import { uploadFileToDrive } from '@/lib/google/drive'
+import { resolveSlackWebhook } from '@/lib/slack/routing'
 
 export const maxDuration = 300
 
@@ -167,9 +168,10 @@ async function deliverWeeklyPptx(db: any, ownerId: string, siteSlug: string, rep
   }
 
   // ── Post to Slack ──────────────────────────────────────────────────────
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL
+  // Sprint MULTI.3 — routed per-owner for weekly_report
+  const webhookUrl = await resolveSlackWebhook(db, ownerId, 'weekly_report', { siteSlug })
   if (!webhookUrl) {
-    notes.push('SLACK_WEBHOOK_URL not set — skipping Slack delivery')
+    notes.push('No Slack webhook resolved (config + env both empty) — skipping Slack delivery')
     return result
   }
 

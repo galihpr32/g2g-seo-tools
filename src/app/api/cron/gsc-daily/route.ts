@@ -184,9 +184,12 @@ export async function GET(request: Request) {
         }
 
         // Send Slack alert only for alertable pages (respects URL pre-filter)
+        // Sprint MULTI.3 — pass routing context so config-mapped channels win.
         const alertableDrops = drops.filter(d => isAlertablePage(d.page))
         if (alertableDrops.length && (notifSettings?.slack_clicks_alerts ?? false)) {
-          await sendRankingDropAlert(alertableDrops)
+          await sendRankingDropAlert(alertableDrops, {
+            db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
+          })
           await supabase.from('alert_log').insert({
             alert_type: 'ranking_drop',
             site_url: siteUrl,
@@ -226,7 +229,7 @@ export async function GET(request: Request) {
           previousIndexed: prevIndexed,
           errors: 0,
           previousErrors: prevErrors,
-        })
+        }, { db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug })
       }
 
       // ── Task 3: Core Web Vitals ─────────────────────────────────────────
@@ -262,7 +265,9 @@ export async function GET(request: Request) {
             degradations.push({ origin, metric: 'INP', current: cwv.inp.poor, previous: prevCWV.inp_poor })
 
           if (degradations.length && (notifSettings?.slack_cwv_alerts ?? false)) {
-            await sendCWVAlert(degradations)
+            await sendCWVAlert(degradations, {
+              db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
+            })
             await supabase.from('alert_log').insert({
               alert_type: 'cwv',
               site_url: siteUrl,

@@ -152,12 +152,26 @@ export async function GET(req: Request) {
   }
 
   // ── 4. Build + send single consolidated Slack message ────────────────────
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL
+  // Sprint MULTI.3 — route via slack_routing_config under 'daily_alerts'
+  const { resolveSlackWebhook } = await import('@/lib/slack/routing')
+  const { data: firstRouteOwner } = await db
+    .from('slack_routing_config')
+    .select('owner_user_id')
+    .eq('notification_type', 'daily_alerts')
+    .eq('enabled', true)
+    .limit(1)
+    .maybeSingle()
+  const ownerForRoute = firstRouteOwner?.owner_user_id
+    ?? (await db.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
+    ?? null
+  const webhookUrl = ownerForRoute
+    ? await resolveSlackWebhook(db, ownerForRoute, 'daily_alerts')
+    : process.env.SLACK_WEBHOOK_URL ?? null
   if (!webhookUrl) {
     return NextResponse.json({
       ok: true,
       alerts: alerts.length,
-      message: 'SLACK_WEBHOOK_URL not set — alerts computed but not delivered.',
+      message: 'No Slack webhook resolved (config + env both empty) — alerts computed but not delivered.',
       preview: alerts.slice(0, 10),
     })
   }

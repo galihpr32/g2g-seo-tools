@@ -665,6 +665,18 @@ export default function SettingsPage() {
             <span className="text-gray-500 group-hover:text-cyan-400 transition">→</span>
           </a>
 
+          {/* Slack routing — multi-channel webhooks per notification type */}
+          <a
+            href="/settings/slack-routing"
+            className="bg-gray-900 border border-gray-800 hover:border-pink-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">🔀 Slack Channel Routing</p>
+              <p className="text-gray-400 text-sm mt-0.5">Send each notification type (daily alerts, weekly reports, agent digests, CMS alerts, bug reports) to a different Slack channel. Falls back to <code className="text-pink-300">SLACK_WEBHOOK_URL</code> env when unmapped.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-pink-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>

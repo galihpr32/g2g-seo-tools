@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
 import { computeAgentMetrics } from '@/lib/reports/agent-metrics'
+import { resolveSlackWebhook } from '@/lib/slack/routing'
 
 export const maxDuration = 60
 
@@ -19,9 +20,6 @@ export async function GET(req: Request) {
   if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL
-  if (!webhookUrl) return NextResponse.json({ error: 'SLACK_WEBHOOK_URL not set' }, { status: 500 })
 
   const db = createSupabase(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -111,6 +109,12 @@ export async function GET(req: Request) {
           } : null,
         ].filter(Boolean)
 
+        // Sprint MULTI.3 — routed per-owner via slack_routing_config
+        const webhookUrl = await resolveSlackWebhook(db, ownerId, 'agent_performance', { siteSlug: site.slug })
+        if (!webhookUrl) {
+          errors.push(`${ownerId}/${site.slug}: no webhook resolved (config + env both empty)`)
+          continue
+        }
         const slackRes = await fetch(webhookUrl, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
