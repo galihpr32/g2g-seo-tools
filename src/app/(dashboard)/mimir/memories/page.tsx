@@ -132,12 +132,15 @@ export default function MimirMemoriesPage() {
             Auto-extracted from conversations and manually curated here.
           </p>
         </div>
-        <button
-          onClick={() => setAddOpen(o => !o)}
-          className="px-3 py-2 bg-purple-700 hover:bg-purple-600 text-white text-sm font-medium rounded-lg transition"
-        >
-          {addOpen ? 'Cancel' : '+ Add memory'}
-        </button>
+        <div className="flex items-center gap-2">
+          <SeedButton onSeeded={() => setRefreshTick(t => t + 1)} />
+          <button
+            onClick={() => setAddOpen(o => !o)}
+            className="px-3 py-2 bg-purple-700 hover:bg-purple-600 text-white text-sm font-medium rounded-lg transition"
+          >
+            {addOpen ? 'Cancel' : '+ Add memory'}
+          </button>
+        </div>
       </div>
 
       {/* Category KPIs */}
@@ -293,6 +296,51 @@ function MemoryCard({ m, onPatch, onDelete }: { m: Memory; onPatch: (p: Partial<
           <button onClick={onDelete} className="hover:text-red-300">Delete</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Auto-seed button ──────────────────────────────────────────────────────
+// Triggers a backend scan of tier products, KB rules, brief outcomes, and
+// active campaigns — turning them into Mimir memories so the assistant has
+// context from day one without waiting for the user to chat about each one.
+function SeedButton({ onSeeded }: { onSeeded: () => void }) {
+  const [busy,   setBusy]   = useState(false)
+  const [result, setResult] = useState<{ inserted: { tier: number; kb: number; outcomes: number; campaigns: number }; skipped: number; errors: string[] } | null>(null)
+
+  async function run() {
+    if (busy) return
+    if (!confirm('Scan tier products, knowledge base, and brief outcomes for the active brand and seed Mimir memory with them?\n\nIdempotent — re-runs skip already-known facts. Useful right after onboarding new tier products or KB rules.')) return
+    setBusy(true)
+    setResult(null)
+    try {
+      const res = await fetch('/api/mimir/memories/seed', { method: 'POST' })
+      const data = await res.json()
+      setResult(data)
+      onSeeded()
+    } catch (e) {
+      setResult({ inserted: { tier: 0, kb: 0, outcomes: 0, campaigns: 0 }, skipped: 0, errors: [e instanceof Error ? e.message : String(e)] })
+    }
+    setBusy(false)
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={run}
+        disabled={busy}
+        title="Scan tier products + KB + brief outcomes → seed Mimir memory automatically. Idempotent."
+        className="px-3 py-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
+      >
+        {busy ? '⏳ Seeding…' : '🌱 Auto-seed from workspace'}
+      </button>
+      {result && (
+        <span className="text-xs text-gray-300 max-w-xs">
+          ✅ Added: T{result.inserted.tier} · KB{result.inserted.kb} · O{result.inserted.outcomes} · C{result.inserted.campaigns}
+          {result.skipped > 0 && ` · skip ${result.skipped}`}
+          {result.errors.length > 0 && <span className="text-red-300"> · {result.errors.length} err</span>}
+        </span>
+      )}
     </div>
   )
 }

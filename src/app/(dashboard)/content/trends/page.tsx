@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import OdinScoringPanel from '@/components/agents/OdinScoringPanel'
+import ExportToSheetButton from '@/components/news-export/ExportToSheetButton'
 
 function addToMapUrl(keyword: string, volume?: number) {
   const params = new URLSearchParams({ add: keyword })
@@ -643,6 +644,7 @@ export default function GameTrendsPage() {
           >
             🔄 Refresh
           </button>
+          <ExportToSheetButton kind="trends" />
           <button
             onClick={() => router.push('/content/news-signals')}
             title="Bifrost — gaming news listener (RSS + FireCrawl deep dive)"

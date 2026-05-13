@@ -641,6 +641,18 @@ export default function SettingsPage() {
             <span className="text-gray-500 group-hover:text-purple-400 transition">→</span>
           </a>
 
+          {/* News & Trends Export — shareable Google Sheet for other divisions */}
+          <a
+            href="/settings/news-export"
+            className="bg-gray-900 border border-gray-800 hover:border-emerald-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">📤 News & Trends Export</p>
+              <p className="text-gray-400 text-sm mt-0.5">Configure a Google Sheet to receive News Signals + Game Trends snapshots. Auto-pushed every Monday morning, plus manual trigger. Hand off to other divisions cleanly.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-emerald-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>

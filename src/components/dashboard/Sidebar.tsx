@@ -18,6 +18,8 @@ const navItems = [
       { label: 'Command Center',  href: '/command-center',                 icon: '🤖' },
       { label: 'Action Items',    href: '/gsc/action-items',               icon: '✅' },
       { label: 'Experiments',     href: '/experiments',                    icon: '🧪' },
+      { label: 'Mimir Memory',    href: '/mimir/memories',                 icon: '🧠' },
+      { label: 'Off-Page Pipeline', href: '/command-center/off-page',      icon: '🔗' },
       { label: 'Notifications',   href: '/notifications',                  icon: '🔔' },
       { label: 'Feedback',        href: '/feedback',                       icon: '🐛' },
     ],

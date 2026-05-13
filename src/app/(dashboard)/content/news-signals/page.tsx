@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
+import ExportToSheetButton from '@/components/news-export/ExportToSheetButton'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 interface NewsSource {
@@ -314,6 +315,12 @@ export default function NewsSignalsPage() {
             >
               {rematchLoading ? '⏳ Re-matching…' : '🔁 Re-match KB'}
             </button>
+            <ExportToSheetButton kind="news" />
+            <a
+              href="/settings/news-export"
+              title="Configure the target Google Sheet"
+              className="text-[10px] text-gray-500 hover:text-emerald-300 px-2"
+            >⚙ Sheet config</a>
             <span className="text-[10px] text-gray-600 ml-auto">
               ⓘ KB-matched = game name overlaps with your Knowledge Base categories. Toggles off to surface new candidates.
             </span>
