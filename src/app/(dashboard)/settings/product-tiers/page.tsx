@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import { TIER_CATEGORY_PRESETS } from '@/lib/product-tiers'
+import CatalogPicker from '@/components/g2g/CatalogPicker'
+import BulkFromCatalogModal from '@/components/g2g/BulkFromCatalogModal'
 
 /**
  * /settings/product-tiers
@@ -63,6 +65,9 @@ export default function ProductTiersPage() {
   const [csvReplace, setCsvReplace] = useState(false)
   const [csvBusy,  setCsvBusy]    = useState(false)
   const [csvResult, setCsvResult] = useState<{ inserted: number; updated: number; errors: { row: number; reason: string }[] } | null>(null)
+
+  // Bulk-from-catalog modal state
+  const [bulkCatalogOpen, setBulkCatalogOpen] = useState(false)
 
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -253,6 +258,12 @@ export default function ProductTiersPage() {
         >
           📥 Bulk CSV
         </button>
+        <button
+          onClick={() => setBulkCatalogOpen(true)}
+          className="px-3 py-2 bg-purple-700 hover:bg-purple-600 text-white text-sm rounded-lg transition"
+        >
+          📚 Bulk from Catalog
+        </button>
       </div>
 
       {/* Grouped table — one section per category. Tier badges still shown
@@ -338,6 +349,22 @@ export default function ProductTiersPage() {
                   ))}
                 </div>
               </div>
+              {/* G2G catalog typeahead — fills product_name + category + relation_id in one click */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  🔍 Pick from G2G Catalog <span className="text-gray-600">(auto-fills name + category + Relation ID)</span>
+                </label>
+                <CatalogPicker
+                  placeholder="Type brand or category, e.g. 'Genshin' or 'Top Up'"
+                  onPick={row => setEditing(prev => prev ? {
+                    ...prev,
+                    product_name: row.brand_name,
+                    category:     row.service_name,
+                    relation_id:  row.relation_id,
+                    url:          prev.url ?? null,
+                  } : prev)}
+                />
+              </div>
               <Field label="Product Name *" value={editing.product_name ?? ''}
                      onChange={v => setEditing({ ...editing, product_name: v })}
                      placeholder="e.g. Albion Online Global Account" />
@@ -376,6 +403,13 @@ export default function ProductTiersPage() {
           </div>
         </div>
       )}
+
+      {/* Bulk-from-catalog modal (canonical CMS catalog) */}
+      <BulkFromCatalogModal
+        open={bulkCatalogOpen}
+        onClose={() => setBulkCatalogOpen(false)}
+        onApplied={() => { void fetchList() }}
+      />
 
       {/* CSV import modal */}
       {csvOpen && (

@@ -102,6 +102,29 @@ export async function attemptCmsUpload(
     }
     const id = bundleFromRow(product, 'id')  // may be null when translation failed
 
+    // ── 2b. Hydrate brand_id + service_id from canonical catalog ───────────
+    // If the queue row's g2g_brand_id/g2g_service_id is missing but the
+    // canonical catalog (g2g_products) has them, copy them in. This skips the
+    // discovery GET on the very first upload after the CSV import landed.
+    let cachedBrandId   = product.g2g_brand_id
+    let cachedServiceId = product.g2g_service_id
+    if (!cachedBrandId || !cachedServiceId) {
+      const { data: catalogRow } = await db
+        .from('g2g_products')
+        .select('brand_id, service_id, is_active')
+        .eq('relation_id', product.relation_id)
+        .maybeSingle()
+      if (catalogRow?.brand_id && catalogRow?.service_id) {
+        cachedBrandId   = catalogRow.brand_id
+        cachedServiceId = catalogRow.service_id
+        // Persist immediately so the next attempt skips the lookup entirely.
+        await markQueueState(db, ownerId, product.relation_id, {
+          g2g_brand_id:   cachedBrandId,
+          g2g_service_id: cachedServiceId,
+        })
+      }
+    }
+
     // ── 3. Mark row as uploading (best-effort optimistic lock) ─────────────
     await markQueueState(db, ownerId, product.relation_id, {
       cms_upload_status: 'uploading',
@@ -113,8 +136,8 @@ export async function attemptCmsUpload(
       relationId:        product.relation_id,
       en,
       id,
-      cached_brand_id:   product.g2g_brand_id,
-      cached_service_id: product.g2g_service_id,
+      cached_brand_id:   cachedBrandId,
+      cached_service_id: cachedServiceId,
     }, tokenRow.token)
 
     // ── 5. Persist outcome ─────────────────────────────────────────────────

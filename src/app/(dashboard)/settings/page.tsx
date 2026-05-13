@@ -629,6 +629,18 @@ export default function SettingsPage() {
             <span className="text-gray-500 group-hover:text-blue-400 transition">→</span>
           </a>
 
+          {/* G2G Product Catalog — canonical mirror of CMS catalog */}
+          <a
+            href="/settings/g2g-products"
+            className="bg-gray-900 border border-gray-800 hover:border-purple-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">📚 G2G Product Catalog</p>
+              <p className="text-gray-400 text-sm mt-0.5">Upload the latest CSV export from G2G admin (13k+ products). Powers CMS upload caching, tier admin autocomplete, sheet validation, and opportunity-to-product mapping.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-purple-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>

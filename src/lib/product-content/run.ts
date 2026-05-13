@@ -109,11 +109,30 @@ export async function runPendingForOwner(
     .gt('updated_at', cutoffIso)
   const lockedSet = new Set((lockedRows ?? []).map(r => r.relation_id))
 
+  // ── Catalog hydration: fetch canonical brand/category/IDs for the same
+  // relation_ids. We use catalog values whenever present (overriding what's
+  // in the sheet, which BDT may have typo'd). Soft-validate: if a relation_id
+  // is NOT in the catalog, we still process it but mark it for review.
+  const { data: catalogRows } = await db
+    .from('g2g_products')
+    .select('relation_id, brand_id, service_id, brand_name, service_name, is_active')
+    .in('relation_id', relIds)
+  const catalogMap = new Map<string, {
+    brand_id: string; service_id: string; brand_name: string; service_name: string; is_active: boolean
+  }>()
+  for (const r of catalogRows ?? []) {
+    catalogMap.set(r.relation_id, r as unknown as ReturnType<typeof catalogMap.get> extends infer V ? NonNullable<V> : never)
+  }
+
   const queue: QueueRow[] = []
   for (const row of candidates) {
     if (lockedSet.has(row.relationId)) continue
 
-    const url = `https://www.g2g.com/categories/${row.productName.toLowerCase().replace(/\s+/g, '-')}`
+    // Prefer canonical names so AI + writeback don't propagate BDT typos.
+    const catalog       = catalogMap.get(row.relationId) ?? null
+    const productName   = catalog?.brand_name   ?? row.productName
+    const categoryName  = catalog?.service_name ?? row.category
+    const url = `https://www.g2g.com/categories/${productName.toLowerCase().replace(/\s+/g, '-')}`
 
     const { data: existing } = await db
       .from('product_content_queue')
@@ -123,19 +142,23 @@ export async function runPendingForOwner(
       .maybeSingle()
 
     let qid: string
+    const baseFields = {
+      product_name:   productName,
+      category:       categoryName,
+      url,
+      sheet_row:      row.rowIndex,
+      request_date:   row.requestDate || null,
+      status:         'generating',
+      // Pre-hydrate so attemptCmsUpload skips its own catalog lookup.
+      g2g_brand_id:   catalog?.brand_id   ?? null,
+      g2g_service_id: catalog?.service_id ?? null,
+    }
+
     if (existing) {
       qid = existing.id
       await db
         .from('product_content_queue')
-        .update({
-          product_name: row.productName,
-          category:     row.category,
-          url,
-          sheet_row:    row.rowIndex,
-          request_date: row.requestDate || null,
-          status:       'generating',
-          updated_at:   new Date().toISOString(),
-        })
+        .update({ ...baseFields, updated_at: new Date().toISOString() })
         .eq('id', qid)
     } else {
       const { data: ins } = await db
@@ -143,12 +166,7 @@ export async function runPendingForOwner(
         .insert({
           owner_user_id: ownerId,
           relation_id:   row.relationId,
-          product_name:  row.productName,
-          category:      row.category,
-          url,
-          sheet_row:     row.rowIndex,
-          request_date:  row.requestDate || null,
-          status:        'generating',
+          ...baseFields,
         })
         .select('id')
         .single()
@@ -159,8 +177,8 @@ export async function runPendingForOwner(
       id:            qid,
       owner_user_id: ownerId,
       relation_id:   row.relationId,
-      product_name:  row.productName,
-      category:      row.category,
+      product_name:  productName,
+      category:      categoryName,
       request_date:  row.requestDate || null,
       sheet_row:     row.rowIndex,
     })

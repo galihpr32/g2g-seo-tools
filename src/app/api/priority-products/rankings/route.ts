@@ -55,6 +55,7 @@ interface ProductMeta {
   product_name: string
   category:     string | null
   url:          string | null
+  relation_id:  string | null
 }
 
 export async function GET(req: Request) {
@@ -70,6 +71,10 @@ export async function GET(req: Request) {
   const tier     = url.searchParams.get('tier')     ?? 'all'
   const market   = url.searchParams.get('market')   ?? 'all'
   const category = url.searchParams.get('category') ?? 'all'
+  // Canonical category filter (from g2g_products.service_name). Preferred
+  // over free-form `category` when the catalog has been imported, because
+  // it's stable across BDT typos / spelling variants.
+  const service  = url.searchParams.get('service')  ?? 'all'
   const range    = url.searchParams.get('range')    ?? '1w'
 
   const weeksBack = RANGE_WEEKS[range] ?? 1
@@ -77,19 +82,36 @@ export async function GET(req: Request) {
   // ── 1. Fetch tier products (filtered by tier + category) ───────────────────
   let productsQ = db
     .from('product_tiers')
-    .select('id, tier, product_name, category, url')
+    .select('id, tier, product_name, category, url, relation_id')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
   if (tier === '1') productsQ = productsQ.eq('tier', 1)
   if (tier === '2') productsQ = productsQ.eq('tier', 2)
   if (category !== 'all') productsQ = productsQ.eq('category', category)
 
-  const { data: productsRaw } = await productsQ
+  let { data: productsRaw } = await productsQ
+
+  // Apply canonical service filter via a second query against g2g_products.
+  if (service !== 'all' && productsRaw && productsRaw.length) {
+    const relIds = productsRaw.map(p => p.relation_id).filter(Boolean) as string[]
+    if (relIds.length === 0) {
+      productsRaw = []
+    } else {
+      const { data: catalogRows } = await db
+        .from('g2g_products')
+        .select('relation_id')
+        .eq('service_name', service)
+        .in('relation_id', relIds)
+      const okSet = new Set((catalogRows ?? []).map(r => r.relation_id))
+      productsRaw = productsRaw.filter(p => p.relation_id && okSet.has(p.relation_id))
+    }
+  }
+
   const products = (productsRaw ?? []) as ProductMeta[]
 
   if (products.length === 0) {
     return NextResponse.json({
-      filters: { tier, market, category, range },
+      filters: { tier, market, category, service, range },
       kpis: emptyKpis(),
       distribution: [],
       topMovers: { gainers: [], losers: [] },
@@ -334,7 +356,7 @@ export async function GET(req: Request) {
   allCategories.sort()
 
   return NextResponse.json({
-    filters: { tier, market, category, range },
+    filters: { tier, market, category, service, range },
     kpis,
     distribution,
     topMovers: { gainers, losers },

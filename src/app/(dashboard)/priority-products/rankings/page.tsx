@@ -112,8 +112,26 @@ export default function RankingsDashboardPage() {
   const [tier,     setTier]     = useState<'all' | '1' | '2'>('all')
   const [market,   setMarket]   = useState<string>('all')
   const [category, setCategory] = useState<string>('all')
+  // Canonical service_name filter (drawn from G2G catalog). Coexists with the
+  // free-form `category` filter — service is more reliable across BDT typos
+  // because it joins via relation_id to g2g_products.
+  const [service,  setService]  = useState<string>('all')
+  const [services, setServices] = useState<string[]>([])
   const [range,    setRange]    = useState<string>('1w')
   const [search,   setSearch]   = useState('')
+
+  // Load the 9 canonical service categories once
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/g2g-catalog/stats')
+        if (res.ok) {
+          const data = await res.json() as { by_service_name?: { service_name: string }[] }
+          setServices((data.by_service_name ?? []).map(r => r.service_name))
+        }
+      } catch { /* silent — falls back to "no canonical filter" */ }
+    })()
+  }, [])
 
   // Expanded row state — which products show their keyword × market leaderboard
   // inline. Lazy-loaded from /api/priority-products/[id] on first expand.
@@ -150,14 +168,14 @@ export default function RankingsDashboardPage() {
     let cancelled = false
     setLoading(true)
     setError(null)
-    const params = new URLSearchParams({ tier, market, category, range })
+    const params = new URLSearchParams({ tier, market, category, service, range })
     fetch(`/api/priority-products/rankings?${params.toString()}`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then((body: ApiBundle) => { if (!cancelled) setData(body) })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [tier, market, category, range, siteSlug])
+  }, [tier, market, category, service, range, siteSlug])
 
   const filteredProducts = useMemo(() => {
     if (!data) return []
@@ -203,10 +221,16 @@ export default function RankingsDashboardPage() {
           <option value="all">All markets</option>
           {TIER_MARKET_CODES.map(m => <option key={m} value={m}>{TIER_MARKETS[m as TierMarket].label}</option>)}
         </select>
-        <select value={category} onChange={e => setCategory(e.target.value)} className="bg-gray-900 border border-gray-800 rounded px-2 py-1 text-white">
+        <select value={category} onChange={e => setCategory(e.target.value)} className="bg-gray-900 border border-gray-800 rounded px-2 py-1 text-white" title="Free-form category from tier admin">
           <option value="all">All categories</option>
           {(data?.categories ?? []).map(c => <option key={c} value={c}>{c}</option>)}
         </select>
+        {services.length > 0 && (
+          <select value={service} onChange={e => setService(e.target.value)} className="bg-gray-900 border border-gray-800 rounded px-2 py-1 text-white" title="Canonical CMS category from G2G catalog">
+            <option value="all">All CMS categories</option>
+            {services.map(s => <option key={s} value={s}>📚 {s}</option>)}
+          </select>
+        )}
 
         <span className="text-gray-700 mx-1">·</span>
         <span className="text-gray-500">Range:</span>
