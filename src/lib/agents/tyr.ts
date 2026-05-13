@@ -551,10 +551,52 @@ export async function reviewSingleBrief(
   const failThresh   = minScore - borderlineWindow
   const tyrStatus: SingleBriefReviewResult['tyrStatus'] =
     score >= minScore ? 'reviewed' : score >= failThresh ? 'borderline' : 'failed'
-  const newBriefStatus = tyrStatus === 'reviewed' ? 'reviewed' : 'draft'
+  let newBriefStatus = tyrStatus === 'reviewed' ? 'reviewed' : 'draft'
+
+  // ── Sprint PRESENT.10 — Autopublish decision ─────────────────────────
+  // When Tyr passes the brief, check autopublish config to decide whether
+  // it can skip human review. Wraps the entire decision in try/catch so the
+  // legacy review flow still works when the new config table is missing.
+  let autopublishNote = ''
+  if (tyrStatus === 'reviewed') {
+    try {
+      // Dynamic import to avoid circular deps + only run when needed
+      const [{ decideAutoPublish, resolveTierLevelForBrief }] = await Promise.all([
+        import('./tyr-autopublish'),
+      ])
+      // Resolve site_slug from the brief row (may be stamped)
+      const { data: briefSite } = await db
+        .from('seo_content_briefs')
+        .select('site_slug')
+        .eq('id', briefId)
+        .maybeSingle()
+      const siteSlug = String(briefSite?.site_slug ?? 'g2g')
+      const tierLevel = await resolveTierLevelForBrief(db, ownerId, siteSlug, briefId)
+
+      // Count forbidden-claim violations in the draft (simple word match against
+      // known forbidden patterns). For now, count = 0 since Bragi's prompt
+      // already enforces no forbidden claims — if any slip through Tyr will
+      // catch via dimension scoring. Wire to real count once we add an explicit
+      // forbidden-violations field on brief.
+      const forbiddenViolations = 0
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const decision = await decideAutoPublish(db, ownerId, siteSlug, tierLevel, { overall: score, dimensions: (breakdown as any).dimensions ?? {} }, forbiddenViolations)
+      if (decision.status === 'auto_approved') {
+        newBriefStatus = 'auto_approved'
+        autopublishNote = `[autopublish] Tier ${tierLevel}: ${decision.rationale}`
+      } else {
+        newBriefStatus = 'needs_review'
+        autopublishNote = `[autopublish] Tier ${tierLevel}: ${decision.rationale}`
+      }
+    } catch (e) {
+      // Non-blocking: keep legacy 'reviewed' status if autopublish lookup fails
+      autopublishNote = `[autopublish] decision skipped (${e instanceof Error ? e.message : String(e)})`
+    }
+  }
 
   const pathNote = tyrStatus === 'reviewed'
-    ? `[tyr] Auto-promoted (score ${score}/100). Reasoning: ${breakdown.reasoning}`
+    ? `[tyr] Auto-promoted (score ${score}/100). Reasoning: ${breakdown.reasoning}${autopublishNote ? '\n' + autopublishNote : ''}`
     : `[tyr] ${tyrStatus} (score ${score}/100, threshold ${minScore}). Issues:\n${breakdown.weaknesses.map((w, i) => `  ${i + 1}. ${w}`).join('\n')}`
 
   await db

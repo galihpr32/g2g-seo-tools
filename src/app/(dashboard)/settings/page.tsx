@@ -653,6 +653,18 @@ export default function SettingsPage() {
             <span className="text-gray-500 group-hover:text-emerald-400 transition">→</span>
           </a>
 
+          {/* Tyr Auto-Publish — quality thresholds per tier */}
+          <a
+            href="/settings/tyr-autopublish"
+            className="bg-gray-900 border border-gray-800 hover:border-cyan-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">⚖ Tyr Auto-Publish Rules</p>
+              <p className="text-gray-400 text-sm mt-0.5">Per-tier thresholds that decide if a brief skips human review and goes straight to <code className="text-cyan-300">auto_approved</code>. Removes the manual review bottleneck for non-top products.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-cyan-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>

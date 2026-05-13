@@ -1,0 +1,31 @@
+name: Weekly AI Agent Performance Digest
+
+on:
+  schedule:
+    # Monday 02:00 UTC (= 09:00 WIB) — fires AFTER weekly report (01:00 UTC) +
+    # news export (01:00 UTC) so all three land sequentially Monday morning.
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: agent-performance-weekly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/agent-performance-weekly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "Missing APP_URL or CRON_SECRET secret"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 240 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/agent-performance-weekly"
