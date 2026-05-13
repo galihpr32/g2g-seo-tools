@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import HermodFindingsPanel from '@/components/agents/HermodFindingsPanel'
+import OutreachFunnel from '@/components/outreach/OutreachFunnel'
+import LogReplyButton from '@/components/outreach/LogReplyButton'
 
 // ── Opener Modal ──────────────────────────────────────────────────────────────
 function OpenerModal({ prospect, onClose }: {
@@ -9,6 +11,7 @@ function OpenerModal({ prospect, onClose }: {
   onClose:  () => void
 }) {
   const [tone,    setTone]    = useState<'professional' | 'casual' | 'direct'>('professional')
+  const [mode,    setMode]    = useState<'opener' | 'full'>('opener')
   const [loading, setLoading] = useState(false)
   const [subject, setSubject] = useState('')
   const [opener,  setOpener]  = useState('')
@@ -24,12 +27,13 @@ function OpenerModal({ prospect, onClose }: {
       const res  = await fetch(`/api/outreach/prospects/${prospect.id}/generate-opener`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ tone }),
+        body:    JSON.stringify({ tone, mode }),
       })
-      const data = await res.json() as { ok: boolean; subject?: string; opener?: string; error?: string }
+      const data = await res.json() as { ok: boolean; subject?: string; opener?: string; body?: string; error?: string }
       if (!data.ok) throw new Error(data.error ?? 'Generation failed')
       setSubject(data.subject ?? '')
-      setOpener(data.opener  ?? '')
+      // For full mode, response uses `body` instead of `opener` — store both in `opener` state for display
+      setOpener((mode === 'full' ? data.body : data.opener) ?? '')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed')
     } finally {
@@ -67,21 +71,39 @@ function OpenerModal({ prospect, onClose }: {
             {prospect.source_keyword && <p>🔑 Keyword: "{prospect.source_keyword}"</p>}
           </div>
 
-          {/* Tone selector */}
-          <div>
-            <label className="block text-xs text-gray-400 mb-2">Tone</label>
-            <div className="flex gap-2">
-              {(['professional', 'casual', 'direct'] as const).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setTone(t)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                    tone === t ? 'bg-red-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  {t === 'professional' ? '🤝' : t === 'casual' ? '😊' : '⚡'} {t}
-                </button>
-              ))}
+          {/* Mode + tone selectors */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">Mode</label>
+              <div className="flex gap-2">
+                {(['opener', 'full'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                      mode === m ? 'bg-purple-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {m === 'opener' ? '✂️ Opener only' : '📧 Full email'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-2">Tone</label>
+              <div className="flex gap-2">
+                {(['professional', 'casual', 'direct'] as const).map(t => (
+                  <button
+                    key={t}
+                    onClick={() => setTone(t)}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                      tone === t ? 'bg-red-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {t === 'professional' ? '🤝' : t === 'casual' ? '😊' : '⚡'} {t}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -91,7 +113,9 @@ function OpenerModal({ prospect, onClose }: {
             disabled={loading}
             className="w-full py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center justify-center gap-2"
           >
-            {loading ? <><span className="animate-spin">⟳</span> Bragi is writing…</> : '✨ Generate Opener'}
+            {loading
+              ? <><span className="animate-spin">⟳</span> Bragi is writing…</>
+              : mode === 'full' ? '✨ Generate Full Email' : '✨ Generate Opener'}
           </button>
 
           {error && <p className="text-sm text-red-400">{error}</p>}
@@ -113,10 +137,12 @@ function OpenerModal({ prospect, onClose }: {
                 <p className="text-white text-sm">{subject}</p>
               </div>
 
-              {/* Opener */}
+              {/* Opener / Full body */}
               <div className="bg-gray-800 border border-gray-700 rounded-lg p-3">
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Email opener</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
+                    {mode === 'full' ? 'Full email body' : 'Email opener'}
+                  </label>
                   <button
                     onClick={() => copy('opener')}
                     className="text-[10px] text-gray-500 hover:text-gray-300 transition"
@@ -132,11 +158,11 @@ function OpenerModal({ prospect, onClose }: {
                 onClick={() => copy('both')}
                 className="w-full py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-xs rounded-lg transition"
               >
-                {copied === 'both' ? '✓ Copied!' : '⎘ Copy subject + opener'}
+                {copied === 'both' ? '✓ Copied!' : `⎘ Copy subject + ${mode === 'full' ? 'body' : 'opener'}`}
               </button>
 
               <p className="text-[10px] text-gray-600 text-center">
-                Bragi generated this opener. Review before sending — personalise the greeting and add your name.
+                Bragi generated this {mode === 'full' ? 'email' : 'opener'}. Review before sending — {mode === 'full' ? 'fill placeholders, double-check facts' : 'personalise the greeting and add your name'}.
               </p>
             </div>
           )}
@@ -288,12 +314,38 @@ interface Candidate {
   domain:          string
   rankingUrl:      string
   position:        number
+  // Hermod v2 score fields
+  overallScore:    number
+  nicheScore:      number
+  qualityScore:    number
+  outreachScore:   number
+  audienceScore:   number
+  trustScore:      number
+  outreachAngle:   string
+  hasWriteForUs:   boolean
+  contactEmail:    string | null
+  notes:           string
+  cached:          boolean
+  evaluatedAt:     string
+  belowThreshold:  boolean
+  // Legacy fields kept for backward compat
   organicTraffic:  number
   organicKeywords: number
   authorityScore:  number
   inTracker:       boolean
   trackerStatus:   string | null
 }
+
+// Map UI region → DataForSEO location_code + language_code
+const REGION_MAP: Record<string, { locationCode: number; languageCode: string; flag: string; label: string }> = {
+  us: { locationCode: 2840, languageCode: 'en', flag: '🇺🇸', label: 'US' },
+  uk: { locationCode: 2826, languageCode: 'en', flag: '🇬🇧', label: 'UK' },
+  au: { locationCode: 2036, languageCode: 'en', flag: '🇦🇺', label: 'AU' },
+  sg: { locationCode: 2702, languageCode: 'en', flag: '🇸🇬', label: 'SG' },
+  id: { locationCode: 2360, languageCode: 'id', flag: '🇮🇩', label: 'ID' },
+}
+
+type Threshold = 'strict' | 'balanced' | 'loose'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const STATUSES: Status[] = ['prospecting', 'contacted', 'negotiating', 'accepted', 'published', 'rejected']
@@ -445,22 +497,35 @@ function EditModal({ prospect, onClose, onSaved }: {
 }
 
 // ── Discovery Panel ───────────────────────────────────────────────────────────
-function DiscoveryPanel({ onAddToTracker }: { onAddToTracker: (c: Candidate, kw: string) => void }) {
-  const [keyword,    setKeyword]    = useState('')
-  const [database,   setDatabase]   = useState('us')
-  const [candidates, setCandidates] = useState<Candidate[]>([])
-  const [loading,    setLoading]    = useState(false)
-  const [error,      setError]      = useState('')
-  const [searched,   setSearched]   = useState('')
-  const [adding,     setAdding]     = useState<Set<string>>(new Set())
+function DiscoveryPanel({ onAddToTracker }: { onAddToTracker: (c: Candidate, kw: string, briefMode: boolean) => void }) {
+  const [keyword,        setKeyword]        = useState('')
+  const [region,         setRegion]         = useState<keyof typeof REGION_MAP>('us')
+  const [threshold,      setThreshold]      = useState<Threshold>('balanced')
+  const [includeBelow,   setIncludeBelow]   = useState(false)
+  const [briefMode,      setBriefMode]      = useState(false)
+  const [candidates,     setCandidates]     = useState<Candidate[]>([])
+  const [meta,           setMeta]           = useState<{ autoSkipped: number; belowThreshold: number; thresholdValue: number } | null>(null)
+  const [loading,        setLoading]        = useState(false)
+  const [error,          setError]          = useState('')
+  const [searched,       setSearched]       = useState('')
+  const [adding,         setAdding]         = useState<Set<string>>(new Set())
 
   async function handleSearch() {
     if (!keyword.trim()) return
     setLoading(true)
     setError('')
     setCandidates([])
+    setMeta(null)
     try {
-      const res = await fetch(`/api/outreach/discover?keyword=${encodeURIComponent(keyword)}&database=${database}&limit=25`)
+      const r = REGION_MAP[region]
+      const params = new URLSearchParams({
+        keyword,
+        threshold,
+        locationCode: String(r.locationCode),
+        languageCode: r.languageCode,
+        ...(includeBelow ? { includeBelow: '1' } : {}),
+      })
+      const res = await fetch(`/api/outreach/discover?${params.toString()}`)
       if (!res.ok) {
         const d = await res.json()
         setError(d.error ?? 'Failed to fetch')
@@ -468,6 +533,11 @@ function DiscoveryPanel({ onAddToTracker }: { onAddToTracker: (c: Candidate, kw:
       }
       const data = await res.json()
       setCandidates(data.candidates ?? [])
+      setMeta({
+        autoSkipped:    data.autoSkipped    ?? 0,
+        belowThreshold: data.belowThreshold ?? 0,
+        thresholdValue: data.thresholdValue ?? 0,
+      })
       setSearched(keyword)
     } catch (e) {
       setError(String(e))
@@ -478,16 +548,16 @@ function DiscoveryPanel({ onAddToTracker }: { onAddToTracker: (c: Candidate, kw:
 
   async function handleAdd(c: Candidate) {
     setAdding(prev => new Set(prev).add(c.domain))
-    await onAddToTracker(c, searched)
+    await onAddToTracker(c, searched, briefMode)
     setAdding(prev => { const n = new Set(prev); n.delete(c.domain); return n })
     // Refresh: mark as inTracker
-    setCandidates(prev => prev.map(x => x.domain === c.domain ? { ...x, inTracker: true, trackerStatus: 'prospecting' } : x))
+    setCandidates(prev => prev.map(x => x.domain === c.domain ? { ...x, inTracker: true, trackerStatus: briefMode ? 'pending_approval' : 'prospecting' } : x))
   }
 
   return (
     <div>
       {/* Search bar */}
-      <div className="flex gap-3 mb-5">
+      <div className="flex gap-3 mb-3">
         <input
           type="text"
           value={keyword}
@@ -497,88 +567,153 @@ function DiscoveryPanel({ onAddToTracker }: { onAddToTracker: (c: Candidate, kw:
           className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-red-500"
         />
         <select
-          value={database}
-          onChange={e => setDatabase(e.target.value)}
+          value={region}
+          onChange={e => setRegion(e.target.value as keyof typeof REGION_MAP)}
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
         >
-          <option value="us">🇺🇸 US</option>
-          <option value="uk">🇬🇧 UK</option>
-          <option value="au">🇦🇺 AU</option>
-          <option value="sg">🇸🇬 SG</option>
+          {Object.entries(REGION_MAP).map(([k, v]) => (
+            <option key={k} value={k}>{v.flag} {v.label}</option>
+          ))}
+        </select>
+        <select
+          value={threshold}
+          onChange={e => setThreshold(e.target.value as Threshold)}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
+          title="Score threshold for filtering candidates"
+        >
+          <option value="strict">⚙️ Strict (≥7.5)</option>
+          <option value="balanced">⚙️ Balanced (≥6.5)</option>
+          <option value="loose">⚙️ Loose (≥5.5)</option>
         </select>
         <button
           onClick={handleSearch}
           disabled={loading || !keyword.trim()}
           className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg flex items-center gap-2"
         >
-          {loading ? <span className="animate-spin">⟳</span> : '🔍'} {loading ? 'Searching…' : 'Discover'}
+          {loading ? <span className="animate-spin">⟳</span> : '🔍'} {loading ? 'Evaluating…' : 'Discover'}
         </button>
+      </div>
+
+      {/* Toggles row */}
+      <div className="flex items-center gap-4 mb-5 text-xs">
+        <label className="inline-flex items-center gap-1.5 text-gray-400 cursor-pointer hover:text-gray-200">
+          <input
+            type="checkbox"
+            checked={includeBelow}
+            onChange={e => setIncludeBelow(e.target.checked)}
+            className="accent-red-600"
+          />
+          Show below-threshold candidates
+        </label>
+        <label className="inline-flex items-center gap-1.5 text-gray-400 cursor-pointer hover:text-gray-200" title="Brief mode queues prospects as pending_approval — they wait until you click Send instead of auto-running through the pipeline.">
+          <input
+            type="checkbox"
+            checked={briefMode}
+            onChange={e => setBriefMode(e.target.checked)}
+            className="accent-yellow-600"
+          />
+          📝 Brief mode (queue as pending_approval)
+        </label>
+        <p className="text-gray-600">
+          Powered by DataForSEO SERP + FireCrawl + Haiku — replaces SEMrush. Cached 14d per domain.
+        </p>
       </div>
 
       {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
 
+      {meta && (
+        <p className="text-xs text-gray-500 mb-3">
+          Found <strong className="text-gray-300">{candidates.length}</strong> qualifying candidate{candidates.length !== 1 ? 's' : ''} for <strong className="text-yellow-400">&quot;{searched}&quot;</strong> at <strong className="text-gray-300">{threshold}</strong> threshold (≥{meta.thresholdValue}).
+          {meta.autoSkipped    > 0 && <> Auto-skipped <strong className="text-gray-400">{meta.autoSkipped}</strong> social/marketplace domain{meta.autoSkipped !== 1 ? 's' : ''}.</>}
+          {meta.belowThreshold > 0 && !includeBelow && <> {meta.belowThreshold} below-threshold hidden — toggle &quot;show below&quot; to see all.</>}
+        </p>
+      )}
+
       {candidates.length > 0 && (
-        <>
-          <p className="text-xs text-gray-500 mb-3">
-            Found <strong className="text-gray-300">{candidates.length}</strong> domains ranking for <strong className="text-yellow-400">&quot;{searched}&quot;</strong>. Top 10 enriched with authority score.
-          </p>
-          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">#</th>
-                  <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Domain</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">AS</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Traffic</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Keywords</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-gray-500"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {candidates.map((c, i) => (
-                  <tr key={c.domain} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                    <td className="px-3 py-2.5 text-gray-500 text-xs">{i + 1}</td>
-                    <td className="px-3 py-2.5">
-                      <a href={`https://${c.domain}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline text-sm">
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800">
+                <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">#</th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Domain</th>
+                <th className="px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-gray-500" title="Overall weighted score (0-10)">Score</th>
+                <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">Outreach Angle</th>
+                <th className="px-3 py-2.5 text-center text-xs font-semibold uppercase tracking-wider text-gray-500">Signals</th>
+                <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-gray-500"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((c, i) => {
+                const scoreColor = c.overallScore >= 7.5 ? 'text-emerald-400' : c.overallScore >= 6.5 ? 'text-green-400' : c.overallScore >= 5.5 ? 'text-yellow-400' : 'text-gray-500'
+                const scoreBg    = c.overallScore >= 7.5 ? 'bg-emerald-900/30 border-emerald-700/50' : c.overallScore >= 6.5 ? 'bg-green-900/30 border-green-800/50' : c.overallScore >= 5.5 ? 'bg-yellow-900/20 border-yellow-800/40' : 'bg-gray-800/50 border-gray-700/40'
+                const breakdownTitle = `Niche ${c.nicheScore} · Quality ${c.qualityScore} · Outreach ${c.outreachScore} · Audience ${c.audienceScore} · Trust ${c.trustScore}`
+                return (
+                  <tr key={c.domain} className={`border-b border-gray-800/50 hover:bg-gray-800/30 ${c.belowThreshold ? 'opacity-60' : ''}`}>
+                    <td className="px-3 py-2.5 text-gray-500 text-xs align-top">{i + 1}</td>
+                    <td className="px-3 py-2.5 align-top">
+                      <a href={`https://${c.domain}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline text-sm font-medium">
                         {c.domain}
                       </a>
-                      <p className="text-gray-600 text-xs truncate max-w-xs">{c.rankingUrl}</p>
+                      <p className="text-gray-600 text-xs truncate max-w-xs">SERP #{c.position} · {c.rankingUrl}</p>
+                      {c.cached && <span className="text-[10px] text-gray-600">cached {new Date(c.evaluatedAt).toLocaleDateString()}</span>}
                     </td>
-                    <td className="px-3 py-2.5 text-right">
-                      {c.authorityScore > 0 ? (
-                        <span className={`text-sm font-medium ${c.authorityScore >= 60 ? 'text-green-400' : c.authorityScore >= 30 ? 'text-yellow-400' : 'text-gray-400'}`}>
-                          {c.authorityScore}
-                        </span>
-                      ) : <span className="text-gray-600 text-xs">—</span>}
+                    <td className="px-3 py-2.5 text-center align-top">
+                      <div className={`inline-flex flex-col items-center px-2 py-1 rounded-lg border ${scoreBg}`} title={breakdownTitle}>
+                        <span className={`text-lg font-bold leading-none ${scoreColor}`}>{c.overallScore.toFixed(1)}</span>
+                        <span className="text-[10px] text-gray-500 mt-0.5">/ 10</span>
+                      </div>
                     </td>
-                    <td className="px-3 py-2.5 text-right text-gray-300 text-sm">{fmt(c.organicTraffic)}</td>
-                    <td className="px-3 py-2.5 text-right text-gray-400 text-sm">{fmt(c.organicKeywords)}</td>
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-3 py-2.5 text-gray-300 text-xs max-w-md align-top">
+                      <p className="line-clamp-3">{c.outreachAngle || '—'}</p>
+                    </td>
+                    <td className="px-3 py-2.5 text-center align-top">
+                      <div className="flex flex-col items-center gap-1">
+                        {c.hasWriteForUs && (
+                          <span className="text-[10px] bg-purple-900/40 text-purple-300 px-1.5 py-0.5 rounded border border-purple-700/40" title="Site has a public Write for Us / Contribute / Submissions page">✍️ Write for us</span>
+                        )}
+                        {c.contactEmail && (
+                          <a href={`mailto:${c.contactEmail}`} className="text-[10px] text-blue-300 hover:underline" title={c.contactEmail}>📧 contact</a>
+                        )}
+                        {!c.hasWriteForUs && !c.contactEmail && (
+                          <span className="text-[10px] text-gray-600">no signals</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right align-top">
                       {c.inTracker ? (
-                        <span className="text-xs text-green-500">✓ Added</span>
+                        <span className="text-xs text-green-500">✓ {c.trackerStatus === 'pending_approval' ? 'Queued' : 'Added'}</span>
                       ) : (
                         <button
                           onClick={() => handleAdd(c)}
                           disabled={adding.has(c.domain)}
-                          className="px-2.5 py-1 bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-xs rounded-lg"
+                          className={`px-2.5 py-1 disabled:opacity-50 text-white text-xs rounded-lg ${briefMode ? 'bg-yellow-700 hover:bg-yellow-600' : 'bg-red-700 hover:bg-red-600'}`}
+                          title={briefMode ? 'Queue as pending_approval — wait for Send' : 'Add to active tracker'}
                         >
-                          {adding.has(c.domain) ? '…' : '+ Track'}
+                          {adding.has(c.domain) ? '…' : briefMode ? '+ Brief' : '+ Track'}
                         </button>
                       )}
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
-      {!loading && !error && candidates.length === 0 && (
+      {!loading && !error && candidates.length === 0 && !meta && (
         <div className="text-center py-16 text-gray-600">
           <p className="text-4xl mb-3">🔍</p>
-          <p className="text-sm">Enter a keyword to discover guestpost candidates that rank for it.</p>
-          <p className="text-xs mt-1">Example: &quot;buy diablo 4 gold&quot;, &quot;game currency marketplace&quot;</p>
+          <p className="text-sm">Enter a keyword to discover & evaluate guestpost candidates.</p>
+          <p className="text-xs mt-1">Each domain is FireCrawl-scraped and Haiku-scored on niche/quality/outreach/audience/trust.</p>
+        </div>
+      )}
+
+      {!loading && !error && meta && candidates.length === 0 && (
+        <div className="text-center py-16 text-gray-600">
+          <p className="text-4xl mb-3">📭</p>
+          <p className="text-sm">No candidates passed the {threshold} threshold (≥{meta.thresholdValue}).</p>
+          <p className="text-xs mt-1">Try a looser threshold, or toggle &quot;show below&quot; to see what was filtered.</p>
         </div>
       )}
     </div>
@@ -752,6 +887,8 @@ function TrackerTable({ prospects, counts, onEdit, onDelete, onCheck, checking, 
                         </button>
                       )}
 
+                      <LogReplyButton prospectId={p.id} variant="compact" />
+
                       <button
                         onClick={() => onEdit(p)}
                         className="px-2 py-1 text-xs text-gray-400 hover:text-white hover:bg-gray-700 rounded transition"
@@ -802,17 +939,33 @@ export default function OutreachPage() {
 
   useEffect(() => { fetchProspects() }, [fetchProspects])
 
-  async function handleAddToTracker(c: Candidate, keyword: string, discoveredVia: string = 'semrush') {
+  async function handleAddToTracker(c: Candidate, keyword: string, briefMode = false, discoveredVia: string = 'hermod_v2') {
     await fetch('/api/outreach/prospects', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        domain:           c.domain,
-        authority_score:  c.authorityScore,
-        organic_traffic:  c.organicTraffic,
-        organic_keywords: c.organicKeywords,
-        source_keyword:   keyword,
-        discovered_via:   discoveredVia,
+        domain:             c.domain,
+        // Hermod v2 carries score data — we pass overall_score in
+        // authority_score for now so the existing column is reused. The
+        // raw 5-dim score is also stored in the data field below.
+        authority_score:    c.overallScore != null ? Math.round(c.overallScore * 10) : c.authorityScore,
+        organic_traffic:    c.organicTraffic,
+        organic_keywords:   c.organicKeywords,
+        contact_email:      c.contactEmail ?? undefined,
+        topic:              c.outreachAngle || undefined,
+        source_keyword:     keyword,
+        discovered_via:     discoveredVia,
+        approval_required:  briefMode,
+        score_breakdown:    {
+          overall:  c.overallScore,
+          niche:    c.nicheScore,
+          quality:  c.qualityScore,
+          outreach: c.outreachScore,
+          audience: c.audienceScore,
+          trust:    c.trustScore,
+          has_write_for_us: c.hasWriteForUs,
+          notes:    c.notes,
+        },
       }),
     })
     await fetchProspects()
@@ -875,6 +1028,11 @@ export default function OutreachPage() {
         </button>
       </div>
 
+      {/* Funnel — pulse view at top */}
+      <div className="mb-6">
+        <OutreachFunnel defaultDays={90} />
+      </div>
+
       {/* Tabs */}
       <div className="flex gap-1 mb-6 bg-gray-900 border border-gray-800 rounded-xl p-1 w-fit">
         {([
@@ -906,12 +1064,25 @@ export default function OutreachPage() {
                 domain:          d.domain ?? '',
                 rankingUrl:      d.ranking_url ?? '',
                 position:        0,
+                overallScore:    0,
+                nicheScore:      0,
+                qualityScore:    0,
+                outreachScore:   0,
+                audienceScore:   0,
+                trustScore:      0,
+                outreachAngle:   '',
+                hasWriteForUs:   false,
+                contactEmail:    null,
+                notes:           '',
+                cached:          false,
+                evaluatedAt:     '',
+                belowThreshold:  false,
                 organicTraffic:  0,
                 organicKeywords: 0,
                 authorityScore:  0,
                 inTracker:       false,
                 trackerStatus:   null,
-              }, d.keyword ?? '', 'hermod_finding')
+              }, d.keyword ?? '', false, 'hermod_finding')
               setTab('tracker')
             }}
           />

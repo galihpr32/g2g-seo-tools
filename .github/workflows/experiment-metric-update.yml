@@ -1,0 +1,44 @@
+name: Weekly Experiment Metric Update
+
+# Once a week — for every active experiment with linked_keywords, pull the
+# latest 7-day avg position from keyword_ranking_history and write to
+# current_value automatically. Eliminates the manual Head step from
+# Workflow #4 (Experiments PIC).
+#
+# Required repo secrets:
+#   APP_URL      — Vercel app URL
+#   CRON_SECRET  — same value as Vercel CRON_SECRET env
+
+on:
+  schedule:
+    # Every Monday 06:00 UTC (13:00 WIB) — kicks off the week with fresh
+    # numbers BEFORE the Senin sprint planning ritual at 07:00 WIB.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: experiment-metric-update
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/experiment-metric-update
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 180 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/experiment-metric-update")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

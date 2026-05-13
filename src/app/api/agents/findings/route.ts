@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 /**
  * GET /api/agents/findings
@@ -28,8 +29,9 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const url     = new URL(req.url)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
+  const url      = new URL(req.url)
 
   const agent     = url.searchParams.get('agent')
   const typeParam = url.searchParams.get('type')
@@ -45,6 +47,7 @@ export async function GET(req: Request) {
     .from('agent_findings')
     .select('id, agent_key, run_id, finding_type, subject, severity, data, observed_at', { count: 'exact' })
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .order('observed_at', { ascending: false })
     .limit(limit)
 

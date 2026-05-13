@@ -105,7 +105,11 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       // the Execute + downstream stages.
       update.claude_review_status   = 'skipped'
       update.claude_review_notes    = '[manual publish] Claude review skipped by user click on Mark Published.'
-      update.claude_review_reviewed_at = nowIso
+      // Column is `claude_reviewed_at`, not `claude_review_reviewed_at` — the
+      // latter is a typo that PostgREST rejects ("not in schema cache"). The
+      // canonical name is set in the migration + used everywhere else
+      // (see pipeline-journey route, daily-briefing automation, etc.).
+      update.claude_reviewed_at = nowIso
     }
 
     // When un-publishing (writer pressed "Mark unpublished" on a published brief),

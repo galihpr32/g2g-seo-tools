@@ -1,0 +1,44 @@
+name: Monthly KB Rule Extraction
+
+# Once a month — for every active site, identify patterns common to winning
+# briefs (top 8 within 30d of publish) but absent from losing briefs (still
+# >25 after 30d). Writes proposals to kb_rule_proposals for Head review.
+#
+# Required repo secrets:
+#   APP_URL      — Vercel app URL
+#   CRON_SECRET  — same value as Vercel CRON_SECRET env
+
+on:
+  schedule:
+    # 02:00 UTC on the 5th of each month (09:00 WIB) — early enough that
+    # the monthly report (1st-3rd) is already generated, late enough that
+    # April briefs published on April 1st have a clean 30-day window.
+    - cron: '0 2 5 * *'
+  workflow_dispatch:
+
+concurrency:
+  group: kb-rule-extraction
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/kb-rule-extraction
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 180 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/kb-rule-extraction")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

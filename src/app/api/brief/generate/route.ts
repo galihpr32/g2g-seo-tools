@@ -26,12 +26,28 @@ export async function POST(request: Request) {
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
+
+  // Resolve active site from cookie
+  const cookieSite = request.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+
+  // Sprint 12: site_url ONLY from site_configs based on active slug.
+  // No fallback to gsc_connections.site_url (always returned G2G's URL).
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', cookieSite)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  // Verify GSC OAuth is connected (tokens shared across sites under same Google account)
   const { data: conn } = await db
     .from('gsc_connections')
-    .select('site_url')
+    .select('user_id')
     .eq('user_id', effectiveOwnerId)
-    .single()
-  if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
+    .maybeSingle()
+
+  const resolvedSiteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
+  if (!resolvedSiteUrl) return NextResponse.json({ error: `No GSC data for site=${cookieSite}` }, { status: 400 })
 
   const reqBody = await request.json()
   const { action_item_id, content_type_config, selected_keywords, custom_instructions, serp_country } = reqBody as {
@@ -55,7 +71,7 @@ export async function POST(request: Request) {
   const { data: gscQueries } = await supabase
     .from('gsc_ranking_drop_queries')
     .select('query, clicks, impressions, ctr, position')
-    .eq('site_url', conn.site_url)
+    .eq('site_url', resolvedSiteUrl)
     .eq('page', item.page)
     .order('clicks', { ascending: false })
     .limit(10)
@@ -67,11 +83,15 @@ export async function POST(request: Request) {
   const { data: brief, error: insertErr } = await supabase
     .from('seo_content_briefs')
     .insert({
-      site_url: conn.site_url,
+      site_url:        resolvedSiteUrl,
+      site_slug:       cookieSite,
       action_item_id,
-      page: item.page,
-      brief_type: item.action_type,
-      status: 'generating',
+      page:            item.page,
+      // brief_type stays as the legacy on_page/off_page split for back-compat
+      // (existing UI filters on it). output_type below is the new driver.
+      brief_type:      item.action_type,
+      output_type:     item.output_type ?? null,
+      status:          'generating',
       primary_keyword: primaryKeyword,
     })
     .select()
@@ -85,7 +105,7 @@ export async function POST(request: Request) {
   // `after()` keeps the serverless function alive until the promise resolves,
   // even after the HTTP response is returned to the client.
   after(
-    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, conn.site_url, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions, serp_country)
+    runBriefPipeline(brief.id, item, topQueries, primaryKeyword, resolvedSiteUrl, gscQueries ?? [], content_type_config, selected_keywords, custom_instructions, serp_country)
       .catch(err => console.error('Brief pipeline error:', err))
   )
 
@@ -299,8 +319,24 @@ async function runBriefPipeline(
       ? getCountryPreset(serpCountryCode)
       : countryFromLanguageCode(lang.code)
 
-    if (item.action_type === 'on_page') {
+    // ── Route by output_type (preferred) → action_type (legacy fallback) ────
+    // output_type is the source of truth (set when the opportunity / action
+    // item was created via pipeline-journey / keyword-gap / competitive flows).
+    // For rows that pre-date Sprint BRAGI.1, derive from action_type so they
+    // keep working until the next backfill pass.
+    const outputType: 'new_page' | 'optimize_existing' | 'blog_post' | 'outreach' =
+      ['new_page', 'optimize_existing', 'blog_post', 'outreach'].includes(item.output_type)
+        ? item.output_type
+        : item.action_type === 'on_page' ? 'optimize_existing'
+        : item.action_type === 'off_page' ? 'outreach'
+        : 'optimize_existing'
+
+    if (outputType === 'optimize_existing') {
       await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
+    } else if (outputType === 'new_page') {
+      await runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
+    } else if (outputType === 'blog_post') {
+      await runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
     } else {
       await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions })
     }
@@ -312,7 +348,7 @@ async function runBriefPipeline(
       logApiUsage(sb, ownerId, { api: 'firecrawl', endpoint: 'scrape', triggeredBy: 'brief_generate', metadata: { page: item.page } })
       logApiUsage(sb, ownerId, { api: 'dataforseo', endpoint: 'serp/google/organic', triggeredBy: 'brief_generate', callCount: topQueries.length || 1, metadata: { page: item.page } })
       logApiUsage(sb, ownerId, { api: 'dataforseo', endpoint: 'keywords_data/google/suggestions', triggeredBy: 'brief_generate', metadata: { keyword: primaryKeyword } })
-      logApiUsage(sb, ownerId, { api: 'claude', endpoint: 'messages', triggeredBy: 'brief_generate', metadata: { model: 'claude-opus-4-6', action_type: item.action_type } })
+      logApiUsage(sb, ownerId, { api: 'claude', endpoint: 'messages', triggeredBy: 'brief_generate', metadata: { model: 'claude-opus-4-6', action_type: item.action_type, output_type: outputType } })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -413,6 +449,135 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
     content_gaps: sections.contentGaps,
     content_outline: sections.outline,
     content_draft: cleanDraft,
+  })
+}
+
+// ─── NEW-PAGE Pipeline ─────────────────────────────────────────────────────
+// For output_type='new_page' — page doesn't exist yet, no crawl. Build from
+// scratch using SERP + competitor analysis. Different prompt explicitly tells
+// the AI to design a fresh category/landing page, not refresh an old one.
+async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
+  briefId: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  item: any
+  topQueries: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  gscQueries: any[]
+  primaryKeyword: string
+  updateBrief: (f: Record<string, unknown>) => Promise<void>
+  kb: KBContext
+  lang: PageLanguage
+  country: CountryPreset
+  selectedKeywords?: string[]
+  customInstructions?: string
+}) {
+  // No crawl — page doesn't exist. Go straight to SERP + keyword research.
+  const serpData = topQueries.length
+    ? await batchSerpData(topQueries, country.dfsLocationCode, country.dfsLanguageCode)
+    : await batchSerpData([primaryKeyword], country.dfsLocationCode, country.dfsLanguageCode)
+  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+
+  await updateBrief({
+    crawl_data: null,   // explicit: no crawl for new page
+    serp_data: {
+      organicResults:  serpData.organicResults.slice(0, 5),
+      peopleAlsoAsk:   serpData.peopleAlsoAsk,
+      relatedSearches: serpData.relatedSearches,
+    },
+    new_keywords:    kwSuggestions.slice(0, 20),
+    longtail_keywords: serpData.relatedSearches.slice(0, 15).map(r => ({ keyword: r.query, intent: 'informational' })),
+    faq_suggestions: serpData.peopleAlsoAsk.slice(0, 8).map(p => ({ question: p.question, suggested_answer: p.answer ?? '' })),
+  })
+
+  const prompt = buildNewPagePrompt({
+    page: item.page, primaryKeyword, gscQueries,
+    competitors: serpData.organicResults.slice(0, 5),
+    paa: serpData.peopleAlsoAsk.slice(0, 8),
+    relatedSearches: serpData.relatedSearches.slice(0, 12),
+    kwSuggestions: kwSuggestions.slice(0, 15),
+    itemNotes: item.notes ?? '',
+    kb, lang, country, selectedKeywords, customInstructions,
+  })
+
+  const aiResponse = await anthropic.messages.create({
+    model: 'claude-opus-4-6',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }],
+  })
+  const rawText  = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : ''
+  const sections = parseClaudeOnPageResponse(rawText)
+  const cleanDraft = kb.dmcaTerms.length ? applyDmcaReplacements(sections.draft, kb.dmcaTerms) : sections.draft
+
+  await updateBrief({
+    status: 'draft',
+    current_content_summary: sections.currentSummary,    // will say "N/A — new page"
+    content_gaps:    sections.contentGaps,
+    content_outline: sections.outline,
+    content_draft:   cleanDraft,
+  })
+}
+
+// ─── BLOG-POST Pipeline ────────────────────────────────────────────────────
+// For output_type='blog_post' — editorial content (how-to, listicle, guide,
+// trend piece). Different structure than category page: long-form, TOC,
+// embedded internal links to product pages, less commercial pressure.
+async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
+  briefId: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  item: any
+  topQueries: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  gscQueries: any[]
+  primaryKeyword: string
+  updateBrief: (f: Record<string, unknown>) => Promise<void>
+  kb: KBContext
+  lang: PageLanguage
+  country: CountryPreset
+  selectedKeywords?: string[]
+  customInstructions?: string
+}) {
+  const serpData = topQueries.length
+    ? await batchSerpData(topQueries, country.dfsLocationCode, country.dfsLanguageCode)
+    : await batchSerpData([primaryKeyword], country.dfsLocationCode, country.dfsLanguageCode)
+  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+
+  await updateBrief({
+    crawl_data: null,
+    serp_data: {
+      organicResults:  serpData.organicResults.slice(0, 5),
+      peopleAlsoAsk:   serpData.peopleAlsoAsk,
+      relatedSearches: serpData.relatedSearches,
+    },
+    new_keywords:    kwSuggestions.slice(0, 20),
+    longtail_keywords: serpData.relatedSearches.slice(0, 15).map(r => ({ keyword: r.query, intent: 'informational' })),
+    faq_suggestions: serpData.peopleAlsoAsk.slice(0, 8).map(p => ({ question: p.question, suggested_answer: p.answer ?? '' })),
+  })
+
+  const prompt = buildBlogPostPrompt({
+    page: item.page, primaryKeyword, gscQueries,
+    competitors: serpData.organicResults.slice(0, 5),
+    paa: serpData.peopleAlsoAsk.slice(0, 8),
+    relatedSearches: serpData.relatedSearches.slice(0, 12),
+    kwSuggestions: kwSuggestions.slice(0, 15),
+    itemNotes: item.notes ?? '',
+    kb, lang, country, selectedKeywords, customInstructions,
+  })
+
+  const aiResponse = await anthropic.messages.create({
+    model: 'claude-opus-4-6',
+    max_tokens: 4096,
+    messages: [{ role: 'user', content: prompt }],
+  })
+  const rawText  = aiResponse.content[0].type === 'text' ? aiResponse.content[0].text : ''
+  const sections = parseClaudeOnPageResponse(rawText)
+  const cleanDraft = kb.dmcaTerms.length ? applyDmcaReplacements(sections.draft, kb.dmcaTerms) : sections.draft
+
+  await updateBrief({
+    status: 'draft',
+    current_content_summary: sections.currentSummary,
+    content_gaps:    sections.contentGaps,
+    content_outline: sections.outline,
+    content_draft:   cleanDraft,
   })
 }
 
@@ -612,6 +777,229 @@ CRITICAL: Follow the G2G category template structure EXACTLY:
 Also output:
 META TITLE: (≤60 chars)
 META DESCRIPTION: (≤110 chars)`
+}
+
+// ─── buildNewPagePrompt — for output_type='new_page' ─────────────────────
+// This is for CREATING a category/landing page from scratch when none exists.
+// Critically different from buildOnPagePrompt: no crawl, no "preserve existing
+// content" framing — the AI is told to design a brand-new page.
+function buildNewPagePrompt(p: {
+  page: string
+  primaryKeyword: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  gscQueries: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  competitors: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  paa: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  relatedSearches: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  kwSuggestions: any[]
+  itemNotes: string
+  kb: KBContext
+  lang: PageLanguage
+  country: CountryPreset
+  selectedKeywords?: string[]
+  customInstructions?: string
+}) {
+  const gameName = deriveTopicFromUrl(p.page)
+  const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword, p.kb.uspsOnPage)
+  const categoryTemplate = detectCategory(p.page)
+  const hasCategoryTemplate = !!categoryTemplate
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+
+  return `You are an expert SEO content strategist for G2G.com, a gaming marketplace. Your job is to DESIGN A NEW CATEGORY/LANDING PAGE FROM SCRATCH — this page does NOT exist yet.
+
+NEW-PAGE MINDSET: No existing content to preserve. The user has identified a keyword opportunity with strong commercial intent and wants a fresh page that can rank from day one. Lead with what buyers come here for: price comparison, listings, trust signals, immediate transaction paths. Avoid the trap of generic "What is X" intros — those rank for informational queries we don't want.
+
+CURRENT DATE: ${today}
+${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}TARGET PAGE URL (to be created): ${p.page}
+PAGE LANGUAGE: ${p.lang.name}
+SERP COUNTRY: ${p.country.flag} ${p.country.label} (SERP data pulled for this market)
+PRIMARY KEYWORD: ${p.primaryKeyword}
+GAME/PRODUCT NAME: ${gameName}
+
+${p.gscQueries.length ? `GSC HINTS (related queries the rest of the site already ranks for):
+${p.gscQueries.map(q => `- "${q.query}" | clicks: ${q.clicks} | pos: ${q.position?.toFixed(1)}`).join('\n')}
+` : '_(No GSC history for this URL — this is a true greenfield launch.)_'}
+
+TOP COMPETITORS RANKING FOR "${p.primaryKeyword}":
+${p.competitors.map((c, i) => `${i + 1}. ${c.title} — ${c.url}\n   ${c.description}`).join('\n')}
+
+PEOPLE ALSO ASK (must-answer questions on the new page):
+${p.paa.map(q => `- ${q.question}`).join('\n')}
+
+RELATED SEARCHES (long-tail to weave in):
+${p.relatedSearches.map(r => `- ${r.query}`).join('\n')}
+
+${p.selectedKeywords && p.selectedKeywords.filter(Boolean).length > 0 ? `
+FOCUS KEYWORDS (hand-picked by editor — prioritise these above all others):
+${p.selectedKeywords.filter(Boolean).map(k => `- ${k}`).join('\n')}
+` : ''}KEYWORD SUGGESTIONS (volume from DataForSEO — for additional coverage):
+${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'} | CPC: $${k.cpc ?? '?'}`).join('\n')}
+
+EDITOR NOTES: ${p.itemNotes || 'none'}
+
+---
+${hasCategoryTemplate ? `
+G2G CATEGORY CONTENT TEMPLATE (MUST FOLLOW for new page):
+${categoryInstructions}
+` : ''}${buildKBBlock(p.kb, true)}
+---
+
+${p.customInstructions?.trim() ? `CUSTOM EDITOR INSTRUCTIONS (override defaults where relevant):\n${p.customInstructions.trim()}\n\n` : ''}Now design the new page with these EXACT sections:
+
+## CURRENT CONTENT SUMMARY
+Write exactly: "N/A — this is a new page that does not exist yet."
+
+## CONTENT GAPS
+List 4-6 topical areas competitors cover that the new page MUST include from launch (price ranges, delivery time, payment methods, account safety, etc.). For each, briefly note WHY it matters for ranking + conversion.
+
+## FRESHNESS OPPORTUNITIES
+2-3 angles to launch with as of ${today}:
+- Current game updates, seasonal events, or meta changes relevant to "${gameName}"
+- "${today}" trending search variants worth seeding into the launch
+- Any data points that will help the page age well (pricing tables, FAQ schema)
+
+## RECOMMENDED KEYWORDS
+5-8 keywords the new page should target. Format: keyword | search intent | priority (high/medium)
+
+## CONTENT OUTLINE
+${hasCategoryTemplate
+  ? 'Follow the G2G category template sections above exactly. Mark each section as NEW (to be created). Do NOT mark anything as "keep" since the page does not exist.'
+  : 'Propose the H2/H3 structure for the new page. 5-7 sections. First section must be transactional (listings, trust signals, price comparison) — NOT a "What is X" intro.'}
+
+## FAQ SECTION
+${hasCategoryTemplate
+  ? 'Write 5-6 Q&A pairs focused on: ' + (categoryTemplate?.faqFocus ?? 'buyer safety, delivery, refunds, payment')
+  : 'Write 5-6 Q&A pairs based on People Also Ask data. Cover buyer concerns: pricing, delivery, safety, refunds.'}
+
+## CONTENT DRAFT
+Write the FULL launch-ready page draft.
+${hasCategoryTemplate ? `
+CRITICAL: Follow the G2G category template structure EXACTLY:
+- Use HTML format with <br><br> between paragraphs (NO <p> tags)
+- Follow the exact H1 format: ${categoryInstructions.match(/H1 format: (.+)/)?.[1] ?? ''}
+- Include {{trending_games}} placeholder in the Trending Products section
+- Follow keyword density rules from the template
+- Follow all writing rules and forbidden words from the template
+- Write the FULL draft including ALL sections from the template
+` : 'Aim for 800-1200 words. Lead with transactional intent. Use H2/H3 hierarchy. Weave in the target keyword and long-tail variants naturally — no keyword stuffing.'}
+Also output:
+META TITLE: (≤60 chars)
+META DESCRIPTION: (≤110 chars)`
+}
+
+// ─── buildBlogPostPrompt — for output_type='blog_post' ───────────────────
+// Editorial article structure — explicitly NOT a category page. Used for
+// content marketing pieces (how-to, listicle, guide, news commentary).
+// Emphasizes long-form depth, internal linking to product pages, less
+// transactional pressure.
+function buildBlogPostPrompt(p: {
+  page: string
+  primaryKeyword: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  gscQueries: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  competitors: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  paa: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  relatedSearches: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  kwSuggestions: any[]
+  itemNotes: string
+  kb: KBContext
+  lang: PageLanguage
+  country: CountryPreset
+  selectedKeywords?: string[]
+  customInstructions?: string
+}) {
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+
+  // Detect article format by primary-keyword shape (informational signal).
+  // "how to ...", "best ...", "guide ...", "vs", "review" → pick the closest.
+  const kwLc = p.primaryKeyword.toLowerCase()
+  const articleFormat: 'how_to' | 'listicle' | 'guide' | 'comparison' | 'news' =
+    kwLc.startsWith('how to')                       ? 'how_to' :
+    /^(best |top \d|\d+ )/.test(kwLc)               ? 'listicle' :
+    /(\bvs\b|comparison|review)/.test(kwLc)         ? 'comparison' :
+    /(news|update|patch|release)/.test(kwLc)        ? 'news' :
+                                                       'guide'
+
+  return `You are an expert content editor for G2G.com's blog / content marketing arm. Your job is to write a STANDALONE EDITORIAL ARTICLE — NOT a product category page. Think gaming media (PCGamer, Polygon-style) with a clear commercial through-line back to G2G's marketplace.
+
+EDITORIAL MINDSET:
+- This is for the BLOG, not a category page. No "trending products" placeholder, no price comparison tables as the lead.
+- Long-form depth wins (1500-2500 words). Use storytelling, examples, original takes.
+- Internal-link strategically to G2G product/category pages — but the value is the article itself.
+- Detected format: **${articleFormat}** — structure the piece accordingly (see below).
+
+CURRENT DATE: ${today}
+${p.lang.instruction ? `\n${p.lang.instruction}\n` : ''}TARGET BLOG URL: ${p.page}
+ARTICLE LANGUAGE: ${p.lang.name}
+SERP COUNTRY: ${p.country.flag} ${p.country.label}
+PRIMARY KEYWORD: ${p.primaryKeyword}
+DETECTED FORMAT: ${articleFormat}
+
+${p.gscQueries.length ? `GSC SIGNALS:
+${p.gscQueries.map(q => `- "${q.query}" | clicks: ${q.clicks} | pos: ${q.position?.toFixed(1)}`).join('\n')}
+` : ''}
+TOP RANKING ARTICLES FOR "${p.primaryKeyword}":
+${p.competitors.map((c, i) => `${i + 1}. ${c.title} — ${c.url}\n   ${c.description}`).join('\n')}
+
+PEOPLE ALSO ASK (questions the article should answer):
+${p.paa.map(q => `- ${q.question}`).join('\n')}
+
+RELATED SEARCHES (long-tail to weave in):
+${p.relatedSearches.map(r => `- ${r.query}`).join('\n')}
+
+${p.selectedKeywords && p.selectedKeywords.filter(Boolean).length > 0 ? `
+FOCUS KEYWORDS (hand-picked — prioritise above all others):
+${p.selectedKeywords.filter(Boolean).map(k => `- ${k}`).join('\n')}
+` : ''}KEYWORD SUGGESTIONS:
+${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'}`).join('\n')}
+
+EDITOR NOTES: ${p.itemNotes || 'none'}
+
+---
+${buildKBBlock(p.kb, true)}
+---
+
+${p.customInstructions?.trim() ? `CUSTOM EDITOR INSTRUCTIONS:\n${p.customInstructions.trim()}\n\n` : ''}Write the brief with these EXACT sections:
+
+## CURRENT CONTENT SUMMARY
+Write exactly: "N/A — this is a new blog article."
+
+## CONTENT GAPS
+3-5 angles or data points the top-ranking competitor articles MISS or cover thinly. For each, suggest how our article will go deeper / be more useful / be more current.
+
+## FRESHNESS OPPORTUNITIES
+2-3 ways to make this article feel fresh as of ${today}:
+- Recent game updates / patch notes / metas to reference
+- Trending discussion threads worth citing
+- Original data we can add (G2G marketplace pricing snapshots, etc.)
+
+## RECOMMENDED KEYWORDS
+5-8 keywords + LSI terms to use. Format: keyword | search intent | priority
+
+## CONTENT OUTLINE
+${articleFormat === 'how_to'     ? 'STEP-BY-STEP STRUCTURE: H1 + 5-8 numbered H2 steps. Each step: actionable, 100-200 words. End with a tools/recommended-products section linking to G2G category pages.'
+: articleFormat === 'listicle'   ? 'LISTICLE STRUCTURE: H1 with the number ("Top N..."), intro, then N H2 entries. Each entry: brief description + why it ranks + 1-line "where to buy/get" linking to G2G.'
+: articleFormat === 'comparison' ? 'COMPARISON STRUCTURE: H1 stating the comparison, intro, H2 "TL;DR / Winner", H2 sections per dimension (price/safety/delivery/etc.), final verdict.'
+: articleFormat === 'news'       ? 'NEWS STRUCTURE: H1 with the news angle, lede (1 paragraph, who/what/when/why), H2 "What happened", H2 "Why it matters to gamers", H2 "What\'s next", H2 "Related on G2G".'
+:                                  'GUIDE STRUCTURE: H1 stating the topic, intro (why this matters now), 5-7 H2 sections covering the topic depth-first, conclusion with next steps.'}
+
+## FAQ SECTION
+Write 4-6 Q&A pairs from the PAA list. These will become FAQ schema markup.
+
+## CONTENT DRAFT
+Write the FULL article draft (1500-2500 words). Use HTML with <h2>, <h3>, <p>, <ul>/<ol> — NOT markdown. Include 2-4 strategic internal links to G2G category/product pages where they add value (e.g. "buy [game] gold safely" → /categories/...). Conversational but authoritative tone.
+
+Also output:
+META TITLE: (≤60 chars — should match the article H1 closely, include primary keyword)
+META DESCRIPTION: (≤110 chars — lead with the article's promise + a hook to click)`
 }
 
 function buildOffPagePrompt(p: {

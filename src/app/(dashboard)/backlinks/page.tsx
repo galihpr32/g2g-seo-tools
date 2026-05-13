@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import PortfolioDashboard from '@/components/backlinks/PortfolioDashboard'
 
 // ── Country config ─────────────────────────────────────────────────────────────
 const COUNTRIES: { code: string; flag: string; label: string; currency: string }[] = [
@@ -581,6 +582,11 @@ export default function BacklinksPage() {
           {refreshResult}
         </div>
       )}
+
+      {/* Portfolio dashboard — derived analytics from the backlinks list */}
+      <div className="max-w-7xl mb-5">
+        <PortfolioDashboard backlinks={backlinks} />
+      </div>
 
       {/* 2-column layout: main content + UTM Generator sidebar */}
       <div className="flex gap-6 max-w-7xl items-start">

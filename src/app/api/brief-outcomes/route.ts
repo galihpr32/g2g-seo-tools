@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 60
 
@@ -41,21 +42,25 @@ export async function GET(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
   const { searchParams } = new URL(req.url)
   const briefId = searchParams.get('brief_id')
 
+  // brief_outcomes itself doesn't have site_slug — we filter via the
+  // !inner join to seo_content_briefs which carries the brand isolation.
   let query = db
     .from('brief_outcomes')
     .select(`
       *,
       seo_content_briefs!inner(
-        primary_keyword, page, status, tyr_score, content_outline, target_publish_date
+        primary_keyword, page, status, tyr_score, content_outline, target_publish_date, site_slug
       )
     `)
     .eq('owner_user_id', ownerId)
+    .eq('seo_content_briefs.site_slug', siteSlug)
     .order('published_at', { ascending: false })
     .limit(200)
 
@@ -139,7 +144,7 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: true, message: `Checkpoint ${checkpoint}d already snapshotted` })
   }
 
-  // GSC connection
+  // GSC OAuth (tokens cover all properties under this Google account)
   const { data: conn } = await supabase
     .from('gsc_connections')
     .select('*')
@@ -148,11 +153,26 @@ export async function PATCH(req: Request) {
 
   if (!conn?.access_token) return NextResponse.json({ error: 'GSC not connected' }, { status: 422 })
 
+  // Sprint 12: site_url comes from the active brand's site_configs row,
+  // NOT from gsc_connections.site_url which is single-site per user.
+  const siteSlug = resolveSiteSlugFromRequest(req)
+  const dbAdmin = createServiceClient()
+  const { data: siteConfig } = await dbAdmin
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  if (!siteConfig?.gsc_property) {
+    return NextResponse.json({ error: `No site config for slug=${siteSlug}` }, { status: 422 })
+  }
+  const siteUrl = siteConfig.gsc_property
+
   const auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
 
   // Fetch last 7 days of GSC data for this page, filtered by keyword
   const rows = await getSearchAnalytics(
-    auth, conn.site_url,
+    auth, siteUrl,
     daysAgo(7), daysAgo(1),
     ['page', 'query'],
     5000
@@ -180,7 +200,7 @@ export async function PATCH(req: Request) {
   // If no keyword match, try page-only aggregate
   if (position === null) {
     const pageRows = await getSearchAnalytics(
-      auth, conn.site_url,
+      auth, siteUrl,
       daysAgo(7), daysAgo(1),
       ['page'], 5000
     ).catch(() => [])

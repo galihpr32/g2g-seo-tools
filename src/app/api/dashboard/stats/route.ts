@@ -5,7 +5,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 30
 
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -13,14 +13,28 @@ export async function GET() {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
-  // Get GSC site_url for this owner
+  // Resolve active site from query param or cookie, fallback to 'g2g'
+  const url        = new URL(req.url)
+  const cookieSite = req.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+  const siteSlug   = url.searchParams.get('site') ?? cookieSite
+
+  // Resolve site_url from site_configs (brand-aware). NO fallback to
+  // gsc_connections.site_url — that path always returned G2G's URL,
+  // causing /offgamers/dashboard to show G2G data (Sprint 12 fix).
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  // Ensure user has GSC OAuth connected at all (otherwise no data to show)
   const { data: conn } = await db
     .from('gsc_connections')
-    .select('site_url')
+    .select('user_id')
     .eq('user_id', ownerId)
     .maybeSingle()
 
-  const siteUrl = conn?.site_url ?? null
+  const siteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
 
   // ── Fetch in parallel ────────────────────────────────────────────────────────
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
@@ -38,6 +52,7 @@ export async function GET() {
           .from('seo_action_items')
           .select('id, status, action_type, assigned_to, created_at, snapshot_date')
           .eq('site_url', siteUrl)
+          .eq('site_slug', siteSlug)
       : Promise.resolve({ data: [], error: null }),
 
     // All briefs (status, created_at)
@@ -46,6 +61,7 @@ export async function GET() {
           .from('seo_content_briefs')
           .select('id, status, created_at')
           .eq('site_url', siteUrl)
+          .eq('site_slug', siteSlug)
       : Promise.resolve({ data: [], error: null }),
 
     // Campaigns + page counts

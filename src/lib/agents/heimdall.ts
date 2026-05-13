@@ -164,17 +164,27 @@ export async function runHeimdall(
       warnings.push(`GSC sync skipped: ${msg} — using cached data`)
     }
 
-    // 1. GSC connection
-    const { data: conn, error: connErr } = await db
-      .from('gsc_connections')
-      .select('site_url')
-      .eq('user_id', ownerId)
+    // 1. Resolve site_url for the active brand from site_configs (Sprint 12).
+    // Heimdall already receives `siteSlug` as a function arg — use it.
+    const { data: brandSiteConfig, error: cfgErr } = await db
+      .from('site_configs')
+      .select('gsc_property')
+      .eq('slug', siteSlug)
+      .eq('is_active', true)
       .maybeSingle()
 
-    if (connErr) throw new Error(`GSC connection lookup failed: ${connErr.message}`)
-    if (!conn?.site_url) throw new Error('No GSC connection found — connect GSC in Settings before running Heimdall')
+    if (cfgErr) throw new Error(`site_configs lookup failed: ${cfgErr.message}`)
+    if (!brandSiteConfig?.gsc_property) throw new Error(`No active site_config for slug=${siteSlug}`)
 
-    const siteUrl = conn.site_url
+    // Verify GSC OAuth is connected (tokens cover all properties under the same Google account)
+    const { data: conn } = await db
+      .from('gsc_connections')
+      .select('user_id')
+      .eq('user_id', ownerId)
+      .maybeSingle()
+    if (!conn) throw new Error('No GSC connection found — connect GSC in Settings before running Heimdall')
+
+    const siteUrl = brandSiteConfig.gsc_property
 
     // 2. Pull last 14 days of pre-aggregated drops, ordered DESC so the
     //    first row per page is the freshest.

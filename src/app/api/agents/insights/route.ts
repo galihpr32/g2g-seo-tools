@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 /**
  * GET /api/agents/insights
@@ -11,13 +12,16 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
  *   - Tyr score distribution (last 30d) with mean / median / borderline count
  *   - Topic coverage (per active topic: published vs total clusters)
  *   - Pending tune_config + coverage_review actions (Vor + Saga suggestions)
+ *
+ * Scoped to the active site_slug (cookie/query/'g2g' default).
  */
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
   const sinceIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -27,6 +31,7 @@ export async function GET() {
     .from('agent_actions')
     .select('agent_key, status, priority')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .gte('created_at', sinceIso)
 
   const approvalByAgent: Record<string, { total: number; approved: number; rejected: number; pending: number; executed: number }> = {}
@@ -44,6 +49,7 @@ export async function GET() {
     .from('seo_content_briefs')
     .select('tyr_score, tyr_status')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .gte('tyr_reviewed_at', sinceIso)
     .not('tyr_score', 'is', null)
 
@@ -65,6 +71,7 @@ export async function GET() {
     .from('keyword_maps')
     .select('id, topic, status, last_cluster_activity_at')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .neq('status', 'archived')
     .order('last_cluster_activity_at', { ascending: false, nullsFirst: false })
 
@@ -100,6 +107,7 @@ export async function GET() {
     .from('agent_actions')
     .select('id, agent_key, action_type, title, description, priority, created_at')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .in('action_type', ['tune_config', 'coverage_review', 'archive_cluster', 'create_topic_map', 'add_to_cluster'])
     .eq('status', 'pending')
     .order('created_at', { ascending: false })

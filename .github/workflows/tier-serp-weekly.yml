@@ -1,0 +1,37 @@
+name: Weekly Tier SERP Snapshot
+
+on:
+  schedule:
+    # Every Monday 02:00 UTC (09:00 WIB) — refreshes SERP for all Tier 1/2
+    # products across the 5 tracked markets (US, DE, FR, MY, ID). Per-call
+    # cost ~$0.0006; full run ~$1.30 at ~2,100 calls/week. See tier-ranking-tracker spec.
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: tier-serp-weekly
+  # Long-running (up to 5 min for full population). Don't pile up.
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger /api/cron/tier-serp-weekly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 360 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/tier-serp-weekly")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

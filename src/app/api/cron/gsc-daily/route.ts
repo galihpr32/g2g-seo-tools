@@ -35,6 +35,18 @@ export async function GET(request: Request) {
   const { data: connections } = await supabase.from('gsc_connections').select('*')
   if (!connections?.length) return NextResponse.json({ message: 'No connections found' })
 
+  // Sprint 12: iterate each (connection × active site) so OffGamers gets its
+  // own GSC sync, not just whichever site happens to be in conn.site_url.
+  // Tokens cover all GSC properties under the same Google account.
+  const { data: sites } = await supabase
+    .from('site_configs')
+    .select('slug, gsc_property')
+    .eq('is_active', true)
+  const activeSites = (sites ?? []) as Array<{ slug: string; gsc_property: string }>
+  if (activeSites.length === 0) {
+    return NextResponse.json({ error: 'No active site_configs' }, { status: 500 })
+  }
+
   const results: Record<string, unknown> = {}
 
   for (const conn of connections) {
@@ -52,7 +64,13 @@ export async function GET(request: Request) {
         }).eq('user_id', conn.user_id)
       }
 
-      const siteUrl = conn.site_url
+      // Sprint 12: iterate each active site for this connection. The
+      // existing per-site logic below uses `siteUrl` which is now bound
+      // by this outer loop instead of the legacy single-value
+      // conn.site_url. Tokens are shared across properties under the
+      // same Google account, so one OAuth set covers all sites.
+      for (const site of activeSites) {
+      const siteUrl = site.gsc_property
       const today = getDateRange(0)
 
       // ── Task 1: Ranking Drop Alert ──────────────────────────────────────
@@ -307,9 +325,10 @@ export async function GET(request: Request) {
         }
       }
 
-      results[siteUrl] = { status: 'ok', drops: drops.length }
+      results[`${conn.user_id}::${siteUrl}`] = { status: 'ok', drops: drops.length }
+      }   // end for site of activeSites
     } catch (err) {
-      results[conn.site_url] = { status: 'error', error: String(err) }
+      results[`${conn.user_id}::error`] = { status: 'error', error: String(err) }
     }
   }
 

@@ -6,6 +6,7 @@ import { SERP_COUNTRIES } from '@/lib/country-config'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import { IntentBadge, type Intent } from '@/components/ui/IntentBadge'
 import LokiFindingsPanel from '@/components/agents/LokiFindingsPanel'
+import ClusterChip from '@/components/clusters/ClusterChip'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const COMP_COLORS = ['#ef4444', '#a855f7', '#06b6d4', '#ec4899']
@@ -623,12 +624,13 @@ function GapTable({ rows, tab, competitorDomains, selected, onToggle, onToggleAl
                         className="w-4 h-4 rounded border-gray-600 bg-gray-800 accent-red-500 cursor-pointer" />
                     </td>
                     <td className="py-2.5 px-3">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <IntentBadge intent={intents[r.keyword]} loading={intentsLoading && !intents[r.keyword]} />
                         <span className="text-white text-xs font-medium">{r.keyword}</span>
                         {isMissing && tab === 'gaps' && (
                           <span className="text-[10px] bg-orange-500/20 text-orange-400 px-1.5 py-0.5 rounded-full">no page</span>
                         )}
+                        <ClusterChip keyword={r.keyword} compact />
                       </div>
                     </td>
                     <td className="py-2.5 px-3 text-right text-gray-300 text-xs">

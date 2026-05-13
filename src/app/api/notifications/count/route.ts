@@ -7,7 +7,7 @@ export const maxDuration = 15
 
 // ── GET /api/notifications/count ─────────────────────────────────────────────
 // Returns total notification count for the badge in the sidebar.
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ count: 0 })
@@ -15,13 +15,16 @@ export async function GET() {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
 
-  const { data: conn } = await db
-    .from('gsc_connections')
-    .select('site_url')
-    .eq('user_id', ownerId)
+  // Sprint 12: site_url from active brand's site_configs, not gsc_connections.
+  const { resolveSiteSlugFromRequest } = await import('@/lib/sites')
+  const siteSlug = resolveSiteSlugFromRequest(req)
+  const { data: brandSiteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
     .maybeSingle()
-
-  const siteUrl = conn?.site_url
+  const siteUrl = brandSiteConfig?.gsc_property ?? null
 
   const staleThreshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
   const etaThreshold   = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
@@ -30,14 +33,14 @@ export async function GET() {
     siteUrl
       ? db.from('seo_action_items')
           .select('id', { count: 'exact', head: true })
-          .eq('site_url', siteUrl).eq('status', 'in_progress')
+          .eq('site_url', siteUrl).eq('site_slug', siteSlug).eq('status', 'in_progress')
           .lt('created_at', staleThreshold)
       : Promise.resolve({ count: 0 }),
 
     siteUrl
       ? db.from('seo_action_items')
           .select('id', { count: 'exact', head: true })
-          .eq('site_url', siteUrl).eq('status', 'in_progress')
+          .eq('site_url', siteUrl).eq('site_slug', siteSlug).eq('status', 'in_progress')
           .is('assigned_to', null)
       : Promise.resolve({ count: 0 }),
 

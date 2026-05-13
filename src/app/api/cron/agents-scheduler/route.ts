@@ -79,14 +79,25 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: 'No enabled agents due', checked: now })
   }
 
+  // Pull active sites ONCE — each scheduled agent will run for every active
+  // brand. Per-agent schedule_next_run_at is updated once after the site
+  // loop (the schedule itself is per-agent, not per-(agent × site)).
+  const { data: activeSitesData } = await db
+    .from('site_configs')
+    .select('slug')
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true })
+  const activeSlugs: string[] = (activeSitesData ?? []).map(s => s.slug as string)
+  if (activeSlugs.length === 0) activeSlugs.push('g2g')
+
   const results: Record<string, unknown> = {}
 
   for (const agentRow of toRun) {
     const key     = agentRow.agent_key as string
     const ownerId = agentRow.owner_user_id as string
     const config  = (agentRow.config ?? {}) as Record<string, unknown>
-    const siteSlug = 'g2g'
 
+    for (const siteSlug of activeSlugs) {
     try {
       // Create run record
       const { data: runRecord, error: runErr } = await db
@@ -102,7 +113,7 @@ export async function GET(request: Request) {
         .single()
 
       if (runErr || !runRecord) {
-        results[`${ownerId}/${key}`] = { status: 'error', error: 'Failed to create run record' }
+        results[`${ownerId}/${siteSlug}/${key}`] = { status: 'error', error: 'Failed to create run record' }
         continue
       }
 
@@ -152,19 +163,11 @@ export async function GET(request: Request) {
         }
         result = await runSaga(ownerId, siteSlug, runId, sagaConfig)
       } else {
-        results[`${ownerId}/${key}`] = { status: 'skipped', reason: 'not implemented' }
+        results[`${ownerId}/${siteSlug}/${key}`] = { status: 'skipped', reason: 'not implemented' }
         continue
       }
 
-      // Update next_run_at for the agent
-      const nextRun = computeNextRun(config)
-      await db
-        .from('agents')
-        .update({ schedule_next_run_at: nextRun.toISOString() })
-        .eq('owner_user_id', ownerId)
-        .eq('agent_key', key)
-
-      results[`${ownerId}/${key}`] = { status: 'ok', ...result }
+      results[`${ownerId}/${siteSlug}/${key}`] = { status: 'ok', site: siteSlug, ...result }
 
       // Slack notification if actions were queued
       if (result.actionsQueued > 0) {
@@ -173,6 +176,7 @@ export async function GET(request: Request) {
           .select('id, title, description, priority, action_type')
           .eq('owner_user_id', ownerId)
           .eq('agent_key', key)
+          .eq('site_slug', siteSlug)
           .eq('run_id', runId)
           .eq('status', 'pending')
           .order('priority', { ascending: false })
@@ -190,12 +194,24 @@ export async function GET(request: Request) {
           .catch((e: unknown) => console.error('[slack] notify failed:', e))
       }
     } catch (err) {
-      results[`${ownerId}/${key}`] = { status: 'error', error: String(err) }
+      results[`${ownerId}/${siteSlug}/${key}`] = { status: 'error', error: String(err) }
     }
+    } // end site loop
+
+    // Update next_run_at ONCE per agent (schedule is per-agent, not per-site).
+    // Even if some sites errored above, advance the schedule so we don't
+    // hot-loop on the same dead agent until ops looks at it.
+    const nextRun = computeNextRun(config)
+    await db
+      .from('agents')
+      .update({ schedule_next_run_at: nextRun.toISOString() })
+      .eq('owner_user_id', ownerId)
+      .eq('agent_key', key)
   }
 
   return NextResponse.json({
-    ran: Object.keys(results).length,
+    ran:       Object.keys(results).length,
+    sites:     activeSlugs,
     results,
     checkedAt: now,
   })
