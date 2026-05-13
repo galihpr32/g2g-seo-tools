@@ -210,6 +210,22 @@ function ReportCard({ report, isAdmin, onChange }: {
             {report.description}
           </pre>
 
+          {/* Screenshots — data URLs stored inline (Sprint FB.1). Click to open full-size. */}
+          {report.attachments && report.attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {report.attachments.map((src, i) => (
+                <a key={i} href={src} target="_blank" rel="noopener noreferrer" title={`Screenshot ${i + 1} — click to open full size`}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={src}
+                    alt={`screenshot-${i + 1}`}
+                    className="h-32 w-32 object-cover rounded border border-gray-700 hover:border-blue-500 transition cursor-zoom-in"
+                  />
+                </a>
+              ))}
+            </div>
+          )}
+
           {/* Replies thread */}
           {report.replies.length > 0 && (
             <div className="space-y-2">

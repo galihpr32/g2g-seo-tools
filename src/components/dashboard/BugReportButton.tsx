@@ -17,6 +17,34 @@
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
 
+/**
+ * Client-side image resize → JPEG data URL. Keeps DB rows manageable —
+ * a 1280px screenshot at 0.85 quality lands ~150-400KB. We store inline in
+ * bug_reports.attachments (text[]) so no Supabase Storage bucket is needed.
+ *
+ * Tradeoff vs. proper Storage: data URLs are CPU/bandwidth-heavy when the
+ * feedback list renders, but at our volume (≤100 tickets) this is fine and
+ * lets us ship without infra changes. If we cross ~500 tickets with images,
+ * migrate to Storage with signed URLs.
+ */
+async function resizeImageToDataUrl(file: File, maxDim: number, quality: number): Promise<string> {
+  const bitmap = await createImageBitmap(file)
+  const scale  = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height))
+  const w      = Math.round(bitmap.width  * scale)
+  const h      = Math.round(bitmap.height * scale)
+
+  const canvas = document.createElement('canvas')
+  canvas.width  = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('canvas 2d unsupported')
+  ctx.drawImage(bitmap, 0, 0, w, h)
+  bitmap.close?.()
+
+  // Use JPEG — significantly smaller than PNG for screenshots with text.
+  return canvas.toDataURL('image/jpeg', quality)
+}
+
 export default function BugReportButton() {
   const pathname  = usePathname()
   const [open, setOpen] = useState(false)
@@ -51,9 +79,37 @@ function BugReportModal({ pageUrl, onClose }: { pageUrl: string; onClose: () => 
   const [title,       setTitle]       = useState('')
   const [description, setDescription] = useState('')
   const [severity,    setSeverity]    = useState<'low' | 'medium' | 'high'>('medium')
+  // Screenshot attachments. Stored as data: URLs after client-side resize to
+  // keep DB rows manageable. Up to 3 per report.
+  const [attachments, setAttachments] = useState<string[]>([])
   const [submitting,  setSubmitting]  = useState(false)
   const [error,       setError]       = useState<string | null>(null)
   const [success,     setSuccess]     = useState(false)
+
+  async function handleFiles(files: FileList | null) {
+    if (!files?.length) return
+    const limit = Math.max(0, 3 - attachments.length)
+    const picks = Array.from(files).slice(0, limit)
+    setError(null)
+    const converted: string[] = []
+    for (const f of picks) {
+      if (!f.type.startsWith('image/')) {
+        setError('Only image files (PNG/JPG) are supported.')
+        continue
+      }
+      try {
+        const dataUrl = await resizeImageToDataUrl(f, 1280, 0.85)
+        converted.push(dataUrl)
+      } catch (e) {
+        console.error('[bug-report] image resize failed:', e)
+      }
+    }
+    if (converted.length) setAttachments(prev => [...prev, ...converted])
+  }
+
+  function removeAttachment(idx: number) {
+    setAttachments(prev => prev.filter((_, i) => i !== idx))
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -71,6 +127,7 @@ function BugReportModal({ pageUrl, onClose }: { pageUrl: string; onClose: () => 
           description: description.trim(),
           severity,
           page_url:    pageUrl,
+          attachments,
         }),
       })
       if (!res.ok) {
@@ -146,6 +203,37 @@ function BugReportModal({ pageUrl, onClose }: { pageUrl: string; onClose: () => 
                     {s.toUpperCase()}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Screenshots <span className="text-gray-600">(optional, up to 3 — auto-resized to ≤1280px)</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {attachments.map((a, i) => (
+                  <div key={i} className="relative group">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={a} alt={`screenshot-${i + 1}`} className="h-16 w-16 object-cover rounded border border-gray-700" />
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      className="absolute -top-1 -right-1 bg-red-600 hover:bg-red-500 text-white text-[10px] w-4 h-4 rounded-full"
+                    >×</button>
+                  </div>
+                ))}
+                {attachments.length < 3 && (
+                  <label className="h-16 w-16 rounded border border-dashed border-gray-700 hover:border-blue-500 hover:text-blue-300 text-gray-500 flex items-center justify-center cursor-pointer text-xs text-center">
+                    + Add
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={e => handleFiles(e.target.files)}
+                    />
+                  </label>
+                )}
               </div>
             </div>
 

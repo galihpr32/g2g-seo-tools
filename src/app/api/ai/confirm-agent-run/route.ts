@@ -49,14 +49,25 @@ export async function POST(req: Request) {
   }
 
   if (!trigger) {
-    return NextResponse.json({ error: 'Token not found or already used' }, { status: 404 })
+    // BDT feedback (May 2026): this error was confusing — "Token not found"
+    // sounded like an auth bug. Most common real cause is that the user
+    // clicked confirm twice (one-time-use token), or hit refresh and the
+    // token from the previous Mimir reply has been consumed.
+    return NextResponse.json({
+      error:  'This action was already triggered or the confirmation has expired (5-min window). Ask Mimir to run the agent again to get a fresh confirmation button.',
+      hint:   'Most common cause: confirm clicked twice, or the Mimir reply is older than 5 minutes.',
+      action: 'reopen_mimir',
+    }, { status: 404 })
   }
 
   // Check expiry
   if (new Date(trigger.expires_at) < new Date()) {
     // Clean up expired token
     await supabase.from('mimir_pending_triggers').delete().eq('token', token)
-    return NextResponse.json({ error: 'Token expired — ask Mimir again to get a fresh confirmation' }, { status: 410 })
+    return NextResponse.json({
+      error:  'Confirmation token expired (5-min window). Ask Mimir again to retry — the next confirmation button will work.',
+      action: 'reopen_mimir',
+    }, { status: 410 })
   }
 
   // Check ownership

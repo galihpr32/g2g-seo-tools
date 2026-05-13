@@ -108,7 +108,15 @@ export async function POST(req: Request) {
       description:  String(description).trim().slice(0, 5000),
       page_url:     page_url?.toString().slice(0, 500) ?? null,
       severity:     ['low','medium','high'].includes(severity) ? severity : 'medium',
-      attachments:  Array.isArray(attachments) ? attachments.filter(s => typeof s === 'string').slice(0, 5) : [],
+      // Sprint FB.1 — attachments are data URLs (client-side resized JPEG).
+      // Cap to 3 × ~1.5MB each so payload + DB row stay sane. The client
+      // resize keeps real values around 200-500KB, so this is a guard rail,
+      // not an expected ceiling.
+      attachments:  Array.isArray(attachments)
+        ? attachments
+            .filter(s => typeof s === 'string' && s.length < 1_500_000)
+            .slice(0, 3)
+        : [],
     })
     .select('id, title, severity, page_url')
     .single()

@@ -24,14 +24,6 @@ export const maxDuration = 60
  * Cost: ~$0.01-0.05 per competitor depending on backlink volume.
  */
 
-interface DfsBacklinkSummary {
-  target:                  string
-  referring_domains:       number
-  referring_main_domains:  number
-  referring_pages:         number
-  rank:                    number
-}
-
 interface DfsRefDomain {
   domain:           string
   rank:             number
@@ -41,8 +33,18 @@ interface DfsRefDomain {
   is_lost:          boolean
 }
 
-async function dfsCall<T = unknown>(path: string, body: unknown): Promise<T | null> {
-  if (!process.env.DATAFORSEO_LOGIN || !process.env.DATAFORSEO_PASSWORD) return null
+/** Diagnostic class so the route handler can surface WHY a call returned
+ *  empty data (credentials missing, network error, DFS rejected request). */
+class DfsCallError extends Error {
+  constructor(message: string, public reason: 'no_credentials' | 'http_error' | 'network_error' | 'malformed_response', public detail?: string) {
+    super(message)
+  }
+}
+
+async function dfsCall<T = unknown>(path: string, body: unknown): Promise<T> {
+  if (!process.env.DATAFORSEO_LOGIN || !process.env.DATAFORSEO_PASSWORD) {
+    throw new DfsCallError('DataForSEO credentials missing in env', 'no_credentials')
+  }
   const auth = Buffer.from(`${process.env.DATAFORSEO_LOGIN}:${process.env.DATAFORSEO_PASSWORD}`).toString('base64')
   try {
     const res = await fetch(`https://api.dataforseo.com/v3${path}`, {
@@ -51,18 +53,20 @@ async function dfsCall<T = unknown>(path: string, body: unknown): Promise<T | nu
       body:    JSON.stringify(body),
     })
     if (!res.ok) {
-      console.error('[backlink-gap] DFS error:', res.status, await res.text())
-      return null
+      const text = await res.text().catch(() => '')
+      console.error('[backlink-gap] DFS error:', res.status, text)
+      throw new DfsCallError(`DataForSEO HTTP ${res.status}`, 'http_error', text.slice(0, 300))
     }
     return await res.json() as T
   } catch (err) {
+    if (err instanceof DfsCallError) throw err
     console.error('[backlink-gap] DFS fetch failed:', err)
-    return null
+    throw new DfsCallError('DataForSEO fetch threw', 'network_error', err instanceof Error ? err.message : String(err))
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getReferringDomains(target: string, limit = 100): Promise<DfsRefDomain[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = await dfsCall<any>('/backlinks/referring_domains/live', [{
     target,
     limit,
@@ -70,6 +74,9 @@ async function getReferringDomains(target: string, limit = 100): Promise<DfsRefD
     filters:  [['is_lost', '=', false]],
   }])
   const items = data?.tasks?.[0]?.result?.[0]?.items ?? []
+  if (!items.length && data?.tasks?.[0]?.status_message) {
+    console.warn(`[backlink-gap] DFS returned empty for ${target}: ${data.tasks[0].status_message}`)
+  }
   return items as DfsRefDomain[]
 }
 
@@ -123,20 +130,39 @@ async function handle(req: Request) {
   }
 
   // Pull our referring domains once (used as the "we have these already" set)
-  const ourRefs = await getReferringDomains(ourDomain, 1000)
-  if (!ourRefs) {
-    return NextResponse.json({ error: 'DataForSEO call failed for our domain' }, { status: 502 })
+  let ourRefs: DfsRefDomain[] = []
+  try {
+    ourRefs = await getReferringDomains(ourDomain, 1000)
+  } catch (e) {
+    if (e instanceof DfsCallError) {
+      // BDT (May 2026) flagged backlink-gap was silent-empty. Surface the
+      // real reason so admin can fix credentials / network issue.
+      return NextResponse.json({
+        error:      `DataForSEO call failed for our domain (${ourDomain}): ${e.message}`,
+        reason:     e.reason,
+        detail:     e.detail,
+        action:     e.reason === 'no_credentials' ? 'Add DATAFORSEO_LOGIN + DATAFORSEO_PASSWORD env vars in Vercel.' : 'Check DataForSEO billing / quota.',
+      }, { status: 502 })
+    }
+    throw e
   }
   const ourRefSet = new Set<string>(
     ourRefs.map(r => r.domain.toLowerCase().replace(/^www\./, ''))
   )
 
   // Pull each competitor's referring domains
-  const competitorResults: Array<{ competitor: string; gaps: Array<{ domain: string; rank: number; backlinks: number }>; total: number; gapsCount: number }> = []
+  const competitorResults: Array<{ competitor: string; gaps: Array<{ domain: string; rank: number; backlinks: number }>; total: number; gapsCount: number; note?: string }> = []
   for (const comp of competitors) {
-    const refs = await getReferringDomains(comp, 200)
-    if (!refs) {
-      competitorResults.push({ competitor: comp, gaps: [], total: 0, gapsCount: 0 })
+    let refs: DfsRefDomain[] = []
+    try {
+      refs = await getReferringDomains(comp, 200)
+    } catch (e) {
+      const note = e instanceof DfsCallError ? `${e.reason}: ${e.message}` : (e instanceof Error ? e.message : 'unknown')
+      competitorResults.push({ competitor: comp, gaps: [], total: 0, gapsCount: 0, note })
+      continue
+    }
+    if (refs.length === 0) {
+      competitorResults.push({ competitor: comp, gaps: [], total: 0, gapsCount: 0, note: 'DataForSEO returned 0 referring domains for this competitor.' })
       continue
     }
 

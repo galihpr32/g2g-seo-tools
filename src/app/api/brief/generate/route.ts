@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { smartScrape } from '@/lib/firecrawl/client'
 import { batchSerpData, getKeywordSuggestions } from '@/lib/dataforseo/client'
-import { buildCategoryInstructions, detectCategory } from '@/lib/g2g-category-prompts'
+import { buildCategoryInstructions, resolveCategory } from '@/lib/g2g-category-prompts'
 import { detectPageLanguage, type PageLanguage } from '@/lib/language-detect'
 import { countryFromLanguageCode, getCountryPreset, type CountryPreset } from '@/lib/country-config'
 import { logApiUsage } from '@/lib/api-logger'
@@ -141,11 +141,19 @@ interface KBContext {
   brandDos: string[]
   brandDonts: string[]
   brandNotes: string
+  /** Hard-stop claims the AI must NEVER make (CS time, refund %, etc).
+   *  Surfaced as a forbidden_claims block in every prompt — separate from
+   *  brandDonts because these specifically gate factual claims, not style. */
+  forbiddenClaims: string[]
   categoryDescription: string
   categoryBuyerIntent: string
   categoryKeywords: string[]
   categoryAngle: string
   categoryNotes: string
+  /** Canonical service_name from g2g_products catalog (e.g. 'Items',
+   *  'Top Up') — drives the category-template detection. Set when the URL
+   *  resolves to a known catalog product, null otherwise. */
+  canonicalServiceName: string | null
   dmcaTerms: Array<{ original: string; replacement: string }>
   uspsOnPage: string[]    // on-page USPs for {usps} placeholder
   uspsOffPage: string[]   // off-page USPs for outreach prompts
@@ -160,7 +168,9 @@ async function loadKBContext(
 ): Promise<KBContext> {
   const empty: KBContext = {
     brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
+    forbiddenClaims: [],
     categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
+    canonicalServiceName: null,
     dmcaTerms: [], uspsOnPage: [], uspsOffPage: [],
   }
 
@@ -198,17 +208,37 @@ async function loadKBContext(
     )
     const catData = (matchedCategory?.data ?? {}) as Record<string, unknown>
 
+    // Look up canonical service_name from g2g_products catalog. Best-effort:
+    // try to match the URL slug → relation_id → catalog row. If the catalog
+    // hasn't been imported yet, this stays null and detection falls back to
+    // URL pattern matching.
+    let canonicalServiceName: string | null = null
+    try {
+      const relMatch = pageUrl.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+      if (relMatch) {
+        const { data: catRow } = await supabase
+          .from('g2g_products')
+          .select('service_name')
+          .eq('relation_id', relMatch[0])
+          .eq('is_active', true)
+          .maybeSingle()
+        if (catRow?.service_name) canonicalServiceName = String(catRow.service_name)
+      }
+    } catch { /* non-blocking */ }
+
     return {
       brandTone:            (brandData.tone         as string) ?? '',
       brandAudience:        (brandData.audience     as string) ?? '',
       brandDos:             (brandData.dos          as string[]) ?? [],
       brandDonts:           (brandData.donts        as string[]) ?? [],
       brandNotes:           (brandData.notes        as string) ?? '',
+      forbiddenClaims:      (brandData.forbidden_claims as string[]) ?? [],
       categoryDescription:  (catData.description   as string) ?? '',
       categoryBuyerIntent:  (catData.buyer_intent  as string) ?? '',
       categoryKeywords:     (catData.keywords      as string[]) ?? [],
       categoryAngle:        (catData.angle         as string) ?? '',
       categoryNotes:        (catData.notes         as string) ?? '',
+      canonicalServiceName,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       dmcaTerms: ((dmcaTerms ?? []) as any[]).map((t: any) => ({ original: t.original_term, replacement: t.replacement_term })),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -229,6 +259,16 @@ async function loadKBContext(
 function buildKBBlock(kb: KBContext, includeDmca = true): string {
   const parts: string[] = []
 
+  // FORBIDDEN CLAIMS — placed FIRST, framed as HARD rules so the LLM weighs
+  // them heaviest. BDT feedback showed Bragi was inventing CS resolution
+  // times — this block is the surgical fix.
+  if (kb.forbiddenClaims.filter(Boolean).length) {
+    parts.push(`⛔ FORBIDDEN CLAIMS (DO NOT WRITE — instant rejection if any appear):
+${kb.forbiddenClaims.filter(Boolean).map(d => `- ${d}`).join('\n')}
+
+These are factual claims we cannot back. If a competitor analysis tempts you toward one, REPHRASE around it — never adopt the claim.`)
+  }
+
   if (kb.brandTone || kb.brandAudience || kb.brandDos.length || kb.brandDonts.length) {
     parts.push(`BRAND CONTEXT (MUST FOLLOW):
 Tone: ${kb.brandTone || 'Not specified'}
@@ -236,6 +276,11 @@ Audience: ${kb.brandAudience || 'Not specified'}
 ${kb.brandDos.filter(Boolean).length ? `DOs:\n${kb.brandDos.filter(Boolean).map(d => `- ${d}`).join('\n')}` : ''}
 ${kb.brandDonts.filter(Boolean).length ? `DON'Ts:\n${kb.brandDonts.filter(Boolean).map(d => `- ${d}`).join('\n')}` : ''}
 ${kb.brandNotes ? `Notes: ${kb.brandNotes}` : ''}`.trim())
+  }
+
+  if (kb.canonicalServiceName) {
+    parts.push(`CANONICAL PRODUCT CATEGORY: ${kb.canonicalServiceName}
+This page is for "${kb.canonicalServiceName}" — DO NOT treat it as a different category. If the URL slug suggests otherwise, trust the canonical category. Currency/Coins, Items, Top Up, Accounts, etc. each require DIFFERENT keyword sets and section structures (see template above).`)
   }
 
   if (kb.categoryDescription || kb.categoryAngle || kb.categoryKeywords.length) {
@@ -306,11 +351,15 @@ async function runBriefPipeline(
     const ownerId: string = briefRow?.owner_user_id ?? ''
 
     // Load KB context once for the pipeline
-    const kb = ownerId
+    const kb: KBContext = ownerId
       ? await loadKBContext(supabase as any, ownerId, item.page)
-      : { brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
+      : {
+          brandTone: '', brandAudience: '', brandDos: [], brandDonts: [], brandNotes: '',
+          forbiddenClaims: [],
           categoryDescription: '', categoryBuyerIntent: '', categoryKeywords: [], categoryAngle: '', categoryNotes: '',
-          dmcaTerms: [], uspsOnPage: [], uspsOffPage: [] }
+          canonicalServiceName: null,
+          dmcaTerms: [], uspsOnPage: [], uspsOffPage: [],
+        }
 
     // Detect language from the target page URL
     const lang = detectPageLanguage(item.page)
@@ -356,6 +405,49 @@ async function runBriefPipeline(
   }
 }
 
+// ─── Category-aware keyword filter (Sprint BRAGI.9) ────────────────────────
+// Demote / drop keywords whose intent mismatches the canonical service_name.
+// Example: BDT complained that an "Items" page got "Growtopia currency buy"
+// as the primary target keyword — that's a currency-intent query, not items.
+//
+// Strategy: tag each keyword with an inferred intent bucket, then keep
+// only those that align with the page's category (or are generic = no
+// intent tokens). Returns the filtered list IN ORIGINAL ORDER so existing
+// scoring (search_volume etc.) is preserved.
+
+const CATEGORY_INTENT_TOKENS: Record<string, { keep: string[]; reject: string[] }> = {
+  'Items':         { keep: ['item', 'items', 'skin', 'cosmetic', 'mount', 'pet', 'weapon', 'armor', 'rune'],
+                     reject: ['currency', 'gold', 'coin', 'coins', 'gem', 'gems', 'top up', 'topup', 'recharge'] },
+  'Game coins':    { keep: ['gold', 'coin', 'coins', 'currency', 'gem', 'gems'],
+                     reject: ['skin', 'item', 'items', 'account', 'top up', 'topup'] },
+  'Top Up':        { keep: ['top up', 'topup', 'recharge', 'reload', 'voucher'],
+                     reject: ['account', 'item', 'items', 'skin', 'gold', 'coin'] },
+  'Accounts':      { keep: ['account', 'accounts', 'level', 'rank'],
+                     reject: ['top up', 'topup', 'recharge', 'gift card'] },
+  'Gift Cards':    { keep: ['gift card', 'giftcard', 'voucher', 'prepaid'],
+                     reject: ['account', 'item', 'skin'] },
+  'GamePal':       { keep: ['coach', 'coaching', 'lfg', 'gamepal', 'play with', 'partner'],
+                     reject: ['account', 'gold', 'item'] },
+  'Game Coaching': { keep: ['coach', 'coaching', 'tutor', 'lesson', 'training'],
+                     reject: ['account', 'gold', 'item'] },
+}
+
+function filterKeywordsByCategory<T extends { keyword: string }>(
+  keywords: T[],
+  canonicalServiceName: string | null,
+): T[] {
+  if (!canonicalServiceName) return keywords
+  const rules = CATEGORY_INTENT_TOKENS[canonicalServiceName]
+  if (!rules) return keywords
+
+  return keywords.filter(kw => {
+    const k = (kw.keyword ?? '').toLowerCase()
+    // Hard reject if it explicitly mentions a mismatched category
+    if (rules.reject.some(tok => k.includes(tok))) return false
+    return true
+  })
+}
+
 // ─── ON-PAGE Pipeline ──────────────────────────────────────────────────────────
 async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
   briefId: string
@@ -379,7 +471,10 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
     : { organicResults: [], peopleAlsoAsk: [], relatedSearches: [] }
 
   // Step 3: Get keyword suggestions from primary keyword
-  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  // Filter by canonical category — drops "currency"-flavoured suggestions
+  // when this page is for Items, etc. BDT (May 2026) flagged this misalignment.
+  const kwSuggestionsRaw = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  const kwSuggestions = filterKeywordsByCategory(kwSuggestionsRaw, kb.canonicalServiceName)
 
   // Store raw data
   await updateBrief({
@@ -475,7 +570,10 @@ async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   const serpData = topQueries.length
     ? await batchSerpData(topQueries, country.dfsLocationCode, country.dfsLanguageCode)
     : await batchSerpData([primaryKeyword], country.dfsLocationCode, country.dfsLanguageCode)
-  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  // Filter by canonical category — drops "currency"-flavoured suggestions
+  // when this page is for Items, etc. BDT (May 2026) flagged this misalignment.
+  const kwSuggestionsRaw = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  const kwSuggestions = filterKeywordsByCategory(kwSuggestionsRaw, kb.canonicalServiceName)
 
   await updateBrief({
     crawl_data: null,   // explicit: no crawl for new page
@@ -539,7 +637,10 @@ async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, 
   const serpData = topQueries.length
     ? await batchSerpData(topQueries, country.dfsLocationCode, country.dfsLanguageCode)
     : await batchSerpData([primaryKeyword], country.dfsLocationCode, country.dfsLanguageCode)
-  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  // Filter by canonical category — drops "currency"-flavoured suggestions
+  // when this page is for Items, etc. BDT (May 2026) flagged this misalignment.
+  const kwSuggestionsRaw = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  const kwSuggestions = filterKeywordsByCategory(kwSuggestionsRaw, kb.canonicalServiceName)
 
   await updateBrief({
     crawl_data: null,
@@ -602,7 +703,10 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   const serpData = await batchSerpData([primaryKeyword, topic].filter(Boolean), country.dfsLocationCode, country.dfsLanguageCode)
 
   // Step 2: Keyword suggestions for off-page content ideas
-  const kwSuggestions = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  // Filter by canonical category — drops "currency"-flavoured suggestions
+  // when this page is for Items, etc. BDT (May 2026) flagged this misalignment.
+  const kwSuggestionsRaw = await getKeywordSuggestions(primaryKeyword, country.dfsLocationCode, country.dfsLanguageCode)
+  const kwSuggestions = filterKeywordsByCategory(kwSuggestionsRaw, kb.canonicalServiceName)
 
   await updateBrief({
     topic,
@@ -682,7 +786,7 @@ function buildOnPagePrompt(p: {
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword, p.kb.uspsOnPage)
-  const categoryTemplate = detectCategory(p.page)
+  const categoryTemplate = resolveCategory(p.page, p.kb.canonicalServiceName)
   const hasCategoryTemplate = !!categoryTemplate
 
   const today = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
@@ -725,7 +829,10 @@ ${p.selectedKeywords.filter(Boolean).map(k => `- ${k}`).join('\n')}
 KEYWORD SUGGESTIONS (volume from DataForSEO — use for additional coverage):
 ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'} | CPC: $${k.cpc ?? '?'}`).join('\n')}
 
-EDITOR NOTES: ${p.itemNotes || 'none'}
+${p.itemNotes ? `⚡ DETECTED SIGNAL FROM AGENT (must reference in draft):
+${p.itemNotes}
+
+REQUIREMENT: At least one section must directly reference the trend, keyword gap, or ranking drop above — by name. Generic "current trends" is not enough.` : 'EDITOR NOTES: none'}
 
 ---
 ${hasCategoryTemplate ? `
@@ -764,19 +871,39 @@ ${hasCategoryTemplate
   : 'Write 5-6 Q&A pairs based on People Also Ask data. Prioritise questions not already answered on the page.'}
 
 ## CONTENT DRAFT
-Write the refreshed, publish-ready content draft. This is a content UPDATE — preserve the page's existing strengths, enrich with missing topics, and ensure freshness.
+⚠ CRITICAL OUTPUT FORMAT — DIFF-STYLE, NOT FULL REWRITE ⚠
+
+The BDT does NOT want a brand-new article — they want a TARGETED EDIT plan. For every section in the current page, output ONE of:
+
+- **\`[KEEP]\` — Section title**
+  One sentence why it's working. No new content needed.
+
+- **\`[UPDATE]\` — Section title**
+  Specify EXACTLY what to change (1-3 bullets) + the new/replacement copy (in HTML, ≤150 words).
+  Use this when the section is on-topic but stale, thin, or missing details competitors have.
+
+- **\`[ADD]\` — New section title**
+  Full new section content in HTML (≤200 words). Use this only for missing sections — competitors cover X, we don't.
+
 ${hasCategoryTemplate ? `
 CRITICAL: Follow the G2G category template structure EXACTLY:
 - Use HTML format with <br><br> between paragraphs (NO <p> tags)
-- Follow the exact H1 format: ${categoryInstructions.match(/H1 format: (.+)/)?.[1] ?? ''}
-- Include {{trending_games}} placeholder in the Trending Products section
-- Follow keyword density rules from the template
-- Follow all writing rules and forbidden words from the template
-- Write the FULL draft including ALL sections from the template
-` : 'Aim for 800-1200 words. Weave in the target keyword and long-tail variants naturally. Do not pad with filler content.'}
+- For ADD/UPDATE blocks, follow keyword density rules + writing rules + forbidden words from the template
+- For the H1 (only if updating): ${categoryInstructions.match(/H1 format: (.+)/)?.[1] ?? ''}
+- If the Trending Products section is missing, ADD it with {{trending_games}} placeholder
+- Mark sections by their existing H2 names from the CURRENT PAGE CONTENT above. Do NOT invent new section names if a similar one already exists.
+` : `
+Pacing guidance:
+- For pages already 800+ words: aim for ≤3 UPDATE blocks and ≤2 ADD blocks total. We're surgically improving, not rewriting.
+- For pages <500 words: more ADDs are OK, but still mark existing sections KEEP/UPDATE rather than starting from scratch.
+- Total new content output across all blocks should rarely exceed 800 words.
+`}
+
+DO NOT write a full continuous article. DO NOT output sections labelled by their old H2 without a [KEEP]/[UPDATE]/[ADD] tag. The output is a CHANGELIST.
+
 Also output:
-META TITLE: (≤60 chars)
-META DESCRIPTION: (≤110 chars)`
+META TITLE: (≤60 chars — only if the current one is weak; otherwise write "KEEP" to signal no change)
+META DESCRIPTION: (≤110 chars — same rule)`
 }
 
 // ─── buildNewPagePrompt — for output_type='new_page' ─────────────────────
@@ -805,7 +932,7 @@ function buildNewPagePrompt(p: {
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword, p.kb.uspsOnPage)
-  const categoryTemplate = detectCategory(p.page)
+  const categoryTemplate = resolveCategory(p.page, p.kb.canonicalServiceName)
   const hasCategoryTemplate = !!categoryTemplate
   const today = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 
@@ -839,7 +966,10 @@ ${p.selectedKeywords.filter(Boolean).map(k => `- ${k}`).join('\n')}
 ` : ''}KEYWORD SUGGESTIONS (volume from DataForSEO — for additional coverage):
 ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'} | CPC: $${k.cpc ?? '?'}`).join('\n')}
 
-EDITOR NOTES: ${p.itemNotes || 'none'}
+${p.itemNotes ? `⚡ DETECTED SIGNAL FROM AGENT (must reference in draft):
+${p.itemNotes}
+
+REQUIREMENT: At least one section must directly reference the trend, keyword gap, or ranking drop above — by name. Generic "current trends" is not enough.` : 'EDITOR NOTES: none'}
 
 ---
 ${hasCategoryTemplate ? `
@@ -961,7 +1091,10 @@ ${p.selectedKeywords.filter(Boolean).map(k => `- ${k}`).join('\n')}
 ` : ''}KEYWORD SUGGESTIONS:
 ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'}`).join('\n')}
 
-EDITOR NOTES: ${p.itemNotes || 'none'}
+${p.itemNotes ? `⚡ DETECTED SIGNAL FROM AGENT (must reference in draft):
+${p.itemNotes}
+
+REQUIREMENT: At least one section must directly reference the trend, keyword gap, or ranking drop above — by name. Generic "current trends" is not enough.` : 'EDITOR NOTES: none'}
 
 ---
 ${buildKBBlock(p.kb, true)}
@@ -1085,7 +1218,10 @@ ${p.relatedSearches.map(r => `- ${r.query}`).join('\n')}
 KEYWORD IDEAS:
 ${p.kwSuggestions.map(k => `- "${k.keyword}" | vol: ${k.search_volume ?? '?'}`).join('\n')}
 
-EDITOR NOTES: ${p.itemNotes || 'none'}
+${p.itemNotes ? `⚡ DETECTED SIGNAL FROM AGENT (must reference in draft):
+${p.itemNotes}
+
+REQUIREMENT: At least one section must directly reference the trend, keyword gap, or ranking drop above — by name. Generic "current trends" is not enough.` : 'EDITOR NOTES: none'}
 ${buildKBBlock(p.kb, false)}
 ---
 ${p.customInstructions?.trim() ? `\nCUSTOM EDITOR INSTRUCTIONS (override defaults where relevant):\n${p.customInstructions.trim()}\n` : ''}

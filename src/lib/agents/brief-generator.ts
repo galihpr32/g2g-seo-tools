@@ -608,6 +608,20 @@ function buildPrompt(input: BriefInput, kbBlock: string, brandName: string = 'G2
 - faqSuggestions: 3-5 questions real users actually search (use "people also ask" style — pricing, safety, delivery time, refund policy).
 - Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.`
 
+  // Sprint BRAGI.10 — Hoist upstream agent signals into a prominent
+  // DETECTED OPPORTUNITY block. BDT (May 2026) flagged that Odin/Loki
+  // trend info ("Firaxis Anniversary Sale", "Garama and Madundung trending")
+  // was being detected but never landed in the final draft. The old prompt
+  // tucked it into "Context from upstream agent: …" as a passing hint —
+  // not surfaced enough to force the LLM to mention it.
+  const signalBlock = input.notes ? `
+
+⚡ DETECTED SIGNAL FROM AGENT (must reference in draft):
+${input.notes}
+
+REQUIREMENT: At least one section in the final content must directly reference the detected trend, keyword gap, or ranking drop above — by name. If Odin/Loki flagged a specific event/keyword/competitor, the draft must call it out (not just generic "current trends"). If Heimdall flagged a position drop, the content must address why and what we changed.
+` : ''
+
   return `You are an expert SEO content strategist for ${brandHost}, a gaming marketplace.
 
 Create a structured SEO content brief for the following:
@@ -616,7 +630,7 @@ Target page: ${input.pageUrl}
 Primary keyword: "${input.keyword}" (${volStr})
 Brief type: ${input.briefType}
 ${input.competitorUrl ? `Reference competitor URL: ${input.competitorUrl}` : ''}
-${input.notes ? `Context from upstream agent: ${input.notes}` : ''}
+${signalBlock}
 ${kbBlock}
 
 ${isCategory ? 'This is a game category page that sells in-game currency, items, accounts, or boosting services. The content must serve buyers (help them find what they want and trust the marketplace) AND search intent.' : ''}
