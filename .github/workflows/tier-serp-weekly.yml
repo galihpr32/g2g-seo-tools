@@ -1,11 +1,15 @@
 name: Weekly Tier SERP Snapshot
 
+# ── PAUSED 2026-05-14 ─────────────────────────────────────────────────
+# Auto-schedule disabled due to DataForSEO budget conservation.
+# Manual trigger via GitHub Actions "Run workflow" button is still active,
+# AND the UI button at /priority-products → "Run SERP baseline" still works
+# (uses /api/priority-products/run-baseline — chunked, owner-controlled).
+#
+# To re-enable: uncomment the `- cron` line below and push.
 on:
-  schedule:
-    # Every Monday 02:00 UTC (09:00 WIB) — refreshes SERP for all Tier 1/2
-    # products across the 5 tracked markets (US, DE, FR, MY, ID). Per-call
-    # cost ~$0.0006; full run ~$1.30 at ~2,100 calls/week. See tier-ranking-tracker spec.
-    - cron: '0 2 * * 1'
+  # schedule:
+  #   - cron: '0 2 * * 1'         # Monday 02:00 UTC (09:00 WIB) — PAUSED
   workflow_dispatch:
 
 concurrency:

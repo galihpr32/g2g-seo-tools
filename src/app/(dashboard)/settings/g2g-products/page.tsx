@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useBrandTheme } from '@/lib/hooks/useBrandTheme'
 
 // ─── G2G canonical catalog admin ─────────────────────────────────────────────
 // Upload the latest CSV export from the G2G CMS admin, eyeball the delta,
@@ -60,6 +61,7 @@ interface Coverage {
 }
 
 export default function G2gProductsPage() {
+  const theme = useBrandTheme()
   const [stats,   setStats]   = useState<Stats | null>(null)
   const [coverage, setCoverage] = useState<Coverage | null>(null)
   const [rows,    setRows]    = useState<CatalogRow[]>([])
@@ -139,9 +141,9 @@ export default function G2gProductsPage() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">📚 G2G Product Catalog</h1>
+          <h1 className="text-2xl font-bold text-white">📚 {theme.name} Product Catalog</h1>
           <p className="text-sm text-gray-400 mt-1">
-            Canonical mirror of every G2G CMS product — feeds CMS upload caching, tier autocomplete, sheet validation, and opportunity mapping.
+            Canonical mirror of every {theme.name} CMS product — feeds CMS upload caching, tier autocomplete, sheet validation, and opportunity mapping.
           </p>
         </div>
         <Link href="/settings" className="text-sm text-gray-400 hover:text-white">← Back to Settings</Link>

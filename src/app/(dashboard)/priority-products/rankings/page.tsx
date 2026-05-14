@@ -119,6 +119,8 @@ export default function RankingsDashboardPage() {
   const [services, setServices] = useState<string[]>([])
   const [range,    setRange]    = useState<string>('1w')
   const [search,   setSearch]   = useState('')
+  // Sprint RANKINGS.UX — client-side bucket filter by avgPosition range
+  const [bucket,   setBucket]   = useState<'all' | 'top3' | 'top10' | 'top20' | 'top50' | 'outside' | 'notRanking'>('all')
 
   // Load the 9 canonical service categories once
   useEffect(() => {
@@ -180,11 +182,24 @@ export default function RankingsDashboardPage() {
   const filteredProducts = useMemo(() => {
     if (!data) return []
     const s = search.trim().toLowerCase()
-    if (!s) return data.products
-    return data.products.filter(p =>
-      p.productName.toLowerCase().includes(s) || (p.category ?? '').toLowerCase().includes(s),
-    )
-  }, [data, search])
+    return data.products.filter(p => {
+      // Text search filter
+      if (s && !p.productName.toLowerCase().includes(s) && !(p.category ?? '').toLowerCase().includes(s)) {
+        return false
+      }
+      // Sprint RANKINGS.UX — bucket filter by avgPosition
+      if (bucket === 'all') return true
+      const ap = p.avgPosition
+      if (bucket === 'notRanking') return ap == null
+      if (ap == null) return false   // exclude unranked from numbered buckets
+      if (bucket === 'top3')    return ap >= 1 && ap <= 3
+      if (bucket === 'top10')   return ap > 3 && ap <= 10
+      if (bucket === 'top20')   return ap > 10 && ap <= 20
+      if (bucket === 'top50')   return ap > 20 && ap <= 50
+      if (bucket === 'outside') return ap > 50
+      return true
+    })
+  }, [data, search, bucket])
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
@@ -231,6 +246,22 @@ export default function RankingsDashboardPage() {
             {services.map(s => <option key={s} value={s}>📚 {s}</option>)}
           </select>
         )}
+
+        {/* Sprint RANKINGS.UX — bucket filter by avgPosition */}
+        <select
+          value={bucket}
+          onChange={e => setBucket(e.target.value as typeof bucket)}
+          className="bg-gray-900 border border-gray-800 rounded px-2 py-1 text-white"
+          title="Filter products by their average ranking position"
+        >
+          <option value="all">All positions</option>
+          <option value="top3">🟢 Top 3 (#1–3)</option>
+          <option value="top10">🔵 Top 10 (#4–10)</option>
+          <option value="top20">🟠 #11–20</option>
+          <option value="top50">🟡 #21–50</option>
+          <option value="outside">⚪ #51+</option>
+          <option value="notRanking">❌ Not ranking</option>
+        </select>
 
         <span className="text-gray-700 mx-1">·</span>
         <span className="text-gray-500">Range:</span>
@@ -486,6 +517,9 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 }
 
 function DistributionChart({ data }: { data: DistributionPoint[] }) {
+  // Sprint RANKINGS.UX — hover tooltip with per-date bucket breakdown
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
+
   if (data.length === 0) {
     return <p className="text-xs text-gray-500 py-12 text-center">No snapshots yet. Run /api/cron/tier-serp-weekly to populate.</p>
   }
@@ -495,40 +529,100 @@ function DistributionChart({ data }: { data: DistributionPoint[] }) {
   const barW = (w - padding * 2) / data.length
   const yScale = (n: number) => (n / max) * (h - padding * 2)
 
+  const hovered = hoveredIdx != null ? data[hoveredIdx] : null
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
-      {/* Bars stacked */}
-      {data.map((d, i) => {
-        const x = padding + i * barW
-        const colW = Math.max(8, barW - 4)
-        const buckets = [
-          { v: d.top3,    color: '#10b981' },
-          { v: d.top10,   color: '#3b82f6' },
-          { v: d.top20,   color: '#f59e0b' },
-          { v: d.top50,   color: '#fb923c' },
-          { v: d.outside, color: '#6b7280' },
-        ]
-        let yOffset = h - padding
-        return (
-          <g key={d.date}>
-            {buckets.map((b, j) => {
-              const bh = yScale(b.v)
-              const rect = (
-                <rect key={j} x={x} y={yOffset - bh} width={colW} height={bh} fill={b.color}>
-                  <title>{`${b.v} kws · ${d.date}`}</title>
-                </rect>
-              )
-              yOffset -= bh
-              return rect
-            })}
-            {/* X label */}
-            <text x={x + colW / 2} y={h - padding + 12} fontSize="8" fill="#6b7280" textAnchor="middle">
-              {d.date.slice(5)}
-            </text>
-          </g>
-        )
-      })}
-    </svg>
+    <div className="relative">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="xMidYMid meet">
+        {/* Bars stacked */}
+        {data.map((d, i) => {
+          const x = padding + i * barW
+          const colW = Math.max(8, barW - 4)
+          const buckets = [
+            { v: d.top3,    color: '#10b981', label: 'Top 3'    },
+            { v: d.top10,   color: '#3b82f6', label: '4–10'     },
+            { v: d.top20,   color: '#f59e0b', label: '11–20'    },
+            { v: d.top50,   color: '#fb923c', label: '21–50'    },
+            { v: d.outside, color: '#6b7280', label: 'Outside'  },
+          ]
+          let yOffset = h - padding
+          const total = buckets.reduce((s, b) => s + b.v, 0)
+          const isHovered = hoveredIdx === i
+          return (
+            <g
+              key={d.date}
+              onMouseEnter={() => setHoveredIdx(i)}
+              onMouseLeave={() => setHoveredIdx(null)}
+              style={{ cursor: 'pointer' }}
+            >
+              {/* Invisible hit area covering full column height for easier hover */}
+              <rect x={x} y={padding} width={colW + 4} height={h - padding * 2} fill="transparent" />
+
+              {buckets.map((b, j) => {
+                const bh = yScale(b.v)
+                const rect = (
+                  <rect
+                    key={j}
+                    x={x} y={yOffset - bh} width={colW} height={bh}
+                    fill={b.color}
+                    opacity={hoveredIdx == null || isHovered ? 1 : 0.4}
+                  />
+                )
+                yOffset -= bh
+                return rect
+              })}
+              {/* Total label on top of bar when hovered */}
+              {isHovered && total > 0 && (
+                <text
+                  x={x + colW / 2}
+                  y={h - padding - yScale(total) - 4}
+                  fontSize="9"
+                  fill="#ffffff"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                >
+                  {total}
+                </text>
+              )}
+              {/* X label */}
+              <text x={x + colW / 2} y={h - padding + 12} fontSize="8" fill={isHovered ? '#fff' : '#6b7280'} textAnchor="middle">
+                {d.date.slice(5)}
+              </text>
+            </g>
+          )
+        })}
+      </svg>
+
+      {/* Hover info panel — pinned top-right, doesn't follow cursor */}
+      {hovered && (
+        <div className="absolute top-1 right-1 bg-gray-950/95 border border-gray-700 rounded-md px-3 py-2 text-xs shadow-lg pointer-events-none min-w-[180px]">
+          <div className="text-gray-400 mb-1.5">{hovered.date}</div>
+          <div className="space-y-0.5">
+            <Row color="#10b981" label="Top 3"   value={hovered.top3}    />
+            <Row color="#3b82f6" label="4–10"    value={hovered.top10}   />
+            <Row color="#f59e0b" label="11–20"   value={hovered.top20}   />
+            <Row color="#fb923c" label="21–50"   value={hovered.top50}   />
+            <Row color="#6b7280" label="Outside" value={hovered.outside} />
+          </div>
+          <div className="border-t border-gray-700 mt-1.5 pt-1.5 flex items-center justify-between text-gray-300">
+            <span>Total kws</span>
+            <span className="font-mono font-semibold">{hovered.top3 + hovered.top10 + hovered.top20 + hovered.top50 + hovered.outside}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Row({ color, label, value }: { color: string; label: string; value: number }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-1.5">
+        <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: color }} />
+        <span className="text-gray-300">{label}</span>
+      </div>
+      <span className="font-mono text-gray-100">{value}</span>
+    </div>
   )
 }
 
