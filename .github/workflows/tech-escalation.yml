@@ -1,11 +1,12 @@
-name: Daily Tech Escalation Digest
+name: Weekly Tech Escalation Digest
 
 on:
   schedule:
-    # Daily 02:00 UTC (09:00 WIB) — early enough that Asst Manager sees it
-    # before sprint planning. Conservative: only fires when there ARE stale
-    # items (route returns ok with no Slack post otherwise).
-    - cron: '0 2 * * *'
+    # Sprint TECH.REALTIME — was daily, now MONDAY ONLY for the comprehensive
+    # digest. Real-time alerts for new high/critical items fire on insert via
+    # maybeAlertTechItem helper (see src/lib/slack/tech-item-alert.ts).
+    # Monday 02:00 UTC = 09:00 WIB — early enough before sprint planning.
+    - cron: '0 2 * * 1'
   workflow_dispatch:
 
 concurrency:

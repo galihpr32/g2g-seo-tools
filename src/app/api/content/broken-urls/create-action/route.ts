@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
+import { maybeAlertTechItem } from '@/lib/slack/tech-item-alert'
 
 export const maxDuration = 15
 
@@ -123,6 +124,18 @@ export async function POST(req: Request) {
     .single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+  // Sprint TECH.REALTIME — fire immediate Slack if priority is high/critical.
+  // Best-effort, non-blocking. Sets last_escalated_at to dedupe with weekly digest.
+  await maybeAlertTechItem(db, {
+    id:            action.id,
+    owner_user_id: ownerId,
+    site_slug:     siteSlug,
+    page:          url,
+    title,
+    action_type:   actionType,
+    priority,
+  })
 
   return NextResponse.json({
     ok:             true,
