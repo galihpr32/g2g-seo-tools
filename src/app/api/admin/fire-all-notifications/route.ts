@@ -306,9 +306,11 @@ function interpretOutcome(cron: CronDef, status: number, latency: number, json: 
     }
 
     case 'gsc_daily': {
+      // Sprint FORCE-FIRE.FIX — slack_posted_count is now in the cron response
+      const slackPosted = Number(json?.slack_posted_count ?? 0)
       const results = (json?.results ?? {}) as Record<string, { status?: string; drops?: number; error?: string }>
-      const errors: string[]   = []
-      let totalDrops           = 0
+      const errors: string[] = []
+      let totalDrops         = 0
       const perTarget: FireResult['per_target'] = []
       for (const k of Object.keys(results)) {
         const r = results[k]
@@ -320,21 +322,28 @@ function interpretOutcome(cron: CronDef, status: number, latency: number, json: 
           perTarget.push({ target: k, outcome: r.drops && r.drops > 0 ? 'drops_detected' : 'no_drops', note: `${r.drops ?? 0} drops` })
         }
       }
-      if (errors.length > 0 && totalDrops === 0) {
+      if (errors.length > 0 && totalDrops === 0 && slackPosted === 0) {
         return { ...base, outcome: 'cron_error', per_target: perTarget,
           error_reason: errors.join(' | '),
           suggestion:   'Check GSC OAuth tokens / GA4 property ID',
         }
       }
-      if (totalDrops > 0) {
+      // Honest delivery check: only claim slack_fired if cron actually posted
+      if (slackPosted > 0) {
         return { ...base, outcome: 'slack_fired', per_target: perTarget,
           error_reason: null,
-          suggestion:   'Slack post is also gated by notification_settings.slack_clicks_alerts (default false). Check toggle at /settings if no message appeared.',
+          suggestion:   `${slackPosted} Slack message(s) posted (clicks/index/CWV combined)`,
+        }
+      }
+      if (totalDrops > 0) {
+        return { ...base, outcome: 'partial', per_target: perTarget,
+          error_reason: `${totalDrops} drops detected but 0 Slack messages posted`,
+          suggestion:   'Check (a) toggles at /settings → Slack Notification Settings — clicks/CWV default OFF · (b) URL filter: only /categories/ pages alert',
         }
       }
       return { ...base, outcome: 'skipped_no_data', per_target: perTarget,
-        error_reason: 'No ranking drops >15% WoW detected on /categories/ pages',
-        suggestion:   'Slack fires only when there are real drops on alertable pages. Routing itself is fine.',
+        error_reason: 'No drops >15% WoW detected (or none on /categories/ alertable pages)',
+        suggestion:   'Routing itself is fine. Slack fires only when there are real drops on alertable pages.',
       }
     }
   }

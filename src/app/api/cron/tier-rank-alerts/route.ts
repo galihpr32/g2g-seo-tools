@@ -147,13 +147,43 @@ export async function GET(req: Request) {
     })
   }
 
+  // Sprint ALLCLEAR — even when no alerts, still post "all clear" to Slack
+  // so managers see proof the cron ran. Silence breeds doubt.
+  const { resolveSlackWebhook } = await import('@/lib/slack/routing')
   if (alerts.length === 0) {
-    return NextResponse.json({ ok: true, message: 'No alert-worthy moves today.' })
+    const { data: firstRouteOwnerClear } = await db
+      .from('slack_routing_config')
+      .select('owner_user_id')
+      .eq('notification_type', 'daily_alerts')
+      .eq('enabled', true)
+      .limit(1)
+      .maybeSingle()
+    const ownerForRouteClear = firstRouteOwnerClear?.owner_user_id
+      ?? (await db.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
+      ?? null
+    const webhookUrlClear = ownerForRouteClear
+      ? await resolveSlackWebhook(db, ownerForRouteClear, 'daily_alerts')
+      : process.env.SLACK_WEBHOOK_URL ?? null
+    if (!webhookUrlClear) {
+      return NextResponse.json({ ok: true, alerts: 0, message: 'No alert-worthy moves today; no webhook resolved.' })
+    }
+    const allClearBlocks = [
+      { type: 'header', text: { type: 'plain_text', text: '✅ Tier Rankings — All Clear', emoji: true } },
+      { type: 'section', text: { type: 'mrkdwn', text: `No Tier 1 drops ≥${T1_DROP_THRESHOLD} pos · No Tier 2 fall-outs from top 10 detected today.\n_Last check: ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC_` } },
+    ]
+    try {
+      const slackRes = await fetch(webhookUrlClear, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocks: allClearBlocks }),
+      })
+      return NextResponse.json({ ok: true, alerts: 0, delivered: slackRes.ok ? 'slack' : 'failed', message: 'All-clear posted.' })
+    } catch (e) {
+      return NextResponse.json({ ok: true, alerts: 0, error: String(e) })
+    }
   }
 
   // ── 4. Build + send single consolidated Slack message ────────────────────
   // Sprint MULTI.3 — route via slack_routing_config under 'daily_alerts'
-  const { resolveSlackWebhook } = await import('@/lib/slack/routing')
   const { data: firstRouteOwner } = await db
     .from('slack_routing_config')
     .select('owner_user_id')

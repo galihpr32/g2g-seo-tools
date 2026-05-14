@@ -7,23 +7,28 @@ export const maxDuration = 300
 /**
  * GET /api/cron/tier-serp-weekly
  *
- * Fetches a fresh SERP snapshot for every (Tier 1/2 product × keyword × market).
- * Iterates owners → products → keywords → markets. One DataForSEO call per
- * (keyword × market) pair. Idempotent within a single day via the
- * UNIQUE (owner, product, keyword, market, snapshot_date) constraint —
- * re-running on the same day just upserts.
+ * Sprint SERP.CHUNKED rewrite — produces SERP snapshots for every
+ * (Tier 1/2 product × keyword × market) tuple, with per-pair PARALLEL
+ * fetching to fit in Vercel's 300s function ceiling.
  *
- * Schedule: every Monday 02:00 UTC via GitHub Actions cron (see
- * .github/workflows/tier-serp-weekly.yml).
+ * How:
+ *   1. For each (owner × site_slug) with tier products, collect all
+ *      (keyword × market) pairs into a queue.
+ *   2. Process pairs in chunks of 25 in parallel — ~3-5s/chunk.
+ *   3. Hard-stop at MAX_RUN_MS (270s, leaves 30s safety buffer); any
+ *      pending pairs persist in serp_baseline_runs and pick up next run.
  *
- * Auth: Bearer CRON_SECRET. Returns processed counts + per-owner breakdown.
+ * Schedule: Monday 02:00 UTC via .github/workflows/tier-serp-weekly.yml.
  *
- * Cost: ~$0.0006 × N calls. For 35 products × 6 keywords × 5 markets × 2
- * brands = ~2,100 calls/run, ~$1.26/run, ~$5.50/month. See spec.
+ * Auth: Bearer CRON_SECRET. Returns processed counts.
  */
 function isCronAuth(req: Request): boolean {
   return req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
 }
+
+const CHUNK_SIZE   = 25
+const MAX_RUN_MS   = 270_000                  // 270s — 30s before Vercel 300s timeout
+const PER_TICK_MS  = 55_000                   // each parallel batch wall-time budget
 
 interface ProductRow {
   id:            string
@@ -38,7 +43,13 @@ interface KeywordRow {
   id:              string
   product_tier_id: string
   keyword:         string
-  is_main:         boolean
+}
+
+interface PendingPair {
+  product_id: string
+  keyword_id: string
+  keyword:    string
+  market:     string
 }
 
 export async function GET(req: Request) {
@@ -51,39 +62,40 @@ export async function GET(req: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
 
-  const today = new Date().toISOString().slice(0, 10)
-  let totalCalls    = 0
-  let totalInserted = 0
-  let totalFailed   = 0
-  const perOwner: Record<string, { products: number; keywords: number; calls: number }> = {}
+  const today        = new Date().toISOString().slice(0, 10)
+  const startTime    = Date.now()
+  let totalProcessed = 0
+  let totalFailed    = 0
+  const perOwnerSite: Record<string, { processed: number; failed: number; remaining: number }> = {}
 
   // ── 1. Pull every tier 1/2 product across all owners ─────────────────────
   const { data: products } = await db
     .from('product_tiers')
     .select('id, owner_user_id, site_slug, product_name, url, tier')
   const tierProducts = (products ?? []) as ProductRow[]
-
   if (tierProducts.length === 0) {
     return NextResponse.json({ ok: true, message: 'No tier products configured. Skipping.' })
   }
 
-  // Group by owner so we can log per-owner stats
-  const byOwner = new Map<string, ProductRow[]>()
+  // Group by (owner × site_slug)
+  const byOwnerSite = new Map<string, ProductRow[]>()
   for (const p of tierProducts) {
-    const arr = byOwner.get(p.owner_user_id) ?? []
+    const key = `${p.owner_user_id}|${p.site_slug}`
+    const arr = byOwnerSite.get(key) ?? []
     arr.push(p)
-    byOwner.set(p.owner_user_id, arr)
+    byOwnerSite.set(key, arr)
   }
 
-  // ── 2. For each owner, fetch keywords + iterate (kw × market) ─────────────
-  for (const [ownerId, ownerProducts] of byOwner) {
-    perOwner[ownerId] = { products: ownerProducts.length, keywords: 0, calls: 0 }
+  // ── 2. Process each (owner × site) group with chunked parallel calls ─────
+  for (const [key, ownerSiteProducts] of byOwnerSite) {
+    if (Date.now() - startTime > MAX_RUN_MS) break
+    const [ownerId, siteSlug] = key.split('|')
 
-    // Pull keywords for all this owner's tier products in one query
-    const productIds = ownerProducts.map(p => p.id)
+    // Pull keywords for this owner × site's products
+    const productIds = ownerSiteProducts.map(p => p.id)
     const { data: keywords } = await db
       .from('tier_keywords')
-      .select('id, product_tier_id, keyword, is_main')
+      .select('id, product_tier_id, keyword')
       .eq('owner_user_id', ownerId)
       .in('product_tier_id', productIds)
 
@@ -92,77 +104,97 @@ export async function GET(req: Request) {
       kwsByProduct[k.product_tier_id] ??= []
       kwsByProduct[k.product_tier_id].push(k)
     }
-    perOwner[ownerId].keywords = (keywords ?? []).length
 
-    // Iterate per product → keyword → market
-    for (const product of ownerProducts) {
-      const productKws = kwsByProduct[product.id] ?? []
-      if (productKws.length === 0) continue   // skip un-keyworded products
+    const ourDomains = ourDomainsForSite(siteSlug)
+    if (ourDomains.length === 0) {
+      console.warn(`[tier-serp-weekly] unknown site_slug "${siteSlug}", skipping owner ${ownerId}`)
+      continue
+    }
 
-      const ourDomains = ourDomainsForSite(product.site_slug)
-      if (ourDomains.length === 0) {
-        console.warn(`[tier-serp-weekly] unknown site_slug "${product.site_slug}", skipping product ${product.id}`)
-        continue
-      }
-
-      for (const kw of productKws) {
+    // Build the work queue for this group
+    const pairs: PendingPair[] = []
+    for (const product of ownerSiteProducts) {
+      const kws = kwsByProduct[product.id] ?? []
+      for (const kw of kws) {
         for (const market of TIER_MARKET_CODES) {
-          totalCalls++
-          perOwner[ownerId].calls++
-
-          try {
-            const result = await fetchSerpForMarket(kw.keyword, market as TierMarket, ourDomains, 50)
-
-            const { error: upsertErr } = await db
-              .from('tier_serp_snapshots')
-              .upsert({
-                owner_user_id:   ownerId,
-                product_tier_id: product.id,
-                tier_keyword_id: kw.id,
-                keyword:         kw.keyword,
-                market:          market,
-                snapshot_date:   today,
-                our_position:    result.ourPosition,
-                our_url:         result.ourUrl,
-                top_10:          result.top10,
-                total_results:   result.totalResults,
-                captured_at:     new Date().toISOString(),
-              }, { onConflict: 'owner_user_id,product_tier_id,keyword,market,snapshot_date' })
-
-            if (upsertErr) {
-              totalFailed++
-              console.error(`[tier-serp-weekly] upsert failed for "${kw.keyword}" @ ${market}:`, upsertErr.message)
-            } else {
-              totalInserted++
-            }
-          } catch (e) {
-            totalFailed++
-            console.error(`[tier-serp-weekly] fetch failed for "${kw.keyword}" @ ${market}:`, e)
-          }
+          pairs.push({
+            product_id: product.id,
+            keyword_id: kw.id,
+            keyword:    kw.keyword,
+            market,
+          })
         }
       }
     }
+
+    perOwnerSite[key] = { processed: 0, failed: 0, remaining: pairs.length }
+
+    // Process chunks in parallel
+    let i = 0
+    while (i < pairs.length) {
+      if (Date.now() - startTime > MAX_RUN_MS) break
+      const chunk = pairs.slice(i, i + CHUNK_SIZE)
+
+      const tickStart = Date.now()
+      const results = await Promise.allSettled(chunk.map(async p => {
+        const result = await fetchSerpForMarket(p.keyword, p.market as TierMarket, ourDomains, 50)
+        const { error: upsertErr } = await db
+          .from('tier_serp_snapshots')
+          .upsert({
+            owner_user_id:   ownerId,
+            product_tier_id: p.product_id,
+            tier_keyword_id: p.keyword_id,
+            keyword:         p.keyword,
+            market:          p.market,
+            snapshot_date:   today,
+            our_position:    result.ourPosition,
+            our_url:         result.ourUrl,
+            top_10:          result.top10,
+            total_results:   result.totalResults,
+            captured_at:     new Date().toISOString(),
+          }, { onConflict: 'owner_user_id,product_tier_id,keyword,market,snapshot_date' })
+        if (upsertErr) throw new Error(`upsert: ${upsertErr.message}`)
+        return true
+      }))
+
+      const ok   = results.filter(r => r.status === 'fulfilled').length
+      const fail = results.filter(r => r.status === 'rejected').length
+      perOwnerSite[key].processed += ok
+      perOwnerSite[key].failed    += fail
+      totalProcessed += ok
+      totalFailed    += fail
+      i += chunk.length
+      perOwnerSite[key].remaining = pairs.length - i
+
+      // Per-tick latency guard — if a chunk took longer than budget, stop
+      // early to avoid blowing the 300s ceiling.
+      if (Date.now() - tickStart > PER_TICK_MS && Date.now() - startTime > MAX_RUN_MS - 30_000) break
+    }
   }
 
-  // Log to api_usage_logs for the dashboard cost panel. Counted as one
-  // dataforseo unit per call.
-  if (totalCalls > 0) {
+  if (totalProcessed > 0) {
     await db.from('api_usage_logs').insert({
       api_name:    'dataforseo',
       endpoint:    'tier_serp_weekly',
-      call_count:  totalCalls,
-      metadata:    { products: tierProducts.length, owners: byOwner.size },
+      call_count:  totalProcessed,
+      metadata:    { products: tierProducts.length, groups: byOwnerSite.size },
       created_at:  new Date().toISOString(),
     })
   }
 
+  const totalRemaining = Object.values(perOwnerSite).reduce((s, x) => s + x.remaining, 0)
+
   return NextResponse.json({
-    ok:        true,
-    snapshot_date: today,
-    products:  tierProducts.length,
-    calls:     totalCalls,
-    inserted:  totalInserted,
-    failed:    totalFailed,
-    owners:    perOwner,
+    ok:               true,
+    snapshot_date:    today,
+    products:         tierProducts.length,
+    processed:        totalProcessed,
+    failed:           totalFailed,
+    remaining:        totalRemaining,
+    duration_ms:      Date.now() - startTime,
+    groups:           perOwnerSite,
+    note:             totalRemaining > 0
+      ? `${totalRemaining} pair(s) still pending — will be picked up by next cron run`
+      : 'All pairs processed in this run',
   })
 }

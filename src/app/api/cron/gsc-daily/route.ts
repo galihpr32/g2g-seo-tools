@@ -48,6 +48,7 @@ export async function GET(request: Request) {
   }
 
   const results: Record<string, unknown> = {}
+  let totalSlackPosted = 0   // Sprint FORCE-FIRE.FIX — true count of Slack messages actually posted
 
   for (const conn of connections) {
     try {
@@ -190,6 +191,7 @@ export async function GET(request: Request) {
           await sendRankingDropAlert(alertableDrops, {
             db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
           })
+          totalSlackPosted++   // Sprint FORCE-FIRE.FIX — count real posts
           await supabase.from('alert_log').insert({
             alert_type: 'ranking_drop',
             site_url: siteUrl,
@@ -224,12 +226,13 @@ export async function GET(request: Request) {
       }, { onConflict: 'site_url,snapshot_date' })
 
       if (notifSettings?.slack_index_alerts ?? true) {
-        await sendIndexCoverageAlert({
+        const ok = await sendIndexCoverageAlert({
           indexedPages: totalIndexed,
           previousIndexed: prevIndexed,
           errors: 0,
           previousErrors: prevErrors,
         }, { db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug })
+        if (ok) totalSlackPosted++   // Sprint FORCE-FIRE.FIX
       }
 
       // ── Task 3: Core Web Vitals ─────────────────────────────────────────
@@ -268,6 +271,7 @@ export async function GET(request: Request) {
             await sendCWVAlert(degradations, {
               db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
             })
+            totalSlackPosted++   // Sprint FORCE-FIRE.FIX
             await supabase.from('alert_log').insert({
               alert_type: 'cwv',
               site_url: siteUrl,
@@ -337,5 +341,39 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({ success: true, results })
+  // Sprint ALLCLEAR — if nothing fired today, post a single "all-clear"
+  // message so stakeholders see proof the cron ran. Routes via daily_alerts.
+  if (totalSlackPosted === 0) {
+    try {
+      const { resolveSlackWebhook } = await import('@/lib/slack/routing')
+      const { data: firstRouteOwner } = await supabase
+        .from('slack_routing_config')
+        .select('owner_user_id')
+        .eq('notification_type', 'daily_alerts')
+        .eq('enabled', true)
+        .limit(1)
+        .maybeSingle()
+      const ownerForRoute = firstRouteOwner?.owner_user_id
+        ?? (await supabase.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
+        ?? null
+      const webhookUrl = ownerForRoute
+        ? await resolveSlackWebhook(supabase, ownerForRoute, 'daily_alerts')
+        : process.env.SLACK_WEBHOOK_URL ?? null
+      if (webhookUrl) {
+        const allClearBlocks = [
+          { type: 'header', text: { type: 'plain_text', text: '✅ GSC Daily — All Clear', emoji: true } },
+          { type: 'section', text: { type: 'mrkdwn', text: `No alertable ranking drops on \`/categories/\` pages today.\nNo index coverage / CWV degradation flagged.\n_Last check: ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC_` } },
+        ]
+        const slackRes = await fetch(webhookUrl, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ blocks: allClearBlocks }),
+        })
+        if (slackRes.ok) totalSlackPosted++
+      }
+    } catch (e) {
+      console.error('[gsc-daily] all-clear post failed:', e)
+    }
+  }
+
+  return NextResponse.json({ success: true, results, slack_posted_count: totalSlackPosted })
 }

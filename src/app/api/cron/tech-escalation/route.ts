@@ -68,8 +68,19 @@ export async function GET(req: Request) {
     .order('created_at', { ascending: true })
     .limit(20)
 
+  // Sprint ALLCLEAR — post all-clear even when no stale items
   if (!items || items.length === 0) {
-    return NextResponse.json({ ok: true, message: 'No stale tech action items.' })
+    const allClearBlocks = [
+      { type: 'header', text: { type: 'plain_text', text: '✅ Tech-debt — Backlog Healthy', emoji: true } },
+      { type: 'section', text: { type: 'mrkdwn', text: 'No tech action items aged >14 days. Backlog is moving.' } },
+    ]
+    try {
+      await fetch(webhookUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blocks: allClearBlocks }),
+      })
+    } catch { /* swallow */ }
+    return NextResponse.json({ ok: true, message: 'No stale tech action items — all-clear posted.', slack_status: 200 })
   }
 
   // Group by site_slug for Slack message clarity

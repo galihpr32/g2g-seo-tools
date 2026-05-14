@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 15
 
@@ -13,29 +14,32 @@ export const maxDuration = 15
  *   by_service_name: [{ service_name, count }, …]
  *   last_import:     { imported_at, rows_total, rows_inserted, … } | null
  */
-export async function GET() {
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  // Sprint OG.CATALOG — scope stats to active site (default 'g2g')
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
   // ── 1. Totals ──────────────────────────────────────────────────────────
   const { count: totalCount } = await db
     .from('g2g_products')
     .select('*', { count: 'exact', head: true })
+    .eq('site_slug', siteSlug)
 
   const { count: activeCount } = await db
     .from('g2g_products')
     .select('*', { count: 'exact', head: true })
+    .eq('site_slug', siteSlug)
     .eq('is_active', true)
 
   // ── 2. By service_name — single query, aggregate in JS (small cardinality) ─
-  // Postgres GROUP BY would be cleaner but requires an RPC; for 9 categories
-  // we can do a lightweight client-side fold.
   const { data: catRows } = await db
     .from('g2g_products')
     .select('service_name')
+    .eq('site_slug', siteSlug)
     .eq('is_active', true)
 
   const catMap = new Map<string, number>()

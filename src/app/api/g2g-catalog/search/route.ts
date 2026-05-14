@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 15
 
@@ -26,11 +27,14 @@ export async function GET(req: Request) {
   const limit   = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '20', 10)))
   const includeInactive = searchParams.get('include_inactive') === '1'
 
+  // Sprint OG.CATALOG — scope search to active site (default 'g2g')
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
   let query = db
     .from('g2g_products')
     .select('relation_id, service_id, brand_id, service_name, brand_name, cms_created_at, is_active')
+    .eq('site_slug', siteSlug)
 
   if (!includeInactive) query = query.eq('is_active', true)
   if (service)          query = query.eq('service_name', service)

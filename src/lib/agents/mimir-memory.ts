@@ -146,10 +146,48 @@ export async function retrieveMemories(
     used += cost
   }
 
-  if (picked.length === 0) return { block: '', rows: [] }
+  if (picked.length === 0) {
+    // Sprint MIMIR.LEARN — log knowledge gap so /reports/mimir-learning
+    // can surface "topics asked about but no memory exists yet". Async,
+    // best-effort, never throw.
+    logRetrievalMiss(db, ctx, eligible.length, hints).catch(() => { /* swallow */ })
+    return { block: '', rows: [] }
+  }
 
   const block = formatMemoriesAsBlock(picked)
   return { block, rows: picked }
+}
+
+/**
+ * Sprint MIMIR.LEARN — record a retrieval miss for the knowledge gap dashboard.
+ * Compresses the query into a single line from hint tokens (we don't have the
+ * raw user prompt here, hint tokens are the next-best signal).
+ */
+async function logRetrievalMiss(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:           SupabaseClient<any, any, any>,
+  ctx:          RetrieveCtx,
+  eligibleCnt:  number,
+  hints:        string[],
+): Promise<void> {
+  // Need at least some signal to be useful — skip blank queries
+  if (hints.length === 0) return
+  const queryStr = hints.slice(0, 12).join(' ').slice(0, 500)
+  try {
+    await db.from('mimir_retrieval_misses').insert({
+      owner_user_id: ctx.ownerId,
+      site_slug:     ctx.siteSlug ?? null,
+      query:         queryStr,
+      top_score:     0,                 // heuristic retriever doesn't expose a similarity
+      threshold:     0,
+      source:        'mimir_chat',
+      source_ref:    ctx.topicSlug ?? ctx.relationId ?? null,
+      // topic / category are filled in async by the weekly classifier
+    })
+  } catch {
+    // Table may not exist on day-0 (migration not applied yet) — swallow
+  }
+  void eligibleCnt
 }
 
 function formatMemoriesAsBlock(rows: MemoryRow[]): string {

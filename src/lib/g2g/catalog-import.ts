@@ -50,6 +50,7 @@ export async function importCatalogCsv(
   csvText:      string,
   ownerUserId:  string,
   sourceLabel:  string | null = null,
+  siteSlug:     string = 'g2g',     // Sprint OG.CATALOG — scope import per brand
 ): Promise<ImportResult> {
   const importedAt = new Date().toISOString()
   const errors:     string[] = []
@@ -71,6 +72,7 @@ export async function importCatalogCsv(
   const { data: priorRows, error: priorErr } = await db
     .from('g2g_products')
     .select('relation_id, service_id, brand_id, service_name, brand_name, is_active')
+    .eq('site_slug', siteSlug)
   if (priorErr) {
     return baseResult(importedAt, [`Failed to snapshot prior catalog: ${priorErr.message}`])
   }
@@ -107,6 +109,7 @@ export async function importCatalogCsv(
       brand_name:       r.brand_name,
       cms_created_at:   r.cms_created_at,
       is_active:        true,                // anything in the CSV is live
+      site_slug:        siteSlug,            // Sprint OG.CATALOG — brand scope
       last_imported_at: importedAt,
       updated_at:       importedAt,
     }))
@@ -128,6 +131,7 @@ export async function importCatalogCsv(
       .update({ is_active: false, updated_at: importedAt })
       .lt('last_imported_at', importedAt)
       .eq('is_active', true)
+      .eq('site_slug', siteSlug)   // Sprint OG.CATALOG — scope to current brand
       .select('relation_id')
     if (deErr) {
       errors.push(`Deactivation pass failed: ${deErr.message}`)

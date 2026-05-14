@@ -51,8 +51,29 @@ export async function GET(req: Request) {
       try {
         const metrics  = await computeAgentMetrics(db, ownerId, site.slug, 7)
         const prevMetrics = await computeAgentMetrics(db, ownerId, site.slug, 14)
-        // Skip brands with zero activity
-        if (metrics.cost.api_calls_total === 0 && metrics.content.briefs_total === 0 && metrics.content.product_content === 0) continue
+        // Sprint ALLCLEAR — even with zero activity, post "Quiet week" so
+        // stakeholders see proof the cron ran. Single short block.
+        const hasActivity = metrics.cost.api_calls_total > 0 || metrics.content.briefs_total > 0 || metrics.content.product_content > 0
+        if (!hasActivity) {
+          const webhookUrlQuiet = await resolveSlackWebhook(db, ownerId, 'agent_performance', { siteSlug: site.slug })
+          if (!webhookUrlQuiet) {
+            errors.push(`${ownerId}/${site.slug}: no webhook resolved (config + env both empty)`)
+            continue
+          }
+          const quietBlocks = [
+            { type: 'header', text: { type: 'plain_text', text: `📊 ${site.display_name} — Quiet Week`, emoji: true } },
+            { type: 'section', text: { type: 'mrkdwn', text: `No agent runs in last 7 days.\n_Possible reasons: opportunity backlog empty, Tyr autopublish gating, manual interventions only._` } },
+            appUrl ? { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: '🎯 Open pipeline' }, url: `${appUrl}/command-center` }] } : null,
+          ].filter(Boolean)
+          try {
+            const rQ = await fetch(webhookUrlQuiet, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ blocks: quietBlocks }) })
+            if (rQ.ok) posted++
+            else errors.push(`${ownerId}/${site.slug}: quiet-week Slack HTTP ${rQ.status}`)
+          } catch (e) {
+            errors.push(`${ownerId}/${site.slug}: quiet-week Slack threw — ${e instanceof Error ? e.message : String(e)}`)
+          }
+          continue
+        }
 
         const fmt = (n: number) => n >= 10_000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toLocaleString()}`
         const fmtPct = (curr: number, prev: number): string => {

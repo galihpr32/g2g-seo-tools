@@ -86,10 +86,22 @@ export async function GET(request: Request) {
           continue
         }
 
-        // ── 2. Build PPTX + 3. Upload to Drive + 4. Post Slack ──────────────
-        const delivery = await deliverWeeklyPptx(db, ownerId, siteSlug, reportId)
-        results[ownerId][siteSlug] = { ok: true, reportId, ...delivery }
-        if (delivery.slack_posted) totalDelivered++
+        // Sprint WEEKLY.PUBLIC — generator only creates DRAFT row.
+        // Slack publish happens in /api/cron/weekly-report-publish at 08:00 UTC
+        // (= 15:00 WIB), giving Galih ~7 hours to edit before auto-send.
+        // PPTX/Drive entirely skipped — Slack message uses public_token URL.
+        await db
+          .from('weekly_reports')
+          .update({ publish_status: 'draft' })
+          .eq('id', reportId)
+          .eq('owner_user_id', ownerId)
+        results[ownerId][siteSlug] = {
+          ok: true,
+          reportId,
+          status: 'draft',
+          message: 'Generated as draft — review before 15:00 WIB auto-publish',
+        }
+        totalDelivered++   // count draft generation as "delivered" for cron summary
 
       } catch (err) {
         results[ownerId][siteSlug] = { ok: false, error: err instanceof Error ? err.message : String(err) }

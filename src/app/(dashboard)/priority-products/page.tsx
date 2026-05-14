@@ -432,40 +432,188 @@ function fmt(n: number): string {
 }
 
 // ─── Manual SERP baseline trigger ────────────────────────────────────────────
-// One-click "run weekly SERP cron NOW" for the active site so a fresh keyword
-// upload doesn't have to wait until Monday for its first baseline. Long-running
-// (typically 30-90s depending on keyword count × markets) — we show a busy
-// state and disable the button.
-function RunBaselineButton() {
-  const [busy, setBusy] = useState(false)
-  const [msg,  setMsg]  = useState<string | null>(null)
+// Sprint SERP.CHUNKED — long-running jobs (1,000+ DataForSEO calls) used to
+// hit Vercel 300s timeout and silently kill mid-job. New flow:
+//   1. POST /start → creates a chunked run row (instant)
+//   2. UI polls /tick repeatedly (25 pairs per chunk, ~5s each)
+//   3. Progress bar updates live; user can close tab + come back later
+//      (open the page → see existing run resume from where it left off)
+interface BaselineRun {
+  id:               string
+  status:           'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  total_pairs:      number
+  processed_pairs:  number
+  failed_pairs:     number
+  remaining:        number
+  percent:          number
+  scope:            'all' | 'tier1' | 'tier2'
+  started_at:       string
+  last_tick_at?:    string | null
+  completed_at?:    string | null
+  notes?:           string | null
+}
 
-  async function run() {
+function RunBaselineButton() {
+  const [run,    setRun]    = useState<BaselineRun | null>(null)
+  const [busy,   setBusy]   = useState(false)
+  const [msg,    setMsg]    = useState<string | null>(null)
+  const [scope,  setScope]  = useState<'all' | 'tier1' | 'tier2'>('all')
+
+  // Load latest run on mount + when polling status mid-flight
+  useEffect(() => {
+    let cancelled = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/priority-products/run-baseline/status')
+        const data = await res.json()
+        if (cancelled) return
+        if (data.run) setRun(data.run as BaselineRun)
+      } catch { /* silent — UI fine without status */ }
+    }
+
+    async function tick() {
+      if (cancelled) return
+      try {
+        const r = run
+        if (!r || (r.status !== 'pending' && r.status !== 'running')) {
+          // Not an active run — schedule one more refresh just in case status flipped
+          timeoutId = setTimeout(fetchStatus, 5000)
+          return
+        }
+        const res = await fetch('/api/priority-products/run-baseline/tick', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ run_id: r.id, chunk_size: 25 }),
+        })
+        const data = await res.json()
+        if (cancelled) return
+        if (!res.ok) {
+          setMsg(`❌ Tick failed: ${data.error ?? 'unknown'}`)
+          return
+        }
+        const updated: BaselineRun = {
+          ...r,
+          status:          data.status,
+          processed_pairs: data.processed_pairs,
+          failed_pairs:    data.failed_pairs,
+          remaining:       data.remaining,
+          percent:         r.total_pairs > 0 ? Math.round((data.processed_pairs / r.total_pairs) * 100) : 0,
+          last_tick_at:    data.last_tick_at,
+        }
+        setRun(updated)
+        if (updated.status === 'running' && updated.remaining > 0) {
+          // Next tick immediately — UI updates after the network round-trip
+          timeoutId = setTimeout(tick, 500)
+        } else if (updated.status === 'done') {
+          setMsg(`✅ Baseline complete · ${updated.processed_pairs} snapshots · ${updated.failed_pairs} failed`)
+        }
+      } catch (e) {
+        if (!cancelled) setMsg(`❌ ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+
+    // Kick off — fetch current run on mount
+    if (!run) {
+      fetchStatus()
+    } else if (run.status === 'pending' || run.status === 'running') {
+      tick()
+    }
+
+    return () => {
+      cancelled = true
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [run])
+
+  async function start() {
     if (busy) return
-    if (!confirm('Run a fresh SERP baseline for every tier keyword × market right now?\n\nThis may take 30-90 seconds and costs ~$0.0006 per call. Use this once after uploading new keywords; the weekly cron handles ongoing refreshes.')) return
+    const scopeLabel = scope === 'all' ? 'all tier products' : scope === 'tier1' ? 'Tier 1 only' : 'Tier 2 only'
+    if (!confirm(`Run a fresh SERP baseline for ${scopeLabel}?\n\nDataForSEO charges ~$0.0006 per call. Progress is saved — you can close this tab and come back later to see the result.`)) return
     setBusy(true); setMsg(null)
     try {
-      const res = await fetch('/api/priority-products/run-baseline', { method: 'POST' })
+      const res = await fetch('/api/priority-products/run-baseline/start', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ scope }),
+      })
       const data = await res.json()
-      if (!res.ok) setMsg(`❌ ${data.error ?? 'Failed'}`)
-      else setMsg(`✅ ${data.inserted}/${data.calls} snapshots saved · ${data.products} products × ${data.keywords} keywords × ${data.markets} markets`)
+      if (!res.ok) {
+        setMsg(`❌ ${data.error ?? 'Failed to start'}`)
+        return
+      }
+      setMsg(`▶️ Run started · ${data.total_pairs} pairs (${data.products} products × ${data.keywords} kws × ${data.markets} markets)`)
+      // Seed the run state so the polling effect picks it up
+      setRun({
+        id:              data.run_id,
+        status:          'pending',
+        total_pairs:     data.total_pairs,
+        processed_pairs: 0,
+        failed_pairs:    0,
+        remaining:       data.total_pairs,
+        percent:         0,
+        scope,
+        started_at:      new Date().toISOString(),
+      })
     } catch (e) {
       setMsg(`❌ ${e instanceof Error ? e.message : String(e)}`)
     }
     setBusy(false)
   }
 
+  const isRunning = run?.status === 'pending' || run?.status === 'running'
+
   return (
-    <div className="flex items-center gap-2">
-      <button
-        onClick={run}
-        disabled={busy}
-        title="Snapshot SERP rankings for every tier keyword right now. Use once after uploading keywords; weekly cron handles the rest."
-        className="px-3 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
-      >
-        {busy ? '⏳ Running baseline…' : '⚡ Run SERP baseline'}
-      </button>
-      {msg && <span className="text-xs text-gray-300 max-w-xs">{msg}</span>}
+    <div className="flex flex-col gap-2 min-w-[280px]">
+      <div className="flex items-center gap-2">
+        <select
+          value={scope}
+          onChange={e => setScope(e.target.value as typeof scope)}
+          disabled={isRunning}
+          className="text-xs bg-gray-900 border border-gray-700 rounded-md px-2 py-2 text-gray-200 disabled:opacity-40"
+        >
+          <option value="all">All tier products</option>
+          <option value="tier1">Tier 1 only</option>
+          <option value="tier2">Tier 2 only</option>
+        </select>
+        <button
+          onClick={start}
+          disabled={busy || isRunning}
+          title="Snapshot SERP rankings for tier keywords in the background. Progress is saved — survives tab close."
+          className="px-3 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white text-sm font-medium rounded-lg transition flex-shrink-0"
+        >
+          {isRunning ? `⏳ ${run.percent}%` : '⚡ Run SERP baseline'}
+        </button>
+      </div>
+
+      {/* Progress bar */}
+      {isRunning && run && (
+        <div className="space-y-1">
+          <div className="h-1.5 w-full bg-gray-800 rounded overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-purple-600 to-pink-500 transition-all"
+              style={{ width: `${run.percent}%` }}
+            />
+          </div>
+          <p className="text-[10px] text-gray-400">
+            {run.processed_pairs}/{run.total_pairs} pairs · {run.remaining} remaining
+            {run.failed_pairs > 0 && <span className="text-red-400"> · {run.failed_pairs} failed</span>}
+            <span className="text-gray-600"> · runs in background</span>
+          </p>
+        </div>
+      )}
+
+      {/* Status message — last completed run or error */}
+      {!isRunning && msg && (
+        <p className="text-[10px] text-gray-300 max-w-xs">{msg}</p>
+      )}
+      {!isRunning && !msg && run?.status === 'done' && (
+        <p className="text-[10px] text-emerald-300">
+          ✓ Last run: {run.processed_pairs}/{run.total_pairs} snapshots
+          {run.failed_pairs > 0 && <span className="text-amber-300"> ({run.failed_pairs} failed)</span>}
+        </p>
+      )}
     </div>
   )
 }

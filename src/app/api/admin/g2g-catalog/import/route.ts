@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { importCatalogCsv } from '@/lib/g2g/catalog-import'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 120
 
@@ -23,7 +24,8 @@ export async function POST(req: Request) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)   // Sprint OG.CATALOG
   const db = createServiceClient()
 
   // ── Resolve CSV text ───────────────────────────────────────────────────
@@ -56,7 +58,7 @@ export async function POST(req: Request) {
   }
 
   // ── Run import ─────────────────────────────────────────────────────────
-  const result = await importCatalogCsv(db, csvText, ownerId, label)
+  const result = await importCatalogCsv(db, csvText, ownerId, label, siteSlug)
   return NextResponse.json(result, { status: result.ok ? 200 : 500 })
 }
 
