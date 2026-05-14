@@ -92,6 +92,7 @@ const navItems = [
       { label: 'Rollout Impact',    href: '/reports/rollout-impact',    icon: '📈' },
       { label: 'Content Economics', href: '/reports/content-economics', icon: '⏱' },
       { label: 'Learning Loop',     href: '/reports/learning-loop',     icon: '🎓' },
+      { label: 'Mimir Learning',    href: '/reports/mimir-learning',    icon: '🧠' },
       { label: 'Multi-Market',   href: '/reports/multi-market',   icon: '🌍' },
       { label: 'Backlink Audit', href: '/reports/backlinks',      icon: '🔗' },
       { label: 'SERP Features',  href: '/reports/serp-features',  icon: '⭐' },

@@ -26,13 +26,21 @@ export async function GET(req: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
   )
 
-  // Iterate every (owner × site) that has any agent activity in last 14d
-  const { data: owners } = await db
-    .from('gsc_connections')
-    .select('user_id')
+  // Sprint OG.SLACK.FIX — used to iterate every gsc_connections.user_id × site,
+  // which produced duplicate "Quiet Week" messages for team members who don't
+  // own tier products. Now derive (owner × site) pairs from product_tiers, so
+  // only OPERATORS who actually configured tier products get a digest.
+  const { data: ownerSiteRows } = await db
+    .from('product_tiers')
+    .select('owner_user_id, site_slug')
 
-  const uniqueOwners = Array.from(new Set((owners ?? []).map(o => o.user_id as string)))
-  if (uniqueOwners.length === 0) return NextResponse.json({ message: 'No owners' })
+  const ownerSitePairs = new Set<string>()
+  for (const r of ownerSiteRows ?? []) {
+    if (r.owner_user_id && r.site_slug) ownerSitePairs.add(`${r.owner_user_id}|${r.site_slug}`)
+  }
+  if (ownerSitePairs.size === 0) {
+    return NextResponse.json({ ok: true, posted: 0, errors: [], message: 'No tier products configured for any owner — skipping digest.' })
+  }
 
   const { data: sites } = await db
     .from('site_configs')
@@ -42,12 +50,18 @@ export async function GET(req: Request) {
   const activeSites = (sites ?? []) as Array<{ slug: string; display_name: string }>
   if (activeSites.length === 0) activeSites.push({ slug: 'g2g', display_name: 'G2G' })
 
+  // Build the iteration set from the actual operator pairs only.
+  const uniqueOwners = Array.from(new Set(Array.from(ownerSitePairs).map(p => p.split('|')[0])))
+
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/+$/, '')
   let posted = 0
   const errors: string[] = []
 
   for (const ownerId of uniqueOwners) {
     for (const site of activeSites) {
+      // Sprint OG.SLACK.FIX — skip pairs without tier products. Prevents
+      // duplicate "Quiet Week" for owners not actually operating that brand.
+      if (!ownerSitePairs.has(`${ownerId}|${site.slug}`)) continue
       try {
         const metrics  = await computeAgentMetrics(db, ownerId, site.slug, 7)
         const prevMetrics = await computeAgentMetrics(db, ownerId, site.slug, 14)

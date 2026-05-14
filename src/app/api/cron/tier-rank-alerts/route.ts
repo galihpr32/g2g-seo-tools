@@ -182,100 +182,115 @@ export async function GET(req: Request) {
     }
   }
 
-  // ── 4. Build + send single consolidated Slack message ────────────────────
-  // Sprint MULTI.3 — route via slack_routing_config under 'daily_alerts'
-  const { data: firstRouteOwner } = await db
-    .from('slack_routing_config')
-    .select('owner_user_id')
-    .eq('notification_type', 'daily_alerts')
-    .eq('enabled', true)
-    .limit(1)
-    .maybeSingle()
-  const ownerForRoute = firstRouteOwner?.owner_user_id
-    ?? (await db.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
-    ?? null
-  const webhookUrl = ownerForRoute
-    ? await resolveSlackWebhook(db, ownerForRoute, 'daily_alerts')
-    : process.env.SLACK_WEBHOOK_URL ?? null
-  if (!webhookUrl) {
-    return NextResponse.json({
-      ok: true,
-      alerts: alerts.length,
-      message: 'No Slack webhook resolved (config + env both empty) — alerts computed but not delivered.',
-      preview: alerts.slice(0, 10),
-    })
+  // ── 4. Group alerts by brand and post SEPARATE Slack message per brand ──
+  // Sprint OG.SLACK.FIX — used to consolidate G2G + OG into one message.
+  // Now per-brand so OG admin sees their stream isolated.
+  const alertsByBrand = new Map<string, Alert[]>()
+  for (const a of alerts) {
+    const bucket = alertsByBrand.get(a.brand) ?? []
+    bucket.push(a)
+    alertsByBrand.set(a.brand, bucket)
   }
 
-  // Sort: critical first (biggest drop in T1), then T2 fall-outs by depth
-  alerts.sort((a, b) => {
-    if (a.tier !== b.tier) return a.tier - b.tier
-    return b.delta - a.delta
-  })
-
-  const t1Count = alerts.filter(a => a.tier === 1).length
-  const t2Count = alerts.filter(a => a.tier === 2).length
-
-  // Cap the in-message row count so we don't exceed Slack's 4000-char limit.
-  // Anything beyond shows up as "+N more — view in tools".
-  const MAX_ROWS_IN_MSG = 30
-  const visible = alerts.slice(0, MAX_ROWS_IN_MSG)
-  const overflow = alerts.length - visible.length
-
-  const tableLines = visible.map(a => {
-    const marketLabel = TIER_MARKETS[a.market as TierMarket]?.label ?? a.market.toUpperCase()
-    const tag = a.reason === 'T1_DROP' ? '🟠' : '🔴'
-    const move = a.prevPosition != null && a.currPosition != null
-      ? `#${a.prevPosition} → #${a.currPosition} (${a.delta > 0 ? '+' : ''}${a.delta})`
-      : a.currPosition == null
-        ? `#${a.prevPosition ?? '?'} → ❌ out of SERP`
-        : `#${a.prevPosition ?? '?'} → #${a.currPosition}`
-    return `${tag} *T${a.tier}* | ${a.brand} | _${a.productName}_ | \`${a.keyword}\` (${marketLabel}) — ${move}`
-  })
-
-  const blocks: unknown[] = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `🎯 Tier Ranking Alerts — ${alerts.length} flag${alerts.length === 1 ? '' : 's'}`, emoji: true },
-    },
-    {
-      type: 'context',
-      elements: [
-        { type: 'mrkdwn', text: `Tier 1 drops ≥${T1_DROP_THRESHOLD} pos: *${t1Count}*  ·  Tier 2 fell out of top 10: *${t2Count}*` },
-      ],
-    },
-    { type: 'divider' },
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: tableLines.join('\n') || '_no rows_' },
-    },
-  ]
-
-  if (overflow > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `+${overflow} more drops — view in Priority Products page.` }],
-    })
+  const brandStyle: Record<string, { color: string; emoji: string }> = {
+    G2G:       { color: '#DC2626', emoji: '🎯' },
+    OFFGAMERS: { color: '#2563EB', emoji: '🕹️' },
   }
 
-  try {
-    const slackRes = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ blocks }),
-    })
-    if (!slackRes.ok) {
-      console.error('[tier-rank-alerts] Slack post failed:', slackRes.status, await slackRes.text())
-      return NextResponse.json({ ok: false, alerts: alerts.length, message: `Slack POST failed: ${slackRes.status}` })
+  let postedBrands = 0
+  const perBrandResults: Record<string, { ok: boolean; alerts: number; reason?: string }> = {}
+
+  for (const [brand, brandAlerts] of alertsByBrand) {
+    // Resolve webhook per-brand: try product_tiers.owner_user_id for this site,
+    // then env fallback. site_slug is lowercase, brand is uppercase.
+    const siteSlugForBrand = brand.toLowerCase()
+    const { data: firstRouteOwner } = await db
+      .from('slack_routing_config')
+      .select('owner_user_id')
+      .eq('notification_type', 'daily_alerts')
+      .eq('enabled', true)
+      .or(`site_slug.eq.${siteSlugForBrand},site_slug.is.null`)
+      .limit(1)
+      .maybeSingle()
+    const ownerForRoute = firstRouteOwner?.owner_user_id
+      ?? (await db.from('product_tiers').select('owner_user_id').eq('site_slug', siteSlugForBrand).limit(1).maybeSingle()).data?.owner_user_id
+      ?? null
+    const webhookUrl = ownerForRoute
+      ? await resolveSlackWebhook(db, ownerForRoute, 'daily_alerts', { siteSlug: siteSlugForBrand })
+      : process.env.SLACK_WEBHOOK_URL ?? null
+    if (!webhookUrl) {
+      perBrandResults[brand] = { ok: false, alerts: brandAlerts.length, reason: 'no_webhook' }
+      continue
     }
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: String(e) })
+
+    // Sort: critical first (biggest drop in T1), then T2 fall-outs by depth
+    brandAlerts.sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier
+      return b.delta - a.delta
+    })
+
+    const t1Count = brandAlerts.filter(a => a.tier === 1).length
+    const t2Count = brandAlerts.filter(a => a.tier === 2).length
+    const MAX_ROWS_IN_MSG = 30
+    const visible  = brandAlerts.slice(0, MAX_ROWS_IN_MSG)
+    const overflow = brandAlerts.length - visible.length
+    const style    = brandStyle[brand] ?? brandStyle.G2G
+
+    const tableLines = visible.map(a => {
+      const marketLabel = TIER_MARKETS[a.market as TierMarket]?.label ?? a.market.toUpperCase()
+      const tag = a.reason === 'T1_DROP' ? '🟠' : '🔴'
+      const move = a.prevPosition != null && a.currPosition != null
+        ? `#${a.prevPosition} → #${a.currPosition} (${a.delta > 0 ? '+' : ''}${a.delta})`
+        : a.currPosition == null
+          ? `#${a.prevPosition ?? '?'} → ❌ out of SERP`
+          : `#${a.prevPosition ?? '?'} → #${a.currPosition}`
+      return `${tag} *T${a.tier}* | _${a.productName}_ | \`${a.keyword}\` (${marketLabel}) — ${move}`
+    })
+
+    const blocks: unknown[] = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `${style.emoji} ${brand} — Tier Ranking Alerts (${brandAlerts.length} flag${brandAlerts.length === 1 ? '' : 's'})`, emoji: true },
+      },
+      {
+        type: 'context',
+        elements: [
+          { type: 'mrkdwn', text: `Tier 1 drops ≥${T1_DROP_THRESHOLD} pos: *${t1Count}*  ·  Tier 2 fell out of top 10: *${t2Count}*` },
+        ],
+      },
+      { type: 'divider' },
+      { type: 'section', text: { type: 'mrkdwn', text: tableLines.join('\n') || '_no rows_' } },
+    ]
+    if (overflow > 0) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `+${overflow} more drops — view in Priority Products page.` }],
+      })
+    }
+
+    try {
+      const slackRes = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Wrap in attachments with brand color stripe (per Sprint OG.SLACK.FIX)
+        body: JSON.stringify({ attachments: [{ color: style.color, blocks }] }),
+      })
+      if (slackRes.ok) {
+        postedBrands++
+        perBrandResults[brand] = { ok: true, alerts: brandAlerts.length }
+      } else {
+        perBrandResults[brand] = { ok: false, alerts: brandAlerts.length, reason: `http_${slackRes.status}` }
+      }
+    } catch (e) {
+      perBrandResults[brand] = { ok: false, alerts: brandAlerts.length, reason: String(e) }
+    }
   }
 
   return NextResponse.json({
-    ok:        true,
-    alerts:    alerts.length,
-    t1Count,
-    t2Count,
-    delivered: 'slack',
+    ok:           postedBrands > 0,
+    alerts:       alerts.length,
+    brands_posted: postedBrands,
+    per_brand:    perBrandResults,
+    delivered:    postedBrands > 0 ? 'slack' : 'none',
   })
 }

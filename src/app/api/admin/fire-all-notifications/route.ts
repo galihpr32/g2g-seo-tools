@@ -97,12 +97,19 @@ export async function GET() {
 
 async function fireCron(origin: string, cron: CronDef): Promise<FireResult> {
   const start = Date.now()
+  // Sprint OG.SLACK.FIX — per-cron timeout so one slow cron doesn't kill the
+  // whole fire-all run. weekly_report can legitimately take 60-120s, others
+  // should be <30s. Cap each at 90s and surface a timeout outcome.
+  const PER_CRON_TIMEOUT_MS = cron.key === 'weekly_report' ? 180_000 : 90_000
+  const aborter = new AbortController()
+  const tid = setTimeout(() => aborter.abort(), PER_CRON_TIMEOUT_MS)
   try {
     const res = await fetch(`${origin}${cron.path}`, {
       method:  'GET',
       headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
       // Disable Next caching for cron self-calls
       cache:   'no-store',
+      signal:  aborter.signal,
     })
     const latency_ms = Date.now() - start
     const text = await res.text()
@@ -124,6 +131,8 @@ async function fireCron(origin: string, cron: CronDef): Promise<FireResult> {
     }
     return interpretOutcome(cron, res.status, latency_ms, json)
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    const isTimeout = msg.toLowerCase().includes('abort')
     return {
       key:               cron.key,
       label:             cron.label,
@@ -132,9 +141,13 @@ async function fireCron(origin: string, cron: CronDef): Promise<FireResult> {
       latency_ms:        Date.now() - start,
       outcome:           'cron_error',
       raw_response:      null,
-      error_reason:      e instanceof Error ? e.message : String(e),
-      suggestion:        'Self-fetch failed — usually a 5xx from the cron route or function timeout',
+      error_reason:      isTimeout ? `Timed out after ${PER_CRON_TIMEOUT_MS / 1000}s` : msg,
+      suggestion:        isTimeout
+        ? 'Cron exceeded the per-call timeout. Likely cause: too many owners × sites. Try running this cron via its own GitHub Actions trigger instead.'
+        : 'Self-fetch failed — usually a 5xx from the cron route or function timeout',
     }
+  } finally {
+    clearTimeout(tid)
   }
 }
 

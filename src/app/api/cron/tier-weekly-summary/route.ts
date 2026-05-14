@@ -157,85 +157,92 @@ export async function GET(req: Request) {
     a.losers.sort((x, y) => x.delta - y.delta).splice(3)
   }
 
-  // ── 5. Format Slack message ───────────────────────────────────────────────
-  // Sprint MULTI.3 — resolve via slack_routing_config. Cron runs across all
-  // owners but composes ONE consolidated message; route by first owner found
-  // who has a tier_summary mapping (most likely the SEO lead). Env fallback
-  // applies when no config exists, preserving current behaviour.
-  const { data: firstOwner } = await db
-    .from('slack_routing_config')
-    .select('owner_user_id')
-    .eq('notification_type', 'tier_summary')
-    .eq('enabled', true)
-    .limit(1)
-    .maybeSingle()
-  const ownerForRoute = firstOwner?.owner_user_id
-    ?? (await db.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
-    ?? null
-  const webhookUrl = ownerForRoute
-    ? await resolveSlackWebhook(db, ownerForRoute, 'tier_summary')
-    : process.env.SLACK_WEBHOOK_URL ?? null
-  if (!webhookUrl) {
-    return NextResponse.json({ ok: true, message: 'No Slack webhook resolved (config + env both empty) — summary computed but not delivered.', grid })
-  }
-
-  // Build block sections per brand
+  // ── 5. Format Slack message — Sprint OG.SLACK.FIX ─────────────────────────
+  // Used to send ONE consolidated message with both brand sections. Now per
+  // brand so OG admin gets their stream isolated. Each brand routes via its
+  // own slack_routing_config row (site_slug='offgamers' or 'g2g').
   const brandOrder = ['g2g', 'offgamers']
+  const brandStyle: Record<string, { color: string; emoji: string }> = {
+    g2g:       { color: '#DC2626', emoji: '🎯' },
+    offgamers: { color: '#2563EB', emoji: '🕹️' },
+  }
   const today = new Date().toISOString().slice(0, 10)
 
-  const blocks: unknown[] = [
-    {
-      type: 'header',
-      text: { type: 'plain_text', text: `📊 Weekly Tier Rankings Summary`, emoji: true },
-    },
-    {
-      type: 'context',
-      elements: [
-        { type: 'mrkdwn', text: `Snapshot: *${today}* · Markets: ${Object.values(TIER_MARKETS).map(m => m.label).join(', ')}` },
-      ],
-    },
-  ]
+  const perBrandResults: Record<string, { ok: boolean; reason?: string }> = {}
+  let postedBrands = 0
 
   for (const slug of brandOrder) {
     const t1 = grid[`${slug}|t1`]
     const t2 = grid[`${slug}|t2`]
-    if (!t1 && !t2) continue
-
-    blocks.push({ type: 'divider' })
-    blocks.push({
-      type: 'section',
-      text: { type: 'mrkdwn', text: `*${slug.toUpperCase()}*` },
-    })
-
-    // Tier 1 section
-    if (t1) blocks.push(...renderTierBlock(1, t1))
-    // Tier 2 section
-    if (t2) blocks.push(...renderTierBlock(2, t2))
-  }
-
-  blocks.push({
-    type: 'context',
-    elements: [{ type: 'mrkdwn', text: '_View full breakdown in `/priority-products/rankings`_' }],
-  })
-
-  try {
-    const slackRes = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ blocks }),
-    })
-    if (!slackRes.ok) {
-      console.error('[tier-weekly-summary] Slack post failed:', slackRes.status, await slackRes.text())
-      return NextResponse.json({ ok: false, message: `Slack POST failed: ${slackRes.status}` })
+    if (!t1 && !t2) {
+      perBrandResults[slug] = { ok: false, reason: 'no_data' }
+      continue
     }
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: String(e) })
+
+    // Resolve webhook for THIS brand
+    const { data: brandOwner } = await db
+      .from('slack_routing_config')
+      .select('owner_user_id')
+      .eq('notification_type', 'tier_summary')
+      .eq('enabled', true)
+      .or(`site_slug.eq.${slug},site_slug.is.null`)
+      .limit(1)
+      .maybeSingle()
+    const ownerForRoute = brandOwner?.owner_user_id
+      ?? (await db.from('product_tiers').select('owner_user_id').eq('site_slug', slug).limit(1).maybeSingle()).data?.owner_user_id
+      ?? null
+    const webhookUrl = ownerForRoute
+      ? await resolveSlackWebhook(db, ownerForRoute, 'tier_summary', { siteSlug: slug })
+      : process.env.SLACK_WEBHOOK_URL ?? null
+    if (!webhookUrl) {
+      perBrandResults[slug] = { ok: false, reason: 'no_webhook' }
+      continue
+    }
+
+    const style = brandStyle[slug] ?? brandStyle.g2g
+    const blocks: unknown[] = [
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `${style.emoji} ${slug.toUpperCase()} — Weekly Tier Rankings`, emoji: true },
+      },
+      {
+        type: 'context',
+        elements: [
+          { type: 'mrkdwn', text: `Snapshot: *${today}* · Markets: ${Object.values(TIER_MARKETS).map(m => m.label).join(', ')}` },
+        ],
+      },
+      { type: 'divider' },
+    ]
+    if (t1) blocks.push(...renderTierBlock(1, t1))
+    if (t2) blocks.push(...renderTierBlock(2, t2))
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '_View full breakdown in `/priority-products/rankings`_' }],
+    })
+
+    try {
+      const slackRes = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Brand-colored attachment stripe
+        body: JSON.stringify({ attachments: [{ color: style.color, blocks }] }),
+      })
+      if (slackRes.ok) {
+        postedBrands++
+        perBrandResults[slug] = { ok: true }
+      } else {
+        perBrandResults[slug] = { ok: false, reason: `http_${slackRes.status}` }
+      }
+    } catch (e) {
+      perBrandResults[slug] = { ok: false, reason: String(e) }
+    }
   }
 
   return NextResponse.json({
-    ok:        true,
-    delivered: 'slack',
-    brands:    brandOrder.filter(s => grid[`${s}|t1`] || grid[`${s}|t2`]),
+    ok:         postedBrands > 0,
+    delivered:  postedBrands > 0 ? 'slack' : 'none',
+    brands:     Object.keys(perBrandResults).filter(k => perBrandResults[k].ok),
+    per_brand:  perBrandResults,
   })
 }
 

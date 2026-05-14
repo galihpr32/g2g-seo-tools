@@ -432,8 +432,21 @@ function ForceFireSection() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ types: Array.from(selected) }),
       })
-      const data = await res.json()
-      if (!res.ok) { setError(data.error ?? 'Fire failed'); return }
+      // Sprint OG.SLACK.FIX — Vercel can return HTML on function timeout
+      // (e.g. weekly_report blocks past 300s). Use text() + safe parse so
+      // we surface the real cause instead of "JSON.parse unexpected character".
+      const text = await res.text()
+      let data: { error?: string; summary?: FireResponse['summary']; results?: FireResponse['results'] } | null = null
+      try { data = JSON.parse(text) } catch { /* HTML response */ }
+      if (!res.ok || !data) {
+        const isHtml = text.toLowerCase().includes('<!doctype') || text.toLowerCase().includes('<html')
+        if (isHtml) {
+          setError(`Function timed out or crashed (HTTP ${res.status}). The endpoint returned HTML, not JSON. Likely cause: one of the selected crons exceeded Vercel's 300s timeout. Try un-selecting "Weekly performance report" (slowest) and retry.`)
+        } else {
+          setError(data?.error ?? text.slice(0, 300) ?? `HTTP ${res.status}`)
+        }
+        return
+      }
       setResponse(data as FireResponse)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

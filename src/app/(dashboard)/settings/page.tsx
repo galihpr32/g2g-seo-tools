@@ -623,8 +623,8 @@ export default function SettingsPage() {
             className="bg-gray-900 border border-gray-800 hover:border-blue-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
           >
             <div>
-              <p className="text-white font-medium">🔐 G2G CMS Token</p>
-              <p className="text-gray-400 text-sm mt-0.5">Paste a fresh admin JWT weekly — powers auto-upload of generated content into the G2G CMS (marketing + SEO + FAQ).</p>
+              <p className="text-white font-medium">🔐 CMS Token</p>
+              <p className="text-gray-400 text-sm mt-0.5">Paste a fresh admin JWT weekly — powers auto-upload of generated content into the CMS (marketing + SEO + FAQ).</p>
             </div>
             <span className="text-gray-500 group-hover:text-blue-400 transition">→</span>
           </a>
@@ -635,8 +635,8 @@ export default function SettingsPage() {
             className="bg-gray-900 border border-gray-800 hover:border-purple-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
           >
             <div>
-              <p className="text-white font-medium">📚 G2G Product Catalog</p>
-              <p className="text-gray-400 text-sm mt-0.5">Upload the latest CSV export from G2G admin (13k+ products). Powers CMS upload caching, tier admin autocomplete, sheet validation, and opportunity-to-product mapping.</p>
+              <p className="text-white font-medium">📚 Product Catalog</p>
+              <p className="text-gray-400 text-sm mt-0.5">Upload the latest CSV export from your CMS admin. Powers CMS upload caching, tier admin autocomplete, sheet validation, and opportunity-to-product mapping. Scoped to active brand.</p>
             </div>
             <span className="text-gray-500 group-hover:text-purple-400 transition">→</span>
           </a>
