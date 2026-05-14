@@ -45,16 +45,32 @@ export async function GET() {
     .order('notification_type', { ascending: true })
     .order('site_slug',        { ascending: true, nullsFirst: true })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
   // Surface whether env fallback is set so the UI can show "✓ Global default
   // configured via env" vs "⚠ No webhook anywhere".
   const env_fallback_set = !!process.env.SLACK_WEBHOOK_URL && process.env.SLACK_WEBHOOK_URL !== 'placeholder'
+
+  // If the table is missing (migration not applied yet) we still want the UI
+  // to render the 7 form templates — surface a soft warning instead of 500
+  // so Galih can paste webhook URLs and the schema is ready post-migration.
+  if (error) {
+    const msg = error.message ?? ''
+    const isMissingTable = msg.toLowerCase().includes("could not find the table") || msg.toLowerCase().includes('does not exist')
+    return NextResponse.json({
+      configs: [],
+      env_fallback_set,
+      notification_types: VALID_TYPES,
+      migration_missing: isMissingTable,
+      error: isMissingTable
+        ? 'slack_routing_config table not found — apply supabase/migrations/add_slack_routing_config.sql in the Supabase SQL editor, then reload this page.'
+        : msg,
+    })
+  }
 
   return NextResponse.json({
     configs: data ?? [],
     env_fallback_set,
     notification_types: VALID_TYPES,
+    migration_missing: false,
   })
 }
 

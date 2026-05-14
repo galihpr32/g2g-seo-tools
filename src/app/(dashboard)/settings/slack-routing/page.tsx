@@ -70,6 +70,7 @@ export default function SlackRoutingPage() {
   const [envFb,   setEnvFb]   = useState(false)
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
+  const [migrationMissing, setMigrationMissing] = useState(false)
   const [savedId, setSavedId] = useState<string | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
   const [testRes, setTestRes] = useState<Record<string, string>>({})
@@ -82,12 +83,18 @@ export default function SlackRoutingPage() {
         const res = await fetch('/api/settings/slack-routing')
         const data = await res.json()
         if (cancelled) return
-        if (!res.ok) { setError(data.error ?? 'Failed to load'); return }
+        // Always render form templates — even on soft errors (e.g. migration
+        // not applied), use VALID_TYPES from response or local TYPE_INFO map.
         setRows(data.configs ?? [])
         setTypes(data.notification_types ?? Object.keys(TYPE_INFO))
         setEnvFb(!!data.env_fallback_set)
+        setMigrationMissing(!!data.migration_missing)
+        if (data.error) setError(data.error)
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e))
+          setTypes(Object.keys(TYPE_INFO))
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -210,6 +217,18 @@ export default function SlackRoutingPage() {
         </div>
         <Link href="/settings" className="text-sm text-gray-400 hover:text-white">← Settings</Link>
       </div>
+
+      {migrationMissing && (
+        <div className="rounded-lg border border-red-700/40 bg-red-500/5 p-4 text-sm text-red-200 space-y-2">
+          <div className="font-semibold">⚠ Migration not applied — saving will fail until you run this</div>
+          <ol className="list-decimal pl-5 space-y-1 text-red-100/90">
+            <li>Open Supabase → SQL Editor → New query</li>
+            <li>Paste contents of <code className="text-pink-300">supabase/migrations/add_slack_routing_config.sql</code></li>
+            <li>Click Run, then reload this page</li>
+          </ol>
+          <p className="text-xs text-red-300/80">You can still draft routes below — they just won&apos;t persist until the table exists.</p>
+        </div>
+      )}
 
       <div className={`rounded-lg border p-3 text-sm ${envFb ? 'border-emerald-700/40 bg-emerald-500/5 text-emerald-200' : 'border-amber-700/40 bg-amber-500/5 text-amber-200'}`}>
         {envFb
