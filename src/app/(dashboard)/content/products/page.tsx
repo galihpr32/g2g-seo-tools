@@ -344,6 +344,19 @@ export default function ProductContentPage() {
   const [loading, setLoading]         = useState(true)
   const [syncing, setSyncing]         = useState(false)
   const [uploading, setUploading]     = useState(false)
+  // Sprint UPLOAD.FEEDBACK — surface upload result so failures aren't silent
+  const [uploadResult, setUploadResult] = useState<{
+    uploaded:    number
+    failed:      number
+    total:       number
+    jwt_expired?: boolean
+    note?:        string
+    errors:      Array<{ relation_id: string; status?: string; error?: string }>
+  } | null>(null)
+  // Sprint UPLOAD.JWT.INLINE — inline JWT refresh from upload result banner
+  const [inlineJwt,    setInlineJwt]    = useState('')
+  const [savingJwt,    setSavingJwt]    = useState(false)
+  const [jwtSaveErr,   setJwtSaveErr]   = useState<string | null>(null)
   const [selected, setSelected]       = useState<Set<string>>(new Set())
   const [filterStatus, setFilterStatus] = useState<Status | 'all'>('all')
   const [search, setSearch]           = useState('')
@@ -524,6 +537,7 @@ export default function ProductContentPage() {
 
   async function handleUpload(uploadAll = false) {
     setUploading(true)
+    setUploadResult(null)
     try {
       const body = uploadAll
         ? { upload_all: true }
@@ -534,12 +548,75 @@ export default function ProductContentPage() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(body),
       })
-      if (res.ok) {
+      // Sprint UPLOAD.FEEDBACK — always surface result, even on failure
+      const data = await res.json().catch(() => null) as {
+        uploaded?:    number
+        failed?:      number
+        total?:       number
+        jwt_expired?: boolean
+        note?:        string
+        message?:     string
+        error?:       string
+        results?:     Array<{ relation_id: string; ok: boolean; status?: string; error?: string }>
+      } | null
+      if (data) {
+        const errors = (data.results ?? [])
+          .filter(r => !r.ok)
+          .map(r => ({ relation_id: r.relation_id, status: r.status, error: r.error }))
+        setUploadResult({
+          uploaded:    data.uploaded ?? 0,
+          failed:      data.failed   ?? 0,
+          total:       data.total    ?? 0,
+          jwt_expired: data.jwt_expired,
+          note:        data.note ?? data.message ?? data.error,
+          errors,
+        })
+      }
+      if (res.ok && (data?.uploaded ?? 0) > 0) {
         setSelected(new Set())
         await fetchItems()
       }
-    } catch { /* silent */ }
+    } catch (e) {
+      setUploadResult({
+        uploaded: 0, failed: 0, total: 0,
+        note: e instanceof Error ? e.message : String(e),
+        errors: [],
+      })
+    }
     setUploading(false)
+  }
+
+  // Sprint UPLOAD.JWT.INLINE — save fresh JWT from inline input + auto-retry
+  async function saveInlineJwt() {
+    const token = inlineJwt.trim().replace(/^Bearer\s+/i, '')
+    if (!token) { setJwtSaveErr('Paste a JWT first'); return }
+    if (token.split('.').length !== 3) {
+      setJwtSaveErr('JWT must have 3 dot-separated parts. Make sure full token was copied (length usually 600–1200 chars).')
+      return
+    }
+    setSavingJwt(true)
+    setJwtSaveErr(null)
+    try {
+      const res = await fetch('/api/settings/cms-token', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ site_slug: 'g2g', token }),
+      })
+      const data = await res.json().catch(() => ({})) as { error?: string; expires_at?: string; token_subject?: string }
+      if (!res.ok) {
+        setJwtSaveErr(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setInlineJwt('')
+      setUploadResult(null)
+      setJwtSaveErr(null)
+      // Auto-retry upload after fresh JWT saved
+      await handleUpload(true)
+    } catch (e) {
+      setJwtSaveErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingJwt(false)
+    }
   }
 
   function toggleSelect(id: string) {
@@ -967,6 +1044,80 @@ export default function ProductContentPage() {
           </div>
         )}
       </div>
+
+      {/* Sprint UPLOAD.FEEDBACK — visible upload outcome */}
+      {uploadResult && (
+        <div className={`mb-4 rounded-lg border p-4 ${
+          uploadResult.jwt_expired                  ? 'border-amber-700/40 bg-amber-500/5' :
+          uploadResult.failed > 0 && uploadResult.uploaded === 0
+                                                    ? 'border-red-700/40 bg-red-500/5' :
+          uploadResult.failed > 0                   ? 'border-yellow-700/40 bg-yellow-500/5' :
+                                                      'border-emerald-700/40 bg-emerald-500/5'
+        }`}>
+          <div className="flex items-start justify-between mb-2">
+            <div className="text-sm font-semibold text-white">
+              {uploadResult.jwt_expired   ? '🔐 JWT Expired — re-refresh CMS token'
+              : uploadResult.failed === 0 && uploadResult.uploaded > 0 ? `✅ Uploaded ${uploadResult.uploaded}/${uploadResult.total}`
+              : uploadResult.uploaded === 0 ? `❌ All ${uploadResult.total} failed`
+              :                              `⚠ Partial: ${uploadResult.uploaded} ok / ${uploadResult.failed} failed`}
+            </div>
+            <button onClick={() => setUploadResult(null)} className="text-xs text-gray-500 hover:text-gray-300">✕</button>
+          </div>
+          {uploadResult.note && (
+            <p className="text-xs text-gray-300 mb-2">{uploadResult.note}</p>
+          )}
+          {uploadResult.jwt_expired && (
+            <div className="mb-3 space-y-2">
+              <p className="text-xs text-amber-200">
+                CMS rejected token. Paste a fresh JWT below — we&apos;ll save it and retry the upload automatically. (Or refresh at <a href="/settings/cms-token" className="text-amber-300 underline">/settings/cms-token</a>.)
+              </p>
+              <div className="flex items-stretch gap-2">
+                <input
+                  type="password"
+                  placeholder="Paste fresh JWT (eyJhbGc…)"
+                  value={inlineJwt}
+                  onChange={e => setInlineJwt(e.target.value)}
+                  className="flex-1 bg-gray-950 border border-amber-700/40 rounded-md px-3 py-2 text-xs text-amber-200 placeholder-amber-700/50 font-mono"
+                />
+                <button
+                  onClick={saveInlineJwt}
+                  disabled={savingJwt || !inlineJwt.trim()}
+                  className="px-3 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs font-semibold rounded-md whitespace-nowrap"
+                >
+                  {savingJwt ? 'Saving + retrying…' : 'Save JWT + Retry'}
+                </button>
+              </div>
+              {jwtSaveErr && (
+                <p className="text-xs text-red-300">⚠ {jwtSaveErr}</p>
+              )}
+              {inlineJwt && (
+                <p className="text-[10px] text-amber-300/70 font-mono">
+                  Length: {inlineJwt.length} chars · {inlineJwt.trim().split('.').length} dot-segments
+                </p>
+              )}
+            </div>
+          )}
+          {uploadResult.errors.length > 0 && (
+            <details className="mt-2">
+              <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">
+                Show {uploadResult.errors.length} error{uploadResult.errors.length === 1 ? '' : 's'}
+              </summary>
+              <ul className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+                {uploadResult.errors.slice(0, 20).map((e, i) => (
+                  <li key={i} className="text-[11px] text-gray-300 font-mono">
+                    <span className="text-gray-500">{e.relation_id.slice(0, 8)}…</span>
+                    {' · '}
+                    <span className={e.status === 'awaiting_token' ? 'text-amber-300' : 'text-red-300'}>
+                      {e.status ?? 'failed'}
+                    </span>
+                    {e.error && <span className="text-gray-400"> — {e.error.slice(0, 200)}</span>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
