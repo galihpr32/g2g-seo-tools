@@ -82,9 +82,14 @@ export default function FridayKpiPage() {
     setLoading(true); setError(null)
     try {
       const res = await fetch('/api/reports/friday-kpi')
-      const body = await res.json() as PreviewResponse
-      if (!res.ok) { setError(body.error ?? `HTTP ${res.status}`); return }
-      setPreview(body)
+      const text = await res.text()
+      let body: PreviewResponse | { error?: string } = {}
+      try { body = text ? JSON.parse(text) : {} } catch {
+        setError(`HTTP ${res.status} · non-JSON response (first 200 chars): ${text.slice(0, 200)}`)
+        return
+      }
+      if (!res.ok) { setError(('error' in body && body.error) || `HTTP ${res.status}`); return }
+      setPreview(body as PreviewResponse)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {

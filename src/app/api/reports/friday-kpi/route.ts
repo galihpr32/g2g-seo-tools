@@ -49,19 +49,38 @@ async function buildPayloadForCurrentUser(req: Request) {
 }
 
 export async function GET(req: Request) {
-  const res = await buildPayloadForCurrentUser(req)
-  if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status })
+  try {
+    const res = await buildPayloadForCurrentUser(req)
+    if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status })
 
-  return NextResponse.json({
-    ok:           true,
-    sites:        res.finalSlugs,
-    payload:      res.payload,
-    slack_blocks: buildFridayKpiSlackBlocks(res.payload),
-  })
+    return NextResponse.json({
+      ok:           true,
+      sites:        res.finalSlugs,
+      payload:      res.payload,
+      slack_blocks: buildFridayKpiSlackBlocks(res.payload),
+    })
+  } catch (err) {
+    console.error('[friday-kpi GET] build failed:', err)
+    return NextResponse.json({
+      ok:    false,
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack?.slice(0, 800) : undefined,
+    }, { status: 500 })
+  }
 }
 
 export async function POST(req: Request) {
-  const res = await buildPayloadForCurrentUser(req)
+  let res
+  try {
+    res = await buildPayloadForCurrentUser(req)
+  } catch (err) {
+    console.error('[friday-kpi POST] build failed:', err)
+    return NextResponse.json({
+      ok:     false,
+      posted: false,
+      reason: `build_failed: ${err instanceof Error ? err.message : String(err)}`,
+    }, { status: 500 })
+  }
   if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status })
 
   const { ownerId, db, payload, finalSlugs } = res
