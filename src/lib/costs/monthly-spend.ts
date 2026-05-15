@@ -10,6 +10,7 @@
 // for now, but routing key changes per owner is on the roadmap.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { estimateBriefCost } from '@/lib/anthropic/model-tier'
 
 export interface MonthlySpend {
   /** YYYY-MM bucket the spend covers */
@@ -47,9 +48,13 @@ export async function getMonthlySpend(
   // First day of the current UTC month at 00:00:00.000Z
   const start = new Date(Date.UTC(year, monthIdx, 1, 0, 0, 0, 0)).toISOString()
 
+  // NOTE: api_usage_logs has no cost_usd column. We compute spend on the
+  // fly from metadata (model + token counts) using estimateBriefCost().
+  // Non-Anthropic rows (DataForSEO etc.) contribute 0 — they're tracked
+  // separately and aren't part of the monthly Anthropic ceiling.
   const { data, error } = await db
     .from('api_usage_logs')
-    .select('api_name, call_count, cost_usd, created_at')
+    .select('api_name, call_count, metadata, created_at')
     .eq('owner_user_id', ownerId)
     .gte('created_at', start)
 
@@ -67,8 +72,15 @@ export async function getMonthlySpend(
 
   for (const r of rows) {
     const api  = String(r.api_name ?? 'unknown')
-    const usd  = Number(r.cost_usd ?? 0)
     const cnt  = Number(r.call_count ?? 1)
+    let usd = 0
+    if (api === 'claude') {
+      const md       = (r.metadata ?? {}) as Record<string, unknown>
+      const model    = String(md.model ?? 'claude-sonnet-4-6')
+      const inTok    = Number(md.input_tokens  ?? 0)
+      const outTok   = Number(md.output_tokens ?? 0)
+      usd = estimateBriefCost(model, inTok, outTok)
+    }
     const cur  = byApiMap.get(api) ?? { usd: 0, calls: 0 }
     cur.usd   += usd
     cur.calls += cnt
