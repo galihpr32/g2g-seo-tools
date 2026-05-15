@@ -1,0 +1,38 @@
+name: Friday KPI Digest
+
+# Sprint FRIDAY.KPI — Combined G2G + OffGamers weekly digest.
+# Runs Friday 08:00 UTC = 15:00 WIB. Galih can also fire ad-hoc via the
+# Run workflow button in the Actions tab, or via the manual trigger button
+# on /reports/friday-kpi.
+
+on:
+  schedule:
+    - cron: '0 8 * * 5'   # Friday 08:00 UTC = 15:00 WIB
+  workflow_dispatch:
+
+concurrency:
+  group: friday-kpi
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/friday-kpi
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 180 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/friday-kpi")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"
