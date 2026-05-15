@@ -33,12 +33,24 @@ export async function GET(req: Request) {
   }
 
   try {
+    // CRITICAL: G2G is on Cloudflare. Any UA containing "Bot", "Tools", or
+    // anything non-browser-ish gets a 502/503. We mimic Chrome 121 on macOS
+    // exactly because that's what passes their bot filter most reliably.
     const res = await fetch(parsed.toString(), {
       headers: {
-        // Identify as a normal browser so anti-bot middleware doesn't return a stub
-        'User-Agent':      'Mozilla/5.0 (compatible; G2G-SEO-Tools/1.0; +https://g2g.com)',
-        'Accept':          'text/html,application/xhtml+xml',
+        'User-Agent':      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept':          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control':   'max-age=0',
+        'sec-ch-ua':       '"Chromium";v="121", "Not A(Brand";v="99", "Google Chrome";v="121"',
+        'sec-ch-ua-mobile':   '?0',
+        'sec-ch-ua-platform': '"macOS"',
+        'sec-fetch-dest':  'document',
+        'sec-fetch-mode':  'navigate',
+        'sec-fetch-site':  'none',
+        'sec-fetch-user':  '?1',
+        'upgrade-insecure-requests': '1',
       },
       // No redirect chase beyond default; 30s outer cap from maxDuration
     })

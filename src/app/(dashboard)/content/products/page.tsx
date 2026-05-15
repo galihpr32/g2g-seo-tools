@@ -756,6 +756,9 @@ export default function ProductContentPage() {
         </div>
       </div>
 
+      {/* ── Sprint COWORK.PREVIEW — Read-only queue of Cowork-routed rows ─── */}
+      <CoworkPreviewPanel />
+
       {/* ── Import History panel ──────────────────────────────────────── */}
       {showHistory && (
         <div className="mb-4 bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -1363,5 +1366,149 @@ function JwtMeta({ token }: { token: string }) {
         </>
       )}
     </p>
+  )
+}
+
+// ─── Sprint COWORK.PREVIEW ──────────────────────────────────────────────────
+// Sheet-scan-only preview of rows marked `Cowork` in col E. The Anthropic
+// 5-min cron deliberately skips these (isPendingTrigger only matches 'yes'),
+// so without this panel they'd be invisible until the Cowork-session schedule
+// in HANDOFF_COWORK_INTEGRATION.md ships. Zero Anthropic calls, zero DB writes.
+interface CoworkRow {
+  relation_id:  string
+  product_name: string
+  category:     string
+  request_date: string
+  sheet_row:    number
+  trigger_raw:  string
+}
+interface CoworkPreviewResponse {
+  ok:             boolean
+  spreadsheet_id?: string
+  sheet_name?:    string
+  count:          number
+  rows:           CoworkRow[]
+  other_counts?: {
+    yes_pending: number
+    generated:   number
+    errors:      number
+    total_rows:  number
+  }
+  reason?: string
+  error?:  string
+}
+
+function CoworkPreviewPanel() {
+  const [data, setData]       = useState<CoworkPreviewResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState<string | null>(null)
+  const [open, setOpen]       = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const res = await fetch('/api/products/cowork-preview')
+      const body = await res.json() as CoworkPreviewResponse
+      if (!res.ok || body.ok === false) {
+        setError(body.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setData(body)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  // Don't render anything when there are zero Cowork rows AND nothing is happening — keeps the page clean.
+  if (!loading && !error && data && data.count === 0) return null
+
+  return (
+    <div className="mb-4 bg-purple-900/15 border border-purple-700/40 rounded-xl">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-purple-900/10 transition rounded-xl"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-purple-300 text-sm font-semibold">🧑‍💻 Cowork Queue (preview)</span>
+          {loading && <span className="text-[10px] text-purple-200/60">loading…</span>}
+          {data && data.count > 0 && (
+            <span className="bg-purple-500/20 border border-purple-500/40 text-purple-200 text-[11px] font-bold px-2 py-0.5 rounded-full">
+              {data.count} pending
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-purple-200/70">
+          <button
+            onClick={(e) => { e.stopPropagation(); void load() }}
+            className="hover:text-white"
+            title="Refresh from sheet"
+          >
+            ↻ Refresh
+          </button>
+          <span>{open ? '▾' : '▸'}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4">
+          {error && (
+            <p className="text-xs text-red-300 mt-2">Failed to load: {error}</p>
+          )}
+
+          {data && data.count > 0 && (
+            <>
+              <p className="text-[11px] text-purple-200/70 mb-2">
+                Rows in col E = <code className="bg-purple-950/40 px-1 rounded">Cowork</code> — the Anthropic 5-min cron <strong>skips</strong> these on purpose.
+                They&apos;ll be picked up by the Cowork-session schedule once <code className="bg-purple-950/40 px-1 rounded">/api/products/auto-content/cowork-submit</code> ships
+                (see <code className="bg-purple-950/40 px-1 rounded">HANDOFF_COWORK_INTEGRATION.md</code>). Read-only here.
+              </p>
+              <div className="bg-gray-950/50 border border-purple-900/30 rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-purple-900/20 text-purple-200/70 text-[10px] uppercase tracking-wider">
+                    <tr>
+                      <th className="text-left  px-3 py-1.5">Product</th>
+                      <th className="text-left  px-3 py-1.5">Category</th>
+                      <th className="text-left  px-3 py-1.5 font-mono">Relation ID</th>
+                      <th className="text-left  px-3 py-1.5">Request Date</th>
+                      <th className="text-right px-3 py-1.5 w-16">Row</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.rows.map((r) => (
+                      <tr key={`${r.sheet_row}-${r.relation_id}`} className="border-t border-purple-900/20">
+                        <td className="px-3 py-1.5 text-white">{r.product_name || '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-300">{r.category || '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-400 font-mono break-all">{r.relation_id || '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-400">{r.request_date || '—'}</td>
+                        <td className="px-3 py-1.5 text-right text-gray-500">#{r.sheet_row}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {data.other_counts && (
+                <p className="text-[10px] text-purple-200/50 mt-2">
+                  Sheet context: {data.other_counts.total_rows} total rows ·
+                  {' '}<span className="text-yellow-300/70">{data.other_counts.yes_pending} <code>yes</code> (Anthropic queue)</span> ·
+                  {' '}<span className="text-emerald-300/70">{data.other_counts.generated} generated</span>
+                  {data.other_counts.errors > 0 && <> · <span className="text-red-300/70">{data.other_counts.errors} errors</span></>}
+                </p>
+              )}
+            </>
+          )}
+
+          {data && data.count === 0 && (
+            <p className="text-xs text-purple-200/60 mt-2">
+              No <code className="bg-purple-950/40 px-1 rounded">Cowork</code> rows in the sheet. Type <code className="bg-purple-950/40 px-1 rounded">Cowork</code> in col E of any row to queue it for the Cowork session.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
