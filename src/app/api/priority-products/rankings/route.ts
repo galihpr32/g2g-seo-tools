@@ -50,12 +50,13 @@ interface SerpRow {
 }
 
 interface ProductMeta {
-  id:           string
-  tier:         1 | 2
-  product_name: string
-  category:     string | null
-  url:          string | null
-  relation_id:  string | null
+  id:               string
+  tier:             1 | 2
+  product_name:     string
+  category:         string | null
+  url:              string | null
+  relation_id:      string | null
+  restriction_type: string | null
 }
 
 export async function GET(req: Request) {
@@ -82,7 +83,7 @@ export async function GET(req: Request) {
   // ── 1. Fetch tier products (filtered by tier + category) ───────────────────
   let productsQ = db
     .from('product_tiers')
-    .select('id, tier, product_name, category, url, relation_id')
+    .select('id, tier, product_name, category, url, relation_id, restriction_type')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
   if (tier === '1') productsQ = productsQ.eq('tier', 1)
@@ -271,16 +272,17 @@ export async function GET(req: Request) {
 
   // ── 7. Per-product summary ─────────────────────────────────────────────────
   type ProductSummary = {
-    id:           string
-    productName:  string
-    tier:         1 | 2
-    category:     string | null
-    url:          string | null
-    kwCount:      number
-    avgPosition:  number | null
-    top3:         number
-    top10:        number
-    wowDelta:     number | null   // positive = improved avg pos
+    id:               string
+    productName:      string
+    tier:             1 | 2
+    category:         string | null
+    url:              string | null
+    restriction_type: string | null
+    kwCount:          number
+    avgPosition:      number | null
+    top3:             number
+    top10:            number
+    wowDelta:         number | null   // positive = improved avg pos
   }
   const perProduct = new Map<string, { sum: number; count: number; sumPrev: number; countPrev: number; t3: number; t10: number; kws: Set<string> }>()
   for (const b of buckets.values()) {
@@ -304,6 +306,7 @@ export async function GET(req: Request) {
     if (!e || e.kws.size === 0) {
       return {
         id: p.id, productName: p.product_name, tier: p.tier, category: p.category, url: p.url,
+        restriction_type: p.restriction_type,
         kwCount: 0, avgPosition: null, top3: 0, top10: 0, wowDelta: null,
       }
     }
@@ -311,6 +314,7 @@ export async function GET(req: Request) {
     const avgPrev = e.countPrev > 0 ? +(e.sumPrev / e.countPrev).toFixed(1) : null
     return {
       id: p.id, productName: p.product_name, tier: p.tier, category: p.category, url: p.url,
+      restriction_type: p.restriction_type,
       kwCount:     e.kws.size,
       avgPosition: avg,
       top3:        e.t3,

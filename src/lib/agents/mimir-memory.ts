@@ -46,6 +46,9 @@ export interface RetrieveCtx {
   siteSlug?:   string | null
   topicSlug?:  string | null
   relationId?: string | null
+  /** Optional market scope — Sprint MIMIR.MARKET. When set, retriever prefers
+   *  memories tagged with the same market or no market (null = applies to all). */
+  market?:     string | null
   /** Free-form tokens drawn from the active page context (page kind, opportunity
    *  topic words, etc.). Used for tag overlap scoring. */
   hintTokens:  string[]
@@ -123,7 +126,11 @@ export async function retrieveMemories(
 
   // Filter to scope-relevant rows first (a topic-scoped row is irrelevant if
   // the chat's topicSlug doesn't match — skip it before scoring).
+  // Sprint MIMIR.MARKET — also exclude memories whose market doesn't match the
+  // active market context. NULL market = applies to all, always included.
   const eligible = candidates.filter(r => {
+    const memMarket = (r as MemoryRow & { market?: string | null }).market ?? null
+    if (memMarket && ctx.market && memMarket !== ctx.market) return false
     if (r.scope === 'global')                                              return true
     if (r.scope === 'site'    && ctx.siteSlug   === r.site_slug)           return true
     if (r.scope === 'topic'   && ctx.topicSlug  === r.topic_slug)          return true

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
-import { fetchSerpForMarket, ourDomainsForSite, TIER_MARKET_CODES, type TierMarket } from '@/lib/ranking-tracker'
+import { fetchSerpForMarket, marketsForKeyword, ourDomainsForSite, type TierMarket } from '@/lib/ranking-tracker'
 
 export const maxDuration = 300
 
@@ -43,6 +43,7 @@ interface KeywordRow {
   id:              string
   product_tier_id: string
   keyword:         string
+  language?:       string
 }
 
 interface PendingPair {
@@ -95,7 +96,7 @@ export async function GET(req: Request) {
     const productIds = ownerSiteProducts.map(p => p.id)
     const { data: keywords } = await db
       .from('tier_keywords')
-      .select('id, product_tier_id, keyword')
+      .select('id, product_tier_id, keyword, language')
       .eq('owner_user_id', ownerId)
       .in('product_tier_id', productIds)
 
@@ -111,12 +112,14 @@ export async function GET(req: Request) {
       continue
     }
 
-    // Build the work queue for this group
+    // Build the work queue for this group — Sprint MARKETS.PRUNE: filter
+    // markets to match keyword language (EN-kw → US, ID-kw → ID only)
     const pairs: PendingPair[] = []
     for (const product of ownerSiteProducts) {
       const kws = kwsByProduct[product.id] ?? []
       for (const kw of kws) {
-        for (const market of TIER_MARKET_CODES) {
+        const markets = marketsForKeyword(kw.language ?? 'en')
+        for (const market of markets) {
           pairs.push({
             product_id: product.id,
             keyword_id: kw.id,

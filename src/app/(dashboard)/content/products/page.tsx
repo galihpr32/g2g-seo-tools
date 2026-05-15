@@ -1090,11 +1090,7 @@ export default function ProductContentPage() {
               {jwtSaveErr && (
                 <p className="text-xs text-red-300">⚠ {jwtSaveErr}</p>
               )}
-              {inlineJwt && (
-                <p className="text-[10px] text-amber-300/70 font-mono">
-                  Length: {inlineJwt.length} chars · {inlineJwt.trim().split('.').length} dot-segments
-                </p>
-              )}
+              {inlineJwt && <JwtMeta token={inlineJwt} />}
             </div>
           )}
           {uploadResult.errors.length > 0 && (
@@ -1315,5 +1311,57 @@ export default function ProductContentPage() {
         />
       )}
     </div>
+  )
+}
+
+// ─── JWT metadata + countdown — Sprint JWT.COUNTDOWN ────────────────────
+// Decodes the JWT payload to surface expiry countdown. Updates every second.
+function JwtMeta({ token }: { token: string }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const segs = token.trim().split('.')
+  let expMs: number | null = null
+  if (segs.length === 3) {
+    try {
+      // base64url → JSON
+      const b64 = segs[1].replace(/-/g, '+').replace(/_/g, '/')
+      const payload = JSON.parse(atob(b64 + '==='.slice(0, (4 - b64.length % 4) % 4))) as { exp?: number }
+      if (payload.exp) expMs = payload.exp * 1000
+    } catch { /* not a parseable JWT */ }
+  }
+
+  const remainingMs = expMs != null ? expMs - now : null
+  let countdown = '—'
+  let color = 'text-amber-300/70'
+  if (remainingMs != null) {
+    if (remainingMs <= 0) {
+      countdown = 'EXPIRED'
+      color = 'text-red-400 font-bold'
+    } else {
+      const mins = Math.floor(remainingMs / 60000)
+      const secs = Math.floor((remainingMs % 60000) / 1000)
+      countdown = `${mins}:${secs.toString().padStart(2, '0')}`
+      if (remainingMs < 120_000)      color = 'text-red-400 font-bold'        // < 2 min
+      else if (remainingMs < 300_000) color = 'text-orange-400 font-semibold' // < 5 min
+      else                            color = 'text-emerald-400'
+    }
+  }
+
+  return (
+    <p className="text-[10px] font-mono">
+      <span className="text-amber-300/70">
+        Length: {token.length} chars · {segs.length} dot-segments
+      </span>
+      {expMs != null && (
+        <>
+          {'  ·  '}
+          <span className={color}>Expires in: {countdown}</span>
+        </>
+      )}
+    </p>
   )
 }

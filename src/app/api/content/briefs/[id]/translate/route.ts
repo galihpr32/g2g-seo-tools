@@ -4,6 +4,10 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { canAccessOwnerData }  from '@/lib/workspace'
 import Anthropic               from '@anthropic-ai/sdk'
 import { logClaudeUsage }      from '@/lib/api-logger'
+// Sprint BRAGI.ID.NATIVE — read variant + invoke native generator when assigned
+import { resolveTierForPage }     from '@/lib/anthropic/model-tier'
+import { ensureIdVariantForBrief } from '@/lib/experiments/id-native'
+import { generateIdNativeContent } from '@/lib/agents/id-native-generator'
 
 export const maxDuration = 60
 
@@ -55,7 +59,7 @@ export async function POST(
   const db = createServiceClient()
   const { data: brief } = await db
     .from('seo_content_briefs')
-    .select('owner_user_id, final_content, primary_keyword, final_content_translations')
+    .select('owner_user_id, final_content, primary_keyword, final_content_translations, site_slug, page, id_experiment_variant')
     .eq('id', id)
     .maybeSingle()
   if (!brief) return NextResponse.json({ error: 'Brief not found' }, { status: 404 })
@@ -76,6 +80,43 @@ export async function POST(
     try {
       const langName = SUPPORTED_LANGS[lang]
       const keyword  = String(brief.primary_keyword ?? '')
+
+      // ─── Sprint BRAGI.ID.NATIVE — variant-aware branching ────────────────
+      // For Indonesian only, check the brief's experiment variant. If
+      // variant=id_native, generate fresh ID copy directly via Sonnet.
+      // Otherwise fall through to the legacy Haiku-translate path below.
+      if (lang === 'id') {
+        const tier = await resolveTierForPage(db, brief.page ?? null, brief.site_slug ?? null)
+        if (tier === 1 || tier === 2) {
+          // Lazily assign variant if missing (e.g. brief was created pre-experiment)
+          const assignment = await ensureIdVariantForBrief(db, id, tier)
+          if (assignment.variant === 'id_native') {
+            const result = await generateIdNativeContent({
+              briefId:         id,
+              primaryKeyword:  keyword,
+              productName:     keyword,     // best available proxy when product_name not stored on brief
+              category:        '',
+              englishMarkdown: sourceText,
+              tier,
+            }, db, ownerId)
+            if (result.ok && result.markdown) {
+              const existing = (brief.final_content_translations ?? {}) as Record<string, string>
+              const updated  = { ...existing, id: result.markdown }
+              await db
+                .from('seo_content_briefs')
+                .update({
+                  final_content_translations: updated,
+                  updated_at:                 new Date().toISOString(),
+                })
+                .eq('id', id)
+              console.log(`[translate] brief ${id} ID generated via id_native (${result.model})`)
+              return
+            }
+            console.warn(`[translate] brief ${id} id_native failed (${result.error}), falling back to en_translate`)
+            // fall through to legacy translation as safety net
+          }
+        }
+      }
 
       const prompt = `You are a professional SEO translator. Translate the markdown article below into ${langName}, following these rules:
 

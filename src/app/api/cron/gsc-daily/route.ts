@@ -12,8 +12,17 @@ import {
   sendRankingDropAlert,
   sendIndexCoverageAlert,
   sendCWVAlert,
+  sendTieredRankingDropAlert,
 } from '@/lib/slack/alerts'
 import { getGA4OrganicTraffic, getGA4ContentPerformance, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
+// Sprint GSC.T1.DOD — Tier-aware drop detection (T1 day-over-day ≥10%,
+// others WoW ≥15% with 4-day lag for GSC freshness)
+import {
+  loadTierPagesForOwner,
+  buildTierMap,
+  detectTieredDrops,
+  getLagDays,
+} from '@/lib/gsc/tier-detect'
 
 export const maxDuration = 60
 
@@ -202,6 +211,54 @@ export async function GET(request: Request) {
             metadata: { drops: alertableDrops },
           })
         }
+      }
+
+      // ── Task 1b: Sprint GSC.T1.DOD — Tier-aware drop detection ─────────────
+      // Runs alongside the legacy WoW check. T1 pages get day-over-day
+      // sensitivity at a tighter 10% threshold; others get WoW with a 4-day
+      // lag so the GSC freshness window has time to stabilize.
+      try {
+        const lag = getLagDays()
+        const [dodCurRows, dodPrevRows, wowCurRows, wowPrevRows] = await Promise.all([
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag),     getDateRange(lag),     ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag + 1), getDateRange(lag + 1), ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag + 6), getDateRange(lag),     ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag + 13), getDateRange(lag + 7), ['page'], 1000),
+        ])
+
+        const tierPages = await loadTierPagesForOwner(supabase, conn.user_id, site.slug)
+        const tierMap   = buildTierMap(tierPages)
+
+        const tieredDrops = detectTieredDrops(
+          { current: toRankingRow(dodCurRows), previous: toRankingRow(dodPrevRows) },
+          { current: toRankingRow(wowCurRows), previous: toRankingRow(wowPrevRows) },
+          tierMap,
+        )
+
+        // Filter to alertable URL set (same /categories/ allowlist as legacy)
+        const tieredAlertable = tieredDrops.filter(d => isAlertablePage(d.page))
+
+        if (tieredAlertable.length && (notifSettings?.slack_clicks_alerts ?? false)) {
+          const { getThresholds } = await import('@/lib/gsc/tier-detect')
+          await sendTieredRankingDropAlert(tieredAlertable, getThresholds(), {
+            db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
+          })
+          totalSlackPosted++
+
+          const t1Count = tieredAlertable.filter(d => d.tier === 1).length
+          await supabase.from('alert_log').insert({
+            alert_type: 'ranking_drop_tiered',
+            site_url:   siteUrl,
+            title:      `${t1Count} T1 DoD drops + ${tieredAlertable.length - t1Count} others`,
+            message:    tieredAlertable.slice(0, 20).map(d => `${d.tier ?? 'na'}:${d.page}`).join(', '),
+            severity:   t1Count > 0 ? 'critical' : 'warning',
+            slack_sent: true,
+            metadata:   { drops: tieredAlertable, thresholds: getThresholds() },
+          })
+        }
+      } catch (e) {
+        // Don't let the tier-aware path break the rest of the cron.
+        console.error('[gsc-daily] tier-aware detection error:', e)
       }
 
       // ── Task 2: Index Coverage ──────────────────────────────────────────

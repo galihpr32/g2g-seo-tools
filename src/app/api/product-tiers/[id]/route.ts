@@ -13,13 +13,16 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
  */
 
 interface PatchBody {
-  tier?:         1 | 2
-  product_name?: string
-  category?:     string | null
-  relation_id?:  string | null
-  url?:          string | null
-  notes?:        string | null
+  tier?:             1 | 2
+  product_name?:     string
+  category?:         string | null
+  relation_id?:      string | null
+  url?:              string | null
+  notes?:            string | null
+  restriction_type?: string | null   // Sprint DMCA.TAGGING — DMCA | Trademark | RegionLock | TOS | null
 }
+
+const VALID_RESTRICTIONS = ['DMCA', 'Trademark', 'RegionLock', 'TOS'] as const
 
 export async function PUT(
   req: Request,
@@ -48,6 +51,13 @@ export async function PUT(
   if (body.relation_id !== undefined)  patch.relation_id  = body.relation_id?.trim() || null
   if (body.url !== undefined)          patch.url          = body.url?.trim() || null
   if (body.notes !== undefined)        patch.notes        = body.notes?.trim() || null
+  if (body.restriction_type !== undefined) {
+    const r = body.restriction_type?.trim() || null
+    if (r && !(VALID_RESTRICTIONS as readonly string[]).includes(r)) {
+      return NextResponse.json({ error: `restriction_type must be one of: ${VALID_RESTRICTIONS.join(', ')} or null` }, { status: 400 })
+    }
+    patch.restriction_type = r
+  }
 
   const { data, error } = await db
     .from('product_tiers')

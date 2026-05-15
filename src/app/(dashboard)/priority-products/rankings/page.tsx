@@ -53,16 +53,17 @@ interface Mover {
 }
 
 interface ProductSummary {
-  id:           string
-  productName:  string
-  tier:         1 | 2
-  category:     string | null
-  url:          string | null
-  kwCount:      number
-  avgPosition:  number | null
-  top3:         number
-  top10:        number
-  wowDelta:     number | null
+  id:               string
+  productName:      string
+  tier:             1 | 2
+  category:         string | null
+  url:              string | null
+  restriction_type: string | null   // Sprint DMCA.TAGGING — 'DMCA' | 'Trademark' | 'RegionLock' | 'TOS' | null
+  kwCount:          number
+  avgPosition:      number | null
+  top3:             number
+  top10:            number
+  wowDelta:         number | null
 }
 
 interface CompetitorRow {
@@ -121,6 +122,8 @@ export default function RankingsDashboardPage() {
   const [search,   setSearch]   = useState('')
   // Sprint RANKINGS.UX — client-side bucket filter by avgPosition range
   const [bucket,   setBucket]   = useState<'all' | 'top3' | 'top10' | 'top20' | 'top50' | 'outside' | 'notRanking'>('all')
+  // Sprint DMCA.TAGGING — client-side filter by restriction_type
+  const [restriction, setRestriction] = useState<'all' | 'any' | 'none' | 'DMCA' | 'Trademark' | 'RegionLock' | 'TOS'>('all')
 
   // Load the 9 canonical service categories once
   useEffect(() => {
@@ -187,6 +190,13 @@ export default function RankingsDashboardPage() {
       if (s && !p.productName.toLowerCase().includes(s) && !(p.category ?? '').toLowerCase().includes(s)) {
         return false
       }
+      // Sprint DMCA.TAGGING — restriction filter
+      if (restriction !== 'all') {
+        const r = p.restriction_type
+        if (restriction === 'none' && r !== null) return false
+        if (restriction === 'any'  && r === null) return false
+        if (restriction !== 'none' && restriction !== 'any' && r !== restriction) return false
+      }
       // Sprint RANKINGS.UX — bucket filter by avgPosition
       if (bucket === 'all') return true
       const ap = p.avgPosition
@@ -199,7 +209,7 @@ export default function RankingsDashboardPage() {
       if (bucket === 'outside') return ap > 50
       return true
     })
-  }, [data, search, bucket])
+  }, [data, search, bucket, restriction])
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
@@ -246,6 +256,22 @@ export default function RankingsDashboardPage() {
             {services.map(s => <option key={s} value={s}>📚 {s}</option>)}
           </select>
         )}
+
+        {/* Sprint DMCA.TAGGING — restriction filter */}
+        <select
+          value={restriction}
+          onChange={e => setRestriction(e.target.value as typeof restriction)}
+          className="bg-gray-900 border border-gray-800 rounded px-2 py-1 text-white"
+          title="Filter by legal/platform restriction (DMCA, Trademark, RegionLock, TOS)"
+        >
+          <option value="all">All restrictions</option>
+          <option value="none">✅ Unrestricted</option>
+          <option value="any">🚫 Any restricted</option>
+          <option value="DMCA">🚫 DMCA</option>
+          <option value="Trademark">™️ Trademark</option>
+          <option value="RegionLock">🌐 Region Lock</option>
+          <option value="TOS">⚠️ TOS</option>
+        </select>
 
         {/* Sprint RANKINGS.UX — bucket filter by avgPosition */}
         <select
@@ -389,7 +415,10 @@ export default function RankingsDashboardPage() {
                             <div className="flex items-center gap-1.5">
                               <span className={`text-gray-500 text-xs transition-transform inline-block ${isOpen ? 'rotate-90' : ''}`}>▸</span>
                               <div className="min-w-0">
-                                <p className="text-white font-medium truncate">{p.productName}</p>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <p className="text-white font-medium truncate">{p.productName}</p>
+                                  <RestrictionBadge restriction={p.restriction_type} />
+                                </div>
                                 {p.url && <p className="text-[10px] text-gray-500 truncate">{p.url}</p>}
                               </div>
                             </div>
@@ -717,6 +746,42 @@ function KeywordLeaderboard({ rows, markets }: {
         </tbody>
       </table>
     </div>
+  )
+}
+
+/**
+ * Sprint DMCA.TAGGING — Visual badge that explains WHY a product may rank
+ * poorly. Hover for full label, color-coded by restriction severity.
+ */
+function RestrictionBadge({ restriction }: { restriction: string | null }) {
+  if (!restriction) return null
+  const map: Record<string, { label: string; icon: string; cls: string; title: string }> = {
+    DMCA: {
+      label: 'DMCA',  icon: '🚫', cls: 'bg-red-500/15 text-red-300 border-red-500/30',
+      title: 'DMCA takedown risk (e.g., HoYoverse) — limits public SEO visibility',
+    },
+    Trademark: {
+      label: 'TM',    icon: '™️', cls: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
+      title: 'Trademark protected — restricted brand keywords',
+    },
+    RegionLock: {
+      label: 'Region', icon: '🌐', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+      title: 'Region-licensed content (e.g., China-only) — limits global visibility',
+    },
+    TOS: {
+      label: 'TOS',   icon: '⚠️', cls: 'bg-orange-500/15 text-orange-300 border-orange-500/30',
+      title: 'Platform Terms-of-Service restriction (e.g., Mobile Legends prohibits sale)',
+    },
+  }
+  const meta = map[restriction]
+  if (!meta) return null
+  return (
+    <span
+      title={meta.title}
+      className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded border ${meta.cls}`}
+    >
+      <span>{meta.icon}</span><span>{meta.label}</span>
+    </span>
   )
 }
 

@@ -26,7 +26,29 @@ export const TIER_MARKETS = {
 
 export type TierMarket = keyof typeof TIER_MARKETS
 
-export const TIER_MARKET_CODES: TierMarket[] = ['us', 'de', 'fr', 'my', 'id']
+// Sprint MARKETS.PRUNE — pause DE/FR/MY temporarily for budget. Default
+// ACTIVE = US (Global) + ID. Override via env DATAFORSEO_ACTIVE_MARKETS=us,de,fr,my,id
+// when budget allows re-enabling.
+const ACTIVE_MARKETS_ENV = process.env.DATAFORSEO_ACTIVE_MARKETS ?? 'us,id'
+export const TIER_MARKET_CODES: TierMarket[] = ACTIVE_MARKETS_ENV
+  .split(',')
+  .map(s => s.trim().toLowerCase() as TierMarket)
+  .filter((m): m is TierMarket => m in TIER_MARKETS)
+
+/** All markets we COULD track (universe) — used by UI dropdowns + tests. */
+export const TIER_MARKET_CODES_ALL: TierMarket[] = ['us', 'de', 'fr', 'my', 'id']
+
+/** Markets that should run for an EN-language keyword (Global proxy). */
+export const EN_MARKETS: TierMarket[] = TIER_MARKET_CODES.filter(m => m !== 'id')
+
+/** Markets that should run for an ID-language keyword. */
+export const ID_MARKETS: TierMarket[] = TIER_MARKET_CODES.filter(m => m === 'id')
+
+/** Pick markets to run for a keyword based on its language column. */
+export function marketsForKeyword(language: 'en' | 'id' | string): TierMarket[] {
+  if (language === 'id') return ID_MARKETS
+  return EN_MARKETS
+}
 
 /** Top-10 row that we persist into tier_serp_snapshots.top_10. */
 export interface SerpTopRow {

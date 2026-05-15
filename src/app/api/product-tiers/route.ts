@@ -14,32 +14,40 @@ import { mapToKbCanonical, type KbCategory } from '@/lib/category-mapping'
  */
 
 interface TierBody {
-  tier:         1 | 2
-  product_name: string
-  category?:    string | null
-  relation_id?: string | null
-  url?:         string | null
-  notes?:       string | null
+  tier:              1 | 2
+  product_name:      string
+  category?:         string | null
+  relation_id?:      string | null
+  url?:              string | null
+  notes?:            string | null
+  restriction_type?: string | null   // Sprint DMCA.TAGGING
 }
+
+const VALID_RESTRICTIONS = ['DMCA', 'Trademark', 'RegionLock', 'TOS'] as const
 
 function normalizeBody(body: TierBody): {
   ok:    true
-  data:  { tier: 1 | 2; product_name: string; category: string | null; relation_id: string | null; url: string | null; notes: string | null }
+  data:  { tier: 1 | 2; product_name: string; category: string | null; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null }
 } | { ok: false; error: string } {
   if (body.tier !== 1 && body.tier !== 2) return { ok: false, error: 'tier must be 1 or 2' }
   if (!body.product_name?.trim())         return { ok: false, error: 'product_name is required' }
   if (!body.relation_id && !body.url && !body.product_name) {
     return { ok: false, error: 'At least one of relation_id, url, or product_name is required' }
   }
+  const restriction = body.restriction_type?.trim() || null
+  if (restriction && !(VALID_RESTRICTIONS as readonly string[]).includes(restriction)) {
+    return { ok: false, error: `restriction_type must be one of: ${VALID_RESTRICTIONS.join(', ')} or null` }
+  }
   return {
     ok: true,
     data: {
-      tier:         body.tier,
-      product_name: body.product_name.trim(),
-      category:     body.category?.trim() || null,
-      relation_id:  body.relation_id?.trim() || null,
-      url:          body.url?.trim() || null,
-      notes:        body.notes?.trim() || null,
+      tier:             body.tier,
+      product_name:     body.product_name.trim(),
+      category:         body.category?.trim() || null,
+      relation_id:      body.relation_id?.trim() || null,
+      url:              body.url?.trim() || null,
+      notes:            body.notes?.trim() || null,
+      restriction_type: restriction,
     },
   }
 }

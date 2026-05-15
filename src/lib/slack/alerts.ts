@@ -76,6 +76,145 @@ export async function sendRankingDropAlert(drops: {
   ], `📉 ${drops.length} pages lost >15% clicks WoW`, ctx)
 }
 
+// ─── Sprint GSC.T1.DOD — Tier-aware ranking drop alert ───────────────────────
+// Splits the alert into urgency buckets so the on-call eye lands on T1
+// drops first. T1 = day-over-day (most recent signal); T2/non-tier = WoW
+// with 4-day lag (smoothed). Includes restriction_type so we don't get
+// pinged about Genshin every Monday.
+export interface TieredDropForAlert {
+  page:              string
+  clicksDrop:        number
+  impressionsDrop:   number
+  positionChange:    number
+  currentClicks:     number
+  previousClicks:    number
+  currentPosition:   number
+  previousPosition:  number
+  tier:              1 | 2 | null
+  comparison:        'day_over_day' | 'week_over_week'
+  threshold_pct:     number
+  product_name:      string | null
+  restriction_type:  string | null
+}
+
+export async function sendTieredRankingDropAlert(
+  drops: TieredDropForAlert[],
+  thresholds: { t1_dod_pct: number; others_wow_pct: number; lag_days: number },
+  ctx?:  SlackRouteCtx,
+) {
+  if (drops.length === 0) return
+
+  const t1     = drops.filter(d => d.tier === 1)
+  const t2     = drops.filter(d => d.tier === 2)
+  const others = drops.filter(d => d.tier === null)
+
+  const blocks: SlackBlock[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '📉 GSC Ranking Drops — Tier-aware', emoji: true },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: [
+          `*T1 (day-over-day ≥ ${thresholds.t1_dod_pct}%):* ${t1.length}`,
+          `*T2 + others (WoW ≥ ${thresholds.others_wow_pct}%, ${thresholds.lag_days}-day lag):* ${t2.length + others.length}`,
+        ].join('\n'),
+      },
+    },
+  ]
+
+  // T1 section — most urgent, full-fat formatting
+  if (t1.length > 0) {
+    blocks.push({ type: 'divider' })
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*🚨 Tier 1 — Day-over-Day drops (act today)*',
+      },
+    })
+    for (const d of t1.slice(0, 8)) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: formatTierRow(d) },
+      })
+    }
+    if (t1.length > 8) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `…and ${t1.length - 8} more T1 drops` }],
+      })
+    }
+  }
+
+  // T2 + non-tier — terser
+  const lower = [...t2, ...others]
+  if (lower.length > 0) {
+    blocks.push({ type: 'divider' })
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*⚠️ Tier 2 + non-tier — Week-over-Week (review when you can)*',
+      },
+    })
+    const condensed = lower.slice(0, 10).map(d => {
+      const path = safePath(d.page)
+      const restr = d.restriction_type ? ` _(${d.restriction_type})_` : ''
+      const tierLabel = d.tier === 2 ? 'T2 ' : ''
+      return `• ${tierLabel}\`${path}\`${restr} — Clicks ↓${Math.round(d.clicksDrop * 100)}% | Pos ${formatPos(d)}`
+    }).join('\n')
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: condensed },
+    })
+    if (lower.length > 10) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: `…and ${lower.length - 10} more` }],
+      })
+    }
+  }
+
+  blocks.push({
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: `G2G SEO Tools · ${new Date().toLocaleDateString('en-GB')} · ${thresholds.lag_days}-day GSC freshness lag applied to WoW window`,
+    }],
+  })
+
+  const fallback = t1.length > 0
+    ? `🚨 ${t1.length} T1 drops + ${lower.length} others`
+    : `📉 ${lower.length} ranking drops detected`
+
+  return sendSlackMessage(blocks, fallback, ctx)
+}
+
+function formatTierRow(d: TieredDropForAlert): string {
+  const path  = safePath(d.page)
+  const name  = d.product_name ? ` (${d.product_name})` : ''
+  const restr = d.restriction_type
+    ? `  _Note: ${d.restriction_type} restriction — drop may be expected_`
+    : ''
+  return [
+    `• \`${path}\`${name}`,
+    `   Clicks ↓${Math.round(d.clicksDrop * 100)}% (${d.previousClicks} → ${d.currentClicks}) · Pos ${formatPos(d)}${restr}`,
+  ].join('\n')
+}
+
+function safePath(url: string): string {
+  try { return new URL(url).pathname.slice(0, 80) } catch { return url.slice(0, 80) }
+}
+
+function formatPos(d: { currentPosition: number; previousPosition: number; positionChange: number }): string {
+  if (!d.previousPosition || !d.currentPosition) return '—'
+  const sign = d.positionChange > 0 ? '+' : ''
+  return `#${d.previousPosition.toFixed(1)} → #${d.currentPosition.toFixed(1)} (${sign}${d.positionChange.toFixed(1)})`
+}
+
 export async function sendIndexCoverageAlert(data: {
   indexedPages: number
   previousIndexed: number

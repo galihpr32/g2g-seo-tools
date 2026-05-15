@@ -8,6 +8,7 @@ import { buildCategoryInstructions, resolveCategory } from '@/lib/g2g-category-p
 import { detectPageLanguage, type PageLanguage } from '@/lib/language-detect'
 import { countryFromLanguageCode, getCountryPreset, type CountryPreset } from '@/lib/country-config'
 import { logApiUsage } from '@/lib/api-logger'
+import { pickBragiModel, resolveTierForPage } from '@/lib/anthropic/model-tier'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 120 // briefs take time — requires Vercel Pro
@@ -99,6 +100,21 @@ export async function POST(request: Request) {
 
   if (insertErr || !brief) {
     return NextResponse.json({ error: insertErr?.message ?? 'Insert failed' }, { status: 500 })
+  }
+
+  // ── Sprint BRAGI.ID.NATIVE — assign A/B variant immediately on insert ─────
+  // Done synchronously (cheap — single UPDATE) so the variant is persisted
+  // before any downstream code reads brief.id_experiment_variant.
+  try {
+    const { resolveTierForPage }      = await import('@/lib/anthropic/model-tier')
+    const { ensureIdVariantForBrief } = await import('@/lib/experiments/id-native')
+    const tier = await resolveTierForPage(supabase, item.page, cookieSite)
+    if (tier === 1 || tier === 2) {
+      await ensureIdVariantForBrief(supabase, brief.id, tier)
+    }
+  } catch (e) {
+    // Don't let variant assignment block brief generation.
+    console.warn('[brief.generate] id-native variant assignment skipped:', e)
   }
 
   // ── Schedule pipeline to run AFTER response is sent ──────────────────────
@@ -380,14 +396,19 @@ async function runBriefPipeline(
         : item.action_type === 'off_page' ? 'outreach'
         : 'optimize_existing'
 
+    // Sprint BRAGI.MODEL.TIER — pick Opus (T1) or Sonnet (T0/T2) based on tier
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tier   = await resolveTierForPage(supabase as any, item.page, item.site_slug ?? null)
+    const model  = pickBragiModel(tier)
+
     if (outputType === 'optimize_existing') {
-      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
+      await runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions, model })
     } else if (outputType === 'new_page') {
-      await runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
+      await runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions, model })
     } else if (outputType === 'blog_post') {
-      await runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions })
+      await runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions, model })
     } else {
-      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions })
+      await runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions, model })
     }
 
     // Log API usage (fire-and-forget)
@@ -397,7 +418,7 @@ async function runBriefPipeline(
       logApiUsage(sb, ownerId, { api: 'firecrawl', endpoint: 'scrape', triggeredBy: 'brief_generate', metadata: { page: item.page } })
       logApiUsage(sb, ownerId, { api: 'dataforseo', endpoint: 'serp/google/organic', triggeredBy: 'brief_generate', callCount: topQueries.length || 1, metadata: { page: item.page } })
       logApiUsage(sb, ownerId, { api: 'dataforseo', endpoint: 'keywords_data/google/suggestions', triggeredBy: 'brief_generate', metadata: { keyword: primaryKeyword } })
-      logApiUsage(sb, ownerId, { api: 'claude', endpoint: 'messages', triggeredBy: 'brief_generate', metadata: { model: 'claude-opus-4-6', action_type: item.action_type, output_type: outputType } })
+      logApiUsage(sb, ownerId, { api: 'claude', endpoint: 'messages', triggeredBy: 'brief_generate', metadata: { model, tier, action_type: item.action_type, output_type: outputType } })
     }
   } catch (err) {
     console.error('Pipeline failed:', err)
@@ -449,7 +470,7 @@ function filterKeywordsByCategory<T extends { keyword: string }>(
 }
 
 // ─── ON-PAGE Pipeline ──────────────────────────────────────────────────────────
-async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
+async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions, model }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -461,6 +482,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
   country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
+  model?: string
 }) {
   // Step 1: Crawl the page
   const crawled = await smartScrape(item.page)
@@ -523,7 +545,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
   })
 
   const aiResponse = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
+    model: model ?? 'claude-opus-4-6',
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   })
@@ -551,7 +573,7 @@ async function runOnPagePipeline({ briefId, item, topQueries, primaryKeyword, gs
 // For output_type='new_page' — page doesn't exist yet, no crawl. Build from
 // scratch using SERP + competitor analysis. Different prompt explicitly tells
 // the AI to design a fresh category/landing page, not refresh an old one.
-async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
+async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions, model }: {
   briefId: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   item: any
@@ -565,6 +587,7 @@ async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
+  model?: string
 }) {
   // No crawl — page doesn't exist. Go straight to SERP + keyword research.
   const serpData = topQueries.length
@@ -598,7 +621,7 @@ async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   })
 
   const aiResponse = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
+    model: model ?? 'claude-opus-4-6',
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   })
@@ -619,7 +642,7 @@ async function runNewPagePipeline({ briefId, item, topQueries, primaryKeyword, g
 // For output_type='blog_post' — editorial content (how-to, listicle, guide,
 // trend piece). Different structure than category page: long-form, TOC,
 // embedded internal links to product pages, less commercial pressure.
-async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions }: {
+async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, kb, lang, country, selectedKeywords, customInstructions, model }: {
   briefId: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   item: any
@@ -633,6 +656,7 @@ async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, 
   country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
+  model?: string
 }) {
   const serpData = topQueries.length
     ? await batchSerpData(topQueries, country.dfsLocationCode, country.dfsLanguageCode)
@@ -665,7 +689,7 @@ async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, 
   })
 
   const aiResponse = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
+    model: model ?? 'claude-opus-4-6',
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   })
@@ -683,7 +707,7 @@ async function runBlogPostPipeline({ briefId, item, topQueries, primaryKeyword, 
 }
 
 // ─── OFF-PAGE Pipeline ─────────────────────────────────────────────────────────
-async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions }: {
+async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, gscQueries, updateBrief, contentTypeConfig, kb, lang, country, customInstructions, model }: {
   briefId: string
   item: any
   topQueries: string[]
@@ -695,6 +719,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   lang: PageLanguage
   country: CountryPreset
   customInstructions?: string
+  model?: string
 }) {
   // Derive topic from URL
   const topic = deriveTopicFromUrl(item.page)
@@ -736,7 +761,7 @@ async function runOffPagePipeline({ briefId, item, topQueries, primaryKeyword, g
   })
 
   const aiResponse = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
+    model: model ?? 'claude-opus-4-6',
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   })
@@ -783,6 +808,7 @@ function buildOnPagePrompt(p: {
   country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
+  model?: string
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword, p.kb.uspsOnPage)
@@ -929,6 +955,7 @@ function buildNewPagePrompt(p: {
   country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
+  model?: string
 }) {
   const gameName = deriveTopicFromUrl(p.page)
   const categoryInstructions = buildCategoryInstructions(p.page, gameName, p.primaryKeyword, p.kb.uspsOnPage)
@@ -1045,6 +1072,7 @@ function buildBlogPostPrompt(p: {
   country: CountryPreset
   selectedKeywords?: string[]
   customInstructions?: string
+  model?: string
 }) {
   const today = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 

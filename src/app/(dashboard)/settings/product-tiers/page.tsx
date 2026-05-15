@@ -16,17 +16,26 @@ import PasteNamesModal from '@/components/g2g/PasteNamesModal'
  */
 
 interface TierRow {
-  id:            string
-  site_slug:     string
-  tier:          1 | 2
-  product_name:  string
-  category:      string | null
-  relation_id:   string | null
-  url:           string | null
-  notes:         string | null
-  created_at:    string
-  updated_at:    string
+  id:               string
+  site_slug:        string
+  tier:             1 | 2
+  product_name:     string
+  category:         string | null
+  relation_id:      string | null
+  url:              string | null
+  notes:            string | null
+  restriction_type: string | null   // Sprint DMCA.TAGGING — DMCA | Trademark | RegionLock | TOS | null
+  created_at:       string
+  updated_at:       string
 }
+
+// Sprint DMCA.TAGGING — UI metadata for restriction picker
+const RESTRICTION_OPTIONS: Array<{ value: 'DMCA' | 'Trademark' | 'RegionLock' | 'TOS'; label: string; hint: string }> = [
+  { value: 'DMCA',       label: '🚫 DMCA',          hint: 'HoYoverse-style takedown risk; rank suppression expected' },
+  { value: 'Trademark',  label: '™️ Trademark',     hint: 'Protected brand keywords; restricted commerce' },
+  { value: 'RegionLock', label: '🌐 Region Lock',    hint: 'License limits visibility outside specific regions (e.g. China-only)' },
+  { value: 'TOS',        label: '⚠️ TOS Restricted', hint: 'Platform terms prohibit sale (e.g. Mobile Legends)' },
+]
 
 interface CategoryTierCount { t1: number; t2: number; total: number }
 interface ApiList {
@@ -170,12 +179,13 @@ export default function ProductTiersPage() {
         method: isNew ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tier:         editing.tier,
-          product_name: editing.product_name?.trim(),
-          category:     editing.category ?? null,
-          relation_id:  editing.relation_id ?? null,
-          url:          editing.url ?? null,
-          notes:        editing.notes ?? null,
+          tier:             editing.tier,
+          product_name:     editing.product_name?.trim(),
+          category:         editing.category ?? null,
+          relation_id:      editing.relation_id ?? null,
+          url:              editing.url ?? null,
+          notes:            editing.notes ?? null,
+          restriction_type: editing.restriction_type ?? null,
         }),
       })
       const data = await res.json()
@@ -329,7 +339,12 @@ export default function ProductTiersPage() {
                   {rows.map(row => (
                     <tr key={row.id} className="border-t border-gray-800 hover:bg-gray-800/30">
                       <td className="px-3 py-2"><TierBadge tier={row.tier} /></td>
-                      <td className="px-3 py-2 text-white font-medium">{row.product_name}</td>
+                      <td className="px-3 py-2 text-white font-medium">
+                        <span className="inline-flex items-center gap-1.5 flex-wrap">
+                          {row.product_name}
+                          <RestrictionBadgeAdmin restriction={row.restriction_type} />
+                        </span>
+                      </td>
                       <td className="px-3 py-2 text-gray-400 text-xs font-mono hidden md:table-cell break-all">{row.relation_id ?? '—'}</td>
                       <td className="px-3 py-2 text-gray-400 text-xs hidden lg:table-cell truncate max-w-[280px]">
                         {row.url ? <a href={row.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">{row.url}</a> : '—'}
@@ -420,6 +435,47 @@ export default function ProductTiersPage() {
               <Field label="Notes" value={editing.notes ?? ''}
                      onChange={v => setEditing({ ...editing, notes: v })}
                      placeholder="(optional) — context, e.g. 'Q4 push target'" />
+
+              {/* Sprint DMCA.TAGGING — restriction type picker */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Restriction <span className="text-gray-600">(optional — explains low organic visibility)</span>
+                </label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditing({ ...editing, restriction_type: null })}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition border ${
+                      !editing.restriction_type
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+                    }`}
+                    title="No legal or platform restriction known"
+                  >
+                    ✅ None
+                  </button>
+                  {RESTRICTION_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setEditing({ ...editing, restriction_type: opt.value })}
+                      title={opt.hint}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition border ${
+                        editing.restriction_type === opt.value
+                          ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {editing.restriction_type && (
+                  <p className="text-[10px] text-amber-300/80 mt-1.5 italic">
+                    {RESTRICTION_OPTIONS.find(o => o.value === editing.restriction_type)?.hint}
+                  </p>
+                )}
+              </div>
             </div>
             <div className="px-5 py-4 border-t border-gray-800 flex justify-end gap-2">
               <button onClick={() => setEditing(null)} className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm rounded-lg">Cancel</button>
@@ -595,6 +651,31 @@ function CategoryStatCard({ category, counts }: { category: string; counts: Cate
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * Sprint DMCA.TAGGING — compact restriction badge shown next to product
+ * name in the admin table. Hover for full label.
+ */
+function RestrictionBadgeAdmin({ restriction }: { restriction: string | null }) {
+  if (!restriction) return null
+  const map: Record<string, { label: string; icon: string; cls: string }> = {
+    DMCA:       { label: 'DMCA',   icon: '🚫', cls: 'bg-red-500/15 text-red-300 border-red-500/30' },
+    Trademark:  { label: 'TM',     icon: '™️', cls: 'bg-purple-500/15 text-purple-300 border-purple-500/30' },
+    RegionLock: { label: 'Region', icon: '🌐', cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
+    TOS:        { label: 'TOS',    icon: '⚠️', cls: 'bg-orange-500/15 text-orange-300 border-orange-500/30' },
+  }
+  const meta = map[restriction]
+  if (!meta) return null
+  const hint = RESTRICTION_OPTIONS.find(o => o.value === restriction)?.hint ?? restriction
+  return (
+    <span
+      title={hint}
+      className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1.5 py-0.5 rounded border ${meta.cls}`}
+    >
+      <span>{meta.icon}</span><span>{meta.label}</span>
+    </span>
   )
 }
 

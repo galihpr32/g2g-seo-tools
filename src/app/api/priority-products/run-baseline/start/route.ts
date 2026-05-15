@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
-import { TIER_MARKET_CODES } from '@/lib/ranking-tracker'
+import { marketsForKeyword, TIER_MARKET_CODES } from '@/lib/ranking-tracker'
 
 export const maxDuration = 30
 
@@ -50,7 +50,7 @@ export async function POST(req: Request) {
   const productIds = products.map(p => p.id)
   const { data: keywords } = await db
     .from('tier_keywords')
-    .select('id, product_tier_id, keyword')
+    .select('id, product_tier_id, keyword, language')
     .eq('owner_user_id', ownerId)
     .in('product_tier_id', productIds)
 
@@ -70,7 +70,10 @@ export async function POST(req: Request) {
   for (const product of products) {
     const kws = kwByProduct[product.id] ?? []
     for (const kw of kws) {
-      for (const market of TIER_MARKET_CODES) {
+      // Sprint MARKETS.PRUNE — only run markets that match keyword language
+      const kwLanguage = (kw as { language?: string }).language ?? 'en'
+      const markets    = marketsForKeyword(kwLanguage)
+      for (const market of markets) {
         pairs.push({
           product_id: product.id,
           keyword_id: kw.id,

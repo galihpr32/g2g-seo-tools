@@ -1,0 +1,37 @@
+name: Daily Anthropic Cost Alert
+
+on:
+  schedule:
+    # Sprint COST.ALERT — daily 06:00 UTC = 13:00 WIB.
+    # Lunchtime check so Galih sees any breach early in the working day.
+    # Idempotency at the API layer means daily firing is safe — each
+    # (owner × month × level) pings exactly once.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: cost-alert-daily
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Trigger /api/cron/cost-alert
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 60 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/cost-alert")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"
