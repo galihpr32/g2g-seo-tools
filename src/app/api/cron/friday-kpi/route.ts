@@ -66,7 +66,8 @@ export async function GET(req: Request) {
       // eslint-disable-next-line no-await-in-loop
       const webhookUrl = await resolveSlackWebhook(db, ownerId, 'friday_kpi')
       if (!webhookUrl) {
-        results.push({ ownerId, ok: true, posted: false, reason: 'no_webhook_configured', total_items: payload.brands.reduce((s, b) => s + b.total_items, 0) })
+        const kwTotal = payload.brands.reduce((s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0)
+        results.push({ ownerId, ok: true, posted: false, reason: 'no_webhook_configured', total_items: kwTotal })
         continue
       }
 
@@ -77,12 +78,15 @@ export async function GET(req: Request) {
         body:    JSON.stringify({ text, blocks }),
       })
 
+      const totalKws = payload.brands.reduce(
+        (s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0,
+      )
       results.push({
+        ok:           res.ok,
         ownerId,
-        ok:          res.ok,
-        posted:      res.ok,
-        reason:      res.ok ? undefined : `slack_${res.status}`,
-        total_items: payload.brands.reduce((s, b) => s + b.total_items, 0),
+        posted:       res.ok,
+        reason:       res.ok ? undefined : `slack_${res.status}`,
+        total_items:  totalKws,
       })
     } catch (e) {
       results.push({ ownerId, ok: false, posted: false, reason: e instanceof Error ? e.message : String(e) })

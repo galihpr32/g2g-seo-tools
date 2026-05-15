@@ -103,15 +103,18 @@ export async function POST(req: Request) {
     body:    JSON.stringify({ text, blocks }),
   }).catch(e => ({ ok: false, status: 0, _err: String(e) } as Response & { _err?: string }))
 
+  const kwTotal = payload.brands.reduce(
+    (s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0,
+  )
   return NextResponse.json({
     ok:           slackRes.ok,
     posted:       slackRes.ok,
     slack_status: slackRes.status,
     sites:        finalSlugs,
     summary: {
-      total_items:    payload.brands.reduce((s, b) => s + b.total_items, 0),
-      anthropic_usd:  payload.cost.anthropicUsd,
-      enrolled_briefs: payload.experiments.id_native_ab.enrolled_total,
+      total_kws:  kwTotal,
+      brands:     payload.brands.length,
+      iso_week:   payload.iso_week,
     },
   })
 }

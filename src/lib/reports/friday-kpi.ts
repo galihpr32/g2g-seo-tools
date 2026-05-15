@@ -1,79 +1,74 @@
-// Sprint FRIDAY.KPI — Combined G2G + OffGamers weekly digest.
+// Sprint FRIDAY.KPI (v2) — KPI Dashboard rewrite.
 //
-// Galih wants one Slack message every Friday afternoon that summarizes the
-// week's worth of action items + numbers — basically the "what should I
-// stress about this weekend" pulse. The digest pulls from infrastructure
-// we already have:
+// Old version was a generic action-items digest. The spec was actually a
+// per-(brand × market) KPI dashboard:
 //
-//   • seo_action_items                   — Sprint FRIDAY.KPI.INFRA columns
-//                                          (notification_type, search_volume, intent)
-//   • tier_serp_snapshots                — top movers across both brands
-//   • cost_alert_state + api_usage_logs  — month-to-date spend status
-//   • seo_content_briefs (id_experiment) — A/B cohort progress
+//   🥇 MOST COMPETITIVE KEYWORD RANKINGS
+//       For each brand × market: Avg pos, Top 3, Top 10 — all with WoW delta
+//   📈 SEO TRAFFIC — Clicks WoW
+//       Per-brand totals last 7d vs prior 7d (GSC)
+//   📈 SEO TRAFFIC — Impressions WoW
+//       Same matrix
 //
-// Output is a single Slack block-kit message. Combined channel (per
-// settings/slack-routing) shows G2G on top, OffGamers below, divider in
-// between — the same channel decides whether the read is for one or
-// both brands.
+// "Most competitive" = all keywords currently tracked in tier_keywords
+// for products on this brand (they're pre-curated as priority — counts as
+// the competitive set). When SV data is available, we surface it; when
+// not, we still report the structural KPIs.
+//
+// Market mapping per the wider app: 'us' → "Global", 'id' → "ID".
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { getMonthlySpend, type MonthlySpend } from '@/lib/costs/monthly-spend'
 
-const TOP_ITEMS_PER_BUCKET = 5
-const LOOKBACK_DAYS        = 7
+export const MARKET_LABELS: Record<string, string> = { us: 'Global', id: 'ID' }
+const MARKETS = ['us', 'id'] as const
+type Market = typeof MARKETS[number]
 
-export interface ActionItem {
-  id:                 string
-  site_slug:          string | null
-  page:               string | null
-  title:              string
-  action_type:        string | null
-  priority:           string | null
-  notification_type:  string | null
-  search_volume:      number | null
-  intent:             string | null
-  created_at:         string
+const WOW_DAYS = 7
+
+export interface MarketKpi {
+  market:         Market
+  market_label:   string
+  kw_count:       number
+  avg_position:   number | null
+  avg_pos_delta:  number | null         // positive = improved
+  top3:           number
+  top3_delta:     number
+  top10:          number
+  top10_delta:    number
 }
 
-export interface FridayKpiBucket {
-  notification_type: string
-  count:             number
-  top_items:         ActionItem[]
+export interface ClickKpi {
+  market:        Market
+  market_label:  string
+  clicks:        number
+  clicks_pct:    number | null          // WoW % (positive = up)
+  impressions:   number
+  imp_pct:       number | null
 }
 
-export interface FridayKpiBrandData {
-  site_slug:          string
-  total_items:        number
-  buckets:            FridayKpiBucket[]
-  top_movers_up:      Array<{ keyword: string; market: string; from: number | null; to: number | null; product: string | null }>
-  top_movers_down:    Array<{ keyword: string; market: string; from: number | null; to: number | null; product: string | null }>
+export interface BrandKpi {
+  site_slug:    string
+  serp:         MarketKpi[]
+  traffic:      ClickKpi[]
 }
 
 export interface FridayKpiPayload {
-  week_label:    string                       // e.g. "Week of 2026-05-11"
-  generated_at:  string
-  brands:        FridayKpiBrandData[]         // typically G2G + OG
-  cost:          MonthlySpend                 // shared (one Anthropic key)
-  experiments: {
-    id_native_ab: {
-      enrolled_total: number
-      en_translate:   number
-      id_native:      number
-      note:           string
-    }
-  }
+  week_label:   string
+  iso_week:     number
+  generated_at: string
+  brands:       BrandKpi[]
+  /** Public weekly report URL (kalau ada) */
+  public_url:   string | null
+  /** Methodology page URL */
+  methodology_url: string
+  /** Priority products page URL */
+  priority_url:    string
 }
 
 /**
- * Build the digest payload. Brand-agnostic at the top level — caller
- * passes in the list of site_slugs to include.
- *
- * @param db        — service-role supabase client
- * @param ownerId   — workspace owner ID. Note: the actual data is pulled
- *                    per-site via site_slug; ownerId scopes the lookups so
- *                    a multi-tenant deployment doesn't cross workspaces.
- * @param siteSlugs — brands to include in the combined digest, e.g.
- *                    ['g2g', 'offgamers']. Order = render order.
+ * Build the KPI payload across the given brands. Per-brand × per-market
+ * lookups are done sequentially to keep this readable; total queries
+ * scale as O(brands × markets × 2) which is small.
  */
 export async function buildFridayKpi(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -81,217 +76,211 @@ export async function buildFridayKpi(
   ownerId:   string,
   siteSlugs: string[],
 ): Promise<FridayKpiPayload> {
-  const sinceIso = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000).toISOString()
-
-  // ── 1. Per-brand action items + top movers ──────────────────────────────
-  const brands: FridayKpiBrandData[] = []
+  const brands: BrandKpi[] = []
   for (const slug of siteSlugs) {
     // eslint-disable-next-line no-await-in-loop
-    const brand = await buildBrandData(db, ownerId, slug, sinceIso)
+    const brand = await buildBrandKpi(db, ownerId, slug)
     brands.push(brand)
   }
 
-  // ── 2. Anthropic spend (shared across brands — one API key) ─────────────
-  const cost = await getMonthlySpend(db, ownerId)
-
-  // ── 3. ID-native A/B cohort snapshot ────────────────────────────────────
-  const { data: variantRows } = await db
-    .from('seo_content_briefs')
-    .select('id_experiment_variant')
-    .eq('owner_user_id', ownerId)
-    .not('id_experiment_variant', 'is', null)
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const variants = (variantRows ?? []) as any[]
-  const enrolledTotal = variants.length
-  const enTranslate   = variants.filter(v => v.id_experiment_variant === 'en_translate').length
-  const idNative      = variants.filter(v => v.id_experiment_variant === 'id_native').length
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/+$/, '')
 
   return {
     week_label:   weekLabel(),
+    iso_week:     isoWeek(),
     generated_at: new Date().toISOString(),
     brands,
-    cost,
-    experiments: {
-      id_native_ab: {
-        enrolled_total: enrolledTotal,
-        en_translate:   enTranslate,
-        id_native:      idNative,
-        note: enrolledTotal < 30
-          ? 'Cohort < 30 — too early for a directional read.'
-          : 'See /api/reports/id-native-ab for combined-score winner.',
-      },
-    },
+    public_url:        appUrl ? `${appUrl}/reports/weekly` : null,
+    methodology_url:   `${appUrl}/methodology/competitive-keywords`,
+    priority_url:      `${appUrl}/priority-products`,
   }
 }
 
-async function buildBrandData(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db:        SupabaseClient<any>,
-  ownerId:   string,
-  siteSlug:  string,
-  sinceIso:  string,
-): Promise<FridayKpiBrandData> {
-  // Action items created in the last 7 days, scoped to this brand.
-  // We fetch broadly then bucket in JS so we have one DB round-trip.
-  const { data } = await db
-    .from('seo_action_items')
-    .select('id, site_slug, page, title, action_type, priority, notification_type, search_volume, intent, created_at')
-    .eq('owner_user_id', ownerId)
-    .eq('site_slug', siteSlug)
-    .gte('created_at', sinceIso)
-    .order('search_volume', { ascending: false, nullsFirst: false })
-
-  const items = (data ?? []) as ActionItem[]
-
-  // Bucket by notification_type — items without a type fall into 'manual'.
-  const byType = new Map<string, ActionItem[]>()
-  for (const it of items) {
-    const t = (it.notification_type ?? 'manual').toLowerCase()
-    const list = byType.get(t) ?? []
-    list.push(it)
-    byType.set(t, list)
-  }
-
-  // Stable display order — most actionable buckets first.
-  const ORDER = ['tier_rank', 'gsc_signal', 'cms_alert', 'cost_alert', 'backlink', 'mimir', 'manual']
-  const buckets: FridayKpiBucket[] = ORDER
-    .filter(t => byType.has(t))
-    .map(t => {
-      const all = byType.get(t) ?? []
-      // Sort each bucket by search_volume DESC, then by priority (critical > high > med > low).
-      const sorted = [...all].sort((a, b) => {
-        const sv = (b.search_volume ?? 0) - (a.search_volume ?? 0)
-        if (sv !== 0) return sv
-        return priorityRank(b.priority) - priorityRank(a.priority)
-      })
-      return {
-        notification_type: t,
-        count:             all.length,
-        top_items:         sorted.slice(0, TOP_ITEMS_PER_BUCKET),
-      }
-    })
-
-  // Also surface any custom notification_type values that weren't in the ORDER list.
-  for (const [t, all] of byType.entries()) {
-    if (ORDER.includes(t)) continue
-    buckets.push({
-      notification_type: t,
-      count:             all.length,
-      top_items:         all.slice(0, TOP_ITEMS_PER_BUCKET),
-    })
-  }
-
-  // Top movers from tier_serp_snapshots — latest snapshot pair per
-  // (product × keyword × market). We compare the two most-recent dates.
-  const movers = await buildMovers(db, ownerId, siteSlug)
-
-  return {
-    site_slug:       siteSlug,
-    total_items:     items.length,
-    buckets,
-    top_movers_up:   movers.up,
-    top_movers_down: movers.down,
-  }
-}
-
-function priorityRank(p: string | null): number {
-  switch ((p ?? '').toLowerCase()) {
-    case 'critical': return 4
-    case 'high':     return 3
-    case 'medium':   return 2
-    case 'low':      return 1
-    default:         return 0
-  }
-}
-
-async function buildMovers(
+async function buildBrandKpi(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db:       SupabaseClient<any>,
   ownerId:  string,
   siteSlug: string,
-): Promise<{
-  up:   Array<{ keyword: string; market: string; from: number | null; to: number | null; product: string | null }>
-  down: Array<{ keyword: string; market: string; from: number | null; to: number | null; product: string | null }>
-}> {
-  // Pull last 14 days for this brand's tier products.
-  const sinceDate = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10)
+): Promise<BrandKpi> {
+  // ── Per-market SERP aggregates ────────────────────────────────────────
+  const serp: MarketKpi[] = []
+  for (const market of MARKETS) {
+    // eslint-disable-next-line no-await-in-loop
+    const m = await buildMarketSerp(db, ownerId, siteSlug, market)
+    serp.push(m)
+  }
+
+  // ── Per-market traffic (GSC clicks + impressions) ──────────────────────
+  const traffic = await buildBrandTraffic(db, ownerId, siteSlug)
+
+  return { site_slug: siteSlug, serp, traffic }
+}
+
+async function buildMarketSerp(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:       SupabaseClient<any>,
+  ownerId:  string,
+  siteSlug: string,
+  market:   Market,
+): Promise<MarketKpi> {
+  const empty: MarketKpi = {
+    market, market_label: MARKET_LABELS[market], kw_count: 0,
+    avg_position: null, avg_pos_delta: null,
+    top3: 0, top3_delta: 0,
+    top10: 0, top10_delta: 0,
+  }
+
+  // 1. Find all tier-product IDs for this brand
   const { data: products } = await db
     .from('product_tiers')
-    .select('id, product_name')
+    .select('id')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
-  const productMap = new Map(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ((products ?? []) as any[]).map(p => [String(p.id), String(p.product_name)]),
-  )
-  const productIds = Array.from(productMap.keys())
-  if (productIds.length === 0) return { up: [], down: [] }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pIds = ((products ?? []) as any[]).map(p => String(p.id))
+  if (pIds.length === 0) return empty
 
+  // 2. Pull latest + ~7-day-ago SERP snapshots for this brand × market.
+  //    Window of 14 days covers the comparison; we pick the two anchor
+  //    dates in JS to avoid two round-trips.
+  const sinceDate = new Date(Date.now() - 21 * 86_400_000).toISOString().slice(0, 10)
   const { data: snaps } = await db
     .from('tier_serp_snapshots')
     .select('product_tier_id, keyword, market, snapshot_date, our_position')
     .eq('owner_user_id', ownerId)
-    .in('product_tier_id', productIds)
+    .in('product_tier_id', pIds)
+    .eq('market', market)
     .gte('snapshot_date', sinceDate)
     .order('snapshot_date', { ascending: false })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (snaps ?? []) as any[]
+  if (rows.length === 0) return empty
 
+  // Latest snapshot per (product × keyword): the most recent date present.
+  // The "WoW prior" comparison: pick the latest snapshot strictly older
+  // than (latestDate - 5 days). 5 days lets us flex around weekly cadence
+  // without missing a comparison when the cron skips a day.
+  const dates = Array.from(new Set(rows.map(r => String(r.snapshot_date)))).sort().reverse()
+  const latestDate = dates[0]
+  const latestMs   = new Date(latestDate).getTime()
+  const priorCutoff = latestMs - 5 * 86_400_000   // cutoff: must be older than this
+  const priorDate  = dates.find(d => new Date(d).getTime() < priorCutoff) ?? null
+
+  type PerKw = { latest: number | null; prior: number | null }
+  const perKw = new Map<string, PerKw>()
+  for (const r of rows) {
+    const key = `${r.product_tier_id}|${r.keyword}`
+    const cur = perKw.get(key) ?? { latest: null, prior: null }
+    const pos = r.our_position == null ? null : Number(r.our_position)
+    if (r.snapshot_date === latestDate && cur.latest === null) cur.latest = pos
+    if (priorDate && r.snapshot_date === priorDate && cur.prior === null) cur.prior = pos
+    perKw.set(key, cur)
+  }
+
+  let posSum = 0, posCount = 0, top3 = 0, top10 = 0
+  let posSumPrev = 0, posCountPrev = 0, top3Prev = 0, top10Prev = 0
+  for (const v of perKw.values()) {
+    if (v.latest != null) {
+      posSum += v.latest; posCount++
+      if (v.latest <= 3)  top3++
+      if (v.latest <= 10) top10++
+    }
+    if (v.prior != null) {
+      posSumPrev += v.prior; posCountPrev++
+      if (v.prior <= 3)  top3Prev++
+      if (v.prior <= 10) top10Prev++
+    }
+  }
+
+  const avgPos     = posCount     > 0 ? +(posSum     / posCount).toFixed(1)     : null
+  const avgPosPrev = posCountPrev > 0 ? +(posSumPrev / posCountPrev).toFixed(1) : null
+
+  return {
+    market,
+    market_label: MARKET_LABELS[market],
+    kw_count:     perKw.size,
+    avg_position:  avgPos,
+    // Convention: positive delta = improvement (= prior - current; lower pos # is better)
+    avg_pos_delta: (avgPos != null && avgPosPrev != null) ? +(avgPosPrev - avgPos).toFixed(1) : null,
+    top3,
+    top3_delta:    top3 - top3Prev,
+    top10,
+    top10_delta:   top10 - top10Prev,
+  }
+}
+
+async function buildBrandTraffic(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:       SupabaseClient<any>,
+  ownerId:  string,
+  siteSlug: string,
+): Promise<ClickKpi[]> {
+  // Resolve site_url for this brand from site_configs.
+  const { data: cfg } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', siteSlug)
+    .maybeSingle()
+  const siteUrl = cfg?.gsc_property as string | undefined
+  if (!siteUrl) {
+    return MARKETS.map(m => ({ market: m, market_label: MARKET_LABELS[m], clicks: 0, clicks_pct: null, impressions: 0, imp_pct: null }))
+  }
+
+  // We don't have country split on gsc_ranking_snapshots in this schema —
+  // surface combined totals per brand under "Global" and zero for ID.
+  // Future enhancement: pull country-split via GSC API directly.
+  // (Acknowledged in the Slack message footnote.)
+  const today    = Date.now()
+  const sinceCur = new Date(today - WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
+  const sincePrev = new Date(today - 2 * WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
+
+  const { data: snaps } = await db
+    .from('gsc_ranking_snapshots')
+    .select('snapshot_date, clicks, impressions')
+    .eq('site_url', siteUrl)
+    .gte('snapshot_date', sincePrev)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows = (snaps ?? []) as any[]
 
-  type Bucket = { latest: typeof rows[number] | null; previous: typeof rows[number] | null }
-  const byKey = new Map<string, Bucket>()
-  for (const s of rows) {
-    const k = `${s.product_tier_id}|${s.keyword}|${s.market}`
-    const cur = byKey.get(k) ?? { latest: null, previous: null }
-    if (!cur.latest)        cur.latest   = s
-    else if (!cur.previous && s.snapshot_date < cur.latest.snapshot_date) cur.previous = s
-    byKey.set(k, cur)
+  let curClicks = 0, curImp = 0, prevClicks = 0, prevImp = 0
+  for (const r of rows) {
+    const isCur = String(r.snapshot_date) >= sinceCur
+    const c = Number(r.clicks      ?? 0)
+    const i = Number(r.impressions ?? 0)
+    if (isCur) { curClicks += c; curImp += i } else { prevClicks += c; prevImp += i }
   }
 
-  type Mover = { keyword: string; market: string; from: number | null; to: number | null; product: string | null; delta: number }
-  const movers: Mover[] = []
-  for (const [, { latest, previous }] of byKey.entries()) {
-    if (!latest || !previous) continue
-    const a = previous.our_position
-    const b = latest.our_position
-    if (a == null && b == null) continue
-    const delta = (a ?? 50) - (b ?? 50)   // positive = improved
-    if (Math.abs(delta) < 2) continue      // skip noise
-    movers.push({
-      keyword: String(latest.keyword),
-      market:  String(latest.market),
-      from:    a,
-      to:      b,
-      product: productMap.get(String(latest.product_tier_id)) ?? null,
-      delta,
-    })
+  const pct = (cur: number, prev: number): number | null => {
+    if (prev <= 0) return cur > 0 ? 100 : null
+    return +(((cur - prev) / prev) * 100).toFixed(1)
   }
 
-  movers.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta))
-  const up   = movers.filter(m => m.delta > 0).slice(0, 5).map(stripDelta)
-  const down = movers.filter(m => m.delta < 0).slice(0, 5).map(stripDelta)
-  return { up, down }
-}
-
-function stripDelta(m: { keyword: string; market: string; from: number | null; to: number | null; product: string | null }) {
-  return { keyword: m.keyword, market: m.market, from: m.from, to: m.to, product: m.product }
+  // We don't have country-split in gsc_ranking_snapshots → expose combined
+  // totals as "Global"; "ID" slot left zero with a footnote in the Slack
+  // template. (Acceptable v1; future cron can split per-country via the
+  // GSC client directly.)
+  return [
+    { market: 'us', market_label: MARKET_LABELS.us, clicks: curClicks, clicks_pct: pct(curClicks, prevClicks), impressions: curImp, imp_pct: pct(curImp, prevImp) },
+    { market: 'id', market_label: MARKET_LABELS.id, clicks: 0,         clicks_pct: null,                       impressions: 0,      imp_pct: null },
+  ]
 }
 
 function weekLabel(now: Date = new Date()): string {
-  // Find Monday of this week (UTC)
   const d = new Date(now)
   d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7))
-  return `Week of ${d.toISOString().slice(0, 10)}`
+  return `Week ${isoWeek(d)} · ${d.toISOString().slice(0, 10)}`
+}
+
+function isoWeek(d: Date = new Date()): number {
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7))
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+  return Math.ceil(((date.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7)
 }
 
 // ─── Slack block-kit builder ─────────────────────────────────────────────────
 
-/**
- * Convert the payload to a Slack block-kit message. Pure function — easy
- * to test, and reusable by both the cron and the manual trigger.
- */
-export function buildFridayKpiSlackBlocks(payload: FridayKpiPayload): {
+export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
   text:   string
   blocks: Array<Record<string, unknown>>
 } {
@@ -299,102 +288,162 @@ export function buildFridayKpiSlackBlocks(payload: FridayKpiPayload): {
 
   blocks.push({
     type: 'header',
-    text: { type: 'plain_text', text: `🗓 Friday KPI — ${payload.week_label}`, emoji: true },
+    text: { type: 'plain_text', text: `📊 Weekly Friday KPI Wrap · ${p.week_label}`, emoji: true },
   })
 
-  // ── Headline summary ──
-  const totalItems = payload.brands.reduce((s, b) => s + b.total_items, 0)
+  // ── SERP rankings section ──
   blocks.push({
     type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: [
-        `*${totalItems} action item${totalItems !== 1 ? 's' : ''}* this week across ${payload.brands.length} brand${payload.brands.length !== 1 ? 's' : ''}.`,
-        `*Anthropic spend MTD:* $${payload.cost.anthropicUsd.toFixed(2)} (${payload.cost.yearMonth})`,
-        `*ID-native A/B cohort:* ${payload.experiments.id_native_ab.enrolled_total} briefs · EN-translate ${payload.experiments.id_native_ab.en_translate} / ID-native ${payload.experiments.id_native_ab.id_native}`,
-      ].join('\n'),
-    },
+    text: { type: 'mrkdwn', text: '*🥇 MOST COMPETITIVE KEYWORD RANKINGS*' },
   })
 
-  for (const brand of payload.brands) {
-    blocks.push({ type: 'divider' })
+  // One block per brand — two-column layout (Global vs ID) using mrkdwn fields.
+  for (const brand of p.brands) {
+    const global = brand.serp.find(s => s.market === 'us') ?? null
+    const id     = brand.serp.find(s => s.market === 'id') ?? null
     blocks.push({
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*${brand.site_slug.toUpperCase()}* — ${brand.total_items} item${brand.total_items !== 1 ? 's' : ''} this week`,
-      },
+      text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}* · ${(global?.kw_count ?? 0) + (id?.kw_count ?? 0)} tracked kws` },
+      fields: [
+        { type: 'mrkdwn', text: `*🌐 Global*\n${formatSerpCell(global)}` },
+        { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatSerpCell(id)}` },
+      ],
     })
-
-    // Bucketed items
-    for (const bucket of brand.buckets) {
-      const headline = `*${formatBucketLabel(bucket.notification_type)}* (${bucket.count})`
-      const lines = bucket.top_items.slice(0, TOP_ITEMS_PER_BUCKET).map(it => {
-        const sv     = it.search_volume ? `SV ${it.search_volume.toLocaleString()}` : 'SV —'
-        const intent = it.intent ? ` · ${it.intent}` : ''
-        const page   = it.page ? ` · \`${safePath(it.page)}\`` : ''
-        return `• ${it.title} _(${sv}${intent})_${page}`
-      }).join('\n')
-      if (lines) {
-        blocks.push({
-          type: 'section',
-          text: { type: 'mrkdwn', text: `${headline}\n${lines}` },
-        })
-      }
-    }
-
-    // Top movers
-    if (brand.top_movers_up.length > 0 || brand.top_movers_down.length > 0) {
-      const upLines = brand.top_movers_up.map(m =>
-        `• 📈 *${m.keyword}* (${m.market.toUpperCase()}) — #${m.from ?? '—'} → #${m.to ?? '—'}`,
-      ).join('\n')
-      const downLines = brand.top_movers_down.map(m =>
-        `• 📉 *${m.keyword}* (${m.market.toUpperCase()}) — #${m.from ?? '—'} → #${m.to ?? '—'}`,
-      ).join('\n')
-      const moverText = [upLines, downLines].filter(Boolean).join('\n')
-      if (moverText) {
-        blocks.push({
-          type: 'section',
-          text: { type: 'mrkdwn', text: `*Top movers (last 2 weeks)*\n${moverText}` },
-        })
-      }
-    }
-
-    if (brand.total_items === 0 && brand.top_movers_up.length === 0 && brand.top_movers_down.length === 0) {
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: '_No action items or significant SERP movement — quiet week._' },
-      })
-    }
   }
 
-  // Footer
-  blocks.push({ type: 'divider' })
   blocks.push({
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `_Generated ${payload.generated_at.slice(0, 16).replace('T', ' ')} UTC · Combined G2G + OG channel · Routing: notification_type=friday_kpi_`,
+      text: `_Most competitive = tier-tracked keywords (curated set per <${p.methodology_url}|methodology>). WoW delta = latest snapshot vs ~7 days prior._`,
     }],
   })
 
-  const text = `🗓 Friday KPI — ${payload.week_label}: ${totalItems} action items across ${payload.brands.length} brands`
+  // ── Traffic section ──
+  blocks.push({ type: 'divider' })
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: '*📈 SEO TRAFFIC — Clicks WoW (GSC)*' },
+  })
+  for (const brand of p.brands) {
+    const global = brand.traffic.find(t => t.market === 'us') ?? null
+    const id     = brand.traffic.find(t => t.market === 'id') ?? null
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}*` },
+      fields: [
+        { type: 'mrkdwn', text: `*🌐 Global*\n${formatClickCell(global)}` },
+        { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatClickCell(id)}` },
+      ],
+    })
+  }
+
+  blocks.push({
+    type: 'section',
+    text: { type: 'mrkdwn', text: '*📈 SEO TRAFFIC — Impressions WoW (GSC)*' },
+  })
+  for (const brand of p.brands) {
+    const global = brand.traffic.find(t => t.market === 'us') ?? null
+    const id     = brand.traffic.find(t => t.market === 'id') ?? null
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}*` },
+      fields: [
+        { type: 'mrkdwn', text: `*🌐 Global*\n${formatImpCell(global)}` },
+        { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatImpCell(id)}` },
+      ],
+    })
+  }
+
+  blocks.push({
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: '_GSC-verified · last 7 days vs prior 7 days · ID country-split coming once GSC country-dim is enabled (currently combined under Global)._',
+    }],
+  })
+
+  // ── Action buttons ──
+  if (p.public_url || p.methodology_url || p.priority_url) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        ...(p.public_url ? [{
+          type: 'button',
+          text: { type: 'plain_text', text: '📄 Public Report' },
+          url:  p.public_url,
+        }] : []),
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🎯 Methodology Doc' },
+          url:  p.methodology_url,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '📊 Priority Products' },
+          url:  p.priority_url,
+        },
+      ],
+    })
+  }
+
+  blocks.push({
+    type: 'context',
+    elements: [{
+      type: 'mrkdwn',
+      text: `_Generated ${p.generated_at.slice(0, 16).replace('T', ' ')} UTC · Combined G2G + OG channel · notification_type=friday_kpi_`,
+    }],
+  })
+
+  const totalKws = p.brands.reduce((s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0)
+  const text = `📊 Friday KPI ${p.week_label} — ${totalKws} kws across ${p.brands.length} brands`
   return { text, blocks }
 }
 
-function formatBucketLabel(t: string): string {
-  const map: Record<string, string> = {
-    tier_rank:  '📊 Tier rank movement',
-    gsc_signal: '🔎 GSC signal',
-    cms_alert:  '📦 CMS alert',
-    cost_alert: '💰 Cost alert',
-    backlink:   '🔗 Backlink',
-    mimir:      '🧠 Mimir learning',
-    manual:     '✍️ Manual',
-  }
-  return map[t] ?? t
+function formatSerpCell(m: MarketKpi | null): string {
+  if (!m || m.kw_count === 0) return '_no tracked kws_'
+  return [
+    `Avg #${m.avg_position?.toFixed(1) ?? '—'} ${deltaArrow(m.avg_pos_delta, true)}`,
+    `Top 3: ${m.top3} ${signedCount(m.top3_delta)}`,
+    `Top 10: ${m.top10} ${signedCount(m.top10_delta)}`,
+  ].join('\n')
 }
 
-function safePath(url: string): string {
-  try { return new URL(url).pathname.slice(0, 60) } catch { return url.slice(0, 60) }
+function formatClickCell(t: ClickKpi | null): string {
+  if (!t) return '_n/a_'
+  if (t.clicks === 0 && t.clicks_pct === null) return '_n/a_'
+  return `${formatK(t.clicks)} ${deltaPctArrow(t.clicks_pct)}`
+}
+
+function formatImpCell(t: ClickKpi | null): string {
+  if (!t) return '_n/a_'
+  if (t.impressions === 0 && t.imp_pct === null) return '_n/a_'
+  return `${formatK(t.impressions)} ${deltaPctArrow(t.imp_pct)}`
+}
+
+function deltaArrow(d: number | null, positiveIsGood: boolean): string {
+  if (d == null) return ''
+  if (Math.abs(d) < 0.05) return '·'
+  const good = (d > 0) === positiveIsGood
+  const arrow = d > 0 ? '↑' : '↓'
+  const color = good ? '✅' : '⚠️'
+  return `${arrow}${Math.abs(d).toFixed(1)} ${color}`
+}
+
+function signedCount(d: number): string {
+  if (d === 0) return ''
+  return d > 0 ? `(+${d})` : `(${d})`
+}
+
+function deltaPctArrow(d: number | null): string {
+  if (d == null) return ''
+  if (Math.abs(d) < 0.1) return '(flat)'
+  const arrow = d > 0 ? '↑' : '↓'
+  return `(${arrow}${Math.abs(d).toFixed(0)}%)`
+}
+
+function formatK(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
+  return n.toString()
 }
