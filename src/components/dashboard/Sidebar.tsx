@@ -88,6 +88,7 @@ const navItems = [
     defaultOpen: true,
     items: [
       { label: 'Weekly Pulse',     href: '/reports/weekly',             icon: '📊' },
+      { label: 'Friday KPI',       href: '/reports/friday-kpi',         icon: '🗓' },
       { label: 'Monthly SEO',      href: '/reports/monthly',            icon: '📅' },
       { label: 'Agent Performance', href: '/reports/agent-performance', icon: '🤖' },
       { label: 'Rollout Impact',    href: '/reports/rollout-impact',    icon: '📈' },
