@@ -52,6 +52,8 @@ const TYPE_INFO: Record<string, { title: string; desc: string }> = {
   agent_performance: { title: 'Agent performance digest',  desc: 'Weekly AI agent activity & cost vs savings (Mon 09:00 WIB).' },
   tier_summary:      { title: 'Tier rankings summary',     desc: 'Monday positive scorecard across all Tier 1+2 keywords.' },
   weekly_report:     { title: 'Weekly performance report', desc: 'GSC + GA4 deck + PPTX download (Mon 08:00 WIB).' },
+  // Sprint FRIDAY.KPI — combined G2G + OG dashboard, Friday afternoon
+  friday_kpi:        { title: 'Friday KPI digest',         desc: 'Combined G2G + OG weekly KPI wrap with SERP rankings + GSC traffic per market (Fri 15:00 WIB).' },
   daily_alerts:      { title: 'Daily alerts',              desc: 'Tier-1 drops ≥3 pos, Tier-2 falls out of top-10, GSC clicks/CWV/index drops, stale tech-debt.' },
   cms_alerts:        { title: 'CMS upload alerts',         desc: 'JWT-expired notices when auto-upload is paused.' },
   bug_reports:       { title: 'In-app bug reports',        desc: 'New feedback submissions from the in-app bug button.' },

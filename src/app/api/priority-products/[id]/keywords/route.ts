@@ -23,12 +23,20 @@ export async function POST(
   const db      = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
-    keyword?: string
-    is_main?: boolean
-    notes?:   string
+    keyword?:  string
+    is_main?:  boolean
+    notes?:    string
+    language?: string   // Sprint TIER.PER.MARKET.KW — 'en' | 'id', defaults to 'en'
   }
   const keyword = body.keyword?.trim()
   if (!keyword) return NextResponse.json({ error: 'keyword is required' }, { status: 400 })
+
+  // Validate language (Sprint MARKETS.PRUNE migration enforced this at DB level
+  // too via CHECK constraint, but reject early for clearer error message).
+  const language = (body.language?.trim().toLowerCase() || 'en') as 'en' | 'id'
+  if (language !== 'en' && language !== 'id') {
+    return NextResponse.json({ error: 'language must be "en" or "id"' }, { status: 400 })
+  }
 
   // Sanity: confirm the product belongs to this owner before touching keywords
   const { data: product } = await db
@@ -66,6 +74,7 @@ export async function POST(
       owner_user_id:   ownerId,
       product_tier_id: productId,
       keyword,
+      language,
       is_main:         !!body.is_main,
       position:        nextPos,
       notes:           body.notes?.trim() || null,
@@ -103,7 +112,7 @@ export async function GET(
 
   const { data, error } = await db
     .from('tier_keywords')
-    .select('id, keyword, is_main, position, notes, created_at, updated_at')
+    .select('id, keyword, language, is_main, position, notes, created_at, updated_at')
     .eq('owner_user_id', ownerId)
     .eq('product_tier_id', productId)
     .order('is_main', { ascending: false })

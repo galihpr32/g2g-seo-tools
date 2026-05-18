@@ -45,9 +45,10 @@ export async function GET(
   }
 
   // ── 2. Keyword list ──────────────────────────────────────────────────────
+  // Sprint TIER.PER.MARKET.KW — include language so UI can show EN/ID badge + filter
   const { data: keywords } = await db
     .from('tier_keywords')
-    .select('id, keyword, is_main, position, notes, created_at')
+    .select('id, keyword, language, is_main, position, notes, created_at')
     .eq('owner_user_id', ownerId)
     .eq('product_tier_id', productId)
     .order('is_main', { ascending: false })

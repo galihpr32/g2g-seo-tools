@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, use } from 'react'
 import Link from 'next/link'
+import { TIER_MARKET_CODES } from '@/lib/ranking-tracker'
 
 /**
  * /priority-products/[id]
@@ -20,7 +21,10 @@ import Link from 'next/link'
 const MARKET_LABELS: Record<string, string> = {
   us: 'US', de: 'DE', fr: 'FR', my: 'MY', id: 'ID',
 }
-const MARKET_ORDER = ['us', 'de', 'fr', 'my', 'id']
+// Sprint MARKETS.PRUNE — only show active markets (us + id by default).
+// Pulled from the same source-of-truth used by tier-serp-weekly cron, so
+// adding a new market via DATAFORSEO_ACTIVE_MARKETS env auto-surfaces here.
+const MARKET_ORDER: string[] = [...TIER_MARKET_CODES]
 
 interface ProductInfo {
   id:           string
@@ -36,6 +40,7 @@ interface ProductInfo {
 interface KeywordRow {
   id:        string
   keyword:   string
+  language:  'en' | 'id'   // Sprint TIER.PER.MARKET.KW — drives which market it runs in
   is_main:   boolean
   position:  number
   notes:     string | null
@@ -44,8 +49,9 @@ interface KeywordRow {
 interface SerpTopRow { position: number; url: string; domain: string; title: string }
 
 interface LeaderRow {
-  keyword: string
-  is_main: boolean
+  keyword:  string
+  language?: 'en' | 'id'   // surfaced from KeywordRow.language for UI badge
+  is_main:  boolean
   positions: Record<string, { position: number | null; url: string | null; snapshot_date: string | null }>
 }
 
@@ -69,9 +75,12 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
   const [error,   setError]   = useState<string | null>(null)
 
   // Keyword form state
-  const [newKeyword, setNewKeyword] = useState('')
-  const [newIsMain,  setNewIsMain]  = useState(false)
-  const [adding,     setAdding]     = useState(false)
+  const [newKeyword,  setNewKeyword]  = useState('')
+  const [newIsMain,   setNewIsMain]   = useState(false)
+  const [newLanguage, setNewLanguage] = useState<'en' | 'id'>('en')   // Sprint TIER.PER.MARKET.KW
+  const [adding,      setAdding]      = useState(false)
+  // Filter: All / EN / ID
+  const [kwLangFilter, setKwLangFilter] = useState<'all' | 'en' | 'id'>('all')
 
   // Selected market for the DFS chart + SERP detail
   const [selectedMarket,  setSelectedMarket]  = useState<string>('us')
@@ -106,12 +115,13 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
       const res = await fetch(`/api/priority-products/${id}/keywords`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: kw, is_main: newIsMain }),
+        body: JSON.stringify({ keyword: kw, is_main: newIsMain, language: newLanguage }),
       })
       const body = await res.json()
       if (!res.ok) { alert(`Add failed: ${body.error ?? res.status}`); return }
       setNewKeyword('')
       setNewIsMain(false)
+      // Keep newLanguage selected (likely user wants to add several of same language)
       await fetchData()
     } finally { setAdding(false) }
   }
@@ -218,22 +228,76 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
 
       {/* ── Keyword management ──────────────────────────────────────────── */}
       <section className="mb-6 bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div className="flex items-start justify-between mb-3">
+        <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
           <div>
             <h2 className="text-white font-semibold mb-0.5">Tracked Keywords</h2>
-            <p className="text-xs text-gray-500">Manual list. Min recommended: 1 main + 5 secondary. SERP refreshed weekly across {MARKET_ORDER.map(m => MARKET_LABELS[m]).join(', ')}.</p>
+            <p className="text-xs text-gray-500">
+              Sprint MARKETS.PRUNE: EN keywords track in US only. ID keywords track in ID only.
+              Min recommended: 1 main + 5 secondary per language.
+            </p>
+          </div>
+          {/* Sprint TIER.PER.MARKET.KW — language filter */}
+          <div className="flex items-center gap-1 text-xs">
+            {(['all', 'en', 'id'] as const).map(opt => (
+              <button
+                key={opt}
+                onClick={() => setKwLangFilter(opt)}
+                className={`px-2 py-1 rounded border ${
+                  kwLangFilter === opt
+                    ? opt === 'id'
+                      ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                      : opt === 'en'
+                        ? 'bg-blue-500/15 border-blue-500/40 text-blue-300'
+                        : 'bg-gray-700 border-gray-600 text-white'
+                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+                }`}
+              >
+                {opt === 'all' ? 'All' : opt === 'id' ? '🇮🇩 ID' : '🌐 EN'}
+              </button>
+            ))}
           </div>
         </div>
 
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
           <input
             type="text"
             value={newKeyword}
             onChange={e => setNewKeyword(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') addKeyword() }}
-            placeholder="Add keyword (e.g. albion online accounts)"
-            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600"
+            placeholder={
+              newLanguage === 'id'
+                ? 'Add ID keyword (e.g. beli akun mobile legends)'
+                : 'Add EN keyword (e.g. albion online accounts)'
+            }
+            className="flex-1 min-w-[240px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600"
           />
+          {/* Sprint TIER.PER.MARKET.KW — language picker on add form */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setNewLanguage('en')}
+              className={`px-2 py-2 rounded-lg text-xs font-medium border ${
+                newLanguage === 'en'
+                  ? 'bg-blue-500/20 border-blue-500/40 text-blue-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+              }`}
+              title="EN keyword — will be tracked in US market"
+            >
+              🌐 EN
+            </button>
+            <button
+              type="button"
+              onClick={() => setNewLanguage('id')}
+              className={`px-2 py-2 rounded-lg text-xs font-medium border ${
+                newLanguage === 'id'
+                  ? 'bg-red-500/20 border-red-500/40 text-red-300'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+              }`}
+              title="ID keyword — will be tracked in Indonesia market"
+            >
+              🇮🇩 ID
+            </button>
+          </div>
           <label className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
             <input type="checkbox" checked={newIsMain} onChange={e => setNewIsMain(e.target.checked)} />
             Set as main
@@ -251,22 +315,38 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
           <p className="text-xs text-gray-500 italic">No keywords yet. Add the main keyword first, then 5-10 secondary.</p>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {keywords.map(kw => (
-              <div key={kw.id} className={`inline-flex items-center gap-2 px-2 py-1 rounded border text-xs ${
-                kw.is_main ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-gray-800 border-gray-700 text-gray-200'
-              }`}>
-                {kw.is_main && <span className="text-amber-400">★</span>}
-                <span className="font-medium">{kw.keyword}</span>
-                <button
-                  onClick={() => toggleMain(kw.id, kw.is_main)}
-                  className="text-gray-500 hover:text-amber-300 text-[10px]"
-                  title={kw.is_main ? 'Demote from main' : 'Promote to main'}
-                >
-                  {kw.is_main ? 'demote' : 'main?'}
-                </button>
-                <button onClick={() => removeKeyword(kw.id)} className="text-gray-500 hover:text-red-400 text-[10px]">×</button>
-              </div>
-            ))}
+            {keywords
+              .filter(kw => kwLangFilter === 'all' || (kw.language ?? 'en') === kwLangFilter)
+              .map(kw => {
+                const lang = (kw.language ?? 'en') as 'en' | 'id'
+                return (
+                  <div key={kw.id} className={`inline-flex items-center gap-2 px-2 py-1 rounded border text-xs ${
+                    kw.is_main ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-gray-800 border-gray-700 text-gray-200'
+                  }`}>
+                    {kw.is_main && <span className="text-amber-400">★</span>}
+                    {/* Sprint TIER.PER.MARKET.KW — language badge */}
+                    <span
+                      className={`text-[9px] font-bold px-1 py-0.5 rounded border ${
+                        lang === 'id'
+                          ? 'bg-red-500/15 text-red-300 border-red-500/30'
+                          : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                      }`}
+                      title={lang === 'id' ? 'Indonesian keyword — tracked in ID' : 'English keyword — tracked in US'}
+                    >
+                      {lang === 'id' ? '🇮🇩' : '🌐'}
+                    </span>
+                    <span className="font-medium">{kw.keyword}</span>
+                    <button
+                      onClick={() => toggleMain(kw.id, kw.is_main)}
+                      className="text-gray-500 hover:text-amber-300 text-[10px]"
+                      title={kw.is_main ? 'Demote from main' : 'Promote to main'}
+                    >
+                      {kw.is_main ? 'demote' : 'main?'}
+                    </button>
+                    <button onClick={() => removeKeyword(kw.id)} className="text-gray-500 hover:text-red-400 text-[10px]">×</button>
+                  </div>
+                )
+              })}
           </div>
         )}
       </section>

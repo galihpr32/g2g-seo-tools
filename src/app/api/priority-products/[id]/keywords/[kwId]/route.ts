@@ -9,10 +9,11 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
  */
 
 interface PatchBody {
-  keyword?: string
-  is_main?: boolean
-  notes?:   string | null
+  keyword?:  string
+  is_main?:  boolean
+  notes?:    string | null
   position?: number
+  language?: string   // Sprint TIER.PER.MARKET.KW — 'en' | 'id'
 }
 
 export async function PUT(
@@ -46,6 +47,13 @@ export async function PUT(
   if (body.is_main  !== undefined) patch.is_main  = !!body.is_main
   if (body.notes    !== undefined) patch.notes    = body.notes?.trim() || null
   if (body.position !== undefined) patch.position = body.position
+  if (body.language !== undefined) {
+    const lang = body.language.trim().toLowerCase()
+    if (lang !== 'en' && lang !== 'id') {
+      return NextResponse.json({ error: 'language must be "en" or "id"' }, { status: 400 })
+    }
+    patch.language = lang
+  }
 
   const { data, error } = await db
     .from('tier_keywords')

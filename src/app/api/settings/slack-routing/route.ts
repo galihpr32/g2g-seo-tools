@@ -18,6 +18,7 @@ const VALID_TYPES = [
   'agent_performance',
   'tier_summary',
   'weekly_report',
+  'friday_kpi',       // Sprint FRIDAY.KPI — combined G2G + OG weekly digest
   'daily_alerts',
   'cms_alerts',
   'bug_reports',

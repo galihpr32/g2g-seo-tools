@@ -34,11 +34,17 @@ ALTER TABLE public.product_tiers
 DROP INDEX IF EXISTS product_tiers_owner_site_relation_uniq;
 
 -- The upsert in src/app/api/product-tiers/route.ts uses onConflict on
--- (owner_user_id, site_slug, relation_id) — postgres needs this exact set
--- to be UNIQUE. We expand to include market.
+-- (owner_user_id, site_slug, market, relation_id). Postgres needs this exact
+-- set as a UNIQUE INDEX or UNIQUE CONSTRAINT.
+--
+-- NOTE: Originally this was a PARTIAL index with WHERE relation_id IS NOT NULL.
+-- That broke the upsert because supabase-js onConflict option doesn't pass a
+-- WHERE clause to the conflict target, so postgres couldn't match the partial
+-- index. Fixed to a regular unique index. NULL relation_id rows are still
+-- allowed because postgres default behavior is NULLS DISTINCT — multiple NULL
+-- values don't violate uniqueness.
 CREATE UNIQUE INDEX IF NOT EXISTS product_tiers_owner_site_market_relation_uniq
-  ON public.product_tiers (owner_user_id, site_slug, market, relation_id)
-  WHERE relation_id IS NOT NULL;
+  ON public.product_tiers (owner_user_id, site_slug, market, relation_id);
 
 -- Indexed lookups: rankings + tier admin frequently filter by market.
 CREATE INDEX IF NOT EXISTS product_tiers_market_idx
