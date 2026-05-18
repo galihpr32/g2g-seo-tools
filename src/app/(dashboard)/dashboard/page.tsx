@@ -190,11 +190,14 @@ export default async function DashboardPage() {
     db.from('seo_content_briefs').select('id').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
       .eq('status', 'published').gte('published_at', prev7Iso).lt('published_at', last7Iso) as unknown as CountQ<{ id: string }>,
 
-    // Backlinks acquired last 7d (status=active, verified within window)
+    // Backlinks acquired last 7d (link_status=active, verified within window)
+    // Sprint DASH.OFFPAGE.FIX — column is link_status not status; using wrong
+    // name silently filtered to 0 rows. paid_backlinks check constraint:
+    // link_status IN ('active', 'broken', 'pending').
     db.from('paid_backlinks').select('id, verified_at, created_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
-      .eq('status', 'active').gte('created_at', last7Iso) as unknown as CountQ<{ id: string; verified_at: string | null; created_at: string }>,
+      .eq('link_status', 'active').gte('created_at', last7Iso) as unknown as CountQ<{ id: string; verified_at: string | null; created_at: string }>,
     db.from('paid_backlinks').select('id').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
-      .eq('status', 'active').gte('created_at', prev7Iso).lt('created_at', last7Iso) as unknown as CountQ<{ id: string }>,
+      .eq('link_status', 'active').gte('created_at', prev7Iso).lt('created_at', last7Iso) as unknown as CountQ<{ id: string }>,
 
     // Outreach sends — count rows where last_sent_at within window
     db.from('outreach_prospects').select('id, last_sent_at').eq('owner_user_id', ownerId)
@@ -247,7 +250,7 @@ export default async function DashboardPage() {
 
     // ── Backlinks acquired MTD (for cost-per-win calc)
     db.from('paid_backlinks').select('id').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
-      .eq('status', 'active').gte('created_at', monthStart) as unknown as CountQ<{ id: string }>,
+      .eq('link_status', 'active').gte('created_at', monthStart) as unknown as CountQ<{ id: string }>,
 
     // ── Alert sources
     db.from('seo_content_briefs').select('id, primary_keyword, blocker_reason').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
@@ -257,7 +260,7 @@ export default async function DashboardPage() {
     db.from('outreach_prospects').select('id, domain, last_sent_at').eq('owner_user_id', ownerId)
       .eq('needs_followup', true).order('last_sent_at', { ascending: true }).limit(20) as unknown as CountQ<{ id: string; domain: string; last_sent_at: string }>,
     db.from('paid_backlinks').select('id, source_url, target_url').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
-      .eq('status', 'broken').limit(20) as unknown as CountQ<{ id: string; source_url: string; target_url: string }>,
+      .eq('link_status', 'broken').limit(20) as unknown as CountQ<{ id: string; source_url: string; target_url: string }>,
     db.from('product_content_queue').select('id, product_name, updated_at').eq('owner_user_id', ownerId)
       .eq('status', 'generating').lt('updated_at', new Date(now - 10 * 60_000).toISOString()).limit(20) as unknown as CountQ<{ id: string; product_name: string; updated_at: string }>,
 
@@ -265,7 +268,7 @@ export default async function DashboardPage() {
     db.from('seo_content_briefs').select('published_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
       .eq('status', 'published').gte('published_at', last7Iso) as unknown as CountQ<{ published_at: string }>,
     db.from('paid_backlinks').select('created_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
-      .eq('status', 'active').gte('created_at', last7Iso) as unknown as CountQ<{ created_at: string }>,
+      .eq('link_status', 'active').gte('created_at', last7Iso) as unknown as CountQ<{ created_at: string }>,
     db.from('outreach_prospects').select('last_sent_at').eq('owner_user_id', ownerId)
       .gte('last_sent_at', last7Iso) as unknown as CountQ<{ last_sent_at: string }>,
     db.from('product_content_queue').select('generated_at').eq('owner_user_id', ownerId)
@@ -372,7 +375,7 @@ export default async function DashboardPage() {
   // ── Alert center
   const alerts: Array<{ severity: 'critical' | 'important' | 'info'; text: string; href: string }> = []
   for (const b of (backlinksBroken.data ?? [])) {
-    alerts.push({ severity: 'critical', text: `Broken backlink: ${b.source_url}`, href: '/competitive/backlink-gap' })
+    alerts.push({ severity: 'critical', text: `Broken backlink: ${b.source_url}`, href: '/backlinks' })
   }
   for (const p of (productStuck.data ?? [])) {
     alerts.push({ severity: 'critical', text: `Stuck product content: ${p.product_name}`, href: '/content/products' })
@@ -384,7 +387,7 @@ export default async function DashboardPage() {
     alerts.push({ severity: 'important', text: `Brief blocked: ${b.primary_keyword ?? 'untitled'} (${b.blocker_reason})`, href: `/content/briefs/${b.id}` })
   }
   for (const o of (outreachNeedsFollowup.data ?? [])) {
-    alerts.push({ severity: 'important', text: `Outreach needs follow-up: ${o.domain}`, href: '/competitive/backlink-gap' })
+    alerts.push({ severity: 'important', text: `Outreach needs follow-up: ${o.domain}`, href: '/outreach' })
   }
 
   const criticalAlerts   = alerts.filter(a => a.severity === 'critical')
@@ -498,7 +501,7 @@ export default async function DashboardPage() {
           }
           alertColor={(outreachNeedsFollowup.data?.length ?? 0) > 0 ? 'text-amber-400' : 'text-emerald-400'}
           sparkData={backlinksSpark}
-          href="/competitive/backlink-gap"
+          href="/backlinks"
         />
       </div>
 
