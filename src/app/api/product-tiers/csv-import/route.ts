@@ -40,6 +40,8 @@ export async function POST(req: Request) {
   const colRelId    = header.findIndex(h => h === 'relation id' || h === 'relation_id')
   const colUrl      = header.findIndex(h => h === 'url')
   const colNotes    = header.findIndex(h => h === 'notes')
+  // Sprint TIER.PER.MARKET — optional Market column; defaults to 'us' if absent
+  const colMarket   = header.findIndex(h => h === 'market')
 
   if (colTier < 0 || colName < 0) {
     return NextResponse.json({
@@ -72,13 +74,21 @@ export async function POST(req: Request) {
     const relId    = colRelId    >= 0 ? (row[colRelId]    ?? '').trim() : ''
     const url      = colUrl      >= 0 ? (row[colUrl]      ?? '').trim() : ''
     const notes    = colNotes    >= 0 ? (row[colNotes]    ?? '').trim() : ''
+    // Sprint TIER.PER.MARKET — read Market col (default 'us'); validate
+    const marketRaw = colMarket >= 0 ? (row[colMarket] ?? '').trim().toLowerCase() : 'us'
+    const market    = (marketRaw === 'id' ? 'id' : 'us') as 'us' | 'id'
 
     if (!tier)         { errors.push({ row: rowNum, reason: 'Tier must be 1 or 2' }); continue }
     if (!name)         { errors.push({ row: rowNum, reason: 'Product Name is required' }); continue }
+    if (colMarket >= 0 && marketRaw && marketRaw !== 'us' && marketRaw !== 'id') {
+      errors.push({ row: rowNum, reason: `Market must be "us" or "id" (got "${marketRaw}")` })
+      continue
+    }
 
     const payload = {
       owner_user_id: ownerId,
       site_slug:     siteSlug,
+      market,
       tier,
       product_name:  name,
       category:      category || null,
@@ -89,10 +99,10 @@ export async function POST(req: Request) {
     }
 
     if (relId && !replace) {
-      // Upsert on the unique (owner, site, relation_id) index
+      // Sprint TIER.PER.MARKET — conflict key includes market
       const { error, data } = await db
         .from('product_tiers')
-        .upsert(payload, { onConflict: 'owner_user_id,site_slug,relation_id' })
+        .upsert(payload, { onConflict: 'owner_user_id,site_slug,market,relation_id' })
         .select('id, created_at, updated_at')
         .single()
 

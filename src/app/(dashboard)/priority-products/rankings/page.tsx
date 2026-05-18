@@ -59,6 +59,7 @@ interface ProductSummary {
   category:         string | null
   url:              string | null
   restriction_type: string | null   // Sprint DMCA.TAGGING — 'DMCA' | 'Trademark' | 'RegionLock' | 'TOS' | null
+  market:           'us' | 'id'      // Sprint TIER.PER.MARKET
   kwCount:          number
   avgPosition:      number | null
   top3:             number
@@ -424,9 +425,21 @@ export default function RankingsDashboardPage() {
                             </div>
                           </td>
                           <td className="px-3 py-2.5">
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
-                              p.tier === 1 ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                            }`}>T{p.tier}</span>
+                            <div className="flex items-center gap-1">
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                                p.tier === 1 ? 'bg-amber-500/15 text-amber-300 border-amber-500/30' : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                              }`}>T{p.tier}</span>
+                              <span
+                                title={p.market === 'id' ? 'Indonesia market' : 'Global / US market'}
+                                className={`text-[9px] font-bold px-1 py-0.5 rounded border ${
+                                  p.market === 'id'
+                                    ? 'bg-red-500/15 text-red-300 border-red-500/30'
+                                    : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                                }`}
+                              >
+                                {p.market === 'id' ? '🇮🇩' : '🌐'}
+                              </span>
+                            </div>
                           </td>
                           <td className="px-3 py-2.5 text-gray-400 hidden md:table-cell text-xs">{p.category ?? '—'}</td>
                           <td className="px-3 py-2.5 text-right text-gray-200">{p.kwCount}</td>

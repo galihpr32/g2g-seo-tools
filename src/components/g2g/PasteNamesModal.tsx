@@ -69,6 +69,8 @@ export default function PasteNamesModal({ open, onClose, onApplied }: Props) {
   const [paste,   setPaste]   = useState('')
   const [service, setService] = useState('')   // optional category pre-filter
   const [tier,    setTier]    = useState<1 | 2>(1)
+  // Sprint TIER.PER.MARKET — bulk picks one market for the whole batch
+  const [market,  setMarket]  = useState<'us' | 'id'>('us')
   const [matching, setMatching] = useState(false)
   const [results,  setResults]  = useState<MatchResult[]>([])
   const [stats,    setStats]    = useState<MatchResponse['stats'] | null>(null)
@@ -158,7 +160,7 @@ export default function PasteNamesModal({ open, onClose, onApplied }: Props) {
       const res = await fetch('/api/product-tiers/bulk-from-catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tier, relation_ids: Array.from(relIds) }),
+        body: JSON.stringify({ tier, market, relation_ids: Array.from(relIds) }),
       })
       const data = await res.json() as InsertResult & { error?: string }
       if (!res.ok || data.error) {
@@ -334,7 +336,7 @@ export default function PasteNamesModal({ open, onClose, onApplied }: Props) {
                 </table>
               </div>
 
-              <div className="flex items-center gap-3 pt-2">
+              <div className="flex items-center gap-3 pt-2 flex-wrap">
                 <span className="text-sm text-gray-300">Add to:</span>
                 {[1, 2].map(t => (
                   <button
@@ -347,6 +349,21 @@ export default function PasteNamesModal({ open, onClose, onApplied }: Props) {
                     }`}
                   >
                     Tier {t}
+                  </button>
+                ))}
+                {/* Sprint TIER.PER.MARKET — market for this bulk */}
+                <span className="text-sm text-gray-300 ml-2">Market:</span>
+                {(['us', 'id'] as const).map(m => (
+                  <button
+                    key={m}
+                    onClick={() => setMarket(m)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium border ${
+                      market === m
+                        ? (m === 'id' ? 'bg-red-600 border-red-500 text-white' : 'bg-blue-600 border-blue-500 text-white')
+                        : 'border-gray-700 bg-gray-950 text-gray-300 hover:border-gray-500'
+                    }`}
+                  >
+                    {m === 'id' ? '🇮🇩 ID' : '🌐 US'}
                   </button>
                 ))}
                 <button

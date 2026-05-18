@@ -18,6 +18,7 @@ import PasteNamesModal from '@/components/g2g/PasteNamesModal'
 interface TierRow {
   id:               string
   site_slug:        string
+  market:           'us' | 'id'      // Sprint TIER.PER.MARKET
   tier:             1 | 2
   product_name:     string
   category:         string | null
@@ -29,6 +30,12 @@ interface TierRow {
   updated_at:       string
 }
 
+// Sprint TIER.PER.MARKET — market labels for the UI picker
+const MARKET_OPTIONS: Array<{ value: 'us' | 'id'; label: string; emoji: string; cls: string }> = [
+  { value: 'us', label: 'Global / US', emoji: '🌐', cls: 'bg-blue-500/15 text-blue-300 border-blue-500/30' },
+  { value: 'id', label: 'Indonesia',    emoji: '🇮🇩', cls: 'bg-red-500/15 text-red-300 border-red-500/30' },
+]
+
 // Sprint DMCA.TAGGING — UI metadata for restriction picker
 const RESTRICTION_OPTIONS: Array<{ value: 'DMCA' | 'Trademark' | 'RegionLock' | 'TOS'; label: string; hint: string }> = [
   { value: 'DMCA',       label: '🚫 DMCA',          hint: 'HoYoverse-style takedown risk; rank suppression expected' },
@@ -38,6 +45,7 @@ const RESTRICTION_OPTIONS: Array<{ value: 'DMCA' | 'Trademark' | 'RegionLock' | 
 ]
 
 interface CategoryTierCount { t1: number; t2: number; total: number }
+interface MarketTierCount { t1: number; t2: number; total: number }
 interface ApiList {
   items: TierRow[]
   stats: {
@@ -46,6 +54,7 @@ interface ApiList {
     total: number
     byCategory:     Record<string, number>
     byCategoryTier: Record<string, CategoryTierCount>
+    byMarket?:      Record<string, MarketTierCount>
   }
 }
 
@@ -59,10 +68,12 @@ export default function ProductTiersPage() {
   const siteSlug = useSiteSlug()
 
   const [items,  setItems]  = useState<TierRow[]>([])
-  const [stats,  setStats]  = useState<ApiList['stats']>({ tier1: 0, tier2: 0, total: 0, byCategory: {}, byCategoryTier: {} })
+  const [stats,  setStats]  = useState<ApiList['stats']>({ tier1: 0, tier2: 0, total: 0, byCategory: {}, byCategoryTier: {}, byMarket: { us: { t1: 0, t2: 0, total: 0 }, id: { t1: 0, t2: 0, total: 0 } } })
   const [loading, setLoading] = useState(true)
   const [filterTier,     setFilterTier]     = useState<'all' | '1' | '2'>('all')
   const [filterCategory, setFilterCategory] = useState<string>('all')
+  // Sprint TIER.PER.MARKET — filter rows by target market
+  const [filterMarket,   setFilterMarket]   = useState<'all' | 'us' | 'id'>('all')
   const [search, setSearch] = useState('')
 
   // Sprint UNIFY.4 — Dynamic categories from KB. Single source of truth for
@@ -124,6 +135,7 @@ export default function ProductTiersPage() {
     const s = search.trim().toLowerCase()
     return items.filter(r => {
       if (filterTier !== 'all' && String(r.tier) !== filterTier) return false
+      if (filterMarket !== 'all' && (r.market ?? 'us') !== filterMarket) return false
       if (filterCategory !== 'all') {
         const c = r.category?.trim() || UNCATEGORIZED
         if (c !== filterCategory) return false
@@ -133,7 +145,7 @@ export default function ProductTiersPage() {
         .filter(Boolean)
         .some(v => (v as string).toLowerCase().includes(s))
     })
-  }, [items, filterTier, filterCategory, search])
+  }, [items, filterTier, filterMarket, filterCategory, search])
 
   // Unique categories present (sorted; presets surfaced first when used).
   const categoryOptions = useMemo(() => {
@@ -186,6 +198,7 @@ export default function ProductTiersPage() {
           url:              editing.url ?? null,
           notes:            editing.notes ?? null,
           restriction_type: editing.restriction_type ?? null,
+          market:           editing.market ?? 'us',
         }),
       })
       const data = await res.json()
@@ -243,7 +256,7 @@ export default function ProductTiersPage() {
           </p>
         </div>
         <button
-          onClick={() => setEditing({ tier: 1, product_name: '', category: null, relation_id: null, url: null, notes: null })}
+          onClick={() => setEditing({ tier: 1, market: 'us', product_name: '', category: null, relation_id: null, url: null, notes: null })}
           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition"
         >
           + Add Product
@@ -272,6 +285,17 @@ export default function ProductTiersPage() {
           <option value="all">All tiers</option>
           <option value="1">Tier 1 only</option>
           <option value="2">Tier 2 only</option>
+        </select>
+        {/* Sprint TIER.PER.MARKET — market filter */}
+        <select
+          value={filterMarket}
+          onChange={e => setFilterMarket(e.target.value as 'all' | 'us' | 'id')}
+          className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600"
+          title="Filter rows by target market"
+        >
+          <option value="all">All markets</option>
+          <option value="us">🌐 Global / US ({stats.byMarket?.us.total ?? 0})</option>
+          <option value="id">🇮🇩 Indonesia ({stats.byMarket?.id.total ?? 0})</option>
         </select>
         <select
           value={filterCategory}
@@ -338,7 +362,12 @@ export default function ProductTiersPage() {
                 <tbody>
                   {rows.map(row => (
                     <tr key={row.id} className="border-t border-gray-800 hover:bg-gray-800/30">
-                      <td className="px-3 py-2"><TierBadge tier={row.tier} /></td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-1">
+                          <TierBadge tier={row.tier} />
+                          <MarketBadge market={row.market ?? 'us'} />
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-white font-medium">
                         <span className="inline-flex items-center gap-1.5 flex-wrap">
                           {row.product_name}
@@ -391,6 +420,31 @@ export default function ProductTiersPage() {
                     </button>
                   ))}
                 </div>
+              </div>
+              {/* Sprint TIER.PER.MARKET — market picker */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Target Market <span className="text-gray-600">— same product can be tiered in BOTH (creates 2 rows)</span>
+                </label>
+                <div className="flex gap-2">
+                  {MARKET_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setEditing({ ...editing, market: opt.value })}
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition border ${
+                        (editing.market ?? 'us') === opt.value
+                          ? opt.cls
+                          : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+                      }`}
+                    >
+                      {opt.emoji} {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Drives which SERP market this product is tracked in.
+                  Tier 1 list per market is independent — best sellers can differ between US and ID.
+                </p>
               </div>
               {/* G2G catalog typeahead — fills product_name + category + relation_id in one click */}
               <div>
@@ -684,6 +738,22 @@ function TierBadge({ tier }: { tier: 1 | 2 }) {
     ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
     : 'bg-blue-500/15  text-blue-300  border-blue-500/30'
   return <span className={`inline-flex items-center px-2 py-0.5 rounded-md border text-xs font-bold ${cls}`}>T{tier}</span>
+}
+
+// Sprint TIER.PER.MARKET — compact market badge next to tier badge
+function MarketBadge({ market }: { market: 'us' | 'id' }) {
+  const cls = market === 'id'
+    ? 'bg-red-500/15 text-red-300 border-red-500/30'
+    : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+  const label = market === 'id' ? '🇮🇩 ID' : '🌐 US'
+  return (
+    <span
+      title={market === 'id' ? 'Indonesia market' : 'Global / US market'}
+      className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-bold ${cls}`}
+    >
+      {label}
+    </span>
+  )
 }
 
 function Field({ label, value, onChange, placeholder, mono }: {

@@ -207,7 +207,7 @@ export default function FridayKpiPage() {
                 </tbody>
               </table>
               <p className="text-[10px] text-gray-500 italic px-3 py-2">
-                ID country-split coming once GSC country dim is wired — currently combined under Global per brand.
+                Last 7 days vs prior 7 days (3-day GSC freshness lag) · ID = country=idn; Global = all other countries.
               </p>
             </div>
 

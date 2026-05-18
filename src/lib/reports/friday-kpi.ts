@@ -18,6 +18,8 @@
 // Market mapping per the wider app: 'us' → "Global", 'id' → "ID".
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { getRefreshedClientFull } from '@/lib/gsc/auth'
+import { getSearchAnalytics, getDateRange } from '@/lib/gsc/client'
 
 export const MARKET_LABELS: Record<string, string> = { us: 'Global', id: 'ID' }
 const MARKETS = ['us', 'id'] as const
@@ -130,12 +132,17 @@ async function buildMarketSerp(
     top10: 0, top10_delta: 0,
   }
 
-  // 1. Find all tier-product IDs for this brand
+  // 1. Find tier-product IDs for this brand × market.
+  // Sprint TIER.PER.MARKET — same product can have separate rows for us + id
+  // tiers. Only include rows whose target market matches the column being
+  // built, so Global cell shows ONLY products targeted at US, and ID cell
+  // shows ONLY products targeted at ID.
   const { data: products } = await db
     .from('product_tiers')
     .select('id')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
+    .eq('market', market)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pIds = ((products ?? []) as any[]).map(p => String(p.id))
   if (pIds.length === 0) return empty
@@ -215,6 +222,10 @@ async function buildBrandTraffic(
   ownerId:  string,
   siteSlug: string,
 ): Promise<ClickKpi[]> {
+  const emptyCells = (): ClickKpi[] => MARKETS.map(m => ({
+    market: m, market_label: MARKET_LABELS[m], clicks: 0, clicks_pct: null, impressions: 0, imp_pct: null,
+  }))
+
   // Resolve site_url for this brand from site_configs.
   const { data: cfg } = await db
     .from('site_configs')
@@ -222,16 +233,96 @@ async function buildBrandTraffic(
     .eq('slug', siteSlug)
     .maybeSingle()
   const siteUrl = cfg?.gsc_property as string | undefined
-  if (!siteUrl) {
-    return MARKETS.map(m => ({ market: m, market_label: MARKET_LABELS[m], clicks: 0, clicks_pct: null, impressions: 0, imp_pct: null }))
+  if (!siteUrl) return emptyCells()
+
+  // Pull this owner's GSC OAuth credentials so we can hit Search Analytics
+  // with the country dimension. Without this, we'd fall back to summing
+  // gsc_ranking_snapshots which has no country split.
+  const { data: conn } = await db
+    .from('gsc_connections')
+    .select('user_id, access_token, refresh_token, expires_at')
+    .eq('user_id', ownerId)
+    .maybeSingle()
+
+  if (!conn?.access_token || !conn?.refresh_token) {
+    // Fallback: combined totals under Global cell, ID empty.
+    return await buildTrafficFallback(db, siteUrl)
   }
 
-  // We don't have country split on gsc_ranking_snapshots in this schema —
-  // surface combined totals per brand under "Global" and zero for ID.
-  // Future enhancement: pull country-split via GSC API directly.
-  // (Acknowledged in the Slack message footnote.)
-  const today    = Date.now()
-  const sinceCur = new Date(today - WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
+  try {
+    const { client: auth, newCredentials } = await getRefreshedClientFull(
+      conn.access_token as string,
+      conn.refresh_token as string,
+      (conn.expires_at as string | null) ?? new Date(0).toISOString(),
+    )
+    // Best-effort token persist so the next call doesn't re-refresh.
+    if (newCredentials) {
+      void db
+        .from('gsc_connections')
+        .update({
+          access_token: newCredentials.accessToken,
+          expires_at:   newCredentials.expiresAt,
+          updated_at:   new Date().toISOString(),
+        })
+        .eq('user_id', ownerId)
+    }
+
+    // Two windows: last 7 days (current) vs prior 7 days (prev).
+    // GSC has ~3-day data freshness lag, so we offset by 3 days.
+    const curStart  = getDateRange(WOW_DAYS + 3)
+    const curEnd    = getDateRange(3)
+    const prevStart = getDateRange(2 * WOW_DAYS + 3)
+    const prevEnd   = getDateRange(WOW_DAYS + 4)
+
+    const [curRows, prevRows] = await Promise.all([
+      getSearchAnalytics(auth, siteUrl, curStart,  curEnd,  ['country'], 1000),
+      getSearchAnalytics(auth, siteUrl, prevStart, prevEnd, ['country'], 1000),
+    ])
+
+    // Aggregate per country bucket: 'idn' → ID, everything else → Global.
+    type Totals = { clicks: number; imp: number }
+    const cur:  Record<'us' | 'id', Totals> = { us: { clicks: 0, imp: 0 }, id: { clicks: 0, imp: 0 } }
+    const prev: Record<'us' | 'id', Totals> = { us: { clicks: 0, imp: 0 }, id: { clicks: 0, imp: 0 } }
+
+    for (const r of curRows) {
+      const country = (r.keys?.[0] ?? '').toLowerCase()
+      const bucket  = country === 'idn' ? 'id' : 'us'
+      cur[bucket].clicks += Number(r.clicks      ?? 0)
+      cur[bucket].imp    += Number(r.impressions ?? 0)
+    }
+    for (const r of prevRows) {
+      const country = (r.keys?.[0] ?? '').toLowerCase()
+      const bucket  = country === 'idn' ? 'id' : 'us'
+      prev[bucket].clicks += Number(r.clicks      ?? 0)
+      prev[bucket].imp    += Number(r.impressions ?? 0)
+    }
+
+    const pct = (c: number, p: number): number | null => {
+      if (p <= 0) return c > 0 ? 100 : null
+      return +(((c - p) / p) * 100).toFixed(1)
+    }
+
+    return [
+      { market: 'us', market_label: MARKET_LABELS.us, clicks: cur.us.clicks, clicks_pct: pct(cur.us.clicks, prev.us.clicks), impressions: cur.us.imp, imp_pct: pct(cur.us.imp, prev.us.imp) },
+      { market: 'id', market_label: MARKET_LABELS.id, clicks: cur.id.clicks, clicks_pct: pct(cur.id.clicks, prev.id.clicks), impressions: cur.id.imp, imp_pct: pct(cur.id.imp, prev.id.imp) },
+    ]
+  } catch (err) {
+    console.warn(`[friday-kpi] GSC country-split for ${siteSlug} failed, falling back:`, err)
+    return await buildTrafficFallback(db, siteUrl)
+  }
+}
+
+/**
+ * Fallback: when GSC OAuth fails or isn't set up, sum gsc_ranking_snapshots
+ * under "Global" and leave ID empty. Better than zero-everything.
+ */
+async function buildTrafficFallback(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:      SupabaseClient<any>,
+  siteUrl: string,
+): Promise<ClickKpi[]> {
+  const today     = Date.now()
+  const sinceCur  = new Date(today - WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
   const sincePrev = new Date(today - 2 * WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
 
   const { data: snaps } = await db
@@ -249,16 +340,10 @@ async function buildBrandTraffic(
     const i = Number(r.impressions ?? 0)
     if (isCur) { curClicks += c; curImp += i } else { prevClicks += c; prevImp += i }
   }
-
-  const pct = (cur: number, prev: number): number | null => {
-    if (prev <= 0) return cur > 0 ? 100 : null
-    return +(((cur - prev) / prev) * 100).toFixed(1)
+  const pct = (c: number, p: number): number | null => {
+    if (p <= 0) return c > 0 ? 100 : null
+    return +(((c - p) / p) * 100).toFixed(1)
   }
-
-  // We don't have country-split in gsc_ranking_snapshots → expose combined
-  // totals as "Global"; "ID" slot left zero with a footnote in the Slack
-  // template. (Acceptable v1; future cron can split per-country via the
-  // GSC client directly.)
   return [
     { market: 'us', market_label: MARKET_LABELS.us, clicks: curClicks, clicks_pct: pct(curClicks, prevClicks), impressions: curImp, imp_pct: pct(curImp, prevImp) },
     { market: 'id', market_label: MARKET_LABELS.id, clicks: 0,         clicks_pct: null,                       impressions: 0,      imp_pct: null },
@@ -359,7 +444,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: '_GSC-verified · last 7 days vs prior 7 days · ID country-split coming once GSC country-dim is enabled (currently combined under Global)._',
+      text: '_GSC-verified · last 7 days vs prior 7 days (3-day freshness lag applied) · ID = country=idn, Global = all other countries._',
     }],
   })
 

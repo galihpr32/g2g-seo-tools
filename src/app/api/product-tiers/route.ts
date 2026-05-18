@@ -21,13 +21,15 @@ interface TierBody {
   url?:              string | null
   notes?:            string | null
   restriction_type?: string | null   // Sprint DMCA.TAGGING
+  market?:           string          // Sprint TIER.PER.MARKET — 'us' | 'id', defaults to 'us'
 }
 
 const VALID_RESTRICTIONS = ['DMCA', 'Trademark', 'RegionLock', 'TOS'] as const
+const VALID_MARKETS = ['us', 'id'] as const
 
 function normalizeBody(body: TierBody): {
   ok:    true
-  data:  { tier: 1 | 2; product_name: string; category: string | null; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null }
+  data:  { tier: 1 | 2; product_name: string; category: string | null; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null; market: 'us' | 'id' }
 } | { ok: false; error: string } {
   if (body.tier !== 1 && body.tier !== 2) return { ok: false, error: 'tier must be 1 or 2' }
   if (!body.product_name?.trim())         return { ok: false, error: 'product_name is required' }
@@ -37,6 +39,10 @@ function normalizeBody(body: TierBody): {
   const restriction = body.restriction_type?.trim() || null
   if (restriction && !(VALID_RESTRICTIONS as readonly string[]).includes(restriction)) {
     return { ok: false, error: `restriction_type must be one of: ${VALID_RESTRICTIONS.join(', ')} or null` }
+  }
+  const market = (body.market?.trim().toLowerCase() || 'us') as 'us' | 'id'
+  if (!(VALID_MARKETS as readonly string[]).includes(market)) {
+    return { ok: false, error: `market must be one of: ${VALID_MARKETS.join(', ')}` }
   }
   return {
     ok: true,
@@ -48,6 +54,7 @@ function normalizeBody(body: TierBody): {
       url:              body.url?.trim() || null,
       notes:            body.notes?.trim() || null,
       restriction_type: restriction,
+      market,
     },
   }
 }
@@ -90,6 +97,20 @@ export async function GET(req: Request) {
     byCategoryTier[k].total += 1
   }
 
+  // Sprint TIER.PER.MARKET — per-market breakdown for the admin UI to show
+  // "US tier 1: 12 / 10 · ID tier 1: 8 / 10" type stats.
+  const byMarket: Record<string, { t1: number; t2: number; total: number }> = {
+    us: { t1: 0, t2: 0, total: 0 },
+    id: { t1: 0, t2: 0, total: 0 },
+  }
+  for (const r of rows) {
+    const m = (r.market ?? 'us') as 'us' | 'id'
+    byMarket[m] ??= { t1: 0, t2: 0, total: 0 }
+    if (r.tier === 1) byMarket[m].t1 += 1
+    else              byMarket[m].t2 += 1
+    byMarket[m].total += 1
+  }
+
   return NextResponse.json({
     items: rows,
     stats: {
@@ -97,6 +118,7 @@ export async function GET(req: Request) {
       // Legacy global byCategory (count only) — kept for backward compat.
       byCategory: Object.fromEntries(Object.entries(byCategoryTier).map(([k, v]) => [k, v.total])),
       byCategoryTier,
+      byMarket,
     },
   })
 }
@@ -140,6 +162,8 @@ export async function POST(req: Request) {
   // If relation_id is set, upsert on the unique index — same product re-tagged
   // shouldn't create dupes. Otherwise plain insert.
   if (norm.data.relation_id) {
+    // Sprint TIER.PER.MARKET — conflict key now includes market so the same
+    // product can have separate rows for us + id (e.g. dual-focus brand).
     const { data, error } = await db
       .from('product_tiers')
       .upsert({
@@ -147,7 +171,7 @@ export async function POST(req: Request) {
         site_slug:     siteSlug,
         ...norm.data,
         updated_at:    new Date().toISOString(),
-      }, { onConflict: 'owner_user_id,site_slug,relation_id' })
+      }, { onConflict: 'owner_user_id,site_slug,market,relation_id' })
       .select()
       .single()
 

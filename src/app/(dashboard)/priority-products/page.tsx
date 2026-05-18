@@ -21,6 +21,7 @@ const UNCATEGORIZED = 'Uncategorized'
 interface ProductRow {
   id:               string
   tier:             1 | 2
+  market:           'us' | 'id'    // Sprint TIER.PER.MARKET
   productName:      string
   category:         string | null
   relationId:       string | null
@@ -66,6 +67,8 @@ export default function PriorityProductsPage() {
   const [filterTier,     setFilterTier]     = useState<'all' | '1' | '2'>('all')
   const [filterHealth,   setFilterHealth]   = useState<'all' | 'critical' | 'attention' | 'monitor' | 'healthy'>('all')
   const [filterCategory, setFilterCategory] = useState<string>('all')
+  // Sprint TIER.PER.MARKET — filter products by target market
+  const [filterMarket,   setFilterMarket]   = useState<'all' | 'us' | 'id'>('all')
   const [search,         setSearch]         = useState('')
 
   useEffect(() => {
@@ -87,6 +90,8 @@ export default function PriorityProductsPage() {
     return rows.filter(r => {
       if (filterTier !== 'all'   && String(r.tier) !== filterTier)   return false
       if (filterHealth !== 'all' && r.health !== filterHealth)        return false
+      // Sprint TIER.PER.MARKET — filter rows by their target market
+      if (filterMarket !== 'all' && (r.market ?? 'us') !== filterMarket) return false
       if (filterCategory !== 'all') {
         const c = r.category?.trim() || UNCATEGORIZED
         if (c !== filterCategory) return false
@@ -96,7 +101,7 @@ export default function PriorityProductsPage() {
         .filter(Boolean)
         .some(v => (v as string).toLowerCase().includes(s))
     })
-  }, [rows, filterTier, filterHealth, filterCategory, search])
+  }, [rows, filterTier, filterHealth, filterMarket, filterCategory, search])
 
   // Unique categories present across ALL rows (not just filtered) so the
   // dropdown stays consistent as you slice.
@@ -189,6 +194,17 @@ export default function PriorityProductsPage() {
           <option value="all">All tiers</option>
           <option value="1">Tier 1 only</option>
           <option value="2">Tier 2 only</option>
+        </select>
+        {/* Sprint TIER.PER.MARKET — market filter */}
+        <select
+          value={filterMarket}
+          onChange={e => setFilterMarket(e.target.value as 'all' | 'us' | 'id')}
+          className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-gray-600"
+          title="Filter products by target market"
+        >
+          <option value="all">All markets</option>
+          <option value="us">🌐 Global / US</option>
+          <option value="id">🇮🇩 Indonesia</option>
         </select>
         <select
           value={filterHealth}

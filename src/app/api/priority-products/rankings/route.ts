@@ -57,6 +57,7 @@ interface ProductMeta {
   url:              string | null
   relation_id:      string | null
   restriction_type: string | null
+  market:           'us' | 'id'   // Sprint TIER.PER.MARKET
 }
 
 export async function GET(req: Request) {
@@ -80,15 +81,20 @@ export async function GET(req: Request) {
 
   const weeksBack = RANGE_WEEKS[range] ?? 1
 
-  // ── 1. Fetch tier products (filtered by tier + category) ───────────────────
+  // ── 1. Fetch tier products (filtered by tier + category + market) ─────────
+  // Sprint TIER.PER.MARKET — the `market` query param now filters the product
+  // SET (not just snapshot market). Combined with snapshot market filter
+  // below, this gives true per-market tier rankings.
   let productsQ = db
     .from('product_tiers')
-    .select('id, tier, product_name, category, url, relation_id, restriction_type')
+    .select('id, tier, market, product_name, category, url, relation_id, restriction_type')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
   if (tier === '1') productsQ = productsQ.eq('tier', 1)
   if (tier === '2') productsQ = productsQ.eq('tier', 2)
   if (category !== 'all') productsQ = productsQ.eq('category', category)
+  // When market filter is set, restrict to products targeted to that market.
+  if (market === 'us' || market === 'id') productsQ = productsQ.eq('market', market)
 
   let { data: productsRaw } = await productsQ
 
@@ -278,6 +284,7 @@ export async function GET(req: Request) {
     category:         string | null
     url:              string | null
     restriction_type: string | null
+    market:           'us' | 'id'   // Sprint TIER.PER.MARKET
     kwCount:          number
     avgPosition:      number | null
     top3:             number
@@ -307,6 +314,7 @@ export async function GET(req: Request) {
       return {
         id: p.id, productName: p.product_name, tier: p.tier, category: p.category, url: p.url,
         restriction_type: p.restriction_type,
+        market: (p.market ?? 'us') as 'us' | 'id',
         kwCount: 0, avgPosition: null, top3: 0, top10: 0, wowDelta: null,
       }
     }
@@ -315,6 +323,7 @@ export async function GET(req: Request) {
     return {
       id: p.id, productName: p.product_name, tier: p.tier, category: p.category, url: p.url,
       restriction_type: p.restriction_type,
+      market: (p.market ?? 'us') as 'us' | 'id',
       kwCount:     e.kws.size,
       avgPosition: avg,
       top3:        e.t3,

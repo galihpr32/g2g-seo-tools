@@ -28,6 +28,7 @@ export const maxDuration = 30
 interface ProductRow {
   id:           string
   tier:         1 | 2
+  market:       'us' | 'id'        // Sprint TIER.PER.MARKET
   productName:  string
   category:     string | null
   relationId:   string | null
@@ -68,13 +69,15 @@ export async function GET(req: Request) {
   const monthStartDate = monthStart.slice(0, 10)
 
   // ── 1. Tier list ────────────────────────────────────────────────────────────
+  // Sprint TIER.PER.MARKET — include market column so the page can group/filter.
   const { data: tiersRaw } = await db
     .from('product_tiers')
-    .select('id, tier, product_name, category, relation_id, url, notes')
+    .select('id, tier, market, product_name, category, relation_id, url, notes')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
 
-  const tiers = (tiersRaw ?? []) as Pick<ProductTier, 'id' | 'tier' | 'product_name' | 'category' | 'relation_id' | 'url' | 'notes'>[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tiers = (tiersRaw ?? []) as Array<Pick<ProductTier, 'id' | 'tier' | 'product_name' | 'category' | 'relation_id' | 'url' | 'notes'> & { market?: 'us' | 'id' }>
   if (tiers.length === 0) {
     return NextResponse.json({
       products: [],
@@ -298,6 +301,7 @@ export async function GET(req: Request) {
       return {
         id:           t.id,
         tier:         t.tier,
+        market:       (t.market ?? 'us') as 'us' | 'id',   // Sprint TIER.PER.MARKET
         productName:  t.product_name,
         category:     t.category ?? null,
         relationId:   t.relation_id ?? null,

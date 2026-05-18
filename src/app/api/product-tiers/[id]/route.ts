@@ -20,9 +20,11 @@ interface PatchBody {
   url?:              string | null
   notes?:            string | null
   restriction_type?: string | null   // Sprint DMCA.TAGGING — DMCA | Trademark | RegionLock | TOS | null
+  market?:           string          // Sprint TIER.PER.MARKET — 'us' | 'id'
 }
 
 const VALID_RESTRICTIONS = ['DMCA', 'Trademark', 'RegionLock', 'TOS'] as const
+const VALID_MARKETS = ['us', 'id'] as const
 
 export async function PUT(
   req: Request,
@@ -58,6 +60,13 @@ export async function PUT(
     }
     patch.restriction_type = r
   }
+  if (body.market !== undefined) {
+    const m = body.market.trim().toLowerCase()
+    if (!(VALID_MARKETS as readonly string[]).includes(m)) {
+      return NextResponse.json({ error: `market must be one of: ${VALID_MARKETS.join(', ')}` }, { status: 400 })
+    }
+    patch.market = m
+  }
 
   const { data, error } = await db
     .from('product_tiers')
@@ -66,6 +75,22 @@ export async function PUT(
     .eq('owner_user_id', ownerId)
     .select()
     .single()
+
+  // Sprint TIER.PER.MARKET — DMCA / restriction_type is product-level
+  // (Galih's confirmation: "DMCA per produk aja"). When the user toggles
+  // restriction on one market row, propagate the same value to any other
+  // market rows for the same (owner × site × relation_id) so they stay
+  // in sync. Fire-and-forget — failures here don't break the primary write.
+  if (data && body.restriction_type !== undefined && data.relation_id) {
+    void db
+      .from('product_tiers')
+      .update({ restriction_type: patch.restriction_type, updated_at: new Date().toISOString() })
+      .eq('owner_user_id', ownerId)
+      .eq('site_slug',     data.site_slug)
+      .eq('relation_id',   data.relation_id)
+      .neq('id', id)
+      .then(() => {/* silent */}, () => {/* silent */})
+  }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   if (!data)  return NextResponse.json({ error: 'Not found' }, { status: 404 })
