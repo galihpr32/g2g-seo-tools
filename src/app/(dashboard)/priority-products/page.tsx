@@ -153,8 +153,9 @@ export default function PriorityProductsPage() {
             Priority alerts, deeper Bragi prompts, and weekly action plans run on every tiered product.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <RunBaselineButton />
+          <BulkRescoreButton />
           <Link
             href="/priority-products/rankings"
             className="px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition"
@@ -489,6 +490,59 @@ interface BaselineRun {
   last_tick_at?:    string | null
   completed_at?:    string | null
   notes?:           string | null
+}
+
+/**
+ * Sprint COMPETITIVE.SCORER.6+ — Bulk rescore button.
+ *
+ * POSTs to /api/competitive/rescore WITHOUT product_tier_id → re-scores all
+ * tier_keywords for the active site. Returns count of kws + clusters scored.
+ *
+ * Cost: ~$0.005 per full run (DataForSEO bulk SV lookup). Negligible.
+ * Latency: 5-20 seconds depending on kw count. Sync-safe.
+ */
+function BulkRescoreButton() {
+  const [busy, setBusy] = useState(false)
+  const [msg,  setMsg]  = useState<string | null>(null)
+
+  async function rescore() {
+    if (busy) return
+    if (!confirm('Re-score ALL competitive keywords for this brand?\n\nThis re-computes SV, density, intent, and final score per the methodology page. Top 3 per cluster get the winner badge. Cost ~$0.005. Takes 5-20 seconds.')) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const res = await fetch('/api/competitive/rescore', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({}),   // no scope → bulk
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMsg(`Failed: ${data.error ?? 'unknown'}`)
+      } else {
+        const winnersCount = (data.summary ?? []).filter((c: { has_top_1: boolean }) => c.has_top_1).length
+        setMsg(`✓ Scored ${data.scored} kws across ${data.clusters} clusters · ${winnersCount} clusters with a strong winner`)
+      }
+    } catch (e) {
+      setMsg(`Failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <button
+        onClick={rescore}
+        disabled={busy}
+        className="px-3 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center gap-1.5"
+        title="Re-compute competitive_score for all tier_keywords across this brand. Marks top 3 per cluster as winners. Used by Friday KPI digest."
+      >
+        {busy ? <>⏳ Scoring all kws…</> : <>🎯 Re-score winners (bulk)</>}
+      </button>
+      {msg && <p className="text-[10px] text-gray-400 max-w-[280px] text-right">{msg}</p>}
+    </div>
+  )
 }
 
 function RunBaselineButton() {
