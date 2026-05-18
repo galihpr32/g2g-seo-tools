@@ -418,11 +418,19 @@ export default function MimirOnpageLearnPage() {
                 </div>
               ))}
               <div className="bg-emerald-900/15 border border-emerald-700/40 rounded-lg p-3 mt-3 text-xs">
-                <p className="text-emerald-200">
+                <p className="text-emerald-200 mb-2">
                   <strong>Summary:</strong> {job.total_inserted} new pattern{job.total_inserted !== 1 ? 's' : ''} saved as Mimir memories
                   {job.total_deleted > 0 && `, ${job.total_deleted} old memories replaced`}.
                   Mimir will use these the next time Bragi generates a brief for this site.
                 </p>
+                <div className="flex gap-2">
+                  <Link
+                    href="/mimir/memories?q=onpage"
+                    className="inline-flex items-center gap-1 px-2 py-1 bg-emerald-700/40 hover:bg-emerald-700/60 border border-emerald-600/50 rounded text-[11px] text-emerald-100"
+                  >
+                    🧠 Browse all on-page patterns →
+                  </Link>
+                </div>
               </div>
             </div>
           )}

@@ -45,6 +45,15 @@ interface KeywordRow {
   is_main:   boolean
   position:  number
   notes:     string | null
+  // Sprint COMPETITIVE.SCORER.6 — scoring metadata for UI badge + tooltip
+  sv_volume?:         number | null
+  sv_volume_norm?:    number | null
+  serp_density?:      number | null
+  intent_score?:      number | null
+  competitive_score?: number | null
+  is_cluster_winner?: boolean
+  cluster_rank?:      number | null
+  last_scored_at?:    string | null
 }
 
 interface SerpTopRow { position: number; url: string; domain: string; title: string }
@@ -261,25 +270,29 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
               Min recommended: 1 main + 5 secondary per language.
             </p>
           </div>
-          {/* Sprint TIER.PER.MARKET.KW — language filter */}
-          <div className="flex items-center gap-1 text-xs">
-            {(['all', 'en', 'id'] as const).map(opt => (
-              <button
-                key={opt}
-                onClick={() => setKwLangFilter(opt)}
-                className={`px-2 py-1 rounded border ${
-                  kwLangFilter === opt
-                    ? opt === 'id'
-                      ? 'bg-red-500/15 border-red-500/40 text-red-300'
-                      : opt === 'en'
-                        ? 'bg-blue-500/15 border-blue-500/40 text-blue-300'
-                        : 'bg-gray-700 border-gray-600 text-white'
-                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
-                }`}
-              >
-                {opt === 'all' ? 'All' : opt === 'id' ? '🇮🇩 ID' : '🌐 EN'}
-              </button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Sprint COMPETITIVE.SCORER.6 — manual triggers per cluster */}
+            <CompetitiveActions productId={id} onRescored={fetchData} />
+            {/* Sprint TIER.PER.MARKET.KW — language filter */}
+            <div className="flex items-center gap-1 text-xs">
+              {(['all', 'en', 'id'] as const).map(opt => (
+                <button
+                  key={opt}
+                  onClick={() => setKwLangFilter(opt)}
+                  className={`px-2 py-1 rounded border ${
+                    kwLangFilter === opt
+                      ? opt === 'id'
+                        ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                        : opt === 'en'
+                          ? 'bg-blue-500/15 border-blue-500/40 text-blue-300'
+                          : 'bg-gray-700 border-gray-600 text-white'
+                      : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-700'
+                  }`}
+                >
+                  {opt === 'all' ? 'All' : opt === 'id' ? '🇮🇩 ID' : '🌐 EN'}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -349,6 +362,21 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
                     kw.is_main ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-gray-800 border-gray-700 text-gray-200'
                   }`}>
                     {kw.is_main && <span className="text-amber-400">★</span>}
+                    {/* Sprint COMPETITIVE.SCORER.6 — cluster winner badge with score tooltip */}
+                    {kw.is_cluster_winner && (
+                      <span
+                        className={`text-[9px] font-bold px-1 py-0.5 rounded border bg-purple-500/20 text-purple-200 border-purple-500/40`}
+                        title={
+                          `Cluster winner #${kw.cluster_rank ?? '?'}\n`
+                          + `Score: ${kw.competitive_score ?? '—'}/100\n`
+                          + `SV norm: ${kw.sv_volume_norm ?? '—'} (raw ${kw.sv_volume ?? '—'})\n`
+                          + `Density: ${kw.serp_density ?? '—'} · Intent: ${kw.intent_score ?? '—'}`
+                          + (kw.last_scored_at ? `\nLast scored: ${new Date(kw.last_scored_at).toLocaleString()}` : '')
+                        }
+                      >
+                        🥇{kw.cluster_rank ? ` #${kw.cluster_rank}` : ''}
+                      </span>
+                    )}
                     {/* Sprint TIER.PER.MARKET.KW — language badge */}
                     <span
                       className={`text-[9px] font-bold px-1 py-0.5 rounded border ${
@@ -361,6 +389,11 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
                       {lang === 'id' ? '🇮🇩' : '🌐'}
                     </span>
                     <span className="font-medium">{kw.keyword}</span>
+                    {kw.competitive_score != null && !kw.is_cluster_winner && (
+                      <span className="text-[10px] text-gray-500" title="Competitive score">
+                        · {kw.competitive_score}
+                      </span>
+                    )}
                     <button
                       onClick={() => toggleMain(kw.id, kw.is_main)}
                       className="text-gray-500 hover:text-amber-300 text-[10px]"
@@ -836,3 +869,63 @@ function SerpDetailPanel({ keyword, market, top, productId, onClose }: {
   )
   void productId   // silence unused — wired in future iteration
 }
+
+function CompetitiveActions({ productId, onRescored }: { productId: string; onRescored: () => void }) {
+  const [busy, setBusy] = useState<'rescore' | 'discover-us' | 'discover-id' | null>(null)
+  const [msg,  setMsg]  = useState<string | null>(null)
+
+  async function rescore() {
+    setBusy('rescore'); setMsg(null)
+    try {
+      const res  = await fetch('/api/competitive/rescore', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ product_tier_id: productId }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setMsg(`Failed: ${data.error ?? 'unknown'}`); return }
+      setMsg(`Scored ${data.scored} kws across ${data.clusters} clusters`)
+      onRescored()
+    } finally { setBusy(null) }
+  }
+
+  async function discover(market: 'us' | 'id') {
+    setBusy(market === 'us' ? 'discover-us' : 'discover-id'); setMsg(null)
+    try {
+      const res  = await fetch('/api/competitive/discover', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ product_tier_id: productId, market, limit: 5 }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setMsg(`Failed: ${data.error ?? 'unknown'}`); return }
+      const created = (data.created ?? []).length
+      const skipped = (data.skipped ?? []).length
+      setMsg(`${created} candidate${created !== 1 ? 's' : ''} added to opportunities${skipped ? ` · ${skipped} skipped (dup/low score)` : ''}`)
+    } finally { setBusy(null) }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1 text-xs">
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <button onClick={rescore} disabled={busy !== null}
+          className="px-2.5 py-1 bg-purple-600/30 hover:bg-purple-600/50 disabled:opacity-50 border border-purple-500/50 text-purple-100 rounded"
+          title="Compute competitive_score for all tier_keywords + mark top 3 winners per cluster">
+          {busy === 'rescore' ? '⏳ Scoring…' : '🎯 Re-score winners'}
+        </button>
+        <button onClick={() => discover('us')} disabled={busy !== null}
+          className="px-2.5 py-1 bg-emerald-600/30 hover:bg-emerald-600/50 disabled:opacity-50 border border-emerald-500/50 text-emerald-100 rounded"
+          title="Discover competitive kw candidates for US market via DataForSEO + score → push to opportunities">
+          {busy === 'discover-us' ? '⏳ Discovering…' : '🌐 Discover US'}
+        </button>
+        <button onClick={() => discover('id')} disabled={busy !== null}
+          className="px-2.5 py-1 bg-emerald-600/30 hover:bg-emerald-600/50 disabled:opacity-50 border border-emerald-500/50 text-emerald-100 rounded"
+          title="Discover competitive kw candidates for ID market via DataForSEO + score → push to opportunities">
+          {busy === 'discover-id' ? '⏳ Discovering…' : '🇮🇩 Discover ID'}
+        </button>
+      </div>
+      {msg && <p className="text-[10px] text-gray-400">{msg}</p>}
+    </div>
+  )
+}
+

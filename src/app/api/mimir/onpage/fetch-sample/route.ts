@@ -136,16 +136,22 @@ export async function GET(req: Request) {
     })
   }
 
-  // All layers exhausted
+  // All layers exhausted — be explicit about what each layer returned so the
+  // user can diagnose. Common case: DataForSEO returned 200 + body but our
+  // meaningful-check failed (no headings + body < 500), so dfs.error is null.
+  const dfsDiag = dfs.error
+    ? `error: ${dfs.error}`
+    : dfs.ok
+      ? `returned ${dfs.text.length} chars without strong structure (meaningful=false)`
+      : 'unknown failure'
+
   return NextResponse.json({
     url:        parsed.toString(),
     source:     'none',
     text:       '',
     bytes:      0,
     meaningful: false,
-    error:      dfs.error
-      ? `All sources failed. DataForSEO: ${dfs.error}. Live fetch yielded ${extracted.length} chars.`
-      : `All sources failed. Live fetch yielded ${extracted.length} chars.`,
+    error:      `All sources failed. DataForSEO ${dfsDiag}. Live fetch yielded ${extracted.length} chars.`,
   }, { status: 502 })
 }
 

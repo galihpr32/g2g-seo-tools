@@ -31,6 +31,9 @@ const WOW_DAYS = 7
 export interface MarketKpi {
   market:         Market
   market_label:   string
+  /** Sprint COMPETITIVE.SCORER.4 — count of cluster winners (top 3 per cluster
+   *  by competitive_score). Replaces the old "all tracked kws" count so the
+   *  section title "Most Competitive Keyword Rankings" matches reality. */
   kw_count:       number
   avg_position:   number | null
   avg_pos_delta:  number | null         // positive = improved
@@ -38,6 +41,13 @@ export interface MarketKpi {
   top3_delta:     number
   top10:          number
   top10_delta:    number
+  /** Sprint COMPETITIVE.SCORER.4 — coverage signal for the digest footer.
+   *  Clusters = priority products targeting this market.
+   *  coverage_total = number of clusters that exist for this brand × market.
+   *  coverage_with_winner = clusters that have at least 1 cluster_winner.
+   *  Helps surface: "G2G Global has 22/26 clusters with a winner tracked". */
+  coverage_total:        number
+  coverage_with_winner:  number
 }
 
 export interface ClickKpi {
@@ -146,6 +156,7 @@ async function buildMarketSerp(
     avg_position: null, avg_pos_delta: null,
     top3: 0, top3_delta: 0,
     top10: 0, top10_delta: 0,
+    coverage_total: 0, coverage_with_winner: 0,
   }
 
   // 1. Find tier-product IDs for this brand × market.
@@ -163,21 +174,64 @@ async function buildMarketSerp(
   const pIds = ((products ?? []) as any[]).map(p => String(p.id))
   if (pIds.length === 0) return empty
 
+  // Sprint COMPETITIVE.SCORER.4 — Pull cluster winners for this brand × market.
+  // We need:
+  //   • the set of winner keywords (for filtering snapshots)
+  //   • per-product winner count (for coverage stat: "X out of Y clusters have ≥1 winner")
+  const { data: winnerRows } = await db
+    .from('tier_keywords')
+    .select('id, keyword, product_tier_id')
+    .eq('owner_user_id', ownerId)
+    .in('product_tier_id', pIds)
+    .eq('cluster_market', market)
+    .eq('is_cluster_winner', true)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const winners = (winnerRows ?? []) as Array<{ id: string; keyword: string; product_tier_id: string }>
+
+  // Winner KW set for snapshot filter — keyed by (product_tier_id|keyword.lower)
+  const winnerKeySet = new Set(winners.map(w => `${w.product_tier_id}|${w.keyword.toLowerCase()}`))
+  const winnerIdSet  = new Set(winners.map(w => w.id))
+
+  // Coverage: products in this market that have at least 1 winner tracked
+  const productsWithWinner = new Set(winners.map(w => w.product_tier_id))
+  const coverageTotal       = pIds.length
+  const coverageWithWinner  = productsWithWinner.size
+
+  // If no winners scored yet, return empty + just the coverage signal.
+  // Helps users distinguish "scoring hasn't run" from "no SERP data".
+  if (winners.length === 0) {
+    return { ...empty, coverage_total: coverageTotal, coverage_with_winner: 0 }
+  }
+
   // 2. Pull latest + ~7-day-ago SERP snapshots for this brand × market.
   //    Window of 14 days covers the comparison; we pick the two anchor
   //    dates in JS to avoid two round-trips.
   const sinceDate = new Date(Date.now() - 21 * 86_400_000).toISOString().slice(0, 10)
   const { data: snaps } = await db
     .from('tier_serp_snapshots')
-    .select('product_tier_id, keyword, market, snapshot_date, our_position')
+    .select('product_tier_id, keyword, market, snapshot_date, our_position, tier_keyword_id')
     .eq('owner_user_id', ownerId)
     .in('product_tier_id', pIds)
     .eq('market', market)
     .gte('snapshot_date', sinceDate)
     .order('snapshot_date', { ascending: false })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rows = (snaps ?? []) as any[]
-  if (rows.length === 0) return empty
+  const allRows = (snaps ?? []) as any[]
+
+  // Sprint COMPETITIVE.SCORER.4 — keep only snapshots whose kw is a cluster
+  // winner. Match by tier_keyword_id (preferred) or fall back to
+  // (product_tier_id × keyword) — covers older snapshots inserted before
+  // tier_keyword_id was reliably populated.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = allRows.filter((r: any) => {
+    if (r.tier_keyword_id && winnerIdSet.has(String(r.tier_keyword_id))) return true
+    const key = `${r.product_tier_id}|${String(r.keyword ?? '').toLowerCase()}`
+    return winnerKeySet.has(key)
+  })
+
+  if (rows.length === 0) {
+    return { ...empty, coverage_total: coverageTotal, coverage_with_winner: coverageWithWinner }
+  }
 
   // Latest snapshot per (product × keyword): the most recent date present.
   // The "WoW prior" comparison: pick the latest snapshot strictly older
@@ -221,7 +275,7 @@ async function buildMarketSerp(
   return {
     market,
     market_label: MARKET_LABELS[market],
-    kw_count:     perKw.size,
+    kw_count:     perKw.size,                    // now only counts winners
     avg_position:  avgPos,
     // Convention: positive delta = improvement (= prior - current; lower pos # is better)
     avg_pos_delta: (avgPos != null && avgPosPrev != null) ? +(avgPosPrev - avgPos).toFixed(1) : null,
@@ -229,6 +283,8 @@ async function buildMarketSerp(
     top3_delta:    top3 - top3Prev,
     top10,
     top10_delta:   top10 - top10Prev,
+    coverage_total:       coverageTotal,
+    coverage_with_winner: coverageWithWinner,
   }
 }
 
@@ -404,19 +460,30 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
     const id     = brand.serp.find(s => s.market === 'id') ?? null
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}* · ${(global?.kw_count ?? 0) + (id?.kw_count ?? 0)} tracked kws` },
+      text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}* · ${(global?.kw_count ?? 0) + (id?.kw_count ?? 0)} winning kws` },
       fields: [
         { type: 'mrkdwn', text: `*🌐 Global*\n${formatSerpCell(global)}` },
         { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatSerpCell(id)}` },
       ],
     })
+
+    // Sprint COMPETITIVE.SCORER.4 — coverage gap footer per brand.
+    // Surfaces clusters (priority products) that don't have any winner
+    // tracked yet, so the user knows where to run discovery next.
+    const coverageLine = formatCoverageLine(global, id)
+    if (coverageLine) {
+      blocks.push({
+        type: 'context',
+        elements: [{ type: 'mrkdwn', text: coverageLine }],
+      })
+    }
   }
 
   blocks.push({
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: `_Most competitive = tier-tracked keywords (curated set per <${p.methodology_url}|methodology>). WoW delta = latest snapshot vs ~7 days prior._`,
+      text: `_Most competitive = top 3 per cluster by competitive_score (<${p.methodology_url}|methodology>). Run discovery on gap clusters to seed missing winners._`,
     }],
   })
 
@@ -548,17 +615,41 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
   })
 
   const totalKws = p.brands.reduce((s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0)
-  const text = `📊 Friday KPI ${p.week_label} — ${totalKws} kws across ${p.brands.length} brands`
+  const text = `📊 Friday KPI ${p.week_label} — ${totalKws} cluster winners across ${p.brands.length} brands`
   return { text, blocks }
 }
 
 function formatSerpCell(m: MarketKpi | null): string {
-  if (!m || m.kw_count === 0) return '_no tracked kws_'
+  if (!m || m.kw_count === 0) {
+    if (m && m.coverage_total > 0 && m.coverage_with_winner === 0) return '_no winners scored yet — run /api/competitive/rescore_'
+    return '_no tracked kws_'
+  }
   return [
     `Avg #${m.avg_position?.toFixed(1) ?? '—'} ${deltaArrow(m.avg_pos_delta, true)}`,
     `Top 3: ${m.top3} ${signedCount(m.top3_delta)}`,
     `Top 10: ${m.top10} ${signedCount(m.top10_delta)}`,
   ].join('\n')
+}
+
+/**
+ * Sprint COMPETITIVE.SCORER.4 — coverage gap line under each brand row.
+ * Returns null when no gap signal worth surfacing (everything covered or
+ * nothing tracked at all).
+ *
+ * Example outputs:
+ *   "🌐 Global 18/22 clusters with winner · 🇮🇩 ID 0/4 — discovery pending"
+ *   "🌐 Global 22/22 · 🇮🇩 ID 4/4 — full coverage"
+ */
+function formatCoverageLine(global: MarketKpi | null, id: MarketKpi | null): string | null {
+  const parts: string[] = []
+  for (const [icon, m] of [['🌐 Global', global], ['🇮🇩 ID', id]] as const) {
+    if (!m || m.coverage_total === 0) continue
+    const gap  = m.coverage_total - m.coverage_with_winner
+    const flag = gap === 0 ? '✓' : gap >= 3 ? '⚠' : '·'
+    parts.push(`${icon} ${m.coverage_with_winner}/${m.coverage_total} ${flag}`)
+  }
+  if (parts.length === 0) return null
+  return `_Cluster coverage:_ ${parts.join('  •  ')}`
 }
 
 function formatClickCell(t: ClickKpi | null): string {

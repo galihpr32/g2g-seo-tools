@@ -169,10 +169,13 @@ export async function fetchPageTextViaDataForSEO(
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
 
-  // "Meaningful" = at least one heading AND meaningful body length.
-  // Helps the fallback chain decide whether to also try other sources.
+  // "Meaningful" = enough body text to learn from, OR a heading + smaller body.
+  // Relaxed from earlier version: many G2G category pages render structured
+  // content via <div> not <h1>/<h2>, so DataForSEO's h_title field is empty.
+  // We still want to use that text for pattern learning even without explicit
+  // headings — the Haiku learner reads prose just fine.
   const hasHeading = /^#{1,6}\s+\S/m.test(text)
-  const meaningful = hasHeading && text.length >= 200
+  const meaningful = (hasHeading && text.length >= 200) || text.length >= 500
 
   return {
     ok:         true,

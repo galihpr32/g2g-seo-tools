@@ -657,7 +657,18 @@ function OppCard({ item, onRefresh, tierMap }: { item: JourneyItem; onRefresh: (
           item.isComplete ? 'bg-emerald-500' : item.needsAction ? 'bg-amber-500' : c.dot
         }`} />
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-white truncate">{item.topic}</p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm font-medium text-white truncate">{item.topic}</p>
+            {/* Sprint COMPETITIVE.SCORER.7 — distinguish competitive-discovery opps so reviewer prioritizes them */}
+            {item.topicSlug?.startsWith('competitive-discovery-') && (
+              <span
+                title="Surfaced by /api/competitive/discover — DataForSEO suggestion that hit competitive threshold"
+                className="text-[9px] font-bold px-1.5 py-0.5 rounded border bg-purple-500/15 text-purple-300 border-purple-500/30"
+              >
+                🎯 Discovered
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-gray-500 mt-0.5">
             {item.totalSv ? `${Number(item.totalSv).toLocaleString()} SV · ` : ''}
             {item.signalCount} signal{item.signalCount !== 1 ? 's' : ''} · {timeAgo(item.createdAt)}
