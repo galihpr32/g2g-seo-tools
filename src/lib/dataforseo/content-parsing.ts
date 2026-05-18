@@ -73,15 +73,19 @@ export async function fetchPageTextViaDataForSEO(
     return { ok: false, text: '', error: 'DataForSEO credentials not set', meaningful: false }
   }
 
+  // /on_page/content_parsing/live valid fields per DataForSEO docs:
+  //   url, custom_user_agent, browser_preset, browser_screen_width|height|scale_factor,
+  //   store_raw_html, enable_javascript, enable_browser_rendering, enable_xhr,
+  //   disable_cookie_popup, return_despite_timeout, custom_js, load_resources
+  // (NOT accept_language — that's only valid on /on_page/instant_pages)
   const body = [{
     url,
-    enable_javascript:       true,
+    enable_javascript:        true,
     enable_browser_rendering: true,
-    custom_user_agent:       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    accept_language:         'en-US,en;q=0.9',
-    load_resources:          false,        // don't fetch images/CSS, saves time
-    return_despite_timeout:  true,         // return whatever was rendered
-    ...(opts.loadWaitSec ? { browser_preset: 'desktop' } : {}),
+    custom_user_agent:        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    load_resources:           false,        // don't fetch images/CSS, saves time
+    return_despite_timeout:   true,         // return whatever was rendered
+    disable_cookie_popup:     true,         // auto-close cookie banners that block content
   }]
 
   const controller = new AbortController()
