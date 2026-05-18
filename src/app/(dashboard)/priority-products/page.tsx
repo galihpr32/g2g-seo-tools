@@ -157,6 +157,13 @@ export default function PriorityProductsPage() {
           <RunBaselineButton />
           <BulkRescoreButton />
           <Link
+            href="/priority-products/keywords"
+            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition"
+            title="See all tier keywords across every priority product"
+          >
+            🔑 Keyword Master →
+          </Link>
+          <Link
             href="/priority-products/rankings"
             className="px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition"
           >

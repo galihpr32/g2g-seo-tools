@@ -14,6 +14,7 @@ const navItems = [
     items: [
       { label: 'Dashboard',         href: '/dashboard',                    icon: '▦'  },
       { label: 'Priority Products', href: '/priority-products',            icon: '🎯' },
+      { label: 'Keyword Master',    href: '/priority-products/keywords',   icon: '🔑' },
       { label: 'Opportunities',     href: '/command-center/opportunities', icon: '🔍' },
       { label: 'Pipeline Journey',  href: '/command-center/pipeline',      icon: '🗺️' },
       { label: 'Command Center',  href: '/command-center',                 icon: '🤖' },
