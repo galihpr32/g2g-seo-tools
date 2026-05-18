@@ -27,6 +27,15 @@ const DIMENSIONS = [
 
 type Dimension = typeof DIMENSIONS[number]['value']
 
+/** Sprint ONPAGE.FETCH.FIX — UI metadata per fetch source returned by the
+ *  hybrid /api/mimir/onpage/fetch-sample endpoint. */
+const SOURCE_META: Record<string, { icon: string; label: string; tone: string }> = {
+  db_brief:             { icon: '🟢', label: 'DB',         tone: 'text-emerald-400' },
+  dataforseo:           { icon: '🔵', label: 'DataForSEO', tone: 'text-blue-400'    },
+  jsonld_meta_fallback: { icon: '🟡', label: 'Fallback',   tone: 'text-amber-400'   },
+  none:                 { icon: '🔴', label: 'Failed',     tone: 'text-red-400'     },
+}
+
 interface TierProduct {
   id:               string
   product_name:     string
@@ -71,6 +80,10 @@ export default function MimirOnpageLearnPage() {
   const [submitting, setSubmitting]= useState(false)
   const [job, setJob]              = useState<JobStatus | null>(null)
   const [fetchErrors, setFetchErrors] = useState<string[]>([])
+  // Sprint ONPAGE.FETCH.FIX — record which source (db_brief / dataforseo /
+  // jsonld_meta_fallback / none) each URL ended up using, so the UI can
+  // surface "5 from DataForSEO, 2 from cached brief, 1 fallback".
+  const [fetchSources, setFetchSources] = useState<Record<string, string>>({})
 
   // ── Load T1/T2 products with URLs ─────────────────────────────────────────
   useEffect(() => {
@@ -119,25 +132,58 @@ export default function MimirOnpageLearnPage() {
   async function startJob() {
     setSubmitting(true)
     setFetchErrors([])
+    setFetchSources({})
     try {
-      // Fetch the live HTML of each selected page (best-effort).
-      // For pages we can't fetch, we skip them with a warning.
+      // Sprint ONPAGE.FETCH.FIX — fetch via hybrid endpoint that tries:
+      //   1. DB-first (seo_content_briefs.final_content for this product/URL)
+      //   2. DataForSEO with JS render (handles SPA pages like G2G categories)
+      //   3. Live fetch + JSON-LD/meta extraction
+      // Returns which source it ended up using so we can show per-page context.
       const picked = products.filter(p => selected.has(p.id) && p.url)
       const fetches = await Promise.all(picked.map(async p => {
         try {
-          const res = await fetch(`/api/tools/fetch-page-text?url=${encodeURIComponent(p.url!)}`)
-          if (!res.ok) return { url: p.url!, content: '', productName: p.product_name, error: `HTTP ${res.status}` }
-          const body = await res.json() as { text?: string }
-          return { url: p.url!, content: String(body.text ?? ''), productName: p.product_name }
+          const qs = new URLSearchParams({
+            url:           p.url!,
+            product_name:  p.product_name,
+          })
+          const res = await fetch(`/api/mimir/onpage/fetch-sample?${qs.toString()}`)
+          const body = await res.json() as { text?: string; source?: string; warning?: string; error?: string }
+          if (!res.ok) {
+            return {
+              url:         p.url!,
+              content:     String(body.text ?? ''),
+              productName: p.product_name,
+              source:      body.source ?? 'none',
+              error:       body.error ?? `HTTP ${res.status}`,
+            }
+          }
+          return {
+            url:         p.url!,
+            content:     String(body.text ?? ''),
+            productName: p.product_name,
+            source:      body.source ?? 'unknown',
+            warning:     body.warning,
+          }
         } catch (e) {
-          return { url: p.url!, content: '', productName: p.product_name, error: e instanceof Error ? e.message : String(e) }
+          return {
+            url:         p.url!,
+            content:     '',
+            productName: p.product_name,
+            source:      'none',
+            error:       e instanceof Error ? e.message : String(e),
+          }
         }
       }))
+
+      // Record source-per-page for UI display
+      const sourceMap: Record<string, string> = {}
+      for (const f of fetches) sourceMap[f.url] = f.source ?? 'unknown'
+      setFetchSources(sourceMap)
 
       const usable = fetches.filter(f => f.content && f.content.trim().length >= 50)
       const failed = fetches.filter(f => !f.content || f.content.trim().length < 50)
       if (failed.length > 0) {
-        setFetchErrors(failed.map(f => `${f.url}: ${'error' in f ? f.error : 'empty / too short'}`))
+        setFetchErrors(failed.map(f => `${f.url}: ${'error' in f && f.error ? f.error : 'empty / too short'}`))
       }
       if (usable.length < 2) {
         alert('Need at least 2 pages with fetchable content. Check the errors below.')
@@ -297,6 +343,26 @@ export default function MimirOnpageLearnPage() {
         >
           {submitting ? 'Submitting…' : `🧠 Learn from ${selected.size} page${selected.size !== 1 ? 's' : ''} × ${dimensions.size} dimension${dimensions.size !== 1 ? 's' : ''}`}
         </button>
+
+        {Object.keys(fetchSources).length > 0 && (
+          <div className="mt-3 bg-gray-900/40 border border-gray-800 rounded-lg p-3 text-xs space-y-1">
+            <p className="font-semibold text-gray-300">Page sources used (newest at top):</p>
+            {Object.entries(fetchSources).map(([url, source]) => {
+              const sourceMeta = SOURCE_META[source] ?? { icon: '?', label: source, tone: 'text-gray-500' }
+              return (
+                <p key={url} className="font-mono text-[11px] truncate flex items-center gap-2">
+                  <span className={sourceMeta.tone}>{sourceMeta.icon} {sourceMeta.label}</span>
+                  <span className="text-gray-600 truncate flex-1">{url}</span>
+                </p>
+              )
+            })}
+            <p className="text-[10px] text-gray-500 pt-1">
+              <strong className="text-emerald-400">DB</strong> = used your own brief content ·{' '}
+              <strong className="text-blue-400">DataForSEO</strong> = JS-rendered fetch (~$0.0006/page) ·{' '}
+              <strong className="text-amber-400">Fallback</strong> = JSON-LD/meta only (limited content)
+            </p>
+          </div>
+        )}
 
         {fetchErrors.length > 0 && (
           <div className="mt-3 bg-amber-900/20 border border-amber-700/30 rounded-lg p-3 text-xs text-amber-200 space-y-1">
