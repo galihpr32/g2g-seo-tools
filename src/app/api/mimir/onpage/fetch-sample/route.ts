@@ -5,7 +5,7 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
 import { fetchPageTextViaDataForSEO } from '@/lib/dataforseo/content-parsing'
 
-export const maxDuration = 30
+export const maxDuration = 60   // SPA pages need 30-50s for full JS render via DataForSEO
 
 /**
  * Sprint ONPAGE.FETCH.FIX — Hybrid fetch-sample for the on-page learner.
@@ -87,7 +87,9 @@ export async function GET(req: Request) {
   }
 
   // ── Layer 2 — DataForSEO with JS render ────────────────────────────────────
-  const dfs = await fetchPageTextViaDataForSEO(parsed.toString(), { timeoutMs: 22_000 })
+  // 50s timeout — gives DFS most of the 60s lambda budget to finish render.
+  // 5s reserved for live-fetch fallback if DFS fails.
+  const dfs = await fetchPageTextViaDataForSEO(parsed.toString(), { timeoutMs: 50_000 })
   if (dfs.ok && dfs.meaningful) {
     return NextResponse.json({
       url:        parsed.toString(),

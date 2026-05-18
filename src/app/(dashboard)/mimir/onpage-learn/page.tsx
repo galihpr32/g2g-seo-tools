@@ -140,7 +140,12 @@ export default function MimirOnpageLearnPage() {
       //   3. Live fetch + JSON-LD/meta extraction
       // Returns which source it ended up using so we can show per-page context.
       const picked = products.filter(p => selected.has(p.id) && p.url)
-      const fetches = await Promise.all(picked.map(async p => {
+
+      // Throttle to 3 concurrent — DataForSEO content_parsing queues internally
+      // when slammed with too many parallel JS-render requests, causing some
+      // to time out. 3 concurrent gives reasonable wall-time while staying
+      // under their soft limit.
+      async function fetchOne(p: typeof picked[number]) {
         try {
           const qs = new URLSearchParams({
             url:           p.url!,
@@ -173,7 +178,16 @@ export default function MimirOnpageLearnPage() {
             error:       e instanceof Error ? e.message : String(e),
           }
         }
-      }))
+      }
+
+      const CONCURRENCY = 3
+      const fetches: Awaited<ReturnType<typeof fetchOne>>[] = []
+      for (let i = 0; i < picked.length; i += CONCURRENCY) {
+        const batch = picked.slice(i, i + CONCURRENCY)
+        // eslint-disable-next-line no-await-in-loop
+        const results = await Promise.all(batch.map(fetchOne))
+        fetches.push(...results)
+      }
 
       // Record source-per-page for UI display
       const sourceMap: Record<string, string> = {}

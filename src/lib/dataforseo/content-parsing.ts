@@ -88,8 +88,12 @@ export async function fetchPageTextViaDataForSEO(
     disable_cookie_popup:     true,         // auto-close cookie banners that block content
   }]
 
+  // SPA pages with full JS render + lazy-loaded sections regularly take 30-50s
+  // on DataForSEO's side. We default to 55s to stay under the 60s lambda cap
+  // while giving DFS room to finish. return_despite_timeout=true above still
+  // returns partial content if THEIR internal timer expires earlier.
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 25_000)
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 55_000)
 
   let res: Response
   try {
