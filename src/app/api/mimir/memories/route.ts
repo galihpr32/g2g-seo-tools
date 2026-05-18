@@ -60,16 +60,22 @@ export async function POST(req: Request) {
   const db = createServiceClient()
 
   const body = await req.json().catch(() => ({})) as {
-    content?:     string
-    category?:    string
-    scope?:       string
-    site_slug?:   string
-    topic_slug?:  string
-    relation_id?: string
-    tags?:        string[]
-    importance?:  number
-    pinned?:      boolean
-    expires_at?:  string | null
+    content?:         string
+    category?:        string
+    scope?:           string
+    site_slug?:       string
+    topic_slug?:      string
+    relation_id?:     string
+    tags?:            string[]
+    importance?:      number
+    pinned?:          boolean
+    expires_at?:      string | null
+    // Sprint MIMIR.NOTES.INLINE — when supplied, server auto-resolves tier
+    // context from the brief's primary_keyword and binds the memory accordingly.
+    brief_id?:        string
+    // Direct tier context (set by SignalModal endpoint that already resolved it).
+    tier?:            number | null
+    product_tier_id?: string | null
   }
 
   const content = String(body.content ?? '').trim().slice(0, 280)
@@ -78,16 +84,48 @@ export async function POST(req: Request) {
   const scope    = VALID_SCOPES.includes(body.scope as typeof VALID_SCOPES[number])         ? body.scope    : 'global'
   const category = VALID_CATEGORIES.includes(body.category as typeof VALID_CATEGORIES[number]) ? body.category : 'fact'
 
+  // Sprint MIMIR.NOTES.INLINE — if a brief_id is passed, resolve tier context.
+  // This lets the inline notes textarea on the brief editor write tier-tagged
+  // memories without the client having to know tier resolution rules.
+  let resolvedTier:          number | null = typeof body.tier === 'number'   ? body.tier            : null
+  let resolvedProductTierId: string | null = typeof body.product_tier_id === 'string' ? body.product_tier_id : null
+  let resolvedRelationId:    string | null = body.relation_id ?? null
+  if (body.brief_id) {
+    const { data: brief } = await db
+      .from('seo_content_briefs')
+      .select('primary_keyword, site_slug, page')
+      .eq('id', body.brief_id)
+      .maybeSingle()
+    if (brief?.primary_keyword || brief?.page) {
+      // Match against product_tiers by name or url
+      const { data: tierRow } = await db
+        .from('product_tiers')
+        .select('id, tier, relation_id, product_name, url')
+        .eq('owner_user_id', ownerId)
+        .eq('site_slug', brief.site_slug ?? siteSlug)
+        .or(`product_name.ilike.${String(brief.primary_keyword ?? '').replace(/[,()]/g, ' ')},url.eq.${brief.page ?? ''}`)
+        .limit(1)
+        .maybeSingle()
+      if (tierRow) {
+        resolvedTier          = tierRow.tier as number
+        resolvedProductTierId = tierRow.id   as string
+        if (!resolvedRelationId) resolvedRelationId = (tierRow.relation_id as string | null) ?? null
+      }
+    }
+  }
+
   const { data, error } = await db
     .from('mimir_memories')
     .insert({
-      owner_user_id: ownerId,
+      owner_user_id:   ownerId,
       content,
       scope,
       category,
       site_slug:   scope === 'site' || scope === 'topic' || scope === 'product' ? (body.site_slug ?? siteSlug) : null,
       topic_slug:  scope === 'topic'   ? body.topic_slug  ?? null : null,
-      relation_id: scope === 'product' ? body.relation_id ?? null : null,
+      relation_id: scope === 'product' ? resolvedRelationId    : null,
+      tier:            resolvedTier,
+      product_tier_id: resolvedProductTierId,
       tags:        Array.isArray(body.tags) ? body.tags.map(t => String(t).toLowerCase()).slice(0, 6) : [],
       importance:  typeof body.importance === 'number' ? Math.max(0, Math.min(100, body.importance)) : 70,
       pinned:      !!body.pinned,

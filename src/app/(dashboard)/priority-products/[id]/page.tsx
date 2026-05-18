@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, use } from 'react'
 import Link from 'next/link'
 import { TIER_MARKET_CODES } from '@/lib/ranking-tracker'
+import SignalModal from '@/components/priority-products/SignalModal'
 
 /**
  * /priority-products/[id]
@@ -86,6 +87,9 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
   const [selectedMarket,  setSelectedMarket]  = useState<string>('us')
   const [expandedKeyword, setExpandedKeyword] = useState<string | null>(null)
   const [serpDetail,      setSerpDetail]      = useState<{ keyword: string; market: string; top: SerpTopRow[] } | null>(null)
+
+  // Sprint T1.MANUAL.INPUT.2 — signal modal
+  const [signalOpen, setSignalOpen] = useState(false)
 
   async function fetchData() {
     setLoading(true)
@@ -201,8 +205,29 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
             )}
             {product.notes && <p className="text-xs text-gray-500 italic mt-1">{product.notes}</p>}
           </div>
+          <div className="flex-shrink-0">
+            <button
+              onClick={() => setSignalOpen(true)}
+              className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition"
+              title="Add note, opportunity, or brief — feeds Mimir memory"
+            >
+              + Add signal
+            </button>
+          </div>
         </div>
       </div>
+
+      <SignalModal
+        product={{
+          id:          product.id,
+          tier:        product.tier,
+          productName: product.product_name,
+          category:    product.category,
+          url:         product.url,
+        }}
+        isOpen={signalOpen}
+        onClose={() => setSignalOpen(false)}
+      />
 
       {/* ── Charts row ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">

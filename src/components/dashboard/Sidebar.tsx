@@ -89,6 +89,7 @@ const navItems = [
     items: [
       { label: 'Weekly Pulse',     href: '/reports/weekly',             icon: '📊' },
       { label: 'Friday KPI',       href: '/reports/friday-kpi',         icon: '🗓' },
+      { label: 'AI Visibility',    href: '/reports/ai-visibility',      icon: '🔮' },
       { label: 'Monthly SEO',      href: '/reports/monthly',            icon: '📅' },
       { label: 'Agent Performance', href: '/reports/agent-performance', icon: '🤖' },
       { label: 'Rollout Impact',    href: '/reports/rollout-impact',    icon: '📈' },

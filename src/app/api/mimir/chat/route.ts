@@ -134,13 +134,34 @@ export async function POST(req: Request) {
     ...(message as string).toLowerCase().split(/\W+/).filter((t: string) => t.length > 3).slice(0, 8),
   )
 
+  // Sprint MIMIR.TIER.LEARN.2 — resolve tier context from relationId so the
+  // retriever can boost T1/T2 product memories. Single small query — fine to
+  // keep on the chat hot path.
+  let tierHint:          number | null = null
+  let productTierIdHint: string | null = null
+  if (relationIdHint) {
+    const { data: tierRow } = await db
+      .from('product_tiers')
+      .select('id, tier')
+      .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
+      .eq('relation_id', relationIdHint)
+      .maybeSingle()
+    if (tierRow) {
+      tierHint          = tierRow.tier as number
+      productTierIdHint = tierRow.id   as string
+    }
+  }
+
   const memory = await retrieveMemories(db, {
     ownerId,
     siteSlug,
-    topicSlug:  topicSlugHint,
-    relationId: relationIdHint,
+    topicSlug:     topicSlugHint,
+    relationId:    relationIdHint,
+    tier:          tierHint,
+    productTierId: productTierIdHint,
     hintTokens,
-    budgetChars: 2000,
+    budgetChars:   2000,
   })
 
   const systemPromptWithMemory = memory.block

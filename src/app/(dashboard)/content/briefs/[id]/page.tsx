@@ -7,6 +7,7 @@ import BriefActionBar from '@/components/agents/BriefActionBar'
 import FinalContentPanel from '@/components/agents/FinalContentPanel'
 import OutreachAnchorEditor from '@/components/agents/OutreachAnchorEditor'
 import PromoteToKbButton from '@/components/agents/PromoteToKbButton'
+import BriefMimirNotes from '@/components/agents/BriefMimirNotes'
 
 // Disable revalidate caching on this page so writers see freshly-generated
 // final content immediately after assembly without a stale 30s window.
@@ -56,6 +57,37 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
   // Lightweight view for agent-generated briefs (no action_item)
   void effectiveOwnerId   // RLS not enforced on service client; brief.owner_user_id check is implicit via select
 
+  // Sprint MIMIR.NOTES.INLINE — resolve tier context for the "Notes for Mimir"
+  // panel. Match the brief's primary_keyword / page against product_tiers so
+  // the editor shows a tier badge and the saved memory inherits tier scope.
+  let briefTier:          1 | 2 | null = null
+  let briefProductTierId: string | null = null
+  let briefProductName:   string | null = null
+  if (brief.primary_keyword || brief.page) {
+    const { data: tierRows } = await db
+      .from('product_tiers')
+      .select('id, tier, product_name, url, relation_id')
+      .eq('owner_user_id', brief.owner_user_id ?? effectiveOwnerId)
+      .eq('site_slug', brief.site_slug ?? 'g2g')
+    type TierLite = { id: string; tier: number; product_name: string; url: string | null; relation_id: string | null }
+    const tierList = (tierRows ?? []) as TierLite[]
+    const nameLower = String(brief.primary_keyword ?? '').toLowerCase().trim()
+    const pageLower = String(brief.page ?? '').toLowerCase().trim()
+    let match: TierLite | undefined
+    if (nameLower) {
+      match = tierList.find(t => t.product_name.toLowerCase() === nameLower)
+        ?? tierList.find(t => nameLower.includes(t.product_name.toLowerCase()) || t.product_name.toLowerCase().includes(nameLower))
+    }
+    if (!match && pageLower) {
+      match = tierList.find(t => (t.url ?? '').toLowerCase() === pageLower)
+    }
+    if (match) {
+      briefTier          = match.tier as 1 | 2
+      briefProductTierId = match.id
+      briefProductName   = match.product_name
+    }
+  }
+
   let path = brief.page as string | null
   try { if (path) path = new URL(path).pathname } catch { /* keep */ }
 
@@ -94,6 +126,18 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
           <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${STATUS_STYLES[brief.status as string] ?? 'text-gray-400 bg-gray-500/10 border-gray-500/20'}`}>
             {brief.status === 'agent_generated' ? '🤖 AI Draft' : brief.status}
           </span>
+          {briefTier && (
+            <span
+              className={`text-[11px] font-bold px-2 py-0.5 rounded border ${
+                briefTier === 1
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                  : 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+              }`}
+              title={`Brief targets T${briefTier} product ${briefProductName ?? ''}`}
+            >
+              T{briefTier}
+            </span>
+          )}
           {brief.brief_type && (
             <span className="text-xs text-gray-500">
               {brief.brief_type === 'on_page'        ? '✏️ On-page' :
@@ -196,6 +240,17 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         initialStatus={brief.status as string}
         initialTyrStatus={brief.tyr_status as string | null}
         briefType={(brief.brief_type as string | null) ?? undefined}
+      />
+
+      {/* Sprint MIMIR.NOTES.INLINE — let the writer teach Mimir while editing.
+          Always renders (even without a tier match — Mimir benefits from
+          site-scoped notes too); tier badge appears when this brief matches a
+          tracked T1/T2 product. */}
+      <BriefMimirNotes
+        briefId={id}
+        tier={briefTier}
+        productTierId={briefProductTierId}
+        productName={briefProductName}
       />
 
       {/* Brief metadata */}

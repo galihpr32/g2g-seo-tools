@@ -6,6 +6,7 @@ import type { JourneyItem, PipelineStageInfo, BriefSummary, Actor, SignalReason 
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import type { ProductTier, TierMap } from '@/lib/product-tiers'
 import { buildTierMap, resolveTierFromMap } from '@/lib/product-tiers'
+import SignalModal from '@/components/priority-products/SignalModal'
 
 // ── Agent badge styling for "Why this opp" reasons ────────────────────────────
 const AGENT_STYLE: Record<SignalReason['agent'], { label: string; cls: string; emoji: string }> = {
@@ -809,11 +810,17 @@ export default function PipelineJourneyPage() {
   // Router + SSR the lazy init runs on the server with no window — the
   // client then hydrates with the empty server state and never re-runs.
   const [search,       setSearch]       = useState('')
+  // Sprint T1.MANUAL.INPUT.3 — deep-link from Priority Products "View opps"
+  // also passes ?product_id= so the empty state can offer "Add signal" with
+  // full tier+market context (not just a name).
+  const [deepLinkProductId, setDeepLinkProductId] = useState<string | null>(null)
   useEffect(() => {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
     const q = params.get('q')
     if (q) setSearch(q)
+    const pid = params.get('product_id')
+    if (pid) setDeepLinkProductId(pid)
   }, [])
   const [processing,   setProcessing]   = useState(false)
   const [processMsg,   setProcessMsg]   = useState<string | null>(null)
@@ -1236,17 +1243,15 @@ export default function PipelineJourneyPage() {
           <p className="text-sm">Loading pipeline…</p>
         </div>
       ) : visible.length === 0 ? (
-        <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
-          <p className="text-3xl mb-3">🎯</p>
-          <p className="text-white font-semibold mb-1">
-            {items.length === 0 ? 'No opportunities yet' : 'No matching opportunities'}
-          </p>
-          <p className="text-gray-500 text-sm">
-            {items.length === 0
-              ? 'Run detection agents (Heimdall, Loki, Odin) to surface opportunities.'
-              : 'Try a different filter or search term.'}
-          </p>
-        </div>
+        <EmptyState
+          totalItems={items.length}
+          search={search}
+          deepLinkedProduct={
+            deepLinkProductId
+              ? tierMap.all.find(p => p.id === deepLinkProductId) ?? null
+              : null
+          }
+        />
       ) : (
         <div className="space-y-2">
           {visible.map(item => (
@@ -1259,6 +1264,95 @@ export default function PipelineJourneyPage() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Sprint T1.MANUAL.INPUT.3 — Empty state with actionable buttons.
+ *
+ * Three cases:
+ *   1. items.length === 0          → No opps in DB at all
+ *   2. deepLinkedProduct set        → User came from Priority Products "View opps"
+ *                                    and 0 matched. Offer "Add signal" CTA
+ *                                    so they can manually inject context.
+ *   3. items.length > 0 + filtered  → Just a filter miss. Generic message.
+ */
+function EmptyState({
+  totalItems,
+  search,
+  deepLinkedProduct,
+}: {
+  totalItems:        number
+  search:            string
+  deepLinkedProduct: ProductTier | null
+}) {
+  const [signalOpen, setSignalOpen] = useState(false)
+
+  if (totalItems === 0) {
+    return (
+      <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
+        <p className="text-3xl mb-3">🎯</p>
+        <p className="text-white font-semibold mb-1">No opportunities yet</p>
+        <p className="text-gray-500 text-sm">
+          Run detection agents (Heimdall, Loki, Odin) to surface opportunities.
+        </p>
+      </div>
+    )
+  }
+
+  if (deepLinkedProduct) {
+    return (
+      <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-10 text-center">
+        <p className="text-3xl mb-3">🎯</p>
+        <p className="text-white font-semibold mb-1">
+          No opps yet for {deepLinkedProduct.product_name}
+        </p>
+        <p className="text-gray-500 text-sm mb-5 max-w-md mx-auto">
+          The detection agents haven&apos;t flagged anything for this T{deepLinkedProduct.tier} product yet.
+          You can inject a signal manually — Mimir will learn from it and Bragi will use it
+          when generating future briefs.
+        </p>
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          <button
+            onClick={() => setSignalOpen(true)}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition"
+          >
+            + Add signal for this product
+          </button>
+          <Link
+            href={`/priority-products/${deepLinkedProduct.id}`}
+            className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 text-sm rounded-lg transition"
+          >
+            Open product detail →
+          </Link>
+        </div>
+
+        <SignalModal
+          product={{
+            id:          deepLinkedProduct.id,
+            tier:        deepLinkedProduct.tier as 1 | 2,
+            productName: deepLinkedProduct.product_name,
+            market:      (deepLinkedProduct as ProductTier & { market?: 'us' | 'id' }).market,
+            category:    deepLinkedProduct.category,
+            url:         deepLinkedProduct.url,
+          }}
+          isOpen={signalOpen}
+          onClose={() => setSignalOpen(false)}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 border-dashed rounded-xl p-12 text-center">
+      <p className="text-3xl mb-3">🎯</p>
+      <p className="text-white font-semibold mb-1">No matching opportunities</p>
+      <p className="text-gray-500 text-sm">
+        {search
+          ? `Nothing matches "${search}". Try a different filter or search term.`
+          : 'Try a different filter or search term.'}
+      </p>
     </div>
   )
 }

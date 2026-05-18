@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import { TIER_CATEGORY_PRESETS } from '@/lib/product-tiers'
+import SignalModal from '@/components/priority-products/SignalModal'
 
 /**
  * /priority-products — the "war room" page for Tier 1 + Tier 2 products.
@@ -336,6 +337,7 @@ function ProductCard({ row }: { row: ProductRow }) {
     : null
 
   const healthCfg = HEALTH_CFG[row.health]
+  const [signalOpen, setSignalOpen] = useState(false)
 
   return (
     <div className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-4 transition">
@@ -397,14 +399,34 @@ function ProductCard({ row }: { row: ProductRow }) {
           >
             Rankings →
           </Link>
+          <button
+            onClick={() => setSignalOpen(true)}
+            className="text-[11px] px-2.5 py-1 bg-emerald-600/80 hover:bg-emerald-600 border border-emerald-700 rounded text-white text-center font-medium"
+            title="Add note, opportunity, or brief — feeds Mimir memory"
+          >
+            + Signal
+          </button>
           <Link
-            href={`/command-center/pipeline?q=${encodeURIComponent(row.productName)}`}
+            href={`/command-center/pipeline?q=${encodeURIComponent(row.productName)}&product_id=${row.id}`}
             className="text-[11px] px-2.5 py-1 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-gray-200 text-center"
           >
             View opps →
           </Link>
         </div>
       </div>
+
+      <SignalModal
+        product={{
+          id:          row.id,
+          tier:        row.tier,
+          productName: row.productName,
+          market:      row.market,
+          category:    row.category,
+          url:         row.url,
+        }}
+        isOpen={signalOpen}
+        onClose={() => setSignalOpen(false)}
+      />
     </div>
   )
 }

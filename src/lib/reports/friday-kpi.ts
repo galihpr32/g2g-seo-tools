@@ -20,6 +20,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getRefreshedClientFull } from '@/lib/gsc/auth'
 import { getSearchAnalytics, getDateRange } from '@/lib/gsc/client'
+import { buildAiVisibilityForKpi, type FridayKpiAiSlice } from '@/lib/agents/freyja'
 
 export const MARKET_LABELS: Record<string, string> = { us: 'Global', id: 'ID' }
 const MARKETS = ['us', 'id'] as const
@@ -65,6 +66,10 @@ export interface FridayKpiPayload {
   methodology_url: string
   /** Priority products page URL */
   priority_url:    string
+  /** Sprint FREYJA — AI Visibility slice per brand */
+  ai_visibility:   FridayKpiAiSlice[]
+  /** Direct link to AI Visibility dashboard */
+  ai_visibility_url: string
 }
 
 /**
@@ -87,6 +92,15 @@ export async function buildFridayKpi(
 
   const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/+$/, '')
 
+  // Sprint FREYJA — AI Visibility slice per brand. Graceful: if Freyja table
+  // is empty (e.g. fresh deploy, no imports yet), returns 0s without crashing.
+  let aiVisibility: FridayKpiAiSlice[] = []
+  try {
+    aiVisibility = await buildAiVisibilityForKpi(db, ownerId, siteSlugs)
+  } catch (e) {
+    console.warn('[friday-kpi] AI visibility slice failed, continuing without it:', e)
+  }
+
   return {
     week_label:   weekLabel(),
     iso_week:     isoWeek(),
@@ -95,6 +109,8 @@ export async function buildFridayKpi(
     public_url:        appUrl ? `${appUrl}/reports/weekly` : null,
     methodology_url:   `${appUrl}/methodology/competitive-keywords`,
     priority_url:      `${appUrl}/priority-products`,
+    ai_visibility:     aiVisibility,
+    ai_visibility_url: `${appUrl}/reports/ai-visibility`,
   }
 }
 
@@ -448,8 +464,54 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
     }],
   })
 
+  // ── Sprint FREYJA — AI Visibility section ──
+  // Only render if we have data. Avoids empty section on fresh deploys.
+  const hasAiData = p.ai_visibility?.some(a =>
+    a.total_mentions > 0 || a.total_citations > 0 || a.total_cited > 0,
+  )
+  if (hasAiData) {
+    blocks.push({ type: 'divider' })
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*🔮 AI VISIBILITY (Freyja)*' },
+    })
+    for (const a of p.ai_visibility) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*${a.site_slug.toUpperCase()}*` },
+        fields: [
+          {
+            type: 'mrkdwn',
+            text: `*Mentions*\n${formatK(a.total_mentions)} ${deltaPctArrow(a.mentions_wow_pct)}`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Citations*\n${formatK(a.total_citations)} ${deltaPctArrow(a.citations_wow_pct)}`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Cited Pages*\n${formatK(a.total_cited)} ${deltaPctArrow(a.cited_wow_pct)}`,
+          },
+          {
+            type: 'mrkdwn',
+            text: `*Top sources*\n${a.top_sources.slice(0, 3).map(s =>
+              `${s.label}: ${formatK(s.citations)} ${deltaPctArrow(s.wow_pct)}`,
+            ).join('\n') || '_none yet_'}`,
+          },
+        ],
+      })
+    }
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: '_Across Bing AI + Semrush AI Visibility (ChatGPT, Gemini, AI Mode, AI Overview). Manual weekly imports until APIs stabilize._',
+      }],
+    })
+  }
+
   // ── Action buttons ──
-  if (p.public_url || p.methodology_url || p.priority_url) {
+  if (p.public_url || p.methodology_url || p.priority_url || p.ai_visibility_url) {
     blocks.push({
       type: 'actions',
       elements: [
@@ -460,13 +522,18 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
         }] : []),
         {
           type: 'button',
-          text: { type: 'plain_text', text: '🎯 Methodology Doc' },
+          text: { type: 'plain_text', text: '🎯 Methodology' },
           url:  p.methodology_url,
         },
         {
           type: 'button',
           text: { type: 'plain_text', text: '📊 Priority Products' },
           url:  p.priority_url,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: '🔮 AI Visibility' },
+          url:  p.ai_visibility_url,
         },
       ],
     })

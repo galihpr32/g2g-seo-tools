@@ -27,6 +27,10 @@ export interface MemoryRow {
   site_slug:              string | null
   topic_slug:             string | null
   relation_id:            string | null
+  /** Sprint MIMIR.TIER.LEARN — tier scope (1, 2, or null). Retriever boosts. */
+  tier:                   number | null
+  /** Sprint MIMIR.TIER.LEARN — direct FK to product_tiers row. */
+  product_tier_id:        string | null
   category:               MemoryCategory
   content:                string
   tags:                   string[]
@@ -46,6 +50,11 @@ export interface RetrieveCtx {
   siteSlug?:   string | null
   topicSlug?:  string | null
   relationId?: string | null
+  /** Sprint MIMIR.TIER.LEARN — when set (1 or 2), retriever boosts memories
+   *  tagged with the same tier so T1 product briefs get T1-context priority. */
+  tier?:       number | null
+  /** Sprint MIMIR.TIER.LEARN — exact product_tier_id match boosts the most. */
+  productTierId?: string | null
   /** Optional market scope — Sprint MIMIR.MARKET. When set, retriever prefers
    *  memories tagged with the same market or no market (null = applies to all). */
   market?:     string | null
@@ -112,6 +121,13 @@ export async function retrieveMemories(
     if (r.scope === 'topic'   && ctx.topicSlug  && r.topic_slug  === ctx.topicSlug)  s += 50
     if (r.scope === 'product' && ctx.relationId && r.relation_id === ctx.relationId) s += 50
 
+    // Sprint MIMIR.TIER.LEARN — tier boost
+    //   • Exact product_tier_id match → strongest signal (manual notes from
+    //     this specific T1 product win over generic site memories)
+    //   • Same tier match → moderate boost (T1 lessons apply to T1 work)
+    if (r.product_tier_id && ctx.productTierId && r.product_tier_id === ctx.productTierId) s += 60
+    if (r.tier && ctx.tier && r.tier === ctx.tier) s += 15
+
     // Tag overlap
     for (const tag of r.tags) {
       if (hints.includes(tag.toLowerCase())) s += 5
@@ -134,7 +150,13 @@ export async function retrieveMemories(
     if (r.scope === 'global')                                              return true
     if (r.scope === 'site'    && ctx.siteSlug   === r.site_slug)           return true
     if (r.scope === 'topic'   && ctx.topicSlug  === r.topic_slug)          return true
-    if (r.scope === 'product' && ctx.relationId === r.relation_id)         return true
+    // Sprint MIMIR.TIER.LEARN — product-scoped rows match by relation_id
+    // (catalog binding) OR product_tier_id (manual T1 signals without a
+    // catalog match still need to retrieve for that product's briefs).
+    if (r.scope === 'product') {
+      if (ctx.relationId   && ctx.relationId   === r.relation_id)      return true
+      if (ctx.productTierId && ctx.productTierId === r.product_tier_id) return true
+    }
     return false
   })
 
