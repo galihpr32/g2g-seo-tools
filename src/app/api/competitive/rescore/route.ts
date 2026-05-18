@@ -113,6 +113,7 @@ export async function POST(req: Request) {
   }
 
   const svByKeyword = new Map<string, number | null>()
+  const svDiagnostics: Array<{ market: string; requested: number; with_sv: number; error?: string }> = []
   for (const [market, kws] of kwsByMarket.entries()) {
     const uniqueKws = Array.from(new Set(kws))
     const locationCode = market === 'id' ? 2360 : 2840   // 2360=ID, 2840=US
@@ -120,11 +121,16 @@ export async function POST(req: Request) {
     try {
       // eslint-disable-next-line no-await-in-loop
       const svMap = await getKeywordDifficulty(uniqueKws, locationCode, langCode)
+      let withSv = 0
       for (const [kw, sv] of Object.entries(svMap)) {
         svByKeyword.set(`${kw.toLowerCase()}|${market}`, sv)
+        if (sv != null && sv > 0) withSv++
       }
+      svDiagnostics.push({ market, requested: uniqueKws.length, with_sv: withSv })
     } catch (e) {
-      console.warn('[rescore] DataForSEO SV fetch failed for market', market, e instanceof Error ? e.message : e)
+      const error = e instanceof Error ? e.message : String(e)
+      console.warn('[rescore] DataForSEO SV fetch failed for market', market, error)
+      svDiagnostics.push({ market, requested: uniqueKws.length, with_sv: 0, error })
     }
   }
 
@@ -198,5 +204,8 @@ export async function POST(req: Request) {
     scored:   totalScored,
     clusters: clusters.size,
     summary:  clusterSummaries,
+    // Sprint COMPETITIVE.SCORER.9 — diagnostic so user knows when DataForSEO
+    // returned no SV for most kws (formula falls back to density+intent only).
+    sv_diagnostics: svDiagnostics,
   })
 }

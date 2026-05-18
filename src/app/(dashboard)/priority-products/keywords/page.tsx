@@ -126,7 +126,11 @@ export default function KeywordMasterPage() {
       if (!res.ok) {
         setRescoreMsg(`Failed: ${body.error ?? 'unknown'}`)
       } else {
-        setRescoreMsg(`✓ Scored ${body.scored} kws across ${body.clusters} clusters`)
+        const svParts = ((body.sv_diagnostics ?? []) as Array<{ market: string; requested: number; with_sv: number; error?: string }>)
+          .map(d => `${d.market.toUpperCase()} ${d.with_sv}/${d.requested}`)
+          .join(', ')
+        const svLine = svParts ? ` · DataForSEO SV: ${svParts}` : ''
+        setRescoreMsg(`✓ Scored ${body.scored} kws across ${body.clusters} clusters${svLine}`)
         await fetchData()
       }
     } catch (e) {

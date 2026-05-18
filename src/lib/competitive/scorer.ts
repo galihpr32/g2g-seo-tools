@@ -162,11 +162,22 @@ export function blendScore(s: {
   sv_volume_norm: number
   serp_density:   number
   intent_score:   number
+  /** Whether SV data was actually retrieved. When false, the 50% SV weight
+   *  is re-distributed to density (60%) and intent (40%) — otherwise null SV
+   *  ties every kw at the same baseline regardless of other signals. */
+  sv_available?: boolean
 }): number {
-  // Methodology weights from /methodology/competitive-keywords
   const v = Math.max(0, Math.min(100, s.sv_volume_norm))
   const d = Math.max(0, Math.min(100, s.serp_density))
   const i = Math.max(0, Math.min(100, s.intent_score))
+
+  // Per /methodology/competitive-keywords: when SV unavailable, methodology
+  // doc explicitly says "density defaults to 50 (mid)". We extend the same
+  // graceful-degradation idea to SV: re-blend density+intent so the score
+  // still discriminates between kws based on signals we DO have.
+  if (s.sv_available === false) {
+    return Math.round(d * 0.60 + i * 0.40)
+  }
   return Math.round(v * 0.50 + d * 0.30 + i * 0.20)
 }
 
@@ -197,7 +208,8 @@ export function scoreCluster(input: ScoreClusterInput): ClusterScoring {
     const sv_volume_norm = svNorms[idx]
     const serp_density   = computeSerpDensity(k.top10, input.our_domain)
     const intent_score   = classifyIntent(k.keyword)
-    const competitive_score = blendScore({ sv_volume_norm, serp_density, intent_score })
+    const sv_available   = k.sv_volume != null && k.sv_volume > 0
+    const competitive_score = blendScore({ sv_volume_norm, serp_density, intent_score, sv_available })
     return {
       id:              k.id,
       product_tier_id: input.product_tier_id,
