@@ -365,7 +365,18 @@ function ProductCard({ row }: { row: ProductRow }) {
 
         {/* Title + URL + GSC line */}
         <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Market flag badge — visually distinguishes US/Global vs ID at glance */}
+            <span
+              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border whitespace-nowrap ${
+                row.market === 'id'
+                  ? 'bg-red-500/10 text-red-300 border-red-500/30'
+                  : 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+              }`}
+              title={row.market === 'id' ? 'Indonesia market (id-language SERP)' : 'Global / US market (en-language SERP)'}
+            >
+              {row.market === 'id' ? '🇮🇩 ID' : '🌐 Global'}
+            </span>
             <p className="text-white font-semibold truncate">{row.productName}</p>
             {row.url && (
               <a href={row.url} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:text-blue-300 truncate">

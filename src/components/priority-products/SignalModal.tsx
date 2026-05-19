@@ -72,6 +72,8 @@ export default function SignalModal({
   const [kind,        setKind]         = useState<Kind>('note')
   const [content,     setContent]      = useState('')
   const [category,    setCategory]     = useState<'preference' | 'fact' | 'rule' | 'lesson'>('preference')
+  // Sprint MIMIR.NOTES.APPLY — note scope (product-only vs category pattern)
+  const [scope,       setScope]        = useState<'product' | 'category'>('product')
   const [topic,       setTopic]        = useState('')
   const [targetUrl,   setTargetUrl]    = useState('')
   const [primaryKw,   setPrimaryKw]    = useState('')
@@ -120,6 +122,8 @@ export default function SignalModal({
           topic:       kind === 'opportunity'  ? (topic || product.productName) : undefined,
           target_url:  (kind === 'opportunity' || kind === 'direct_brief') ? (targetUrl || product.url || undefined) : undefined,
           primary_keyword: kind === 'direct_brief' ? (primaryKw || product.productName) : undefined,
+          // Sprint MIMIR.NOTES.APPLY — propagate to category peers if user opts in (notes only)
+          apply_to_category: kind === 'note' && scope === 'category',
         }),
       })
       const data = await res.json()
@@ -194,25 +198,64 @@ export default function SignalModal({
           <p className="text-[11px] text-gray-500">{KIND_META[kind].help}</p>
 
           {kind === 'note' && (
-            <div>
-              <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Category</label>
-              <div className="grid grid-cols-4 gap-1">
-                {CATEGORY_OPTIONS.map(c => (
-                  <button
-                    key={c.value}
-                    onClick={() => setCategory(c.value)}
-                    title={c.help}
-                    className={`px-2 py-1.5 text-xs rounded border transition ${
-                      category === c.value
-                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
-                        : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-gray-200'
-                    }`}
-                  >
-                    {c.label}
-                  </button>
-                ))}
+            <>
+              {/* Sprint MIMIR.NOTES.APPLY — scope radio (only for note kind) */}
+              {product.category && (
+                <div className="bg-gray-950/50 border border-gray-800 rounded px-2 py-1.5">
+                  <p className="text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">Apply this note to</p>
+                  <div className="flex items-center gap-3 text-[11px] flex-wrap">
+                    <label className="flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="radio"
+                        name={`scope-${product.id}`}
+                        checked={scope === 'product'}
+                        onChange={() => setScope('product')}
+                        className="accent-emerald-500"
+                      />
+                      <span className={scope === 'product' ? 'text-emerald-200' : 'text-gray-400'}>
+                        Just this product
+                      </span>
+                    </label>
+                    <label className="flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="radio"
+                        name={`scope-${product.id}`}
+                        checked={scope === 'category'}
+                        onChange={() => setScope('category')}
+                        className="accent-emerald-500"
+                      />
+                      <span className={scope === 'category' ? 'text-emerald-200' : 'text-gray-400'}>
+                        All {product.category} products
+                      </span>
+                    </label>
+                  </div>
+                  {scope === 'category' && (
+                    <p className="text-[10px] text-gray-500 italic mt-1">
+                      Pattern bakal di-apply ke semua brief di category {product.category}, termasuk T0 mass content nanti.
+                    </p>
+                  )}
+                </div>
+              )}
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-1">Memory category</label>
+                <div className="grid grid-cols-4 gap-1">
+                  {CATEGORY_OPTIONS.map(c => (
+                    <button
+                      key={c.value}
+                      onClick={() => setCategory(c.value)}
+                      title={c.help}
+                      className={`px-2 py-1.5 text-xs rounded border transition ${
+                        category === c.value
+                          ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                          : 'bg-gray-900 border-gray-800 text-gray-400 hover:text-gray-200'
+                      }`}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            </>
           )}
 
           {kind === 'opportunity' && (

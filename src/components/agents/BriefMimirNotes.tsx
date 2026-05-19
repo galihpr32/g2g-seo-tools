@@ -34,14 +34,17 @@ export default function BriefMimirNotes({
   tier,
   productTierId,
   productName,
+  productCategory,
 }: {
-  briefId:        string
-  tier:           1 | 2 | null
-  productTierId:  string | null
-  productName:    string | null
+  briefId:         string
+  tier:            1 | 2 | null
+  productTierId:   string | null
+  productName:     string | null
+  productCategory: string | null   // Sprint MIMIR.NOTES.APPLY — for scope radio label
 }) {
   const [content,  setContent]  = useState('')
   const [category, setCategory] = useState<'preference' | 'fact' | 'rule' | 'lesson'>('preference')
+  const [scope,    setScope]    = useState<'product' | 'category'>('product')
   const [busy,     setBusy]     = useState(false)
   const [msg,      setMsg]      = useState<string | null>(null)
   const [recent,   setRecent]   = useState<RecentNote[]>([])
@@ -72,7 +75,9 @@ export default function BriefMimirNotes({
           brief_id: briefId,
           tier,
           product_tier_id: productTierId,
-          tags:     ['brief_note', ...(tier ? [`t${tier}`] : [])],
+          // Sprint MIMIR.NOTES.APPLY — propagate to category peers if user opts in
+          apply_to_category: scope === 'category',
+          tags:     ['brief_note', ...(tier ? [`t${tier}`] : []), ...(scope === 'category' ? ['category_pattern'] : [])],
           importance: tier === 1 ? 80 : tier === 2 ? 70 : 60,
         }),
       })
@@ -120,6 +125,46 @@ export default function BriefMimirNotes({
       </p>
 
       <div className="space-y-2">
+        {/* Sprint MIMIR.NOTES.APPLY — scope radio for category propagation */}
+        {productCategory && tier && (
+          <div className="bg-gray-950/50 border border-gray-800 rounded px-2 py-1.5 mb-1">
+            <p className="text-[9px] font-bold uppercase tracking-wider text-gray-500 mb-1">Apply this note to</p>
+            <div className="flex items-center gap-2 text-[11px]">
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`scope-${briefId}`}
+                  value="product"
+                  checked={scope === 'product'}
+                  onChange={() => setScope('product')}
+                  className="accent-emerald-500"
+                />
+                <span className={scope === 'product' ? 'text-emerald-200' : 'text-gray-400'}>
+                  Just this product
+                </span>
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name={`scope-${briefId}`}
+                  value="category"
+                  checked={scope === 'category'}
+                  onChange={() => setScope('category')}
+                  className="accent-emerald-500"
+                />
+                <span className={scope === 'category' ? 'text-emerald-200' : 'text-gray-400'}>
+                  All {productCategory} products (category pattern)
+                </span>
+              </label>
+            </div>
+            {scope === 'category' && (
+              <p className="text-[10px] text-gray-500 italic mt-1">
+                Pattern bakal di-apply ke semua brief di category {productCategory}, termasuk T0 mass content nanti.
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-4 gap-1">
           {CATEGORY_OPTIONS.map(c => (
             <button

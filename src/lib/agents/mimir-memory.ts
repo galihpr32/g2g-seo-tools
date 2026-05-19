@@ -31,6 +31,10 @@ export interface MemoryRow {
   tier:                   number | null
   /** Sprint MIMIR.TIER.LEARN — direct FK to product_tiers row. */
   product_tier_id:        string | null
+  /** Sprint MIMIR.NOTES.APPLY — denormalized parent product category. */
+  product_category:       string | null
+  /** Sprint MIMIR.NOTES.APPLY — true = pattern applies cross-product within category. */
+  apply_to_category:      boolean
   category:               MemoryCategory
   content:                string
   tags:                   string[]
@@ -394,4 +398,152 @@ ${transcript}`,
   }
 
   return { inserted, skipped, errors }
+}
+
+// ─── Brief-context retrieval ─────────────────────────────────────────────────
+//
+// Sprint MIMIR.NOTES.APPLY — Build a Mimir context block for brief generation.
+//
+// 3-layer retrieval:
+//   Layer 1 (most specific, score +60): same product_tier_id OR same relation_id
+//   Layer 2 (category pattern, +30):    apply_to_category=true AND same product_category
+//   Layer 3 (site/global, +10):         scope='site' AND site matches, OR scope='global'
+//
+// Category prioritization (max 10 memories total):
+//   • All rules (must-respect)
+//   • All lessons (mistakes from history)
+//   • Top 3 preferences by importance
+//   • Top 2 facts by importance
+//
+// Returns:
+//   • block: formatted markdown ready to inject into Bragi system prompt
+//   • applied: list of memory IDs that made it into the block (for brief.mimir_notes_applied)
+
+export interface BriefMimirContext {
+  block:   string
+  applied: Array<{
+    id:       string
+    category: MemoryCategory
+    scope:    'product' | 'category' | 'site'
+    content:  string
+  }>
+}
+
+export async function getMimirContextForBrief(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:    SupabaseClient<any, any, any>,
+  args:  {
+    ownerId:          string
+    siteSlug:         string
+    productTierId:    string | null
+    relationId:       string | null
+    productCategory:  string | null
+  },
+): Promise<BriefMimirContext> {
+  const { ownerId, siteSlug, productTierId, relationId, productCategory } = args
+
+  // Pull candidates (all owner's active, non-expired memories)
+  const nowIso = new Date().toISOString()
+  const { data, error } = await db
+    .from('mimir_memories')
+    .select('*')
+    .eq('owner_user_id', ownerId)
+    .eq('archived', false)
+    .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+    .limit(500)
+
+  if (error) {
+    console.warn('[mimir-memory] getMimirContextForBrief failed:', error.message)
+    return { block: '', applied: [] }
+  }
+
+  const candidates = (data ?? []) as MemoryRow[]
+  if (candidates.length === 0) return { block: '', applied: [] }
+
+  // Classify each candidate by which layer it matches (or skip if none).
+  type ScopedRow = { row: MemoryRow; layer: 'product' | 'category' | 'site'; layerBoost: number }
+  const scoped: ScopedRow[] = []
+  for (const r of candidates) {
+    // Layer 1 — same-product
+    if (
+      r.scope === 'product'
+      && (
+        (productTierId && r.product_tier_id === productTierId)
+        || (relationId   && r.relation_id    === relationId)
+      )
+    ) {
+      scoped.push({ row: r, layer: 'product', layerBoost: 60 })
+      continue
+    }
+    // Layer 2 — category pattern (opt-in)
+    if (
+      r.apply_to_category
+      && r.site_slug === siteSlug
+      && productCategory
+      && r.product_category === productCategory
+    ) {
+      scoped.push({ row: r, layer: 'category', layerBoost: 30 })
+      continue
+    }
+    // Layer 3 — site/global
+    if (
+      (r.scope === 'site'   && r.site_slug === siteSlug)
+      || r.scope === 'global'
+    ) {
+      scoped.push({ row: r, layer: 'site', layerBoost: 10 })
+    }
+  }
+
+  if (scoped.length === 0) return { block: '', applied: [] }
+
+  // Score each — importance + layerBoost + pinned bonus
+  function score(s: ScopedRow): number {
+    return s.row.importance + s.layerBoost + (s.row.pinned ? 20 : 0)
+  }
+  scoped.sort((a, b) => score(b) - score(a))
+
+  // Category prioritization: gather rules, lessons, top prefs, top facts
+  const rules    = scoped.filter(s => s.row.category === 'rule')
+  const lessons  = scoped.filter(s => s.row.category === 'lesson')
+  const prefs    = scoped.filter(s => s.row.category === 'preference').slice(0, 3)
+  const facts    = scoped.filter(s => s.row.category === 'fact').slice(0, 2)
+  const picked   = [...rules, ...lessons, ...prefs, ...facts].slice(0, 10)
+
+  if (picked.length === 0) return { block: '', applied: [] }
+
+  // Format block — group by category for readability
+  const buckets: Record<MemoryCategory, ScopedRow[]> = { rule: [], lesson: [], preference: [], fact: [] }
+  for (const s of picked) buckets[s.row.category].push(s)
+
+  const lines: string[] = []
+  const scopeIcon = (l: 'product' | 'category' | 'site') =>
+    l === 'product'  ? '[product]'
+    : l === 'category' ? '[category pattern]'
+    :                    '[site rule]'
+  if (buckets.rule.length) {
+    lines.push('**Rules (must respect — non-negotiable):**')
+    for (const s of buckets.rule) lines.push(`- ${scopeIcon(s.layer)} ${s.row.content}`)
+  }
+  if (buckets.lesson.length) {
+    lines.push('\n**Lessons from past edits (avoid repeating these mistakes):**')
+    for (const s of buckets.lesson) lines.push(`- ${scopeIcon(s.layer)} ${s.row.content}`)
+  }
+  if (buckets.preference.length) {
+    lines.push('\n**Preferences (writer style guides):**')
+    for (const s of buckets.preference) lines.push(`- ${scopeIcon(s.layer)} ${s.row.content}`)
+  }
+  if (buckets.fact.length) {
+    lines.push('\n**Facts (brand/product context):**')
+    for (const s of buckets.fact) lines.push(`- ${scopeIcon(s.layer)} ${s.row.content}`)
+  }
+
+  const block = `## User notes & lessons for this product (from Mimir)\n${lines.join('\n')}`
+  const applied = picked.map(s => ({
+    id:       s.row.id,
+    category: s.row.category,
+    scope:    s.layer,
+    content:  s.row.content,
+  }))
+
+  return { block, applied }
 }

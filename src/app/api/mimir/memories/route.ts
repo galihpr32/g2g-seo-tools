@@ -76,6 +76,11 @@ export async function POST(req: Request) {
     // Direct tier context (set by SignalModal endpoint that already resolved it).
     tier?:            number | null
     product_tier_id?: string | null
+    // Sprint MIMIR.NOTES.APPLY — category-wide pattern propagation. When true,
+    // memory applies to ALL products in the same category (not just THIS product).
+    // Used for cross-product learning that propagates T1/T2 manual work to T0 later.
+    apply_to_category?: boolean
+    product_category?:  string   // optional override; usually auto-resolved
   }
 
   const content = String(body.content ?? '').trim().slice(0, 280)
@@ -85,11 +90,14 @@ export async function POST(req: Request) {
   const category = VALID_CATEGORIES.includes(body.category as typeof VALID_CATEGORIES[number]) ? body.category : 'fact'
 
   // Sprint MIMIR.NOTES.INLINE — if a brief_id is passed, resolve tier context.
-  // This lets the inline notes textarea on the brief editor write tier-tagged
-  // memories without the client having to know tier resolution rules.
+  // Sprint MIMIR.NOTES.APPLY — also resolve product category for category
+  // pattern propagation. Stored even when apply_to_category=false so the
+  // retriever can later promote memories from product-only → category-wide
+  // without needing a join.
   let resolvedTier:          number | null = typeof body.tier === 'number'   ? body.tier            : null
   let resolvedProductTierId: string | null = typeof body.product_tier_id === 'string' ? body.product_tier_id : null
   let resolvedRelationId:    string | null = body.relation_id ?? null
+  let resolvedCategory:      string | null = body.product_category ?? null
   if (body.brief_id) {
     const { data: brief } = await db
       .from('seo_content_briefs')
@@ -100,7 +108,7 @@ export async function POST(req: Request) {
       // Match against product_tiers by name or url
       const { data: tierRow } = await db
         .from('product_tiers')
-        .select('id, tier, relation_id, product_name, url')
+        .select('id, tier, relation_id, product_name, url, category')
         .eq('owner_user_id', ownerId)
         .eq('site_slug', brief.site_slug ?? siteSlug)
         .or(`product_name.ilike.${String(brief.primary_keyword ?? '').replace(/[,()]/g, ' ')},url.eq.${brief.page ?? ''}`)
@@ -110,8 +118,18 @@ export async function POST(req: Request) {
         resolvedTier          = tierRow.tier as number
         resolvedProductTierId = tierRow.id   as string
         if (!resolvedRelationId) resolvedRelationId = (tierRow.relation_id as string | null) ?? null
+        if (!resolvedCategory)   resolvedCategory   = (tierRow.category as string | null) ?? null
       }
     }
+  }
+  // If category still null but product_tier_id known (from signal endpoint), look it up
+  if (!resolvedCategory && resolvedProductTierId) {
+    const { data: prod } = await db
+      .from('product_tiers')
+      .select('category')
+      .eq('id', resolvedProductTierId)
+      .maybeSingle()
+    if (prod?.category) resolvedCategory = String(prod.category)
   }
 
   const { data, error } = await db
@@ -126,6 +144,8 @@ export async function POST(req: Request) {
       relation_id: scope === 'product' ? resolvedRelationId    : null,
       tier:            resolvedTier,
       product_tier_id: resolvedProductTierId,
+      product_category:   resolvedCategory,
+      apply_to_category:  !!body.apply_to_category,
       tags:        Array.isArray(body.tags) ? body.tags.map(t => String(t).toLowerCase()).slice(0, 6) : [],
       importance:  typeof body.importance === 'number' ? Math.max(0, Math.min(100, body.importance)) : 70,
       pinned:      !!body.pinned,

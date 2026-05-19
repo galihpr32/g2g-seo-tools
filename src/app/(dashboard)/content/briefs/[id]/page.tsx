@@ -60,16 +60,18 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
   // Sprint MIMIR.NOTES.INLINE — resolve tier context for the "Notes for Mimir"
   // panel. Match the brief's primary_keyword / page against product_tiers so
   // the editor shows a tier badge and the saved memory inherits tier scope.
-  let briefTier:          1 | 2 | null = null
-  let briefProductTierId: string | null = null
-  let briefProductName:   string | null = null
+  // Sprint MIMIR.NOTES.APPLY — also resolve category for category-pattern scope radio.
+  let briefTier:            1 | 2 | null = null
+  let briefProductTierId:   string | null = null
+  let briefProductName:     string | null = null
+  let briefProductCategory: string | null = null
   if (brief.primary_keyword || brief.page) {
     const { data: tierRows } = await db
       .from('product_tiers')
-      .select('id, tier, product_name, url, relation_id')
+      .select('id, tier, product_name, url, relation_id, category')
       .eq('owner_user_id', brief.owner_user_id ?? effectiveOwnerId)
       .eq('site_slug', brief.site_slug ?? 'g2g')
-    type TierLite = { id: string; tier: number; product_name: string; url: string | null; relation_id: string | null }
+    type TierLite = { id: string; tier: number; product_name: string; url: string | null; relation_id: string | null; category: string | null }
     const tierList = (tierRows ?? []) as TierLite[]
     const nameLower = String(brief.primary_keyword ?? '').toLowerCase().trim()
     const pageLower = String(brief.page ?? '').toLowerCase().trim()
@@ -82,9 +84,10 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
       match = tierList.find(t => (t.url ?? '').toLowerCase() === pageLower)
     }
     if (match) {
-      briefTier          = match.tier as 1 | 2
-      briefProductTierId = match.id
-      briefProductName   = match.product_name
+      briefTier            = match.tier as 1 | 2
+      briefProductTierId   = match.id
+      briefProductName     = match.product_name
+      briefProductCategory = match.category
     }
   }
 
@@ -242,6 +245,35 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         briefType={(brief.brief_type as string | null) ?? undefined}
       />
 
+      {/* Sprint MIMIR.NOTES.APPLY — trust-signal panel that shows which
+          Mimir notes were used during the last generation/regenerate.
+          Visible only when brief.mimir_notes_applied has entries. */}
+      {Array.isArray(brief.mimir_notes_applied) && (brief.mimir_notes_applied as unknown[]).length > 0 && (
+        <section className="bg-emerald-900/15 border border-emerald-700/30 rounded-xl p-4 mb-4">
+          <p className="text-xs font-semibold text-emerald-200 mb-2">
+            ✓ Last generation applied {(brief.mimir_notes_applied as unknown[]).length} Mimir note{(brief.mimir_notes_applied as unknown[]).length !== 1 ? 's' : ''}
+          </p>
+          <ul className="space-y-1 text-[11px]">
+            {(brief.mimir_notes_applied as Array<{ id: string; category: string; scope: string; content: string }>).map((n, i) => (
+              <li key={n.id ?? i} className="flex items-start gap-2 text-gray-300">
+                <span className={`text-[9px] px-1 py-0.5 rounded border whitespace-nowrap ${
+                  n.category === 'rule'       ? 'bg-red-500/20 text-red-200 border-red-500/40' :
+                  n.category === 'lesson'     ? 'bg-amber-500/20 text-amber-200 border-amber-500/40' :
+                  n.category === 'preference' ? 'bg-blue-500/20 text-blue-200 border-blue-500/40' :
+                                                'bg-gray-700 text-gray-300 border-gray-600'
+                }`}>
+                  {n.category}
+                </span>
+                <span className="text-[9px] px-1 py-0.5 rounded border bg-gray-800 text-gray-400 border-gray-700 whitespace-nowrap">
+                  {n.scope === 'product' ? '[this product]' : n.scope === 'category' ? '[category pattern]' : '[site]'}
+                </span>
+                <span className="flex-1">{n.content}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* Sprint MIMIR.NOTES.INLINE — let the writer teach Mimir while editing.
           Always renders (even without a tier match — Mimir benefits from
           site-scoped notes too); tier badge appears when this brief matches a
@@ -251,6 +283,7 @@ export default async function BriefDetailPage({ params }: { params: Promise<{ id
         tier={briefTier}
         productTierId={briefProductTierId}
         productName={briefProductName}
+        productCategory={briefProductCategory}
       />
 
       {/* Brief metadata */}

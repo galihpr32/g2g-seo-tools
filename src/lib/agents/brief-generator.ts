@@ -158,10 +158,49 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   let lastErr: unknown = null
   let parsed: ParsedBrief | null = null
 
+  // Sprint MIMIR.NOTES.APPLY — resolve product context once per generation so
+  // we can fetch Mimir context (Layer 1+2+3 notes). Lookup is best-effort —
+  // brief may not match any tier product (e.g., one-off content), in which
+  // case we still get site/global memories from Layer 3.
+  let mimirProductTierId:   string | null = null
+  let mimirRelationId:      string | null = null
+  let mimirProductCategory: string | null = null
+  try {
+    const { data: tierMatch } = await db
+      .from('product_tiers')
+      .select('id, relation_id, category, product_name, url')
+      .eq('owner_user_id', input.ownerId)
+      .eq('site_slug', input.siteSlug ?? 'g2g')
+      .or(
+        `product_name.ilike.${String(input.keyword ?? '').replace(/[,()]/g, ' ')}`
+        + (input.pageUrl ? `,url.eq.${input.pageUrl}` : ''),
+      )
+      .limit(1)
+      .maybeSingle()
+    if (tierMatch) {
+      mimirProductTierId   = tierMatch.id as string
+      mimirRelationId      = (tierMatch.relation_id as string | null) ?? null
+      mimirProductCategory = (tierMatch.category as string | null) ?? null
+    }
+  } catch (e) {
+    console.warn('[brief-generator] mimir product lookup failed (non-fatal):', e)
+  }
+
+  const { getMimirContextForBrief } = await import('@/lib/agents/mimir-memory')
+  const mimir = await getMimirContextForBrief(db, {
+    ownerId:         input.ownerId,
+    siteSlug:        input.siteSlug ?? 'g2g',
+    productTierId:   mimirProductTierId,
+    relationId:      mimirRelationId,
+    productCategory: mimirProductCategory,
+  })
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
-      const prompt  = buildPrompt(input, kbBlock, brandName)
+      // Sprint MIMIR.NOTES.APPLY — append Mimir context block AFTER kbBlock so
+      // user notes have higher prompt salience than generic KB rules.
+      const prompt  = buildPrompt(input, kbBlock + (mimir.block ? `\n\n${mimir.block}` : ''), brandName)
 
       const response = await anthropic.messages.create({
         model:       MODEL,
@@ -253,6 +292,9 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
       content_draft:    draftLines.join('\n'),
       faq_suggestions:  parsed.faqSuggestions,
       new_keywords:     parsed.targetKeywords.slice(1).map(k => ({ keyword: k, volume: null })),
+      // Sprint MIMIR.NOTES.APPLY — track which Mimir notes informed this generation
+      // so the brief editor can show a trust-signal "applied N notes" panel.
+      mimir_notes_applied: mimir.applied,
     })
     .eq('id', input.briefId)
 

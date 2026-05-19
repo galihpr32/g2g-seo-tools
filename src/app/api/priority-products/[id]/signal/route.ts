@@ -36,12 +36,14 @@ interface PostBody {
   kind:            Kind
   content:         string
   // optional
-  category?:       string                  // for kind=note
+  category?:       string                  // memory category (preference/fact/rule/lesson)
   tags?:           string[]                // for kind=note
   topic?:          string                  // for kind=opportunity
   target_url?:     string                  // for kind=opportunity or direct_brief
   primary_keyword?: string                 // for kind=direct_brief
   importance?:     number
+  // Sprint MIMIR.NOTES.APPLY — propagate this note to category peers
+  apply_to_category?: boolean
 }
 
 export async function POST(
@@ -196,6 +198,10 @@ export async function POST(
         ? Math.max(0, Math.min(100, body.importance))
         : (product.tier === 1 ? 80 : 70),
       source_kind:     'manual',
+      // Sprint MIMIR.NOTES.APPLY — denormalize product category so retriever
+      // can find category peers without joining product_tiers.
+      product_category:  product.category ?? null,
+      apply_to_category: !!body.apply_to_category,
     })
     .select('id')
     .single()
