@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
+import { checkLinkLive } from '@/app/api/backlinks/check/route'
 
 export const maxDuration = 300
 
@@ -7,95 +8,34 @@ export const maxDuration = 300
  * GET /api/cron/backlinks-verify
  *
  * Daily — for every paid_backlink with status='pending' or 'active' (and
- * stale last_verified_at), cURL the external_url, parse HTML, check whether
- * the anchor text + target_page link still exists.
+ * stale last_verified_at), runs the SAME verification helper as the manual
+ * "Check" button (/api/backlinks/check). That helper:
+ *   1. Tries plain fetch first (cheap)
+ *   2. Falls back to Firecrawl (headless browser) on 403/429/503/timeout
+ *   3. Matches by anchorText AND targetDomain (hostname only)
  *
  * State transitions:
  *   pending → active  : link found
- *   pending → broken  : URL 404/5xx OR anchor not found
+ *   pending → broken  : URL truly dead (both fetch + Firecrawl failed) OR
+ *                       anchor/domain missing from rendered HTML
  *   active  → broken  : link previously found is now missing or page errored
  *   broken  → active  : link reappeared (manual recovery / temporary outage)
  *
  * Auth: Bearer CRON_SECRET (GitHub Actions).
  *
  * Eliminates Specialist 2's manual click-each-pending-link daily ritual.
- * Conservative: 7 second timeout per fetch, max 50 backlinks per run, only
- * touches links with last_verified_at older than 48h.
+ *
+ * SPRINT BL.VERIFY.FIX (2026-05-19): Previously this cron used a more brittle
+ * verification path that diverged from the manual check — no Firecrawl
+ * fallback, strict full-URL match. Result: Cloudflare-protected publishers
+ * returned 403 → marked broken; URL-path mismatch (UTM/redirect/format) →
+ * also marked broken. Galih reported 18/19 "broken" rows were false
+ * positives that flipped to active on manual "Check" click. Fixed by routing
+ * cron through the same checkLinkLive helper used by the UI.
  */
 function isCronAuth(req: Request): boolean {
   const authHeader = req.headers.get('authorization')
   return authHeader === `Bearer ${process.env.CRON_SECRET}`
-}
-
-function normalizeUrl(s: string): string {
-  return s.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '')
-}
-
-interface VerifyResult {
-  status:    'active' | 'broken'
-  httpStatus: number | null
-  note:       string
-}
-
-async function verifyBacklink(externalUrl: string, anchorText: string, targetPage: string): Promise<VerifyResult> {
-  const controller = new AbortController()
-  const timeoutId  = setTimeout(() => controller.abort(), 7000)
-
-  try {
-    const res = await fetch(externalUrl, {
-      method:  'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; G2G-LinkVerifier/1.0; +https://g2g-seo-tools.vercel.app)',
-        'Accept':     'text/html,application/xhtml+xml',
-      },
-      signal:  controller.signal,
-      redirect: 'follow',
-    })
-    clearTimeout(timeoutId)
-
-    if (res.status >= 500) return { status: 'broken', httpStatus: res.status, note: `Server error (${res.status})` }
-    if (res.status === 404) return { status: 'broken', httpStatus: 404, note: '404 Not Found' }
-    if (res.status >= 400)  return { status: 'broken', httpStatus: res.status, note: `HTTP ${res.status}` }
-
-    const html = await res.text()
-    if (!html) return { status: 'broken', httpStatus: res.status, note: 'Empty response body' }
-
-    // Two checks:
-    //  1. anchor text appears in body
-    //  2. target page URL appears in href somewhere (normalized comparison)
-    const lowerHtml   = html.toLowerCase()
-    const anchorLower = anchorText.toLowerCase().trim()
-    const targetNorm  = normalizeUrl(targetPage)
-
-    const anchorPresent = lowerHtml.includes(anchorLower)
-    const targetPresent = lowerHtml.includes(targetNorm) || lowerHtml.includes(targetNorm.replace(/-/g, '%2d'))
-
-    if (!targetPresent) {
-      return {
-        status: 'broken',
-        httpStatus: res.status,
-        note:   anchorPresent
-          ? 'Target URL link removed (anchor text remains, link gone)'
-          : 'Anchor text + target URL both missing',
-      }
-    }
-    if (!anchorPresent) {
-      // Target URL present but anchor text changed — softer warning, still active
-      return {
-        status: 'active',
-        httpStatus: res.status,
-        note:   'Active — anchor text changed (target URL still linked)',
-      }
-    }
-    return { status: 'active', httpStatus: res.status, note: 'Verified' }
-  } catch (err) {
-    clearTimeout(timeoutId)
-    const msg = err instanceof Error ? err.message : String(err)
-    if (msg.includes('aborted') || msg.includes('timeout')) {
-      return { status: 'broken', httpStatus: null, note: 'Timeout (>7s)' }
-    }
-    return { status: 'broken', httpStatus: null, note: `Fetch error: ${msg.slice(0, 100)}` }
-  }
 }
 
 export async function GET(req: Request) {
@@ -134,26 +74,31 @@ export async function GET(req: Request) {
   for (const b of backlinks) {
     stats.checked++
     try {
-      const result = await verifyBacklink(
+      const result = await checkLinkLive(
         String(b.external_url),
         String(b.anchor_text ?? ''),
         String(b.target_page ?? ''),
       )
 
-      const newStatus = result.status
+      const newStatus = result.found ? 'active' : 'broken'
       const oldStatus = String(b.link_status)
+      const note = result.found
+        ? `Verified via ${result.method}`
+        : (result.error ?? `Anchor or domain missing (via ${result.method})`)
 
       const updates: Record<string, unknown> = {
         link_status:       newStatus,
         last_verified_at:  new Date().toISOString(),
-        verification_note: result.note,
-        http_status:       result.httpStatus,
+        verification_note: note,
+        // Keep http_status null — checkLinkLive doesn't expose it; verification
+        // note captures the failure mode.
+        http_status:       null,
       }
 
       if (oldStatus !== newStatus) {
         if (newStatus === 'active')  stats.flippedActive++
         if (newStatus === 'broken')  stats.flippedBroken++
-        transitions.push({ id: String(b.id), from: oldStatus, to: newStatus, note: result.note })
+        transitions.push({ id: String(b.id), from: oldStatus, to: newStatus, note })
       } else {
         if (newStatus === 'active')  stats.stillActive++
         if (newStatus === 'broken')  stats.stillBroken++

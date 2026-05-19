@@ -410,6 +410,13 @@ export default function BacklinksPage() {
   const [sortKey,       setSortKey]       = useState<SortKey>('live_date')
   const [sortDir,       setSortDir]       = useState<'asc' | 'desc'>('desc')
 
+  // Sprint BL.VERIFY.UI.1 — multi-select + bulk verify
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkVerifying, setBulkVerifying] = useState(false)
+  const [bulkProgress,  setBulkProgress]  = useState<{
+    done: number; total: number; flipped_active: number; flipped_broken: number; errors: number
+  } | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -556,6 +563,112 @@ export default function BacklinksPage() {
   }
 
   const hasFilters = search || statusFilter !== 'all' || countryFilter !== 'all' || dateFrom || dateTo
+
+  // Sprint BL.VERIFY.UI.1 — selection helpers + date presets
+  function toggleRow(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  function selectAllVisible() {
+    setSelectedIds(new Set(visibleBacklinks.map(b => b.id)))
+  }
+  function clearSelection() {
+    setSelectedIds(new Set())
+  }
+  function applyDatePreset(preset: 'today' | 'week' | 'month' | 'last7' | 'last30' | 'clear') {
+    const now = new Date()
+    const yyyymmdd = (d: Date) => d.toISOString().slice(0, 10)
+    if (preset === 'clear') {
+      setDateFrom('')
+      setDateTo('')
+    } else if (preset === 'today') {
+      setDateFrom(yyyymmdd(now))
+      setDateTo(yyyymmdd(now))
+    } else if (preset === 'week') {
+      const mondayOffset = (now.getDay() + 6) % 7
+      const monday = new Date(now)
+      monday.setDate(now.getDate() - mondayOffset)
+      setDateFrom(yyyymmdd(monday))
+      setDateTo(yyyymmdd(now))
+    } else if (preset === 'month') {
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      setDateFrom(yyyymmdd(firstOfMonth))
+      setDateTo(yyyymmdd(now))
+    } else if (preset === 'last7') {
+      setDateFrom(yyyymmdd(new Date(now.getTime() - 7  * 86_400_000)))
+      setDateTo(yyyymmdd(now))
+    } else if (preset === 'last30') {
+      setDateFrom(yyyymmdd(new Date(now.getTime() - 30 * 86_400_000)))
+      setDateTo(yyyymmdd(now))
+    }
+  }
+
+  /**
+   * Sprint BL.VERIFY.UI.1 — Bulk verify selected rows.
+   *
+   * Reuses existing single-id /api/backlinks/check endpoint (which already
+   * uses the canonical checkLinkLive helper — see BL.VERIFY.FIX). Throttled
+   * to 3 concurrent because:
+   *  • Firecrawl fallback is slow per call (5-15s)
+   *  • Going too parallel slams remote sites and our Firecrawl quota
+   *  • 50 rows × 3 concurrent × ~10s avg ≈ 3 min wall time — acceptable
+   */
+  async function handleBulkVerify() {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    if (!confirm(`Verify ${ids.length} backlink${ids.length !== 1 ? 's' : ''}? Plain fetch first, Firecrawl fallback for blocked sites. ~5-15s per row.`)) return
+
+    setBulkVerifying(true)
+    setBulkProgress({ done: 0, total: ids.length, flipped_active: 0, flipped_broken: 0, errors: 0 })
+
+    const CONCURRENCY = 3
+    const oldStatuses = new Map<string, string>()
+    for (const id of ids) {
+      const bl = backlinks.find(b => b.id === id)
+      if (bl) oldStatuses.set(id, bl.link_status)
+    }
+
+    for (let i = 0; i < ids.length; i += CONCURRENCY) {
+      const chunk = ids.slice(i, i + CONCURRENCY)
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all(chunk.map(async id => {
+        try {
+          const res = await fetch('/api/backlinks/check', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ id }),
+          })
+          const data = await res.json()
+          if (res.ok) {
+            const newStatus = data.link_status as 'active' | 'broken'
+            const oldStatus = oldStatuses.get(id)
+            setBacklinks(prev => prev.map(b => b.id === id
+              ? { ...b, link_status: newStatus, last_checked_at: new Date().toISOString(), check_method: data.method }
+              : b
+            ))
+            setBulkProgress(p => {
+              if (!p) return p
+              const flippedActive = (oldStatus !== 'active' && newStatus === 'active') ? p.flipped_active + 1 : p.flipped_active
+              const flippedBroken = (oldStatus !== 'broken' && newStatus === 'broken') ? p.flipped_broken + 1 : p.flipped_broken
+              return { ...p, done: p.done + 1, flipped_active: flippedActive, flipped_broken: flippedBroken }
+            })
+          } else {
+            setBulkProgress(p => p ? { ...p, done: p.done + 1, errors: p.errors + 1 } : p)
+          }
+        } catch {
+          setBulkProgress(p => p ? { ...p, done: p.done + 1, errors: p.errors + 1 } : p)
+        }
+      }))
+    }
+
+    setBulkVerifying(false)
+    // Keep progress visible after done so user sees final summary; clear selection
+    clearSelection()
+  }
 
   return (
     <div className="p-8 min-h-screen">
@@ -736,8 +849,26 @@ export default function BacklinksPage() {
                   ))}
                 </select>
 
-                {/* Date range */}
+                {/* Date range with quick presets */}
                 <div className="flex items-center gap-1.5">
+                  {/* Sprint BL.VERIFY.UI.1 — preset shortcuts */}
+                  <div className="flex items-center gap-1 mr-1">
+                    {([
+                      { k: 'today',  l: 'Today' },
+                      { k: 'week',   l: 'This week' },
+                      { k: 'month',  l: 'This month' },
+                      { k: 'last7',  l: 'Last 7d' },
+                      { k: 'last30', l: 'Last 30d' },
+                    ] as const).map(p => (
+                      <button
+                        key={p.k}
+                        onClick={() => applyDatePreset(p.k)}
+                        className="px-2 py-1 rounded text-[11px] bg-gray-800 border border-gray-700 text-gray-400 hover:text-white hover:border-gray-500 transition"
+                      >
+                        {p.l}
+                      </button>
+                    ))}
+                  </div>
                   <input
                     type="date"
                     value={dateFrom}
@@ -794,6 +925,58 @@ export default function BacklinksPage() {
             </div>
           )}
 
+          {/* Sprint BL.VERIFY.UI.1 — Bulk-select toolbar (shows when ≥1 selected) */}
+          {visibleBacklinks.length > 0 && (
+            <div className="flex items-center gap-2 mb-3 flex-wrap">
+              <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.size > 0 && visibleBacklinks.every(b => selectedIds.has(b.id))}
+                  onChange={() => {
+                    const allSelected = visibleBacklinks.every(b => selectedIds.has(b.id))
+                    if (allSelected) clearSelection()
+                    else selectAllVisible()
+                  }}
+                />
+                Select all visible ({visibleBacklinks.length})
+              </label>
+              {selectedIds.size > 0 && (
+                <>
+                  <span className="text-xs text-gray-600">·</span>
+                  <span className="text-xs text-emerald-400">{selectedIds.size} selected</span>
+                  <button
+                    onClick={handleBulkVerify}
+                    disabled={bulkVerifying}
+                    className="px-3 py-1 rounded-lg text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-medium transition"
+                    title="Re-verify selected via fetch → Firecrawl fallback. Updates link_status per result."
+                  >
+                    {bulkVerifying ? `⟳ Verifying ${bulkProgress?.done ?? 0}/${bulkProgress?.total ?? 0}…` : `🔍 Verify ${selectedIds.size} selected`}
+                  </button>
+                  <button
+                    onClick={clearSelection}
+                    disabled={bulkVerifying}
+                    className="text-xs text-gray-500 hover:text-white transition disabled:opacity-50"
+                  >
+                    Clear selection
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Sprint BL.VERIFY.UI.1 — Final summary after bulk verify */}
+          {!bulkVerifying && bulkProgress && bulkProgress.done === bulkProgress.total && bulkProgress.total > 0 && (
+            <div className="mb-3 bg-emerald-900/15 border border-emerald-700/30 rounded-lg p-3 text-xs flex items-center justify-between">
+              <span className="text-emerald-200">
+                ✓ Verified {bulkProgress.total} backlinks ·
+                <span className="text-emerald-300 font-semibold"> {bulkProgress.flipped_active} flipped to active</span>
+                {bulkProgress.flipped_broken > 0 && <span className="text-red-300 font-semibold"> · {bulkProgress.flipped_broken} flipped to broken</span>}
+                {bulkProgress.errors > 0 && <span className="text-amber-300"> · {bulkProgress.errors} errors</span>}
+              </span>
+              <button onClick={() => setBulkProgress(null)} className="text-gray-500 hover:text-white">✕</button>
+            </div>
+          )}
+
           {/* Backlink list */}
           {loading ? (
             <div className="text-gray-500 text-sm text-center py-12">Loading backlinks…</div>
@@ -830,6 +1013,18 @@ export default function BacklinksPage() {
                 <div className="p-4">
                   {/* Top row */}
                   <div className="flex items-start justify-between gap-4 flex-wrap">
+                    {/* Sprint BL.VERIFY.UI.1 — checkbox per row */}
+                    <label
+                      className="flex items-start pt-1 cursor-pointer select-none"
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(bl.id)}
+                        onChange={() => toggleRow(bl.id)}
+                        className="mt-0.5 accent-emerald-500"
+                      />
+                    </label>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <span className="text-white font-semibold text-sm">{bl.site_name}</span>

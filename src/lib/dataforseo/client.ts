@@ -208,6 +208,65 @@ export async function getKeywordDifficulty(
   return result
 }
 
+// ─── DataForSEO Labs: keyword overview (better long-tail coverage) ──────────
+// Google Ads endpoint above relies on Google Keyword Planner data which is
+// sparse for gaming/niche terms. Labs uses a multi-source SV database
+// (clickstream + Bing + estimation models) that covers long-tail far better.
+//
+// Cost: ~$0.0005 per kw (10x Google Ads but still negligible at our scale).
+// Latency: similar to google_ads endpoint.
+//
+// Used as a fallback when google_ads returns null for a kw.
+export async function getKeywordVolumesLabs(
+  keywords:    string[],
+  locationCode = 2360,
+  languageCode = 'id',
+): Promise<Record<string, number>> {
+  if (!keywords.length) return {}
+  const CHUNK = 1000   // Labs endpoint accepts up to 1000 kws per call
+  const result: Record<string, number> = {}
+
+  let totalRequested = 0
+  let totalReceived  = 0
+  let totalWithSv    = 0
+
+  for (let i = 0; i < keywords.length; i += CHUNK) {
+    const batch = keywords.slice(i, i + CHUNK)
+    totalRequested += batch.length
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await dfsPost<any>('/dataforseo_labs/google/keyword_overview/live', [
+      {
+        keywords:      batch,
+        location_code: locationCode,
+        language_code: languageCode,
+      },
+    ])
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items: any[] = data?.tasks?.[0]?.result ?? []
+    totalReceived += items.length
+    for (const item of items) {
+      const kw = item?.keyword
+      const sv = item?.keyword_info?.search_volume
+      if (kw) {
+        if (sv != null) {
+          result[String(kw).toLowerCase()] = sv
+          totalWithSv++
+        }
+      }
+    }
+  }
+
+  if (totalRequested > 0) {
+    console.warn(
+      `[dataforseo:getKeywordVolumesLabs] ${totalRequested} requested, ${totalReceived} returned, ${totalWithSv} with non-null SV `
+      + `(location_code=${locationCode}, language_code=${languageCode})`,
+    )
+  }
+  return result
+}
+
 // ─── Domain Ranked Keywords (what does this URL rank for?) ───────────────────
 // Useful to understand current keyword coverage of a page
 export async function getDomainRankedKeywords(

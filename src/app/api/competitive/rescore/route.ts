@@ -4,7 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
 import { scoreCluster, persistClusterScoring } from '@/lib/competitive/scorer'
-import { getKeywordDifficulty } from '@/lib/dataforseo/client'
+import { getKeywordDifficulty, getKeywordVolumesLabs } from '@/lib/dataforseo/client'
 
 export const maxDuration = 60
 
@@ -113,25 +113,68 @@ export async function POST(req: Request) {
   }
 
   const svByKeyword = new Map<string, number | null>()
-  const svDiagnostics: Array<{ market: string; requested: number; with_sv: number; error?: string }> = []
+  const svDiagnostics: Array<{
+    market:      string
+    requested:   number
+    from_ads:    number
+    from_labs:   number
+    still_null:  number
+    error?:      string
+  }> = []
   for (const [market, kws] of kwsByMarket.entries()) {
     const uniqueKws = Array.from(new Set(kws))
     const locationCode = market === 'id' ? 2360 : 2840   // 2360=ID, 2840=US
     const langCode     = market === 'id' ? 'id'  : 'en'
+
+    let fromAds  = 0
+    let fromLabs = 0
+    let lastError: string | undefined
+
+    // Layer 1: Google Ads (cheap, fast — sparse for long-tail gaming)
     try {
       // eslint-disable-next-line no-await-in-loop
-      const svMap = await getKeywordDifficulty(uniqueKws, locationCode, langCode)
-      let withSv = 0
-      for (const [kw, sv] of Object.entries(svMap)) {
-        svByKeyword.set(`${kw.toLowerCase()}|${market}`, sv)
-        if (sv != null && sv > 0) withSv++
+      const adsMap = await getKeywordDifficulty(uniqueKws, locationCode, langCode)
+      for (const [kw, sv] of Object.entries(adsMap)) {
+        if (sv != null && sv > 0) {
+          svByKeyword.set(`${kw.toLowerCase()}|${market}`, sv)
+          fromAds++
+        }
       }
-      svDiagnostics.push({ market, requested: uniqueKws.length, with_sv: withSv })
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e)
-      console.warn('[rescore] DataForSEO SV fetch failed for market', market, error)
-      svDiagnostics.push({ market, requested: uniqueKws.length, with_sv: 0, error })
+      lastError = `google_ads: ${e instanceof Error ? e.message : String(e)}`
+      console.warn('[rescore] Google Ads SV fetch failed for market', market, lastError)
     }
+
+    // Layer 2: DataForSEO Labs fallback — for kws Google Ads didn't cover.
+    // Labs uses a clickstream+Bing multi-source database with way better
+    // long-tail coverage. ~10x more expensive per kw but only called on the
+    // gap subset, so cost stays small.
+    const stillNullKws = uniqueKws.filter(kw => !svByKeyword.has(`${kw.toLowerCase()}|${market}`))
+    if (stillNullKws.length > 0) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const labsMap = await getKeywordVolumesLabs(stillNullKws, locationCode, langCode)
+        for (const [kw, sv] of Object.entries(labsMap)) {
+          if (sv != null && sv > 0 && !svByKeyword.has(`${kw.toLowerCase()}|${market}`)) {
+            svByKeyword.set(`${kw.toLowerCase()}|${market}`, sv)
+            fromLabs++
+          }
+        }
+      } catch (e) {
+        const labsErr = `labs: ${e instanceof Error ? e.message : String(e)}`
+        lastError = lastError ? `${lastError}; ${labsErr}` : labsErr
+        console.warn('[rescore] DataForSEO Labs SV fallback failed for market', market, labsErr)
+      }
+    }
+
+    svDiagnostics.push({
+      market,
+      requested:   uniqueKws.length,
+      from_ads:    fromAds,
+      from_labs:   fromLabs,
+      still_null:  uniqueKws.length - fromAds - fromLabs,
+      error:       lastError,
+    })
   }
 
   // ── 4. Bulk-fetch latest SERP snapshots per (kw × market) for density ─────

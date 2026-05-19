@@ -126,10 +126,12 @@ export default function KeywordMasterPage() {
       if (!res.ok) {
         setRescoreMsg(`Failed: ${body.error ?? 'unknown'}`)
       } else {
-        const svParts = ((body.sv_diagnostics ?? []) as Array<{ market: string; requested: number; with_sv: number; error?: string }>)
-          .map(d => `${d.market.toUpperCase()} ${d.with_sv}/${d.requested}`)
-          .join(', ')
-        const svLine = svParts ? ` · DataForSEO SV: ${svParts}` : ''
+        type Diag = { market: string; requested: number; from_ads: number; from_labs: number; still_null: number; error?: string }
+        const diags = (body.sv_diagnostics ?? []) as Diag[]
+        const svParts = diags.map(d =>
+          `${d.market.toUpperCase()} ${d.from_ads + d.from_labs}/${d.requested} (Ads ${d.from_ads}, Labs ${d.from_labs}, null ${d.still_null})`,
+        ).join(' · ')
+        const svLine = svParts ? ` · SV hit rate: ${svParts}` : ''
         setRescoreMsg(`✓ Scored ${body.scored} kws across ${body.clusters} clusters${svLine}`)
         await fetchData()
       }
