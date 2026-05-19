@@ -568,6 +568,8 @@ function RunBaselineButton() {
   const [busy,   setBusy]   = useState(false)
   const [msg,    setMsg]    = useState<string | null>(null)
   const [scope,  setScope]  = useState<'all' | 'tier1' | 'tier2'>('all')
+  // Sprint BL.MARKET.SCOPE — narrow baseline to a single market
+  const [market, setMarket] = useState<'all' | 'us' | 'id'>('all')
 
   // Load latest run on mount + when polling status mid-flight
   useEffect(() => {
@@ -639,14 +641,15 @@ function RunBaselineButton() {
 
   async function start() {
     if (busy) return
-    const scopeLabel = scope === 'all' ? 'all tier products' : scope === 'tier1' ? 'Tier 1 only' : 'Tier 2 only'
-    if (!confirm(`Run a fresh SERP baseline for ${scopeLabel}?\n\nDataForSEO charges ~$0.0006 per call. Progress is saved — you can close this tab and come back later to see the result.`)) return
+    const scopeLabel  = scope  === 'all' ? 'all tier products' : scope === 'tier1' ? 'Tier 1 only' : 'Tier 2 only'
+    const marketLabel = market === 'all' ? 'all markets' : market === 'id' ? '🇮🇩 Indonesia only' : '🌐 Global / US only'
+    if (!confirm(`Run a fresh SERP baseline for ${scopeLabel} · ${marketLabel}?\n\nDataForSEO charges ~$0.0006 per call. Progress is saved — you can close this tab and come back later to see the result.`)) return
     setBusy(true); setMsg(null)
     try {
       const res = await fetch('/api/priority-products/run-baseline/start', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ scope }),
+        body:    JSON.stringify({ scope, market }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -676,16 +679,28 @@ function RunBaselineButton() {
 
   return (
     <div className="flex flex-col gap-2 min-w-[280px]">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5 flex-wrap">
         <select
           value={scope}
           onChange={e => setScope(e.target.value as typeof scope)}
           disabled={isRunning}
           className="text-xs bg-gray-900 border border-gray-700 rounded-md px-2 py-2 text-gray-200 disabled:opacity-40"
+          title="Which tier products to include"
         >
           <option value="all">All tier products</option>
           <option value="tier1">Tier 1 only</option>
           <option value="tier2">Tier 2 only</option>
+        </select>
+        <select
+          value={market}
+          onChange={e => setMarket(e.target.value as typeof market)}
+          disabled={isRunning}
+          className="text-xs bg-gray-900 border border-gray-700 rounded-md px-2 py-2 text-gray-200 disabled:opacity-40"
+          title="Which market(s) to snapshot — saves cost when you only need one"
+        >
+          <option value="all">All markets</option>
+          <option value="us">🌐 Global / US only</option>
+          <option value="id">🇮🇩 Indonesia only</option>
         </select>
         <button
           onClick={start}

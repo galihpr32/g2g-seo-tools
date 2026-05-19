@@ -29,21 +29,32 @@ export async function POST(req: Request) {
   const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
 
-  const body = await req.json().catch(() => ({})) as { scope?: 'all' | 'tier1' | 'tier2' }
-  const scope = body.scope ?? 'all'
+  const body = await req.json().catch(() => ({})) as {
+    scope?:  'all' | 'tier1' | 'tier2'
+    market?: 'all' | 'us'    | 'id'
+  }
+  const scope  = body.scope  ?? 'all'
+  const market = body.market ?? 'all'
 
-  // 1. Load tier products for this owner × site, filtered by scope
+  // 1. Load tier products for this owner × site, filtered by scope + market
+  // Sprint BL.MARKET.SCOPE — when market !== 'all', only pull products
+  // whose target market matches. Avoids running US SERP for ID-only products
+  // and vice versa. Keyword-language pairing still applies in step 3.
   let productsQ = db
     .from('product_tiers')
-    .select('id, product_name, url, tier')
+    .select('id, product_name, url, tier, market')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
-  if (scope === 'tier1') productsQ = productsQ.eq('tier', 1)
-  if (scope === 'tier2') productsQ = productsQ.eq('tier', 2)
+  if (scope === 'tier1')  productsQ = productsQ.eq('tier', 1)
+  if (scope === 'tier2')  productsQ = productsQ.eq('tier', 2)
+  if (market !== 'all')   productsQ = productsQ.eq('market', market)
 
   const { data: products } = await productsQ
   if (!products?.length) {
-    return NextResponse.json({ ok: false, error: `No tier products for scope='${scope}' on site=${siteSlug}` }, { status: 400 })
+    return NextResponse.json({
+      ok:    false,
+      error: `No tier products for scope='${scope}', market='${market}' on site=${siteSlug}`,
+    }, { status: 400 })
   }
 
   // 2. Load keywords for those products
@@ -73,15 +84,26 @@ export async function POST(req: Request) {
       // Sprint MARKETS.PRUNE — only run markets that match keyword language
       const kwLanguage = (kw as { language?: string }).language ?? 'en'
       const markets    = marketsForKeyword(kwLanguage)
-      for (const market of markets) {
+      for (const m of markets) {
+        // Sprint BL.MARKET.SCOPE — if user picked a specific market, skip
+        // pairs whose computed market doesn't match. Catches the case where
+        // an ID-targeted product still has an EN keyword (rare, but possible).
+        if (market !== 'all' && m !== market) continue
         pairs.push({
           product_id: product.id,
           keyword_id: kw.id,
           keyword:    kw.keyword,
-          market,
+          market:     m,
         })
       }
     }
+  }
+
+  if (pairs.length === 0) {
+    return NextResponse.json({
+      ok:    false,
+      error: `No pairs match scope='${scope}', market='${market}'. Check that products in this scope have matching keywords.`,
+    }, { status: 400 })
   }
 
   // 4. Cancel any currently-running run for this (owner × site) so the UI
@@ -119,7 +141,8 @@ export async function POST(req: Request) {
     total_pairs: pairs.length,
     products:    products.length,
     keywords:    keywords.length,
-    markets:     TIER_MARKET_CODES.length,
+    markets:     market === 'all' ? TIER_MARKET_CODES.length : 1,
     scope,
+    market,
   })
 }
