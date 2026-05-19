@@ -30,7 +30,7 @@ import type { AiVisibilityOverview } from '@/lib/agents/freyja'
 
 const SKILL_NAME      = 'searchfit-seo:ai-visibility'
 const MODEL           = 'claude-haiku-4-5-20251001'
-const MAX_TOKENS      = 1200
+const MAX_TOKENS      = 2000
 const TIMEOUT_MS      = 25_000
 const MAX_ATTEMPTS    = 3
 const BASE_BACKOFF_MS = 700    // 700ms, 1.4s, 2.8s
@@ -288,10 +288,20 @@ export async function POST(req: NextRequest) {
   let recs: Recommendation[]
   try {
     // Strip accidental markdown code fences if model adds them
-    const cleaned = rawOutput
+    let cleaned = rawOutput
       .replace(/^```(?:json)?\s*/i, '')
       .replace(/\s*```\s*$/, '')
       .trim()
+
+    // Safety net: if the output was truncated mid-JSON (token budget hit),
+    // recover any complete objects already present by truncating at the last
+    // complete object boundary before the final comma or broken field.
+    if (!cleaned.endsWith(']')) {
+      const lastClose = cleaned.lastIndexOf('}')
+      if (lastClose !== -1) {
+        cleaned = cleaned.slice(0, lastClose + 1) + ']'
+      }
+    }
 
     const parsed = JSON.parse(cleaned) as unknown
     if (!Array.isArray(parsed)) throw new Error('Expected JSON array at root')
