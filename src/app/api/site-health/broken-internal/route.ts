@@ -121,30 +121,36 @@ async function collectUrls(
 // ── HTTP check ────────────────────────────────────────────────────────────────
 
 function fixSuggestion(
-  status: number | null,
-  category: UrlCategory,
-  source: UrlSource['source'],
+  status:      number | null,
+  category:    UrlCategory,
+  source:      UrlSource['source'],
+  sourceLabel: string,
 ): string {
+  const label = sourceLabel ? `"${sourceLabel}"` : 'this entry'
+
   if (category === 'ok') return 'No action needed.'
+
   if (category === 'redirect') {
     return source === 'seo_content_briefs'
-      ? 'Update the `page` field in this brief to the final redirect destination.'
-      : 'Update this tracked URL to its final destination URL.'
+      ? `Brief ${label}: update the \`page\` field to the final redirect destination (skip the chain).`
+      : `Keyword ${label}: update the tracked URL to its final destination to avoid redirect overhead.`
   }
+
   if (category === 'broken') {
     const code = status ?? 0
     if (code === 404 || code === 410) {
       return source === 'seo_content_briefs'
-        ? 'Page no longer exists — archive or delete this brief, or update `page` to a valid URL.'
-        : 'URL no longer resolves — page may have been removed. Review the tracked keyword or add a 301 redirect.'
+        ? `Brief ${label}: page no longer exists (${code}). Archive/delete this brief or update \`page\` to a valid URL.`
+        : `Keyword ${label}: ranked URL returns ${code}. Page was likely removed — add a 301 redirect or retire this keyword from the tracker.`
     }
     if (code >= 500) {
-      return 'Server error — check the page\'s deployment status. May be transient; re-audit to confirm.'
+      return `${source === 'seo_content_briefs' ? 'Brief' : 'Keyword'} ${label}: server error (${code}) — check deployment status. May be transient; re-audit to confirm.`
     }
-    return 'Broken URL — investigate server-side and add a redirect or remove the reference.'
+    return `${source === 'seo_content_briefs' ? 'Brief' : 'Keyword'} ${label}: unexpected status (${code ?? 'unknown'}) — investigate server-side and add a redirect or remove the reference.`
   }
+
   // error / timeout
-  return 'Request timed out or failed — page may be unreachable. Re-audit after checking connectivity.'
+  return `${source === 'seo_content_briefs' ? 'Brief' : 'Keyword'} ${label}: request timed out or failed — page may be unreachable. Re-audit after checking site connectivity.`
 }
 
 async function checkUrl(src: UrlSource): Promise<CheckResult> {
@@ -190,7 +196,7 @@ async function checkUrl(src: UrlSource): Promise<CheckResult> {
     status,
     status_text,
     category,
-    fix_suggestion: fixSuggestion(status, category, src.source),
+    fix_suggestion: fixSuggestion(status, category, src.source, src.source_label),
   }
 }
 

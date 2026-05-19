@@ -181,15 +181,18 @@ export async function POST(req: NextRequest) {
   let pageText = ''
   let source   = 'none'
 
-  // Layer 1: DataForSEO JS render (primary, handles SPAs like G2G)
+  // Layer 1: DataForSEO JS render (primary, handles SPAs like G2G).
+  // Accept content even when meaningful=false — DataForSEO may return text
+  // without strong heading structure (common for SPA shells), but any page
+  // text is sufficient for schema inference.
   const dfs = await fetchPageTextViaDataForSEO(url, { timeoutMs: 40_000 })
-  if (dfs.ok && dfs.meaningful) {
+  if (dfs.ok && dfs.text && dfs.text.trim().length >= 50) {
     pageText = dfs.text.slice(0, 30_000)
-    source   = 'dataforseo'
+    source   = dfs.meaningful ? 'dataforseo' : 'dataforseo_partial'
   }
 
   // Layer 2: Live fetch + meta extraction fallback
-  if (!pageText || pageText.length < 100) {
+  if (!pageText || pageText.length < 50) {
     const fallback = await liveFetchFallback(url)
     if (fallback.length >= 50) {
       pageText = fallback.slice(0, 30_000)
