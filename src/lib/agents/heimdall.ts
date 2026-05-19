@@ -4,49 +4,98 @@ import { lookupKeywordInUniverse } from '@/lib/agents/universe-helpers'
 import { persistFindingsBulk, type HeimdallDropAnalysisData } from '@/lib/agents/findings'
 
 /**
- * Classify a ranking drop into a likely root-cause category, using only
- * signals available from gsc_ranking_drops (no extra API calls). The output
- * is heuristic — meant to give the user a starting hypothesis, not a verdict.
+ * Classify a ranking drop into a likely root-cause category and return a
+ * structured fix checklist, using only signals from gsc_ranking_drops.
  *
- *   algorithmic → big position slide; likely SERP layout shift, link decay,
- *                 or topical authority loss. Recommend link/E-E-A-T audit.
- *   technical   → position held but clicks tanked; impressions or CTR loss.
- *                 Recommend indexation / schema / snippet review.
- *   content     → moderate position drop with sharp click loss; intent
- *                 mismatch or stale content. Recommend on-page refresh.
- *   unknown     → signal mix doesn't fit cleanly.
+ * The output is heuristic — meant to give the user a prioritised starting
+ * hypothesis, not a verdict. Fix checklist steps are ordered by urgency.
+ *
+ * Categories (technical-SEO + SEO-audit methodology):
+ *   algorithmic → big position slide; likely SERP layout shift, backlink
+ *                 decay, or topical authority loss. Longest to recover.
+ *   technical   → position held but clicks tanked; CTR / impression loss.
+ *                 Often fastest to fix: indexation, schema, snippet.
+ *   content     → moderate position + sharp click loss; intent mismatch
+ *                 or stale content. Weeks to recover with a refresh.
+ *   unknown     → mixed signals; run full-spectrum checks.
+ *
+ * recovery_potential:
+ *   high   = technical (snippet/schema fix is same-day)
+ *   medium = content (refresh takes days to weeks to register)
+ *   low    = algorithmic (link profile / authority takes months)
  */
+type FixStep = { step: string; priority: 'immediate' | 'high' | 'medium' }
+
 function categorizeDrop(args: {
-  clicksDropPct:  number
-  positionDiff:   number    // positive = slipped down
-  clicksPrev:     number
-}): { category: HeimdallDropAnalysisData['category']; reasoning: string; recommendation: string } {
+  clicksDropPct: number
+  positionDiff:  number    // positive = slipped down
+  clicksPrev:    number
+}): {
+  category:           HeimdallDropAnalysisData['category']
+  reasoning:          string
+  recommendation:     string
+  fix_checklist:      FixStep[]
+  recovery_potential: 'high' | 'medium' | 'low'
+} {
   const { clicksDropPct, positionDiff } = args
+
   if (positionDiff >= 5) {
     return {
-      category:       'algorithmic',
-      reasoning:      `Slipped ${positionDiff.toFixed(1)} positions — likely SERP/algorithm shift or backlink decay. Position drop is the dominant signal here.`,
-      recommendation: 'Audit recent backlinks (lost / toxic), check for SERP layout changes (AI overviews, new feature snippets), review competitors who gained positions.',
+      category:    'algorithmic',
+      reasoning:   `Slipped ${positionDiff.toFixed(1)} positions — likely SERP/algorithm shift or backlink decay. Position drop is the dominant signal here.`,
+      recommendation: 'Audit recent backlinks (lost/toxic), check for SERP layout changes (AI overviews, new feature snippets), review competitors who gained positions.',
+      recovery_potential: 'low',
+      fix_checklist: [
+        { step: 'Compare SERP top-3 now vs 2 weeks ago — check for new AI Overviews or featured snippets displacing organic', priority: 'immediate' },
+        { step: 'Audit lost/toxic backlinks via GSC Links report and Ahrefs/SEMrush lost links filter', priority: 'immediate' },
+        { step: 'Review competitors who gained positions for E-E-A-T signals (author bios, cite dates, depth)', priority: 'high' },
+        { step: 'Add fresh internal links from recently published pages to boost topical authority signal', priority: 'medium' },
+      ],
     }
   }
+
   if (Math.abs(positionDiff) < 1 && clicksDropPct >= 30) {
     return {
-      category:       'technical',
-      reasoning:      `Position held (${positionDiff.toFixed(1)}) but clicks fell ${clicksDropPct.toFixed(0)}% — suggests CTR or impression loss, not ranking loss. Likely indexation, snippet, or schema issue.`,
-      recommendation: 'Check GSC indexation status, verify schema/structured data, review snippet (title/meta) for staleness, confirm canonical and robots.txt unchanged.',
+      category:    'technical',
+      reasoning:   `Position held (${positionDiff >= 0 ? '+' : ''}${positionDiff.toFixed(1)}) but clicks fell ${clicksDropPct.toFixed(0)}% — CTR or impression loss, not a ranking loss. Likely indexation, snippet, or schema issue.`,
+      recommendation: 'Check GSC indexation, verify schema/structured data, review snippet (title/meta) for staleness, confirm canonical and robots.txt unchanged.',
+      recovery_potential: 'high',
+      fix_checklist: [
+        { step: 'Verify page is indexed: search site:PAGE_URL in Google + check GSC Coverage report for errors', priority: 'immediate' },
+        { step: 'Validate structured data with Schema.org validator — broken schema removes rich snippets and tanks CTR', priority: 'immediate' },
+        { step: 'Rewrite title tag & meta description to match current SERP intent — A/B test against competitors\' snippets', priority: 'high' },
+        { step: 'Confirm canonical tag is self-referential and robots.txt has no new disallow rules', priority: 'high' },
+        { step: 'Run Core Web Vitals (PageSpeed Insights) — CWV demotion can suppress impressions even with stable rank', priority: 'medium' },
+      ],
     }
   }
+
   if (positionDiff >= 2 && positionDiff < 5 && clicksDropPct >= 25) {
     return {
-      category:       'content',
-      reasoning:      `Moderate position slip (${positionDiff.toFixed(1)}) combined with ${clicksDropPct.toFixed(0)}% click drop — content may be misaligned with current intent or has gone stale.`,
-      recommendation: 'Review on-page content for freshness, intent match against current SERP top-3, refresh internal links and meta description, check for new sub-intents to cover.',
+      category:    'content',
+      reasoning:   `Moderate position slip (${positionDiff.toFixed(1)}) combined with ${clicksDropPct.toFixed(0)}% click drop — content likely misaligned with current search intent or has gone stale.`,
+      recommendation: 'Review on-page content for freshness and intent match against current SERP top-3, refresh internal links and meta description, cover new sub-intents.',
+      recovery_potential: 'medium',
+      fix_checklist: [
+        { step: 'Check SERP top-3 intent vs page H1/intro — intent mismatch (informational vs transactional) is the #1 cause', priority: 'immediate' },
+        { step: 'Refresh stale info: update prices, availability, dates, and any facts that have changed since last publish', priority: 'high' },
+        { step: 'Identify new sub-intents in the SERP (e.g. "how to sell" vs just "buy") — add a section if missing', priority: 'high' },
+        { step: 'Add internal links from recently published pages using on-topic anchor text', priority: 'medium' },
+      ],
     }
   }
+
   return {
-    category:       'unknown',
-    reasoning:      `Mixed signals — clicks down ${clicksDropPct.toFixed(0)}%, position diff ${positionDiff.toFixed(1)}. Likely combination of factors.`,
+    category:    'unknown',
+    reasoning:   `Mixed signals — clicks down ${clicksDropPct.toFixed(0)}%, position diff ${positionDiff.toFixed(1)}. Likely a combination of factors.`,
     recommendation: 'Run full audit: indexation, on-page freshness, backlink profile, SERP layout, internal links.',
+    recovery_potential: 'medium',
+    fix_checklist: [
+      { step: 'Run site:PAGE_URL — confirm the page is indexed and not duplicated', priority: 'immediate' },
+      { step: 'Open GSC Performance for this URL — identify which queries declined most and by how much', priority: 'immediate' },
+      { step: 'Audit on-page content freshness and SERP intent match against current top-3', priority: 'high' },
+      { step: 'Review backlink profile for any losses in the past 30 days', priority: 'medium' },
+    ],
   }
 }
 
@@ -303,6 +352,8 @@ export async function runHeimdall(
           reasoning:           verdict.reasoning,
           recommendation:      verdict.recommendation,
           top_dropped_queries: queriesByPage.get(d.original_page) ?? [],
+          fix_checklist:       verdict.fix_checklist,
+          recovery_potential:  verdict.recovery_potential,
         }
         const severity: 'high' | 'medium' | 'low' =
           d.clicks_drop_pct >= 50 || d.clicks_drop_abs >= 50 ? 'high'
@@ -364,13 +415,25 @@ export async function runHeimdall(
           ? `improved ${Math.abs(drop.position_diff).toFixed(1)} positions but clicks still down`
           : `held position at ${drop.position_now.toFixed(1)}`
 
+      // Classify drop here (verdict also feeds action description below).
+      // Note: findings bulk-persist above already computed verdicts for all drops;
+      // we recompute here per-action because the findings loop runs before dedup.
+      const actionVerdict = categorizeDrop({
+        clicksDropPct: drop.clicks_drop_pct,
+        positionDiff:  drop.position_diff,
+        clicksPrev:    drop.clicks_prev,
+      })
+      const topFix = actionVerdict.fix_checklist[0]?.step ?? actionVerdict.recommendation
+
       const description = [
         `Clicks down ${drop.clicks_drop_abs} (-${drop.clicks_drop_pct.toFixed(1)}%): ${drop.clicks_prev} → ${drop.clicks_now} (snapshot ${drop.snapshot_date}).`,
         `Position: ${posChangeStr}.`,
+        `Root cause: ${actionVerdict.category} — ${actionVerdict.reasoning}`,
+        `#1 fix: ${topFix}`,
         isCritical
           ? `⚡ Critical drop — approve to auto-draft a brief via Bragi.`
-          : `Recommend on-page review (intent match, freshness, internal links, schema).`,
-      ].join(' ')
+          : ``,
+      ].filter(Boolean).join(' ')
 
       // Derive keyword candidate from URL path for universe lookup.
       // /categories/wow-gold → "wow gold"

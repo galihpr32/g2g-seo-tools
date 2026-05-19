@@ -93,6 +93,73 @@ async function fetchTrendReasons(
   return { reasons: reasons.slice(0, 3), steamHit }
 }
 
+// ── Content strategy derivation (no extra API calls) ──────────────────────────
+//
+// Applies content-strategy skill methodology to each trending game: maps available
+// signals to search intent, content type, content angle, and topical authority tier.
+//
+// Signal mapping (G2G marketplace context):
+//   buy_search_volume dominant  → transactional/commercial → buying_guide
+//   live event / update signal  → informational spike       → game_guide
+//   existing page (update_page) → content refresh           → category_page
+//   high total volume (>10k SV) → pillar content tier
+//   default                     → category_page, commercial intent
+
+interface ContentStrategy {
+  intent:            'informational' | 'commercial' | 'transactional' | 'mixed'
+  content_type:      'category_page' | 'buying_guide' | 'game_guide' | 'comparison'
+  content_angle:     string   // specific headline direction for Bragi's brief prompt
+  pillar_or_cluster: 'pillar' | 'cluster' | 'standalone'
+}
+
+function deriveContentStrategy(
+  gameName: string,
+  sv: number,
+  buySv: number,
+  p2w: number,
+  trendReasons: TrendReason[],
+  suggestedAction: 'create_page' | 'update_page',
+): ContentStrategy {
+  const hasBuyIntent  = buySv > 0 && buySv > sv * 0.2
+  const hasNewContent = trendReasons.some(r => r.type === 'new_release' || r.type === 'update')
+  const hasLiveEvent  = trendReasons.some(r => r.type === 'live_event')
+  const hasSale       = trendReasons.some(r => r.type === 'sale')
+  const isBroadVolume = sv > 10_000 || p2w > 100_000
+
+  // 1. Intent — commercial by default for a gaming marketplace
+  let intent: ContentStrategy['intent']
+  if (hasBuyIntent && (hasNewContent || hasLiveEvent)) intent = 'mixed'
+  else if (hasBuyIntent)                               intent = 'transactional'
+  else if (hasNewContent || hasLiveEvent)              intent = 'informational'
+  else                                                 intent = 'commercial'
+
+  // 2. Content type
+  let content_type: ContentStrategy['content_type']
+  if (suggestedAction === 'update_page')         content_type = 'category_page'
+  else if (hasBuyIntent && buySv > sv * 0.6)    content_type = 'buying_guide'
+  else if (hasNewContent || hasLiveEvent)        content_type = 'game_guide'
+  else                                           content_type = 'category_page'
+
+  // 3. Content angle — specific headline direction for Bragi's brief prompt
+  let content_angle: string
+  if (hasSale)
+    content_angle = `Steam sale alert — best time to buy & sell ${gameName} items and accounts`
+  else if (hasLiveEvent)
+    content_angle = `${gameName} live event — limited items & trading opportunities for players`
+  else if (hasNewContent)
+    content_angle = `${gameName} update — what to farm, trade, and sell in the new patch`
+  else if (hasBuyIntent)
+    content_angle = `Buy & sell ${gameName} accounts, items & currency — G2G marketplace guide`
+  else
+    content_angle = `${gameName} marketplace — trade accounts, items & in-game currency on G2G`
+
+  // 4. Topical authority tier (pillar = broad anchor page; cluster = subtopic)
+  const pillar_or_cluster: ContentStrategy['pillar_or_cluster'] =
+    isBroadVolume ? 'pillar' : sv > 1_000 ? 'cluster' : 'standalone'
+
+  return { intent, content_type, content_angle, pillar_or_cluster }
+}
+
 export async function runOdin(
   ownerId: string,
   siteSlug: string,
@@ -224,6 +291,18 @@ export async function runOdin(
       const trendBasis = basisParts.join(' · ')
 
       const suggestedAction: 'create_page' | 'update_page' = existingPageUrl ? 'update_page' : 'create_page'
+
+      // Derive content strategy from available signals — drives content_type,
+      // content_angle, and search intent that Bragi uses to generate the brief.
+      const contentStrategy = deriveContentStrategy(
+        String(game.name),
+        sv,
+        Number(game.buy_search_volume ?? 0),
+        p2w,
+        trendReasons,
+        suggestedAction,
+      )
+
       // Fast-path: high-priority NEW trend (no existing page) → handoff to
       // Bragi directly. Skips the suggest_trend_brief → manual approve →
       // Bragi-scan three-step. One approval = one brief.
@@ -260,6 +339,8 @@ export async function runOdin(
         keyword_map_id:         universe.keyword_map_id,
         topic:                  universe.topic,
         outside_universe:       universe.outside_universe,
+        // Content strategy (content-strategy skill methodology applied per game)
+        content_strategy:  contentStrategy,
       }
 
       let insertErr
@@ -283,8 +364,17 @@ export async function runOdin(
                 page_url:      categoryPageUrl,
                 search_volume: sv,
                 source_agent:  'odin',
-                brief_type:    'category_page',
-                context:       `Trending game basis: ${trendBasis}`,
+                // content_type from strategy — buying_guide when buy intent dominates
+                brief_type:    contentStrategy.content_type === 'buying_guide'
+                                 ? 'buying_guide' : 'category_page',
+                // Specific angle so Bragi's brief prompt has direction, not just keyword
+                content_angle: contentStrategy.content_angle,
+                search_intent: contentStrategy.intent,
+                context: [
+                  `Trending game: ${trendBasis}.`,
+                  `Recommended angle: "${contentStrategy.content_angle}"`,
+                  `(${contentStrategy.content_type} · ${contentStrategy.intent} intent · ${contentStrategy.pillar_or_cluster}).`,
+                ].join(' '),
               },
               ...sharedData,
               fast_path:     true,
@@ -328,7 +418,8 @@ export async function runOdin(
           search_volume:   sv,
           g2g_recommended: !!game.g2g_recommended,
         },
-        queued_as_brief: !insertErr,
+        queued_as_brief:  !insertErr,
+        content_strategy: contentStrategy,
       }
       await persistFinding(db, {
         agentKey:    'odin',

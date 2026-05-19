@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
@@ -53,6 +53,32 @@ interface ApiResponse {
   error?:      string
 }
 
+// ── Skill: searchfit-seo:ai-visibility — recommendation types ────────────────
+interface AiVisRec {
+  title:     string
+  action:    string
+  metric:    string
+  rationale: string
+  priority:  'high' | 'medium' | 'low'
+  dimension: 'content' | 'technical' | 'authority' | 'prompt_optimization'
+}
+
+interface RecsRecord {
+  id:              string
+  snapshot_date:   string
+  recommendations: AiVisRec[]
+  generated_at:    string
+}
+
+interface RecsApiResponse {
+  ok:        boolean
+  cached?:   boolean
+  disabled?: boolean
+  skill?:    string
+  record?:   RecsRecord | null
+  error?:    string
+}
+
 export default function AiVisibilityPage() {
   const siteSlug = useSiteSlug()
 
@@ -64,6 +90,47 @@ export default function AiVisibilityPage() {
   const [importJson,   setImportJson]   = useState('')
   const [importing,    setImporting]    = useState(false)
   const [importResult, setImportResult] = useState<{ ok: boolean; inserted: number; skipped: number; errors?: unknown[] } | null>(null)
+
+  // ── Skill: ai-visibility recommendations ────────────────────────────────
+  const [recsRecord,      setRecsRecord]      = useState<RecsRecord | null>(null)
+  const [recsLoading,     setRecsLoading]     = useState(false)
+  const [recsError,       setRecsError]       = useState<string | null>(null)
+  const [recsDisabled,    setRecsDisabled]    = useState(false)
+  const [recsCollapsed,   setRecsCollapsed]   = useState(false)
+  const [recsGenerating,  setRecsGenerating]  = useState(false)
+
+  const loadRecs = useCallback(async () => {
+    setRecsLoading(true); setRecsError(null)
+    try {
+      const res  = await fetch(`/api/reports/ai-visibility/recommend?site=${siteSlug}`)
+      const body = await res.json() as RecsApiResponse
+      if (body.disabled) { setRecsDisabled(true); return }
+      if (!body.ok) { setRecsError(body.error ?? 'Failed to load recommendations'); return }
+      setRecsRecord(body.record ?? null)
+    } catch (e) {
+      setRecsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRecsLoading(false)
+    }
+  }, [siteSlug])
+
+  const generateRecs = async (force = false) => {
+    setRecsGenerating(true); setRecsError(null)
+    try {
+      const res  = await fetch('/api/reports/ai-visibility/recommend', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ site: siteSlug, force }),
+      })
+      const body = await res.json() as RecsApiResponse
+      if (!body.ok) { setRecsError(body.error ?? 'Generation failed'); return }
+      setRecsRecord(body.record ?? null)
+    } catch (e) {
+      setRecsError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRecsGenerating(false)
+    }
+  }
 
   async function load() {
     setLoading(true); setError(null)
@@ -82,6 +149,7 @@ export default function AiVisibilityPage() {
     }
   }
   useEffect(() => { void load() }, [days, siteSlug])
+  useEffect(() => { void loadRecs() }, [loadRecs])
 
   async function runImport() {
     setImporting(true); setImportResult(null)
@@ -209,6 +277,74 @@ export default function AiVisibilityPage() {
         </>
       )}
 
+      {/* ── Skill: AI Visibility Recommendations ───────────────────────────── */}
+      {!recsDisabled && (
+        <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
+          {/* Header row */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+            <button
+              onClick={() => setRecsCollapsed(c => !c)}
+              className="flex items-center gap-2 text-left flex-1"
+            >
+              <span className="text-sm font-semibold text-white">💡 Recommendations</span>
+              {recsRecord && (
+                <span className="text-[10px] text-gray-500 ml-1">
+                  from snapshot {recsRecord.snapshot_date} · {timeAgo(recsRecord.generated_at)}
+                </span>
+              )}
+              <span className="text-gray-600 text-xs ml-1">{recsCollapsed ? '▼' : '▲'}</span>
+            </button>
+            <button
+              onClick={() => void generateRecs(true)}
+              disabled={recsGenerating}
+              className="text-[11px] px-3 py-1.5 rounded-lg border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 flex-shrink-0"
+              title="Regenerate recommendations using latest snapshot data"
+            >
+              <span>{recsGenerating ? '⏳' : '🤖'}</span>
+              <span>{recsGenerating ? 'Generating…' : 'Regenerate'}</span>
+            </button>
+          </div>
+
+          {!recsCollapsed && (
+            <div className="p-4">
+              {/* Attribution */}
+              <p className="text-[10px] text-gray-600 mb-3">
+                Generated via Anthropic skill: <code className="text-gray-500">searchfit-seo:ai-visibility</code> · Model: claude-haiku-4-5
+              </p>
+
+              {recsLoading && (
+                <p className="text-xs text-gray-500 py-4 text-center">Loading recommendations…</p>
+              )}
+
+              {recsError && (
+                <p className="text-xs text-red-400 py-2">⚠ {recsError}</p>
+              )}
+
+              {!recsLoading && !recsError && !recsRecord && (
+                <div className="py-6 text-center">
+                  <p className="text-sm text-gray-400 mb-3">No recommendations yet for this site.</p>
+                  <button
+                    onClick={() => void generateRecs(false)}
+                    disabled={recsGenerating}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm rounded-lg"
+                  >
+                    {recsGenerating ? 'Generating…' : '🤖 Generate recommendations'}
+                  </button>
+                </div>
+              )}
+
+              {recsRecord && recsRecord.recommendations.length > 0 && (
+                <div className="space-y-3">
+                  {recsRecord.recommendations.map((rec, i) => (
+                    <RecCard key={i} rec={rec} index={i + 1} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Import section */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
         <h2 className="text-sm font-semibold text-white mb-2">📥 Import snapshots</h2>
@@ -326,6 +462,63 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
       </div>
     </div>
   )
+}
+
+// ── Recommendation card ───────────────────────────────────────────────────────
+
+const PRIORITY_BG: Record<AiVisRec['priority'], string> = {
+  high:   'border-red-800/50   bg-red-900/20',
+  medium: 'border-amber-800/50 bg-amber-900/20',
+  low:    'border-blue-800/50  bg-blue-900/20',
+}
+
+const PRIORITY_LABEL: Record<AiVisRec['priority'], string> = {
+  high:   'text-red-300   bg-red-900/40   border-red-700/40',
+  medium: 'text-amber-300 bg-amber-900/40 border-amber-700/40',
+  low:    'text-blue-300  bg-blue-900/40  border-blue-700/40',
+}
+
+const DIMENSION_LABEL: Record<AiVisRec['dimension'], string> = {
+  content:              'Content',
+  technical:            'Technical',
+  authority:            'Authority',
+  prompt_optimization:  'Prompt Opt.',
+}
+
+function RecCard({ rec, index }: { rec: AiVisRec; index: number }) {
+  return (
+    <div className={`rounded-lg border p-3.5 ${PRIORITY_BG[rec.priority]}`}>
+      <div className="flex items-start gap-2 mb-1.5">
+        <span className="text-gray-500 text-xs font-mono mt-0.5 flex-shrink-0">{index}.</span>
+        <div className="flex-1">
+          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+            <span className="text-white text-sm font-semibold">{rec.title}</span>
+            <span className={`text-[9px] px-1.5 py-0.5 rounded border uppercase font-bold ${PRIORITY_LABEL[rec.priority]}`}>
+              {rec.priority}
+            </span>
+            <span className="text-[9px] px-1.5 py-0.5 rounded border bg-gray-800 border-gray-700 text-gray-400 uppercase">
+              {DIMENSION_LABEL[rec.dimension] ?? rec.dimension}
+            </span>
+          </div>
+          <p className="text-sm text-gray-200 mb-1">{rec.action}</p>
+          <p className="text-xs text-emerald-400 mb-1">🎯 {rec.metric}</p>
+          <p className="text-xs text-gray-500 leading-relaxed">{rec.rationale}</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Time helper ───────────────────────────────────────────────────────────────
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const m  = Math.floor(ms / 60_000)
+  if (m < 60)  return `${m}m ago`
+  const h  = Math.floor(m / 60)
+  if (h < 24)  return `${h}h ago`
+  const d  = Math.floor(h / 24)
+  return d < 7 ? `${d}d ago` : new Date(iso).toLocaleDateString()
 }
 
 function pctClass(d: number | null): string {

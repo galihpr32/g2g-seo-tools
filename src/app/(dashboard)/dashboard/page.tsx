@@ -191,11 +191,13 @@ export default async function DashboardPage() {
       .eq('status', 'published').gte('published_at', prev7Iso).lt('published_at', last7Iso) as unknown as CountQ<{ id: string }>,
 
     // Backlinks acquired last 7d (link_status=active, verified within window)
-    // Sprint DASH.OFFPAGE.FIX — column is link_status not status; using wrong
-    // name silently filtered to 0 rows. paid_backlinks check constraint:
-    // link_status IN ('active', 'broken', 'pending').
-    db.from('paid_backlinks').select('id, verified_at, created_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
-      .eq('link_status', 'active').gte('created_at', last7Iso) as unknown as CountQ<{ id: string; verified_at: string | null; created_at: string }>,
+    // Sprint DASH.OFFPAGE.FIX — column is link_status not status.
+    // Sprint DASH.OFFPAGE.FIX.2 — also dropped 'verified_at' from SELECT.
+    // That column doesn't exist (actual name is last_verified_at) so the
+    // whole SELECT errored and data came back null → KPI stuck at 0 while
+    // the sparkline query (which only selects created_at) worked correctly.
+    db.from('paid_backlinks').select('id, created_at').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
+      .eq('link_status', 'active').gte('created_at', last7Iso) as unknown as CountQ<{ id: string; created_at: string }>,
     db.from('paid_backlinks').select('id').eq('owner_user_id', ownerId).eq('site_slug', siteSlug)
       .eq('link_status', 'active').gte('created_at', prev7Iso).lt('created_at', last7Iso) as unknown as CountQ<{ id: string }>,
 
