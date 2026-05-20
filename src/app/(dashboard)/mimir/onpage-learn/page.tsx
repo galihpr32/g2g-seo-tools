@@ -57,8 +57,16 @@ interface JobStatus {
   total_deleted:     number
   per_dimension:     Array<{
     dimension: string
-    patterns:  string[]
-    examples:  string[]
+    // Sprint MIMIR.POLISH.4 — patterns are now categorized objects.
+    // Old jobs (before this sprint) may still have string[] in DB — render both.
+    patterns:  Array<{
+      category:     'rule' | 'preference' | 'fact' | 'lesson'
+      content:      string
+      example:      string
+      source_url:   string
+      page_support: number
+    }> | string[]
+    examples?: string[]
     inserted:  number
     deleted:   number
     error?:    string
@@ -425,8 +433,53 @@ export default function MimirOnpageLearnPage() {
                   ) : d.patterns.length === 0 ? (
                     <p className="text-xs text-gray-500 italic">No recurring patterns found in this dimension.</p>
                   ) : (
-                    <ul className="space-y-1 text-xs text-gray-200">
-                      {d.patterns.map((p, j) => <li key={j} className="flex gap-1.5"><span className="text-gray-600">▸</span><span>{p}</span></li>)}
+                    <ul className="space-y-1.5 text-xs text-gray-200">
+                      {d.patterns.map((p, j) => {
+                        // Sprint MIMIR.POLISH.4 — patterns are now categorized objects (with category/content/example/page_support).
+                        // Older jobs (pre-this sprint) may still have plain strings — render legibly either way.
+                        if (typeof p === 'string') {
+                          return (
+                            <li key={j} className="flex gap-1.5">
+                              <span className="text-gray-600">▸</span>
+                              <span>{p}</span>
+                            </li>
+                          )
+                        }
+                        const catColor = {
+                          rule:       'border-red-700/50    bg-red-500/10    text-red-300',
+                          preference: 'border-blue-700/50   bg-blue-500/10   text-blue-300',
+                          fact:       'border-slate-600/50  bg-slate-500/10  text-slate-200',
+                          lesson:     'border-amber-700/50  bg-amber-500/10  text-amber-300',
+                        }[p.category]
+                        return (
+                          <li key={j} className="flex items-start gap-2">
+                            <span className={`px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-semibold border rounded shrink-0 ${catColor}`}>
+                              {p.category}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-gray-200">{p.content}</p>
+                              {p.example && (
+                                <p className="text-[10px] text-gray-500 italic mt-0.5 truncate" title={p.example}>
+                                  ex: &ldquo;{p.example}&rdquo;
+                                </p>
+                              )}
+                              <div className="flex items-center gap-2 mt-0.5 text-[9px] text-gray-600">
+                                <span>{p.page_support} pages</span>
+                                {p.source_url && (
+                                  <a
+                                    href={p.source_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-gray-500 hover:text-blue-400 underline truncate max-w-xs"
+                                  >
+                                    {p.source_url.replace(/^https?:\/\/[^/]+/, '')}
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          </li>
+                        )
+                      })}
                     </ul>
                   )}
                 </div>

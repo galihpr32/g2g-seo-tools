@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 
 // ─── Mimir Memory Admin ────────────────────────────────────────────────────
 // Browse what Mimir has learned + manage manually-added rules/preferences.
@@ -21,6 +22,14 @@ interface Memory {
   site_slug:              string | null
   topic_slug:             string | null
   relation_id:            string | null
+  /** Sprint MIMIR.TIER.LEARN — tier scope (1, 2, or null). */
+  tier:                   number | null
+  /** Sprint MIMIR.TIER.LEARN — FK to product_tiers row. */
+  product_tier_id:        string | null
+  /** Sprint MIMIR.NOTES.APPLY — denormalized parent product category. */
+  product_category:       string | null
+  /** Sprint MIMIR.NOTES.APPLY — true = pattern applies cross-product within category. */
+  apply_to_category:      boolean
   category:               MemoryCategory
   content:                string
   tags:                   string[]
@@ -32,19 +41,85 @@ interface Memory {
   archived:               boolean
   created_at:             string
   updated_at:             string
+  /** Sprint MIMIR.POLISH.3 — auto-tuning metadata (optional, hydrated when present). */
+  applied_count?:         number
+  last_applied_at?:       string | null
 }
 
 const SCOPES:     MemoryScope[]    = ['global', 'site', 'topic', 'product']
 const CATEGORIES: MemoryCategory[] = ['rule', 'preference', 'lesson', 'fact']
+const SOURCES = ['manual', 'extracted', 'imported'] as const
+type SourceKind = (typeof SOURCES)[number]
+type TierFilter = '' | '1' | '2' | 'untagged'
+
+interface MemoryProductOption {
+  id:           string
+  product_name: string
+  tier:         number | null
+  market:       string | null
+  category:     string | null
+  site_slug:    string
+  memory_count: number
+}
 
 export default function MimirMemoriesPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-gray-500">Loading…</div>}>
+      <MimirMemoriesPageInner />
+    </Suspense>
+  )
+}
+
+function MimirMemoriesPageInner() {
+  const router = useRouter()
+  const sp     = useSearchParams()
+
   const [memories,    setMemories]   = useState<Memory[]>([])
   const [loading,     setLoading]    = useState(true)
-  const [scopeF,      setScopeF]     = useState<MemoryScope | ''>('')
-  const [categoryF,   setCategoryF]  = useState<MemoryCategory | ''>('')
-  const [search,      setSearch]     = useState('')
-  const [showArchived, setShowArchived] = useState(false)
+  const [scopeF,      setScopeF]     = useState<MemoryScope | ''>((sp.get('scope') as MemoryScope) || '')
+  const [categoryF,   setCategoryF]  = useState<MemoryCategory | ''>((sp.get('category') as MemoryCategory) || '')
+  const [sourceF,     setSourceF]    = useState<SourceKind | ''>((sp.get('source') as SourceKind) || '')
+  const [tierF,       setTierF]      = useState<TierFilter>((sp.get('tier') as TierFilter) || '')
+  const [productF,    setProductF]   = useState<string>(sp.get('product') ?? '')
+  const [importMin,   setImportMin]  = useState<number>(parseInt(sp.get('importance_min') ?? '0', 10) || 0)
+  const [crossOnly,   setCrossOnly]  = useState<boolean>(sp.get('cross_only') === '1')
+  const [search,      setSearch]     = useState(sp.get('q') ?? '')
+  const [showArchived, setShowArchived] = useState(sp.get('include_archived') === '1')
   const [refreshTick, setRefreshTick] = useState(0)
+
+  // Sprint MIMIR.POLISH.2 — load product dropdown options once. Refreshes on
+  // tick so a newly-attached memory shows up in the dropdown immediately.
+  const [productOptions, setProductOptions] = useState<MemoryProductOption[]>([])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res  = await fetch('/api/mimir/memories/products')
+        const data = await res.json()
+        if (!cancelled) setProductOptions(data.products ?? [])
+      } catch { if (!cancelled) setProductOptions([]) }
+    })()
+    return () => { cancelled = true }
+  }, [refreshTick])
+
+  // Sprint MIMIR.POLISH.2 — sync filter state back to URL (shareable links).
+  // Debounce-skip on the search box since it changes on every keystroke; the
+  // URL update piggy-backs on the fetch effect below by setting all params
+  // at once.
+  useEffect(() => {
+    const params = new URLSearchParams()
+    if (scopeF)         params.set('scope', scopeF)
+    if (categoryF)      params.set('category', categoryF)
+    if (sourceF)        params.set('source', sourceF)
+    if (tierF)          params.set('tier', tierF)
+    if (productF)       params.set('product', productF)
+    if (importMin > 0)  params.set('importance_min', String(importMin))
+    if (crossOnly)      params.set('cross_only', '1')
+    if (search.trim())  params.set('q', search.trim())
+    if (showArchived)   params.set('include_archived', '1')
+    const qs = params.toString()
+    router.replace(qs ? `?${qs}` : '?', { scroll: false })
+  }, [scopeF, categoryF, sourceF, tierF, productF, importMin, crossOnly, search, showArchived, router])
 
   // Add-form state
   const [addOpen, setAddOpen]   = useState(false)
@@ -59,10 +134,15 @@ export default function MimirMemoriesPage() {
     ;(async () => {
       try {
         const params = new URLSearchParams()
-        if (scopeF)        params.set('scope', scopeF)
-        if (categoryF)     params.set('category', categoryF)
-        if (search.trim()) params.set('q', search.trim())
-        if (showArchived)  params.set('include_archived', '1')
+        if (scopeF)         params.set('scope', scopeF)
+        if (categoryF)      params.set('category', categoryF)
+        if (sourceF)        params.set('source', sourceF)
+        if (tierF)          params.set('tier', tierF)
+        if (productF)       params.set('product', productF)
+        if (importMin > 0)  params.set('importance_min', String(importMin))
+        if (crossOnly)      params.set('cross_only', '1')
+        if (search.trim())  params.set('q', search.trim())
+        if (showArchived)   params.set('include_archived', '1')
         const res = await fetch(`/api/mimir/memories?${params}`)
         const data = await res.json()
         if (!cancelled) setMemories(data.memories ?? [])
@@ -70,7 +150,7 @@ export default function MimirMemoriesPage() {
       finally { if (!cancelled) setLoading(false) }
     })()
     return () => { cancelled = true }
-  }, [scopeF, categoryF, search, showArchived, refreshTick])
+  }, [scopeF, categoryF, sourceF, tierF, productF, importMin, crossOnly, search, showArchived, refreshTick])
 
   async function patchMemory(id: string, patch: Partial<Memory>) {
     const res = await fetch(`/api/mimir/memories?id=${id}`, {
@@ -86,6 +166,9 @@ export default function MimirMemoriesPage() {
     const res = await fetch(`/api/mimir/memories?id=${id}`, { method: 'DELETE' })
     if (res.ok) setRefreshTick(t => t + 1)
   }
+
+  // Sprint MIMIR.POLISH.5 — applied-trace drill-down modal state.
+  const [appliedFor, setAppliedFor] = useState<Memory | null>(null)
 
   async function addMemory() {
     if (!draft.content?.trim()) { setAddErr('Content required'); return }
@@ -122,6 +205,24 @@ export default function MimirMemoriesPage() {
     return c
   }, [memories])
 
+  // Sprint MIMIR.POLISH.1 — scope + tier breakdown chips so coverage gaps are
+  // visible at a glance. e.g. "60 product / 7 site / 0 global" tells you
+  // immediately that site-wide rules are underweighted.
+  const breakdown = useMemo(() => {
+    const scope = { global: 0, site: 0, topic: 0, product: 0 }
+    const tier  = { t1: 0, t2: 0, untagged: 0 }
+    const propagate = { cross: 0, single: 0 }
+    for (const m of memories) {
+      scope[m.scope]++
+      if (m.tier === 1) tier.t1++
+      else if (m.tier === 2) tier.t2++
+      else tier.untagged++
+      if (m.apply_to_category) propagate.cross++
+      else propagate.single++
+    }
+    return { scope, tier, propagate }
+  }, [memories])
+
   return (
     <div className="p-6 md:p-8 max-w-6xl mx-auto space-y-5">
       <div className="flex items-start justify-between flex-wrap gap-3">
@@ -143,13 +244,33 @@ export default function MimirMemoriesPage() {
         </div>
       </div>
 
-      {/* Category KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-        <Kpi label="Total"       value={memories.length} tone="gray" />
-        <Kpi label="Rules"       value={counts.rule} tone="red" />
+      {/* Category KPIs — Sprint MIMIR.POLISH.1 added Facts card (was missing). */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 text-sm">
+        <Kpi label="Total"       value={memories.length}   tone="gray" />
+        <Kpi label="Rules"       value={counts.rule}       tone="red" />
         <Kpi label="Preferences" value={counts.preference} tone="blue" />
-        <Kpi label="Lessons"     value={counts.lesson} tone="amber" />
-        <Kpi label="Pinned"      value={counts.pinned} tone="purple" />
+        <Kpi label="Facts"       value={counts.fact}       tone="slate" />
+        <Kpi label="Lessons"     value={counts.lesson}     tone="amber" />
+        <Kpi label="Pinned"      value={counts.pinned}     tone="purple" />
+      </div>
+
+      {/* Sprint MIMIR.POLISH.1 — Coverage breakdown chips. Surfaces lop-sided
+       *  distributions (e.g. all memory is product-scope, none is site-wide). */}
+      <div className="rounded-lg border border-gray-800 bg-gray-900/50 p-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        <span className="text-gray-500 uppercase tracking-wide">Scope:</span>
+        <Chip label="Global"  value={breakdown.scope.global}  active={breakdown.scope.global > 0}  />
+        <Chip label="Site"    value={breakdown.scope.site}    active={breakdown.scope.site > 0}    />
+        <Chip label="Topic"   value={breakdown.scope.topic}   active={breakdown.scope.topic > 0}   />
+        <Chip label="Product" value={breakdown.scope.product} active={breakdown.scope.product > 0} />
+        <span className="text-gray-700">|</span>
+        <span className="text-gray-500 uppercase tracking-wide">Tier:</span>
+        <Chip label="T1"       value={breakdown.tier.t1}       active={breakdown.tier.t1 > 0}       tone="purple" />
+        <Chip label="T2"       value={breakdown.tier.t2}       active={breakdown.tier.t2 > 0}       tone="blue" />
+        <Chip label="Untagged" value={breakdown.tier.untagged} active={breakdown.tier.untagged > 0} tone="gray" />
+        <span className="text-gray-700">|</span>
+        <span className="text-gray-500 uppercase tracking-wide">Reach:</span>
+        <Chip label="Cross-product" value={breakdown.propagate.cross}  active={breakdown.propagate.cross > 0}  tone="emerald" />
+        <Chip label="Single-product" value={breakdown.propagate.single} active={breakdown.propagate.single > 0} tone="gray" />
       </div>
 
       {/* Add form */}
@@ -216,27 +337,89 @@ export default function MimirMemoriesPage() {
         </div>
       )}
 
-      {/* Filter bar */}
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-3 flex flex-wrap items-center gap-2 text-sm">
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search content…"
-          className="bg-gray-950 border border-gray-700 rounded-md px-3 py-1.5 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-purple-500 flex-1 min-w-[200px]"
-        />
-        <select value={scopeF} onChange={e => setScopeF(e.target.value as MemoryScope | '')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
-          <option value="">All scopes</option>
-          {SCOPES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <select value={categoryF} onChange={e => setCategoryF(e.target.value as MemoryCategory | '')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
-          <option value="">All categories</option>
-          {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <label className="flex items-center gap-1.5 text-xs text-gray-400">
-          <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
-          Show archived
-        </label>
+      {/* Filter bar — Sprint MIMIR.POLISH.2 — expanded with tier/product/source
+       *  filters + importance slider + cross-product toggle + URL param sync. */}
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-3 space-y-2 text-sm">
+        {/* Row 1: search + primary filters */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search content…"
+            className="bg-gray-950 border border-gray-700 rounded-md px-3 py-1.5 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-purple-500 flex-1 min-w-[200px]"
+          />
+          <select value={scopeF} onChange={e => setScopeF(e.target.value as MemoryScope | '')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+            <option value="">All scopes</option>
+            {SCOPES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select value={categoryF} onChange={e => setCategoryF(e.target.value as MemoryCategory | '')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+            <option value="">All categories</option>
+            {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={sourceF} onChange={e => setSourceF(e.target.value as SourceKind | '')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+            <option value="">All sources</option>
+            {SOURCES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+
+        {/* Row 2: tier + product + importance + reach + archived */}
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={tierF} onChange={e => setTierF(e.target.value as TierFilter)} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+            <option value="">All tiers</option>
+            <option value="1">T1 only</option>
+            <option value="2">T2 only</option>
+            <option value="untagged">Untagged</option>
+          </select>
+          <select value={productF} onChange={e => setProductF(e.target.value)} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200 max-w-xs">
+            <option value="">All products ({productOptions.length})</option>
+            {productOptions.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.product_name}{p.tier ? ` · T${p.tier}` : ''}{p.market ? ` · ${p.market}` : ''} ({p.memory_count})
+              </option>
+            ))}
+          </select>
+          <label className="flex items-center gap-2 text-xs text-gray-400">
+            Importance ≥ <span className="font-semibold text-gray-200 tabular-nums w-8">{importMin}</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={importMin}
+              onChange={e => setImportMin(parseInt(e.target.value, 10) || 0)}
+              className="w-28 accent-purple-500"
+            />
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400">
+            <input type="checkbox" checked={crossOnly} onChange={e => setCrossOnly(e.target.checked)} />
+            Cross-product only
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-400">
+            <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+            Show archived
+          </label>
+          {(scopeF || categoryF || sourceF || tierF || productF || importMin > 0 || crossOnly || search || showArchived) && (
+            <button
+              onClick={() => {
+                setScopeF(''); setCategoryF(''); setSourceF(''); setTierF('')
+                setProductF(''); setImportMin(0); setCrossOnly(false)
+                setSearch(''); setShowArchived(false)
+              }}
+              className="ml-auto text-xs text-gray-400 hover:text-purple-300 underline"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        {/* Active filter readout */}
+        <div className="text-xs text-gray-500 pt-1 border-t border-gray-800">
+          Showing <span className="text-gray-300 font-semibold">{memories.length}</span> memories
+          {productF && productOptions.find(p => p.id === productF) && (
+            <> · product: <span className="text-purple-300">{productOptions.find(p => p.id === productF)?.product_name}</span></>
+          )}
+        </div>
       </div>
 
       {/* List */}
@@ -254,15 +437,24 @@ export default function MimirMemoriesPage() {
               m={m}
               onPatch={(patch) => patchMemory(m.id, patch)}
               onDelete={() => deleteMemory(m.id)}
+              onShowApplied={() => setAppliedFor(m)}
             />
           ))}
         </div>
       )}
+
+      {/* Sprint MIMIR.POLISH.5 — applied trace modal */}
+      {appliedFor && <AppliedTraceModal memory={appliedFor} onClose={() => setAppliedFor(null)} />}
     </div>
   )
 }
 
-function MemoryCard({ m, onPatch, onDelete }: { m: Memory; onPatch: (p: Partial<Memory>) => void; onDelete: () => void }) {
+function MemoryCard({ m, onPatch, onDelete, onShowApplied }: {
+  m: Memory
+  onPatch: (p: Partial<Memory>) => void
+  onDelete: () => void
+  onShowApplied: () => void
+}) {
   const categoryColors: Record<MemoryCategory, string> = {
     rule:       'border-red-700/40    bg-red-500/5    text-red-300',
     preference: 'border-blue-700/40   bg-blue-500/5   text-blue-300',
@@ -283,8 +475,42 @@ function MemoryCard({ m, onPatch, onDelete }: { m: Memory; onPatch: (p: Partial<
         {m.site_slug   && <span>· site: {m.site_slug}</span>}
         {m.topic_slug  && <span>· topic: {m.topic_slug}</span>}
         {m.relation_id && <span>· product</span>}
+        {/* Sprint MIMIR.POLISH.2 — tier badge + cross-product reach badge */}
+        {m.tier && (
+          <span className="px-1.5 py-0.5 rounded-md border border-purple-700/50 bg-purple-500/10 text-purple-300 font-medium">
+            T{m.tier}
+          </span>
+        )}
+        {m.product_category && (
+          <span className="text-gray-500">· cat: <span className="text-gray-400">{m.product_category}</span></span>
+        )}
+        {m.apply_to_category && (
+          <span
+            title="Cross-product: pattern propagates to ALL products in this category"
+            className="px-1.5 py-0.5 rounded-md border border-emerald-700/50 bg-emerald-500/10 text-emerald-300 font-medium"
+          >
+            🌐 cross-product
+          </span>
+        )}
         {m.tags.length > 0 && <span>· {m.tags.map(t => `#${t}`).join(' ')}</span>}
-        <span>· {m.source_kind === 'extracted' ? '🤖 auto' : '✏ manual'}</span>
+        <span>· {m.source_kind === 'extracted' ? '🤖 auto' : m.source_kind === 'imported' ? '📥 import' : '✏ manual'}</span>
+        {/* Sprint MIMIR.POLISH.5 — applied trace badge; click to open drill-down modal */}
+        {typeof m.applied_count === 'number' && m.applied_count > 0 ? (
+          <button
+            onClick={onShowApplied}
+            title={`Click to see briefs that used this memory${m.last_applied_at ? ` · last ${new Date(m.last_applied_at).toLocaleDateString()}` : ''}`}
+            className="px-1.5 py-0.5 rounded-md border border-blue-700/50 bg-blue-500/10 hover:bg-blue-500/20 text-blue-300 font-medium cursor-pointer transition-colors"
+          >
+            📎 {m.applied_count}x
+          </button>
+        ) : (
+          <span
+            title="Never applied to a brief yet — candidate for archival if stale"
+            className="px-1.5 py-0.5 rounded-md border border-gray-800 text-gray-600 font-medium cursor-help"
+          >
+            📎 0x
+          </span>
+        )}
         <span>· {new Date(m.updated_at).toLocaleDateString()}</span>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => onPatch({ pinned: !m.pinned })} className="hover:text-purple-300">
@@ -345,18 +571,157 @@ function SeedButton({ onSeeded }: { onSeeded: () => void }) {
   )
 }
 
-function Kpi({ label, value, tone }: { label: string; value: number; tone: 'gray' | 'red' | 'blue' | 'amber' | 'purple' }) {
+function Kpi({ label, value, tone }: { label: string; value: number; tone: 'gray' | 'red' | 'blue' | 'amber' | 'purple' | 'slate' }) {
   const colors = {
     gray:   'border-gray-800   bg-gray-900',
     red:    'border-red-800/40 bg-red-500/5',
     blue:   'border-blue-800/40 bg-blue-500/5',
     amber:  'border-amber-800/40 bg-amber-500/5',
     purple: 'border-purple-800/40 bg-purple-500/5',
+    slate:  'border-slate-700/50 bg-slate-500/5',
   }[tone]
   return (
     <div className={`rounded-lg border ${colors} p-3`}>
       <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>
       <p className="text-xl font-bold text-white mt-0.5">{value}</p>
     </div>
+  )
+}
+
+// ─── Sprint MIMIR.POLISH.5 — Applied trace drill-down modal ────────────────
+// Lists briefs that injected this memory into their prompt. Lets Galih trace
+// "where did this Mimir pattern actually get used?" and spot stale memories
+// (0x applied = candidate for archive).
+interface AppliedBrief {
+  id:               string
+  primary_keyword:  string | null
+  page:             string | null
+  status:           string | null
+  tyr_score:        number | null
+  created_at:       string
+  updated_at:       string
+}
+
+function AppliedTraceModal({ memory, onClose }: { memory: Memory; onClose: () => void }) {
+  const [loading,  setLoading]  = useState(true)
+  const [briefs,   setBriefs]   = useState<AppliedBrief[]>([])
+  const [error,    setError]    = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setLoading(true); setError(null)
+      try {
+        const res  = await fetch(`/api/mimir/memories/${memory.id}/applied`)
+        const data = await res.json()
+        if (cancelled) return
+        if (!res.ok) {
+          setError(data.error ?? 'Failed to load')
+        } else {
+          setBriefs(data.briefs ?? [])
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      }
+      if (!cancelled) setLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [memory.id])
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 backdrop-blur-sm"
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="bg-gray-900 border border-gray-700 rounded-lg max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col"
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between p-4 border-b border-gray-800">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              📎 Applied trace
+              <span className="text-xs text-gray-500 font-normal">
+                · {memory.applied_count ?? 0} brief{memory.applied_count === 1 ? '' : 's'}
+                {memory.last_applied_at && ` · last ${new Date(memory.last_applied_at).toLocaleDateString()}`}
+              </span>
+            </h2>
+            <p className="text-xs text-gray-400 mt-1 line-clamp-2">{memory.content}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none ml-3">×</button>
+        </div>
+
+        {/* Body */}
+        <div className="overflow-y-auto p-4">
+          {loading ? (
+            <p className="text-sm text-gray-500 text-center py-8">Loading…</p>
+          ) : error ? (
+            <p className="text-sm text-red-400 text-center py-8">Error: {error}</p>
+          ) : briefs.length === 0 ? (
+            <div className="text-center py-8 space-y-2">
+              <p className="text-sm text-gray-400">No briefs have used this memory yet.</p>
+              <p className="text-xs text-gray-500">
+                Either Mimir hasn&apos;t picked it as relevant for any recent brief, or it&apos;s a candidate for archival.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {briefs.map(b => (
+                <a
+                  key={b.id}
+                  href={`/content/briefs/${b.id}`}
+                  className="block bg-gray-950/40 hover:bg-gray-950/70 border border-gray-800 hover:border-blue-700/50 rounded-lg p-3 transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white truncate">
+                        {b.primary_keyword ?? '(no keyword)'}
+                      </p>
+                      {b.page && (
+                        <p className="text-xs text-gray-500 truncate">{b.page}</p>
+                      )}
+                    </div>
+                    <div className="shrink-0 text-right text-xs">
+                      {b.tyr_score != null && (
+                        <p className={`font-semibold ${b.tyr_score >= 80 ? 'text-emerald-400' : b.tyr_score >= 60 ? 'text-amber-400' : 'text-red-400'}`}>
+                          Tyr {b.tyr_score}
+                        </p>
+                      )}
+                      <p className="text-gray-500">{b.status ?? '—'}</p>
+                      <p className="text-gray-600 text-[10px]">{new Date(b.updated_at).toLocaleDateString()}</p>
+                    </div>
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Sprint MIMIR.POLISH.1 — small inline chip for breakdown row.
+function Chip({
+  label, value, active, tone = 'slate',
+}: {
+  label:   string
+  value:   number
+  active:  boolean
+  tone?:   'slate' | 'purple' | 'blue' | 'gray' | 'emerald'
+}) {
+  const baseTone = {
+    slate:   active ? 'bg-slate-800/60   border-slate-600   text-slate-200'   : 'bg-gray-900/30 border-gray-800 text-gray-600',
+    purple:  active ? 'bg-purple-800/30  border-purple-600  text-purple-200'  : 'bg-gray-900/30 border-gray-800 text-gray-600',
+    blue:    active ? 'bg-blue-800/30    border-blue-600    text-blue-200'    : 'bg-gray-900/30 border-gray-800 text-gray-600',
+    emerald: active ? 'bg-emerald-800/30 border-emerald-600 text-emerald-200' : 'bg-gray-900/30 border-gray-800 text-gray-600',
+    gray:    active ? 'bg-gray-800       border-gray-600    text-gray-200'    : 'bg-gray-900/30 border-gray-800 text-gray-600',
+  }[tone]
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border ${baseTone}`}>
+      <span>{label}</span>
+      <span className="font-semibold tabular-nums">{value}</span>
+    </span>
   )
 }

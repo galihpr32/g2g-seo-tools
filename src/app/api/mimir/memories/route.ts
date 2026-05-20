@@ -8,8 +8,12 @@ export const maxDuration = 15
 
 const VALID_SCOPES     = ['global', 'site', 'topic', 'product'] as const
 const VALID_CATEGORIES = ['preference', 'fact', 'rule', 'lesson'] as const
+const VALID_SOURCES    = ['manual', 'extracted', 'imported'] as const
 
-// ─── GET /api/mimir/memories?scope=&category=&q=&include_archived=0 ────────
+// ─── GET /api/mimir/memories ────────────────────────────────────────────────
+// Sprint MIMIR.POLISH.2 — accept tier / product_tier_id / source_kind /
+// importance_min / cross_only query params so the admin UI can mirror them
+// in URL (shareable links like `?tier=1&product=abc123`).
 export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -22,6 +26,11 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const scope        = searchParams.get('scope')    ?? ''
   const category     = searchParams.get('category') ?? ''
+  const source       = searchParams.get('source')   ?? ''
+  const tierParam    = searchParams.get('tier')     ?? ''     // '1' | '2' | 'untagged' | ''
+  const productId    = (searchParams.get('product') ?? '').trim()
+  const importMin    = parseInt(searchParams.get('importance_min') ?? '0', 10)
+  const crossOnly    = searchParams.get('cross_only') === '1'
   const q            = (searchParams.get('q') ?? '').trim()
   const includeArchived = searchParams.get('include_archived') === '1'
   const onlyActiveSite  = searchParams.get('site_filter') === '1'
@@ -38,6 +47,13 @@ export async function GET(req: Request) {
   if (!includeArchived)  query = query.eq('archived', false)
   if (VALID_SCOPES.includes(scope as typeof VALID_SCOPES[number]))         query = query.eq('scope', scope)
   if (VALID_CATEGORIES.includes(category as typeof VALID_CATEGORIES[number])) query = query.eq('category', category)
+  if (VALID_SOURCES.includes(source as typeof VALID_SOURCES[number]))       query = query.eq('source_kind', source)
+  if (tierParam === '1')        query = query.eq('tier', 1)
+  if (tierParam === '2')        query = query.eq('tier', 2)
+  if (tierParam === 'untagged') query = query.is('tier', null)
+  if (productId)                query = query.eq('product_tier_id', productId)
+  if (importMin > 0)            query = query.gte('importance', importMin)
+  if (crossOnly)                query = query.eq('apply_to_category', true)
   if (onlyActiveSite)   query = query.or(`scope.eq.global,site_slug.eq.${siteSlug},and(site_slug.is.null,scope.neq.site)`)
   if (q) {
     const safe = q.replace(/[%,()]/g, ' ')

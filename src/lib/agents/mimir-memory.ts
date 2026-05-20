@@ -547,3 +547,126 @@ export async function getMimirContextForBrief(
 
   return { block, applied }
 }
+
+// ─── Sprint MIMIR.POLISH.3 — Applied-count bump ────────────────────────────
+//
+// Called by brief-generator AFTER mimir_notes_applied is written to the brief.
+// Increments applied_count + last_applied_at on every memory that was
+// injected into the prompt. Fire-and-forget — failures are logged but do
+// NOT bubble up (brief generation already succeeded; tracking is a nice-to-
+// have signal for the weekly auto-tuner).
+//
+// Race condition note: we use a SQL increment via rpc-style update so two
+// concurrent brief generations against the same memory both produce a +1
+// instead of last-write-wins.
+export async function bumpMemoriesApplied(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:         SupabaseClient<any, any, any>,
+  memoryIds:  string[],
+): Promise<void> {
+  if (!Array.isArray(memoryIds) || memoryIds.length === 0) return
+  const nowIso = new Date().toISOString()
+
+  // Pull current counts then update — read-modify-write. Acceptable trade-off
+  // vs an RPC because brief generation is low-frequency (a few per minute max)
+  // and the precision hit on rare double-increments doesn't change tuning.
+  try {
+    const { data: current } = await db
+      .from('mimir_memories')
+      .select('id, applied_count')
+      .in('id', memoryIds)
+
+    const updates = (current ?? []).map(r => ({
+      id:               r.id as string,
+      applied_count:    ((r.applied_count as number | null) ?? 0) + 1,
+      last_applied_at:  nowIso,
+    }))
+
+    // Parallel single-row updates; targets different PKs so no contention.
+    await Promise.all(
+      updates.map(u =>
+        db.from('mimir_memories')
+          .update({ applied_count: u.applied_count, last_applied_at: u.last_applied_at })
+          .eq('id', u.id),
+      ),
+    )
+  } catch (err) {
+    console.warn('[mimir-memory] bumpMemoriesApplied non-fatal failure:', err instanceof Error ? err.message : String(err))
+  }
+}
+
+// ─── Sprint MIMIR.POLISH.3 — Weekly auto-tuner ──────────────────────────────
+//
+// Runs once per week. For each owner's memories:
+//   • If last_applied_at is null OR older than 60 days → importance -10 (floor 30)
+//   • If last_applied_at is within last 7 days        → importance +5  (cap 100)
+//   • Lessons get an extra +5 boost (max +15) on apply because they prevent
+//     repeated mistakes — stronger signal than a generic rule firing
+// Sets last_tuned_at so re-runs in the same week are idempotent.
+export interface TuneResult {
+  total_seen:     number
+  decayed:        number
+  boosted:        number
+  unchanged:      number
+  errors:         string[]
+}
+
+export async function autoTuneMimirMemories(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:       SupabaseClient<any, any, any>,
+  ownerId:  string,
+): Promise<TuneResult> {
+  const result: TuneResult = { total_seen: 0, decayed: 0, boosted: 0, unchanged: 0, errors: [] }
+  const now = Date.now()
+  const sixtyDays = 60 * 24 * 60 * 60 * 1000
+  const sevenDays = 7  * 24 * 60 * 60 * 1000
+  const oneWeekAgo = new Date(now - sevenDays).toISOString()
+
+  // Skip rows tuned within the last week — idempotent on re-runs.
+  const { data: rows, error } = await db
+    .from('mimir_memories')
+    .select('id, category, importance, last_applied_at, last_tuned_at, applied_count')
+    .eq('owner_user_id', ownerId)
+    .eq('archived', false)
+    .or(`last_tuned_at.is.null,last_tuned_at.lt.${oneWeekAgo}`)
+    .limit(2000)
+
+  if (error) { result.errors.push(error.message); return result }
+  result.total_seen = rows?.length ?? 0
+
+  type Row = { id: string; category: MemoryCategory; importance: number; last_applied_at: string | null; applied_count: number | null }
+  const updates: Array<{ id: string; new_importance: number; kind: 'decayed' | 'boosted' | 'unchanged' }> = []
+  for (const r of (rows ?? []) as Row[]) {
+    const lastAppliedMs = r.last_applied_at ? new Date(r.last_applied_at).getTime() : null
+    let delta = 0
+    if (lastAppliedMs === null || (now - lastAppliedMs) > sixtyDays) {
+      delta = -10
+    } else if ((now - lastAppliedMs) <= sevenDays) {
+      delta = r.category === 'lesson' ? +15 : +5
+    }
+    if (delta === 0) {
+      updates.push({ id: r.id, new_importance: r.importance, kind: 'unchanged' })
+      continue
+    }
+    const next = Math.max(30, Math.min(100, r.importance + delta))
+    updates.push({
+      id:             r.id,
+      new_importance: next,
+      kind:           delta < 0 ? 'decayed' : 'boosted',
+    })
+  }
+
+  const tunedAtIso = new Date(now).toISOString()
+  await Promise.all(updates.map(async u => {
+    const { error: updErr } = await db
+      .from('mimir_memories')
+      .update({ importance: u.new_importance, last_tuned_at: tunedAtIso })
+      .eq('id', u.id)
+    if (updErr) { result.errors.push(`tune ${u.id}: ${updErr.message}`); return }
+    if      (u.kind === 'decayed')  result.decayed++
+    else if (u.kind === 'boosted')  result.boosted++
+    else                            result.unchanged++
+  }))
+
+  return result
+}

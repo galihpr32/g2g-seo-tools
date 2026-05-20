@@ -11,10 +11,18 @@
 //   5. cta_pattern         — Call-to-action style + frequency
 //   6. internal_link_style — Anchor text patterns + link density
 //
+// Sprint MIMIR.POLISH.4 — disciplined classification:
+//   • RULE       = pattern observable across ≥3 pages, absolute "always/never"
+//   • PREFERENCE = pattern observable across ≥2 pages, soft tendency
+//   • FACT       = factual statement about the brand/product, not a directive
+//   • LESSON     = past mistake corrected by team (rarely produced here;
+//                  most lessons come from brief_review_feedback table)
+//
 // Each extracted pattern becomes one mimir_memories row with:
-//   category   = 'rule'
+//   category   = (model-classified, see above)
 //   scope      = 'site'
 //   tags       = ['onpage', dimension, ...]
+//   source_url = first page URL that exhibits the pattern (for trace-back)
 //
 // Replace strategy (UI option): when enabled, we delete existing memories
 // with the same (site_slug, onpage_dimension, scope=site) before
@@ -76,12 +84,27 @@ export interface LearnInput {
   replace?:   boolean
 }
 
+/** Sprint MIMIR.POLISH.4 — extracted pattern is no longer just a "rule".
+ *  Model returns category + content + supporting source URL per pattern. */
+export type PatternCategory = 'rule' | 'preference' | 'fact' | 'lesson'
+
+export interface ExtractedPattern {
+  category:   PatternCategory
+  /** Imperative or descriptive sentence (≤250 chars). */
+  content:    string
+  /** Verbatim snippet from corpus supporting the pattern. */
+  example:    string
+  /** First page URL that exhibits the pattern, for trace-back. */
+  source_url: string
+  /** Count of pages exhibiting the pattern, model-reported (≥2 enforced). */
+  page_support: number
+}
+
 export interface DimensionResult {
   dimension:    OnpageDimension
-  patterns:     string[]        // 2-5 short rules extracted from the cohort
-  examples:     string[]        // verbatim snippets supporting each pattern
-  inserted:     number          // memory rows created
-  deleted:      number          // memories removed when replace=true
+  patterns:     ExtractedPattern[] // Sprint MIMIR.POLISH.4 — categorized, not raw strings
+  inserted:     number             // memory rows created
+  deleted:      number             // memories removed when replace=true
   error?:       string
 }
 
@@ -123,7 +146,6 @@ export async function learnOnpagePatterns(
       perDim.push({
         dimension: dim,
         patterns:  [],
-        examples:  [],
         inserted:  0,
         deleted:   0,
         error:     err instanceof Error ? err.message : String(err),
@@ -163,19 +185,19 @@ async function learnOneDimension(
       .contains('tags',    ['onpage', dim])
       .select('id')
     if (delErr) {
-      return { dimension: dim, patterns: [], examples: [], inserted: 0, deleted: 0, error: `delete: ${delErr.message}` }
+      return { dimension: dim, patterns: [], inserted: 0, deleted: 0, error: `delete: ${delErr.message}` }
     }
     deleted = oldMems?.length ?? 0
   }
 
-  // 2. Run extraction
+  // 2. Run extraction with categorized output (Sprint MIMIR.POLISH.4).
   const prompt = buildPrompt(dim, input.pages)
-  let extracted: { patterns: string[]; examples: string[] } = { patterns: [], examples: [] }
+  let patterns: ExtractedPattern[] = []
 
   try {
     const res = await anthropic.messages.create({
       model:      MODEL,
-      max_tokens: 1500,
+      max_tokens: 2000,
       tools:      [EXTRACT_TOOL],
       tool_choice: { type: 'tool', name: EXTRACT_TOOL.name },
       messages:   [{ role: 'user', content: prompt }],
@@ -191,33 +213,58 @@ async function learnOneDimension(
 
     const toolUse = res.content.find(c => c.type === 'tool_use')
     if (toolUse && toolUse.type === 'tool_use') {
-      const payload = toolUse.input as { patterns?: string[]; examples?: string[] }
-      extracted = {
-        patterns: (payload.patterns ?? []).map(p => String(p ?? '').trim()).filter(Boolean).slice(0, 5),
-        examples: (payload.examples ?? []).map(p => String(p ?? '').trim()).filter(Boolean).slice(0, 5),
+      const payload = toolUse.input as {
+        patterns?: Array<{
+          category?:     string
+          content?:      string
+          example?:      string
+          source_url?:   string
+          page_support?: number
+        }>
       }
+      patterns = (payload.patterns ?? [])
+        .map(p => {
+          const cat = String(p.category ?? '').toLowerCase()
+          const validCat: PatternCategory = (
+            cat === 'preference' || cat === 'fact' || cat === 'lesson' ? cat : 'rule'
+          ) as PatternCategory
+          return {
+            category:     validCat,
+            content:      String(p.content ?? '').trim().slice(0, 250),
+            example:      String(p.example ?? '').trim().slice(0, 250),
+            source_url:   String(p.source_url ?? '').trim() || (input.pages[0]?.url ?? ''),
+            page_support: Math.max(1, Math.min(10, Number(p.page_support ?? 2))),
+          }
+        })
+        .filter(p => p.content)
+        // Sprint MIMIR.POLISH.4 — discipline: require ≥2 page support, else drop.
+        // Stops single-page quirks from leaking in as rules.
+        .filter(p => p.page_support >= 2)
+        .slice(0, 6)
     }
   } catch (err) {
-    return { dimension: dim, patterns: [], examples: [], inserted: 0, deleted, error: err instanceof Error ? err.message : String(err) }
+    return { dimension: dim, patterns: [], inserted: 0, deleted, error: err instanceof Error ? err.message : String(err) }
   }
 
-  // 3. Insert one memory per pattern.
-  const inserts = extracted.patterns.map((pattern, idx) => ({
+  // 3. Insert one memory per pattern with model-chosen category + provenance.
+  // Importance defaults differ by category: rules + lessons get 75 (stronger
+  // signal), preferences + facts get 60 (softer baseline). Tuner adjusts later.
+  const inserts = patterns.map(p => ({
     owner_user_id: input.ownerId,
     scope:         'site' as const,
     site_slug:     input.siteSlug,
-    category:      'rule' as const,
-    content:       `On-page ${DIMENSION_LABELS[dim]}: ${pattern}`,
-    tags:          ['onpage', dim],
-    importance:    70,
+    category:      p.category,
+    content:       `On-page ${DIMENSION_LABELS[dim]}: ${p.content}`,
+    tags:          ['onpage', dim, `support:${p.page_support}p`, p.source_url ? new URL(p.source_url).pathname.split('/').pop()?.slice(0, 40) || 'src' : 'src'].filter(Boolean) as string[],
+    importance:    (p.category === 'rule' || p.category === 'lesson') ? 75 : 60,
     pinned:        false,
     source_kind:   'extracted' as const,
     expires_at:    null,
     archived:      false,
-  })).slice(0, 5)
+  }))
 
   if (inserts.length === 0) {
-    return { dimension: dim, patterns: extracted.patterns, examples: extracted.examples, inserted: 0, deleted }
+    return { dimension: dim, patterns, inserted: 0, deleted }
   }
 
   const { error: insErr, data: insRows } = await db
@@ -225,13 +272,12 @@ async function learnOneDimension(
     .insert(inserts)
     .select('id')
   if (insErr) {
-    return { dimension: dim, patterns: extracted.patterns, examples: extracted.examples, inserted: 0, deleted, error: `insert: ${insErr.message}` }
+    return { dimension: dim, patterns, inserted: 0, deleted, error: `insert: ${insErr.message}` }
   }
 
   return {
     dimension: dim,
-    patterns:  extracted.patterns,
-    examples:  extracted.examples,
+    patterns,
     inserted:  insRows?.length ?? 0,
     deleted,
   }
@@ -252,12 +298,25 @@ DIMENSION: ${label}
 WHAT TO LOOK FOR:
 ${DIMENSION_HINTS[dim]}
 
+CLASSIFY EACH PATTERN STRICTLY (Sprint MIMIR.POLISH.4):
+
+• "rule" — Absolute pattern enforced across ALL or NEARLY ALL pages (≥3 of ${pages.length}). Phrased as "always" or "never". Example: "Always place H1 within first 50 words" or "Never use 'embark' or 'immersive'". This is the MOST RESTRICTIVE category — use sparingly.
+
+• "preference" — Soft tendency observable in ≥2 pages but with variation. Phrased as "tend to" or "prefer". Example: "Tend to open intro with a benefit statement rather than a question". Most stylistic observations belong here, NOT in rule.
+
+• "fact" — Descriptive statement about the brand or product that is true but is NOT a directive. Example: "Trust signals include GamerProtect, ISO certification, escrow" or "Average H2 count is 6". Use when content describes what IS rather than what TO DO.
+
+• "lesson" — Past mistake that was corrected. RARELY produced by on-page analysis (lessons usually come from team edits, not from reading published pages). Only use if you can identify a clear "before/after" pattern, like "Older pages used X, newer pages corrected to Y".
+
+DEFAULT TO PREFERENCE when uncertain. Rules are reserved for true absolutes that copywriters MUST follow. Most observed patterns are preferences.
+
 INSTRUCTIONS:
 1. Read all ${pages.length} pages below.
-2. Identify 2-5 RECURRING patterns specific to ${label}. Pattern = a rule observable in multiple pages, not a quirk of one.
-3. For each pattern, capture a short verbatim example from the corpus that demonstrates it.
-4. Write patterns as imperative rules for a copywriter to follow: "Start the H1 with…", "Place the trust signal after the second H2…", etc.
-5. Ignore patterns from a SINGLE page. Need at least 2 supporting examples to count as a pattern.
+2. Identify 2-6 patterns. For each, decide which category fits BEST per definitions above.
+3. Record page_support = number of pages exhibiting the pattern (must be ≥2; single-page quirks are dropped).
+4. Pick ONE source_url from a page that clearly exhibits the pattern.
+5. Capture a short verbatim example (≤250 chars) from the corpus.
+6. Patterns must be specific enough to be actionable. Avoid vague observations like "good content has clear structure".
 
 CORPUS (${pages.length} pages):
 ${corpus}
@@ -280,24 +339,49 @@ const DIMENSION_HINTS: Record<OnpageDimension, string> = {
     '• Where do internal links go (categories, related products, blog, FAQ)?\n• Anchor text style: keyword-exact vs descriptive vs branded?\n• Approximate link density (links per 100 words)?',
 }
 
+// Sprint MIMIR.POLISH.4 — extract tool now requires categorized output per
+// pattern with explicit page_support count + source URL for trace-back.
 const EXTRACT_TOOL = {
   name: 'submit_patterns',
-  description: 'Submit the patterns observed across the corpus for this dimension.',
+  description: 'Submit categorized patterns observed across the corpus for this dimension. Each pattern includes category, content, example snippet, source URL, and page support count.',
   input_schema: {
     type: 'object' as const,
-    required: ['patterns', 'examples'],
+    required: ['patterns'],
     properties: {
       patterns: {
         type:        'array',
-        description: '2-5 imperative rules describing the recurring on-page pattern for this dimension.',
-        items:       { type: 'string', maxLength: 250 },
-        maxItems:    5,
-      },
-      examples: {
-        type:        'array',
-        description: 'Short verbatim snippets from the corpus that demonstrate the patterns.',
-        items:       { type: 'string', maxLength: 250 },
-        maxItems:    5,
+        description: '2-6 categorized patterns. Default to "preference" for stylistic observations; reserve "rule" for absolutes observed across nearly all pages.',
+        items: {
+          type:     'object',
+          required: ['category', 'content', 'example', 'source_url', 'page_support'],
+          properties: {
+            category: {
+              type:        'string',
+              enum:        ['rule', 'preference', 'fact', 'lesson'],
+              description: 'Strict classification per definitions. Default to preference when uncertain.',
+            },
+            content: {
+              type:        'string',
+              maxLength:   250,
+              description: 'Pattern statement. For rules/preferences use imperative phrasing; for facts use descriptive.',
+            },
+            example: {
+              type:        'string',
+              maxLength:   250,
+              description: 'Verbatim snippet from the corpus that demonstrates the pattern.',
+            },
+            source_url: {
+              type:        'string',
+              description: 'URL of one page that clearly exhibits this pattern (for trace-back).',
+            },
+            page_support: {
+              type:        'integer',
+              minimum:     2,
+              description: 'Number of pages exhibiting this pattern (must be ≥2; single-page quirks are dropped).',
+            },
+          },
+        },
+        maxItems:    6,
       },
     },
   },

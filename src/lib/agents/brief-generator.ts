@@ -298,6 +298,15 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
     })
     .eq('id', input.briefId)
 
+  // Sprint MIMIR.POLISH.3 — bump applied_count + last_applied_at on each memory
+  // that made it into the prompt. Fire-and-forget; failures are logged but do
+  // not surface to the brief flow. Feeds the weekly auto-tuner so memories
+  // never used naturally decay and frequently-used ones get boosted.
+  if (mimir.applied.length > 0) {
+    const { bumpMemoriesApplied } = await import('@/lib/agents/mimir-memory')
+    bumpMemoriesApplied(db, mimir.applied.map(a => a.id)).catch(() => {})
+  }
+
   // ── Auto-run Tyr quality review immediately after Bragi generates ──────────
   // No need for manual trigger — Tyr scores the brief and writes tyr_score +
   // tyr_status back to the row. Errors are caught so a Tyr failure doesn't
