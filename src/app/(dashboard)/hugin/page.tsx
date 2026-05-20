@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import BaselineButton from './_baseline-button'
 
 // ─── /hugin — Long-tail Discovery ──────────────────────────────────────────
 //
@@ -209,6 +210,7 @@ function HuginPageInner() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <BaselineButton onCompleted={() => setRefreshTick(t => t + 1)} />
           <button onClick={exportCsv} className="px-3 py-2 bg-emerald-700/40 hover:bg-emerald-700/60 border border-emerald-600/50 text-sm text-emerald-100 rounded-lg">📥 CSV</button>
           {selected.size > 0 && (
             <button
