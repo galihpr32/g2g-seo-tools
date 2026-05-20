@@ -1,16 +1,24 @@
 // ─── Forseti Reddit scraper ─────────────────────────────────────────────────
 //
-// Fetches /r/[subreddit]/new.json (no OAuth needed for public subs — just a
-// User-Agent header), classifies + scores severity per thread, upserts into
+// Fetches subreddit posts, classifies + scores severity, upserts into
 // forseti_threads while preserving manual overrides.
+//
+// Sprint FORSETI.PULLPUSH.1 — Reddit started blocking anonymous fetches from
+// cloud-provider IPs (Vercel, AWS) mid-2024, returning 403 even on public
+// .json endpoints. Reddit OAuth requires corporate API registration which
+// isn't always granted. So we route through PullPush.io (community-run
+// successor to Pushshift) which scrapes Reddit from residential infra and
+// exposes a free public JSON API.
+//
+// Fallback chain:
+//   1. PullPush API (primary, works from Vercel)
+//   2. Reddit .json   (fallback for dev local where residential IPs aren't blocked)
+//   3. /api/forseti/ingest from a local poller script (Sprint FORSETI.INGEST)
 //
 // Shared library used by:
 //   • Cron endpoint  (/api/cron/forseti-scraper)
 //   • Manual button  (/api/forseti/scraper/run)
-//
-// Both call runForsetiScraper(db, opts). The cron version iterates all
-// configured owners; the manual version is scoped to one owner (and
-// optionally one subreddit).
+//   • Ingest endpoint (/api/forseti/ingest) — for the local-poller path
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { classifyComplaintCategory, scoreSeverity, keywordFilterMatches } from './classify'
@@ -43,6 +51,7 @@ export interface ScrapeResult {
   updated:         number      // existing threads re-synced (score updates)
   filtered:        number      // dropped by keyword filter
   alerts_needed:   string[]    // forseti_thread.id values where severity ≥ 4 and inserted=true
+  source:          'pullpush' | 'reddit_json' | 'ingest'
   error?:          string
   duration_ms:     number
 }
@@ -54,46 +63,178 @@ export interface RunOpts {
   ownerId?:   string
 }
 
-// ─── Reddit JSON types ─────────────────────────────────────────────────────
+/**
+ * Normalized post shape used internally. PullPush and Reddit return slightly
+ * different field structures — we collapse them into this before processing.
+ */
+export interface NormalizedPost {
+  /** Reddit's globally-unique submission ID (e.g. '1abcdef'), no t3_ prefix. */
+  id:                 string
+  title:              string
+  selftext:           string
+  author:             string | null
+  score:              number
+  num_comments:       number
+  /** Unix seconds. */
+  created_utc:        number
+  /** Relative `/r/.../comments/...` path. */
+  permalink:          string
+  subreddit:          string
+  /** Set to a non-null value when Reddit removed the post; we skip these. */
+  removed_by_category?: string | null
+}
+
+// ─── Reddit + PullPush response types ──────────────────────────────────────
 
 interface RedditChild {
   kind: string
   data: {
     id:            string
-    name:          string                 // 't3_xxx'
+    name:          string
     title:         string
-    selftext:      string                 // body text
-    permalink:     string                 // /r/.../comments/xxx/
-    url:           string                 // canonical post URL
+    selftext:      string
+    permalink:     string
+    url:           string
     author:        string
-    score:         number                 // upvotes
+    score:         number
     num_comments:  number
-    created_utc:   number                 // unix seconds
+    created_utc:   number
     subreddit:     string
     is_self:       boolean
-    removed_by_category?: string | null   // 'deleted' | 'moderator' | etc.
+    removed_by_category?: string | null
   }
 }
 
 interface RedditListing {
   kind: string
-  data: {
-    children: RedditChild[]
-    after:    string | null
-  }
+  data: { children: RedditChild[]; after: string | null }
+}
+
+interface PullPushSubmission {
+  id:            string
+  title:         string
+  selftext:      string
+  author:        string
+  score:         number
+  num_comments:  number
+  created_utc:   number
+  permalink:     string
+  subreddit:     string
+  removed_by_category?: string | null
+}
+
+interface PullPushResponse {
+  data: PullPushSubmission[]
 }
 
 const REDDIT_USER_AGENT = process.env.FORSETI_USER_AGENT
   ?? 'g2g-seo-tools/1.0 (Forseti community-response tracker; contact: seo@g2g.com)'
+const REDDIT_FETCH_TIMEOUT_MS = 12_000
 
-const REDDIT_FETCH_TIMEOUT_MS = 12_000   // per-sub timeout
+// ─── Fetchers (PullPush primary, Reddit fallback) ──────────────────────────
+
+/**
+ * Sprint FORSETI.PULLPUSH.1 — Try PullPush first (works from Vercel datacenter
+ * IPs since they scrape Reddit independently from residential infra). If
+ * PullPush fails for any reason, fall back to Reddit's own .json endpoint
+ * (which works from dev local but usually returns 403 from Vercel).
+ *
+ * Returns posts + which source actually served the data (for diagnostics).
+ */
+async function fetchSubredditPosts(subreddit: string): Promise<{
+  posts:  NormalizedPost[]
+  source: 'pullpush' | 'reddit_json'
+}> {
+  // Try PullPush first
+  try {
+    const posts = await fetchFromPullPush(subreddit)
+    return { posts, source: 'pullpush' }
+  } catch (err) {
+    console.warn(`[forseti-scraper] PullPush fetch for r/${subreddit} failed, trying Reddit fallback:`, err instanceof Error ? err.message : String(err))
+  }
+  // Fall back to Reddit's own JSON
+  const posts = await fetchFromRedditJson(subreddit)
+  return { posts, source: 'reddit_json' }
+}
+
+async function fetchFromPullPush(subreddit: string): Promise<NormalizedPost[]> {
+  // Sprint FORSETI.PULLPUSH.1 — PullPush /reddit/search/submission endpoint.
+  // sort_type=created_utc + sort=desc + size=100 mirrors Reddit's /new listing.
+  const url = `https://api.pullpush.io/reddit/search/submission/?subreddit=${encodeURIComponent(subreddit)}&size=100&sort=desc&sort_type=created_utc`
+  const controller = new AbortController()
+  const timeoutId  = setTimeout(() => controller.abort(), REDDIT_FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': REDDIT_USER_AGENT, 'Accept': 'application/json' },
+      signal:  controller.signal,
+    })
+    if (!res.ok) throw new Error(`PullPush HTTP ${res.status}`)
+    const data = await res.json() as PullPushResponse
+    return (data.data ?? []).map(p => normalizePullPushPost(p))
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+async function fetchFromRedditJson(subreddit: string): Promise<NormalizedPost[]> {
+  const url = `https://www.reddit.com/r/${encodeURIComponent(subreddit)}/new.json?limit=100`
+  const controller = new AbortController()
+  const timeoutId  = setTimeout(() => controller.abort(), REDDIT_FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': REDDIT_USER_AGENT, 'Accept': 'application/json' },
+      signal:  controller.signal,
+    })
+    if (!res.ok) {
+      const status = res.status
+      const msg = status === 403
+        ? 'Reddit blocked the request (HTTP 403 — Vercel IP likely blocked, PullPush primary should work)'
+        : status === 404
+        ? 'Subreddit not found (HTTP 404)'
+        : `Reddit returned HTTP ${status}`
+      throw new Error(msg)
+    }
+    const listing = await res.json() as RedditListing
+    return (listing.data?.children ?? [])
+      .filter(c => c.kind === 't3')
+      .map(c => normalizeRedditChild(c))
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+function normalizePullPushPost(p: PullPushSubmission): NormalizedPost {
+  return {
+    id:                  p.id,
+    title:               p.title ?? '',
+    selftext:            p.selftext ?? '',
+    author:              p.author ?? null,
+    score:               Number(p.score) || 0,
+    num_comments:        Number(p.num_comments) || 0,
+    created_utc:         Number(p.created_utc) || 0,
+    permalink:           p.permalink ?? '',
+    subreddit:           p.subreddit ?? '',
+    removed_by_category: p.removed_by_category ?? null,
+  }
+}
+
+function normalizeRedditChild(c: RedditChild): NormalizedPost {
+  return {
+    id:                  c.data.id,
+    title:               c.data.title ?? '',
+    selftext:            c.data.selftext ?? '',
+    author:              c.data.author ?? null,
+    score:               Number(c.data.score) || 0,
+    num_comments:        Number(c.data.num_comments) || 0,
+    created_utc:         Number(c.data.created_utc) || 0,
+    permalink:           c.data.permalink ?? '',
+    subreddit:           c.data.subreddit ?? '',
+    removed_by_category: c.data.removed_by_category ?? null,
+  }
+}
 
 // ─── Main runner ────────────────────────────────────────────────────────────
 
-/**
- * Run scraper for one or more configs. Returns a result row per config.
- * Failures on individual configs do not block the others.
- */
 export async function runForsetiScraper(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db:   SupabaseClient<any, any, any>,
@@ -111,8 +252,6 @@ export async function runForsetiScraper(
   if (!configs || configs.length === 0) return []
 
   const results: ScrapeResult[] = []
-  // Sequential to keep memory + Reddit rate-limit predictable. r/G2G_com is
-  // small (~1 sec fetch), 10 subs takes <15s total.
   for (const config of configs as SubredditConfig[]) {
     const result = await scrapeOneConfig(db, config)
     results.push(result)
@@ -128,48 +267,14 @@ async function scrapeOneConfig(
   config: SubredditConfig,
 ): Promise<ScrapeResult> {
   const start = Date.now()
-  const result: ScrapeResult = {
-    config_id:     config.id,
-    subreddit:     config.subreddit,
-    ok:            false,
-    fetched:       0,
-    matched:       0,
-    inserted:      0,
-    updated:       0,
-    filtered:      0,
-    alerts_needed: [],
-    duration_ms:   0,
-  }
 
-  let listing: RedditListing
+  let posts:  NormalizedPost[] = []
+  let source: 'pullpush' | 'reddit_json' = 'pullpush'
+
   try {
-    const url = `https://www.reddit.com/r/${encodeURIComponent(config.subreddit)}/new.json?limit=100`
-    const controller = new AbortController()
-    const timeoutId  = setTimeout(() => controller.abort(), REDDIT_FETCH_TIMEOUT_MS)
-    const res = await fetch(url, {
-      headers: { 'User-Agent': REDDIT_USER_AGENT, 'Accept': 'application/json' },
-      signal:  controller.signal,
-    })
-    clearTimeout(timeoutId)
-    if (!res.ok) {
-      const status = res.status
-      // 403 = private/quarantined, 404 = subreddit doesn't exist
-      const errMsg = status === 403
-        ? 'Subreddit is private or quarantined (HTTP 403)'
-        : status === 404
-        ? 'Subreddit not found (HTTP 404)'
-        : `Reddit returned HTTP ${status}`
-      await db.from('forseti_subreddit_configs').update({
-        status:         'error',
-        last_error:     errMsg,
-        last_polled_at: new Date().toISOString(),
-        updated_at:     new Date().toISOString(),
-      }).eq('id', config.id)
-      result.error       = errMsg
-      result.duration_ms = Date.now() - start
-      return result
-    }
-    listing = await res.json() as RedditListing
+    const fetched = await fetchSubredditPosts(config.subreddit)
+    posts  = fetched.posts
+    source = fetched.source
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await db.from('forseti_subreddit_configs').update({
@@ -178,18 +283,72 @@ async function scrapeOneConfig(
       last_polled_at: new Date().toISOString(),
       updated_at:     new Date().toISOString(),
     }).eq('id', config.id)
-    result.error       = errMsg
-    result.duration_ms = Date.now() - start
-    return result
+    return {
+      config_id:     config.id,
+      subreddit:     config.subreddit,
+      ok:            false,
+      fetched:       0,
+      matched:       0,
+      inserted:      0,
+      updated:       0,
+      filtered:      0,
+      alerts_needed: [],
+      source:        'pullpush',
+      error:         errMsg,
+      duration_ms:   Date.now() - start,
+    }
   }
 
-  const children = listing.data?.children ?? []
-  result.fetched = children.length
+  const processed = await processPostsForConfig(db, config, posts)
+  // Mark config polled successfully.
+  await db.from('forseti_subreddit_configs').update({
+    status:               'ok',
+    last_error:           null,
+    last_polled_at:       new Date().toISOString(),
+    last_polled_threads:  processed.matched,
+    total_threads:        ((config as unknown as { total_threads?: number }).total_threads ?? 0) + processed.inserted,
+    updated_at:           new Date().toISOString(),
+  }).eq('id', config.id)
 
-  // Process each post.
-  for (const child of children) {
-    if (child.kind !== 't3') continue
-    const post = child.data
+  return {
+    config_id:     config.id,
+    subreddit:     config.subreddit,
+    ok:            true,
+    fetched:       posts.length,
+    matched:       processed.matched,
+    inserted:      processed.inserted,
+    updated:       processed.updated,
+    filtered:      processed.filtered,
+    alerts_needed: processed.alerts_needed,
+    source,
+    duration_ms:   Date.now() - start,
+  }
+}
+
+// ─── Post processor (shared with /api/forseti/ingest) ──────────────────────
+
+export interface ProcessResult {
+  matched:       number
+  inserted:      number
+  updated:       number
+  filtered:      number
+  alerts_needed: string[]
+}
+
+/**
+ * Sprint FORSETI.INGEST — factored out so the /api/forseti/ingest endpoint
+ * (called by a local poller running from residential IP) can run the exact
+ * same classify/score/upsert logic without re-fetching anything.
+ */
+export async function processPostsForConfig(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:     SupabaseClient<any, any, any>,
+  config: SubredditConfig,
+  posts:  NormalizedPost[],
+): Promise<ProcessResult> {
+  const result: ProcessResult = { matched: 0, inserted: 0, updated: 0, filtered: 0, alerts_needed: [] }
+
+  for (const post of posts) {
     if (post.removed_by_category) continue   // skip deleted/removed
 
     // Keyword filter (for big subs).
@@ -215,41 +374,35 @@ async function scrapeOneConfig(
     })
 
     const nowIso       = new Date().toISOString()
-    const postedIso    = new Date(post.created_utc * 1000).toISOString()
-    const permalink    = post.permalink ? `https://www.reddit.com${post.permalink}` : post.url
+    const postedIso    = post.created_utc > 0 ? new Date(post.created_utc * 1000).toISOString() : nowIso
+    const permalink    = post.permalink ? `https://www.reddit.com${post.permalink}` : `https://www.reddit.com/r/${post.subreddit}/comments/${post.id}/`
     const bodySnippet  = (post.selftext ?? '').slice(0, 4000)
 
-    // Upsert. The unique constraint (owner_user_id, reddit_id) protects against
-    // duplicates. We need to preserve manual_*_override on re-poll, so we do a
-    // SELECT first to check existence.
     const { data: existing } = await db
       .from('forseti_threads')
-      .select('id, manual_category_override, manual_severity_override')
+      .select('id')
       .eq('owner_user_id', config.owner_user_id)
       .eq('reddit_id',     post.id)
       .maybeSingle()
 
     if (existing) {
-      // Update: bump op_post_score + comment count + last_synced_at. Preserve
-      // manual overrides + workflow status.
       await db.from('forseti_threads').update({
-        op_post_score:      post.score,
-        op_comment_count:   post.num_comments,
-        auto_category:      auto_category,
-        auto_severity:      auto_severity,
-        last_synced_at:     nowIso,
-        updated_at:         nowIso,
+        op_post_score:    post.score,
+        op_comment_count: post.num_comments,
+        auto_category,
+        auto_severity,
+        last_synced_at:   nowIso,
+        updated_at:       nowIso,
       }).eq('id', existing.id)
       result.updated++
     } else {
-      // Insert new thread.
       const { data: inserted, error: insertErr } = await db.from('forseti_threads').insert({
         owner_user_id:    config.owner_user_id,
         site_slug:        config.site_slug,
         config_id:        config.id,
         reddit_id:        post.id,
         reddit_url:       permalink,
-        subreddit:        post.subreddit,
+        subreddit:        post.subreddit || config.subreddit,
         thread_title:     post.title.slice(0, 500),
         thread_permalink: permalink,
         op_username:      post.author,
@@ -269,22 +422,9 @@ async function scrapeOneConfig(
         continue
       }
       result.inserted++
-      // Sev-4+ → queue for Slack alert. Caller fires alerts after batch.
       if (auto_severity >= 4 && inserted?.id) result.alerts_needed.push(inserted.id as string)
     }
   }
 
-  // Mark config polled successfully.
-  await db.from('forseti_subreddit_configs').update({
-    status:               'ok',
-    last_error:           null,
-    last_polled_at:       new Date().toISOString(),
-    last_polled_threads:  result.matched,
-    total_threads:        (config as unknown as { total_threads: number }).total_threads + result.inserted,
-    updated_at:           new Date().toISOString(),
-  }).eq('id', config.id)
-
-  result.ok          = true
-  result.duration_ms = Date.now() - start
   return result
 }
