@@ -83,11 +83,18 @@ export async function GET(request: Request) {
       const siteUrl = site.gsc_property
       const today = getDateRange(0)
 
-      // ── Task 1: Ranking Drop Alert ──────────────────────────────────────
+      // ── Task 1: Ranking Drop Snapshot (data ingestion only) ──────────────
+      // Sprint HEIMDALL.LAG.FIX — apply GSC freshness lag so the snapshot
+      // reflects settled Google data, not the in-flight h-1 reading which
+      // produces phantom "drops" that disappear once Google backfills.
+      // Slack alerts now flow exclusively through Task 1b (tier-aware,
+      // proper threshold per tier). This block just writes the snapshot rows.
+      const { getLagDays: lagDaysFn } = await import('@/lib/gsc/tier-detect')
+      const lagDays = lagDaysFn()
       const [currentRows, previousRows, queryRows] = await Promise.all([
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page'], 1000),
-        getSearchAnalytics(auth, siteUrl, getDateRange(14), getDateRange(8), ['page'], 1000),
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page', 'query'], 2000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(lagDays + 6),  getDateRange(lagDays),     ['page'],          1000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(lagDays + 13), getDateRange(lagDays + 7), ['page'],          1000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(lagDays + 6),  getDateRange(lagDays),     ['page', 'query'], 2000),
       ])
 
       const toRankingRow = (rows: typeof currentRows): RankingRow[] =>
@@ -193,24 +200,12 @@ export async function GET(request: Request) {
           })
         }
 
-        // Send Slack alert only for alertable pages (respects URL pre-filter)
-        // Sprint MULTI.3 — pass routing context so config-mapped channels win.
-        const alertableDrops = drops.filter(d => isAlertablePage(d.page))
-        if (alertableDrops.length && (notifSettings?.slack_clicks_alerts ?? false)) {
-          await sendRankingDropAlert(alertableDrops, {
-            db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
-          })
-          totalSlackPosted++   // Sprint FORCE-FIRE.FIX — count real posts
-          await supabase.from('alert_log').insert({
-            alert_type: 'ranking_drop',
-            site_url: siteUrl,
-            title: `${alertableDrops.length} pages dropped >15% WoW`,
-            message: alertableDrops.map(d => d.page).join(', '),
-            severity: alertableDrops.length > 5 ? 'critical' : 'warning',
-            slack_sent: !!process.env.SLACK_WEBHOOK_URL,
-            metadata: { drops: alertableDrops },
-          })
-        }
+        // Sprint HEIMDALL.LAG.FIX — Slack alerting moved exclusively to
+        // Task 1b (tier-aware). This block previously fired a generic
+        // 15% WoW alert with h-1 data, producing duplicate + premature
+        // alerts. Drops are still saved to gsc_ranking_drops above so the
+        // dashboard + Friday KPI can read them.
+        void notifSettings   // kept in scope below for other alert types
       }
 
       // ── Task 1b: Sprint GSC.T1.DOD — Tier-aware drop detection ─────────────

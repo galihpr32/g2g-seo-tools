@@ -250,10 +250,11 @@ export async function persistClusterScoring(
 ): Promise<{ updated: number; error?: string }> {
   const nowIso = new Date().toISOString()
 
-  // Update each kw with its score; assign cluster_rank to top 3
+  // Sprint COMPETITIVE.SCORER.11 — parallel per-kw updates within a cluster.
+  // Each row targets a different primary key so no write contention. JS is
+  // single-threaded so the `updated++` counter is race-safe between awaits.
   let updated = 0
-  for (let i = 0; i < cluster.kws.length; i++) {
-    const k = cluster.kws[i]
+  const updatePromises = cluster.kws.map(async (k, i) => {
     const rank = i < 3 ? i + 1 : null
     const { error } = await db
       .from('tier_keywords')
@@ -275,6 +276,7 @@ export async function persistClusterScoring(
     } else {
       updated++
     }
-  }
+  })
+  await Promise.all(updatePromises)
   return { updated }
 }

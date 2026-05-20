@@ -6,7 +6,11 @@ import { resolveSiteSlugFromRequest } from '@/lib/sites'
 import { scoreCluster, persistClusterScoring } from '@/lib/competitive/scorer'
 import { getKeywordDifficulty, getKeywordVolumesLabs } from '@/lib/dataforseo/client'
 
-export const maxDuration = 60
+// Vercel Pro maxDuration ceiling. Bulk re-score across 300+ kws hits 2 DFS
+// endpoint chains (Google Ads chunked + Labs fallback) plus per-cluster
+// persistence. 60s wasn't enough; 300s gives comfortable headroom while still
+// being a hard stop if something goes wrong.
+export const maxDuration = 300
 
 /**
  * Sprint COMPETITIVE.SCORER.3 — Re-score competitive keywords.
@@ -213,33 +217,44 @@ export async function POST(req: Request) {
     has_top_1:       boolean
   }> = []
 
-  for (const c of clusters.values()) {
-    const scoreInputKws = c.kws.map(k => ({
-      id:        k.id,
-      keyword:   k.keyword,
-      sv_volume: svByKeyword.get(`${k.keyword.toLowerCase()}|${c.market}`) ?? null,
-      top10:     latestTop10.get(`${c.product_tier_id}|${k.keyword.toLowerCase()}|${c.market}`) ?? null,
-    }))
+  // Sprint COMPETITIVE.SCORER.11 — parallelize per-cluster persistence.
+  // Previously this looped with await per cluster (22 clusters × ~200ms
+  // serial = 4.4s just for DB writes). DB upserts don't fight each other
+  // since they target different rows; safe to fan out.
+  const clusterResults = await Promise.all(
+    Array.from(clusters.values()).map(async c => {
+      const scoreInputKws = c.kws.map(k => ({
+        id:        k.id,
+        keyword:   k.keyword,
+        sv_volume: svByKeyword.get(`${k.keyword.toLowerCase()}|${c.market}`) ?? null,
+        top10:     latestTop10.get(`${c.product_tier_id}|${k.keyword.toLowerCase()}|${c.market}`) ?? null,
+      }))
 
-    const scored = scoreCluster({
-      product_tier_id: c.product_tier_id,
-      cluster_market:  c.market,
-      our_domain:      ourDomain,
-      keywords:        scoreInputKws,
-    })
+      const scored = scoreCluster({
+        product_tier_id: c.product_tier_id,
+        cluster_market:  c.market,
+        our_domain:      ourDomain,
+        keywords:        scoreInputKws,
+      })
 
-    // eslint-disable-next-line no-await-in-loop
-    const persistRes = await persistClusterScoring(db, ownerId, scored)
-    totalScored += persistRes.updated
+      const persistRes = await persistClusterScoring(db, ownerId, scored)
+      return {
+        updated: persistRes.updated,
+        summary: {
+          product_tier_id: c.product_tier_id,
+          market:          c.market,
+          kw_count:        scored.kws.length,
+          top_score:       scored.top_score,
+          top_kw:          scored.kws[0]?.keyword ?? null,
+          has_top_1:       scored.has_top_1,
+        },
+      }
+    }),
+  )
 
-    clusterSummaries.push({
-      product_tier_id: c.product_tier_id,
-      market:          c.market,
-      kw_count:        scored.kws.length,
-      top_score:       scored.top_score,
-      top_kw:          scored.kws[0]?.keyword ?? null,
-      has_top_1:       scored.has_top_1,
-    })
+  for (const r of clusterResults) {
+    totalScored += r.updated
+    clusterSummaries.push(r.summary)
   }
 
   return NextResponse.json({
