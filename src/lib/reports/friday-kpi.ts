@@ -65,6 +65,18 @@ export interface BrandKpi {
   traffic:      ClickKpi[]
 }
 
+export interface ForsetiBrandSlice {
+  site_slug:           string
+  spotted_this_week:   number
+  responded:           number
+  response_rate_pct:   number
+  sev4plus_pending:    number
+  avg_response_time_h: number | null
+  by_category:         Array<{ category: string; count: number }>
+  resolved_this_week:  number
+  escalated_this_week: number
+}
+
 export interface FridayKpiPayload {
   week_label:   string
   iso_week:     number
@@ -80,6 +92,10 @@ export interface FridayKpiPayload {
   ai_visibility:   FridayKpiAiSlice[]
   /** Direct link to AI Visibility dashboard */
   ai_visibility_url: string
+  /** Sprint FORSETI.DIGEST — Community response slice per brand */
+  forseti:         ForsetiBrandSlice[]
+  /** Direct link to Forseti triage queue */
+  forseti_url:     string
 }
 
 /**
@@ -111,6 +127,30 @@ export async function buildFridayKpi(
     console.warn('[friday-kpi] AI visibility slice failed, continuing without it:', e)
   }
 
+  // Sprint FORSETI.DIGEST — Community response slice per brand. Graceful:
+  // if no Forseti configs yet, returns zero rows so the digest block hides.
+  const forseti: ForsetiBrandSlice[] = []
+  try {
+    const { computeForsetiStats } = await import('@/app/api/forseti/stats/route')
+    for (const slug of siteSlugs) {
+      // eslint-disable-next-line no-await-in-loop
+      const s = await computeForsetiStats(db, ownerId, slug, 7)
+      forseti.push({
+        site_slug:           slug,
+        spotted_this_week:   s.spotted_this_week,
+        responded:           s.responded,
+        response_rate_pct:   s.response_rate_pct,
+        sev4plus_pending:    s.sev4plus_pending,
+        avg_response_time_h: s.avg_response_time_h,
+        by_category:         s.by_category,
+        resolved_this_week:  s.resolved_this_week,
+        escalated_this_week: s.escalated_this_week,
+      })
+    }
+  } catch (e) {
+    console.warn('[friday-kpi] Forseti slice failed, continuing without it:', e)
+  }
+
   return {
     week_label:   weekLabel(),
     iso_week:     isoWeek(),
@@ -121,6 +161,8 @@ export async function buildFridayKpi(
     priority_url:      `${appUrl}/priority-products`,
     ai_visibility:     aiVisibility,
     ai_visibility_url: `${appUrl}/reports/ai-visibility`,
+    forseti,
+    forseti_url:       `${appUrl}/forseti`,
   }
 }
 
@@ -577,8 +619,46 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
     })
   }
 
+  // ── Sprint FORSETI.DIGEST — Community response section ──
+  // Render only when at least one brand has activity. New tool may be unused
+  // at first; skip the block silently when zero everywhere.
+  const hasForsetiData = p.forseti?.some(f =>
+    f.spotted_this_week > 0 || f.responded > 0 || f.sev4plus_pending > 0,
+  )
+  if (hasForsetiData) {
+    blocks.push({ type: 'divider' })
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*⚖ COMMUNITY RESPONSE (Forseti)*' },
+    })
+    for (const f of p.forseti) {
+      const topCats = f.by_category.slice(0, 3)
+        .map(c => `${c.category} (${c.count})`)
+        .join(' · ') || '_none_'
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*${f.site_slug.toUpperCase()}*` },
+        fields: [
+          { type: 'mrkdwn', text: `*Spotted*\n${f.spotted_this_week}` },
+          { type: 'mrkdwn', text: `*Responded*\n${f.responded} (${f.response_rate_pct}%)` },
+          { type: 'mrkdwn', text: `*Avg respond*\n${f.avg_response_time_h == null ? '—' : `${f.avg_response_time_h}h`}` },
+          { type: 'mrkdwn', text: `*Sev-4+ pending*\n${f.sev4plus_pending > 0 ? `⚠ ${f.sev4plus_pending}` : '0'}` },
+          { type: 'mrkdwn', text: `*Top categories*\n${topCats}` },
+          { type: 'mrkdwn', text: `*Outcomes*\n${f.resolved_this_week} resolved · ${f.escalated_this_week} escalated` },
+        ],
+      })
+    }
+    blocks.push({
+      type: 'context',
+      elements: [{
+        type: 'mrkdwn',
+        text: '_Reddit threads tracked via Forseti. Last 7 days, multi-subreddit. Tim membalas manual di Reddit + log di tool._',
+      }],
+    })
+  }
+
   // ── Action buttons ──
-  if (p.public_url || p.methodology_url || p.priority_url || p.ai_visibility_url) {
+  if (p.public_url || p.methodology_url || p.priority_url || p.ai_visibility_url || p.forseti_url) {
     blocks.push({
       type: 'actions',
       elements: [
@@ -602,6 +682,11 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
           text: { type: 'plain_text', text: '🔮 AI Visibility' },
           url:  p.ai_visibility_url,
         },
+        ...(hasForsetiData ? [{
+          type: 'button',
+          text: { type: 'plain_text', text: '⚖ Forseti Queue' },
+          url:  p.forseti_url,
+        }] : []),
       ],
     })
   }

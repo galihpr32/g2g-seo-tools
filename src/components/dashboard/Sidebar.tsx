@@ -83,6 +83,8 @@ const navItems = [
     items: [
       { label: 'Guestpost Outreach', href: '/outreach',    icon: '🤝' },
       { label: 'Backlink Tracker',   href: '/backlinks',   icon: '🔗' },
+      // Sprint FORSETI.SIDEBAR — community response tracker
+      { label: 'Forseti · Reddit',   href: '/forseti',     icon: '⚖' },
     ],
   },
   {

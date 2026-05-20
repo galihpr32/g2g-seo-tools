@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getActiveSiteSlug } from '@/lib/sites-server'
 import Link from 'next/link'
+import ForsetiWidget from './_forseti-widget'
 
 /**
  * Command-center dashboard. Replaces the legacy widget grid with a focused
@@ -506,6 +507,10 @@ export default async function DashboardPage() {
           href="/backlinks"
         />
       </div>
+
+      {/* ── Sprint FORSETI.DASH.WIDGET — Community Response block ──────── */}
+      <ForsetiWidget />
+
 
       {/* ── Row 3 — News + AI viz / Cost panel ───────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">

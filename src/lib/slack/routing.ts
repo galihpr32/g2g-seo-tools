@@ -18,7 +18,8 @@ export type NotificationType =
   | 'cms_alerts'
   | 'bug_reports'
   | 'general'
-  | 'friday_kpi'   // Sprint FRIDAY.KPI — combined G2G + OG digest, Friday 15:00 WIB
+  | 'friday_kpi'       // Sprint FRIDAY.KPI — combined G2G + OG digest, Friday 15:00 WIB
+  | 'forseti_severe'   // Sprint FORSETI.SLACK.ALERT — sev-4+ new Reddit threads
 
 interface ResolveOpts {
   /** When omitted, only site-agnostic + env fallback are tried. */
