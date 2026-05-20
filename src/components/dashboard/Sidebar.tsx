@@ -22,6 +22,8 @@ const navItems = [
       { label: 'Experiments',     href: '/experiments',                    icon: '🧪' },
       { label: 'Mimir Memory',    href: '/mimir/memories',                 icon: '🧠' },
       { label: 'Mimir Onpage Learn', href: '/mimir/onpage-learn',          icon: '📐' },
+      // Sprint HUGIN.SIDEBAR — long-tail discovery
+      { label: 'Hugin · Long-tail',  href: '/hugin',                       icon: '🪶' },
       { label: 'Off-Page Pipeline', href: '/command-center/off-page',      icon: '🔗' },
       { label: 'Notifications',   href: '/notifications',                  icon: '🔔' },
       { label: 'Feedback',        href: '/feedback',                       icon: '🐛' },

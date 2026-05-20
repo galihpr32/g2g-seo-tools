@@ -143,6 +143,35 @@ export async function GET(request: Request) {
         )
       }
 
+      // Sprint HUGIN.CRON — comprehensive query snapshot (ALL queries, not just dropped).
+      // Hugin needs historical query-level data to compute WoW deltas + new
+      // emergence. Existing gsc_ranking_drop_queries only saves queries for
+      // dropped pages, so we add this separate comprehensive write here.
+      if (queryRows.length) {
+        const queryInserts = queryRows
+          .filter(q => (q.keys?.[1] ?? '').trim().length > 0)   // must have query
+          .map(q => ({
+            site_url:      siteUrl,
+            snapshot_date: today,
+            page:          q.keys?.[0] ?? '',
+            query:         (q.keys?.[1] ?? '').toLowerCase().trim().slice(0, 500),
+            clicks:        q.clicks      ?? 0,
+            impressions:   q.impressions ?? 0,
+            ctr:           q.ctr         ?? 0,
+            position:      q.position    ?? 0,
+          }))
+        // Chunked to avoid Supabase row-batch limits (default 1000)
+        for (let i = 0; i < queryInserts.length; i += 500) {
+          // eslint-disable-next-line no-await-in-loop
+          await supabase
+            .from('gsc_query_snapshots')
+            .upsert(queryInserts.slice(i, i + 500), {
+              onConflict:       'site_url,snapshot_date,page,query',
+              ignoreDuplicates: true,
+            })
+        }
+      }
+
       // Save detected drops to dedicated table (so page reads from DB, not live API)
       if (drops.length) {
         // Upsert drop records
