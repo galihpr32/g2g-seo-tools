@@ -32,9 +32,13 @@ export async function GET(request: Request) {
 
   // Load all GSC connections — one per (owner × site). Each connection holds
   // the GSC property URL we query against.
+  // gsc_connections is keyed by user_id only (one OAuth set per workspace).
+  // The (site_slug → GSC property URL) mapping lives in site_configs. So we
+  // iterate (connection × active site_configs) the same way gsc-daily cron
+  // does — gives us one aggregator run per (owner × site).
   const { data: connections, error } = await db
     .from('gsc_connections')
-    .select('user_id, site_url, site_slug')
+    .select('user_id')
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
@@ -43,20 +47,26 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: true, message: 'No GSC connections configured', results: [] })
   }
 
-  // Group by (owner × site) — there can be multiple properties per workspace
-  // but the aggregator is per workspace, so we iterate each connection.
+  const { data: sites } = await db
+    .from('site_configs')
+    .select('slug, gsc_property')
+    .eq('is_active', true)
+  const activeSites = (sites ?? []) as Array<{ slug: string; gsc_property: string }>
+  if (activeSites.length === 0) {
+    return NextResponse.json({ ok: false, error: 'No active site_configs configured' }, { status: 500 })
+  }
+
   const results = []
   for (const conn of connections) {
-    const ownerId  = conn.user_id  as string
-    const siteUrl  = conn.site_url as string
-    const siteSlug = (conn.site_slug as string | null) ?? 'g2g'
-
-    const result = await runHuginAggregator(db, {
-      ownerId,
-      siteSlug,
-      gscPropertyUrl: siteUrl,
-    })
-    results.push(result)
+    const ownerId = conn.user_id as string
+    for (const site of activeSites) {
+      const result = await runHuginAggregator(db, {
+        ownerId,
+        siteSlug:       site.slug,
+        gscPropertyUrl: site.gsc_property,
+      })
+      results.push(result)
+    }
   }
 
   return NextResponse.json({

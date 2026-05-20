@@ -72,21 +72,23 @@ export async function POST(req: Request) {
   const week     = pendingWeeks[0]
   const remaining = pendingWeeks.slice(1)
 
-  // Load GSC connection + refresh token
+  // Load GSC connection + refresh token. gsc_connections is keyed by user_id
+  // only (one OAuth set covers all properties under same Google account).
+  // The specific GSC property URL we query is stored on the run itself.
   const { data: conn } = await db
     .from('gsc_connections')
-    .select('user_id, site_url, access_token, refresh_token, expires_at')
+    .select('user_id, access_token, refresh_token, expires_at')
     .eq('user_id', ownerId)
-    .eq('site_url', run.gsc_property_url)
     .maybeSingle()
   if (!conn) {
     await db.from('hugin_baseline_runs').update({
       status:        'failed',
-      error_message: 'GSC connection no longer exists',
+      error_message: 'GSC OAuth connection no longer exists',
       updated_at:    new Date().toISOString(),
     }).eq('id', runId)
     return NextResponse.json({ ok: false, error: 'GSC connection missing' }, { status: 400 })
   }
+  const gscPropertyUrl = run.gsc_property_url as string
 
   let rowsFetched = 0
   const warningsList: string[] = (Array.isArray(run.warnings) ? run.warnings : []) as string[]
@@ -99,13 +101,13 @@ export async function POST(req: Request) {
       await db.from('gsc_connections').update({
         access_token: newCredentials.accessToken,
         expires_at:   newCredentials.expiresAt,
-      }).eq('user_id', ownerId).eq('site_url', conn.site_url)
+      }).eq('user_id', ownerId)
     }
 
     // Fetch the week with dimensions=[page, query], rowLimit 25000
     const rows = await getSearchAnalytics(
       auth,
-      conn.site_url,
+      gscPropertyUrl,
       week.start,
       week.end,
       ['page', 'query'],
@@ -115,7 +117,7 @@ export async function POST(req: Request) {
     const inserts = (rows ?? [])
       .filter(r => (r.keys?.[1] ?? '').trim().length > 0 && (r.keys?.[0] ?? '').trim().length > 0)
       .map(r => ({
-        site_url:      conn.site_url,
+        site_url:      gscPropertyUrl,
         // For weekly aggregates the API returns one row per (page, query) for the whole range.
         // We store with snapshot_date = week's END date so cron and baseline data live in
         // the same table. Aggregator's date-range queries already handle overlapping rows.

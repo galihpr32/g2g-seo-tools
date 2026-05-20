@@ -53,20 +53,37 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `duration_days must be one of ${VALID_DURATIONS.join(', ')}` }, { status: 400 })
   }
 
-  // 1. Resolve GSC property for this owner + site
-  const { data: connection } = await db
-    .from('gsc_connections')
-    .select('user_id, site_url, site_slug')
-    .eq('user_id', ownerId)
-    .eq('site_slug', siteSlug)
+  // 1. Resolve GSC property URL for this site from site_configs (the actual
+  // mapping table). gsc_connections is keyed by user_id only — one row per
+  // user, shared across sites since OAuth tokens cover all GSC properties
+  // under the same Google account.
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('slug, gsc_property')
+    .eq('slug', siteSlug)
+    .eq('is_active', true)
     .maybeSingle()
-  if (!connection) {
+  if (!siteConfig?.gsc_property) {
     return NextResponse.json({
-      error: `No GSC connection for ${siteSlug}. Connect it first at /settings/google.`,
+      error: `No active site_config for ${siteSlug}. Configure it first at /settings.`,
     }, { status: 400 })
   }
 
-  // 2. Block concurrent runs for same (owner × site)
+  // 2. Verify the owner actually has OAuth tokens
+  const { data: connection } = await db
+    .from('gsc_connections')
+    .select('user_id, site_url')
+    .eq('user_id', ownerId)
+    .maybeSingle()
+  if (!connection) {
+    return NextResponse.json({
+      error: `No GSC OAuth connection for this workspace. Connect it first at /settings/google.`,
+    }, { status: 400 })
+  }
+
+  const gscPropertyUrl = siteConfig.gsc_property as string
+
+  // 3. Block concurrent runs for same (owner × site)
   const { data: active } = await db
     .from('hugin_baseline_runs')
     .select('id, status')
@@ -81,7 +98,7 @@ export async function POST(req: Request) {
     }, { status: 409 })
   }
 
-  // 3. Build the list of weekly windows.
+  // 4. Build the list of weekly windows.
   // end-anchor = today - GSC_LAG_DAYS. We walk back in 7-day chunks until
   // we've covered duration_days days. Last chunk may be shorter than 7
   // days if duration_days % 7 != 0.
@@ -100,13 +117,13 @@ export async function POST(req: Request) {
   // partial-failure date ranges in error_message)
   weeks.reverse()
 
-  // 4. Insert run row
+  // 5. Insert run row
   const { data: run, error: insertErr } = await db
     .from('hugin_baseline_runs')
     .insert({
       owner_user_id:    ownerId,
       site_slug:        siteSlug,
-      gsc_property_url: connection.site_url,
+      gsc_property_url: gscPropertyUrl,
       duration_days:    days,
       status:           'pending',
       total_weeks:      weeks.length,
@@ -121,12 +138,12 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({
-    ok:           true,
-    run_id:       run.id,
-    duration_days: days,
-    total_weeks:  weeks.length,
-    gsc_property_url: connection.site_url,
-    first_window: weeks[0],
-    last_window:  weeks[weeks.length - 1],
+    ok:                true,
+    run_id:            run.id,
+    duration_days:     days,
+    total_weeks:       weeks.length,
+    gsc_property_url:  gscPropertyUrl,
+    first_window:      weeks[0],
+    last_window:       weeks[weeks.length - 1],
   })
 }
