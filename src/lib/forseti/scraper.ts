@@ -61,6 +61,9 @@ export interface RunOpts {
   subreddit?: string
   /** Optionally scope to a single owner. Cron iterates all owners; manual scopes to caller. */
   ownerId?:   string
+  /** Sprint FORSETI.BASELINE.1 — when set, paginate PullPush walking back this many days.
+   *  When omitted, the normal 100-post latest fetch is used. */
+  lookbackDays?: number
 }
 
 /**
@@ -157,10 +160,19 @@ async function fetchSubredditPosts(subreddit: string): Promise<{
   return { posts, source: 'reddit_json' }
 }
 
-async function fetchFromPullPush(subreddit: string): Promise<NormalizedPost[]> {
+async function fetchFromPullPush(subreddit: string, beforeUtc?: number): Promise<NormalizedPost[]> {
   // Sprint FORSETI.PULLPUSH.1 — PullPush /reddit/search/submission endpoint.
   // sort_type=created_utc + sort=desc + size=100 mirrors Reddit's /new listing.
-  const url = `https://api.pullpush.io/reddit/search/submission/?subreddit=${encodeURIComponent(subreddit)}&size=100&sort=desc&sort_type=created_utc`
+  // Sprint FORSETI.BASELINE.1 — optional `before` cursor for pagination
+  // when walking back in time for a baseline scan.
+  const params = [
+    `subreddit=${encodeURIComponent(subreddit)}`,
+    'size=100',
+    'sort=desc',
+    'sort_type=created_utc',
+  ]
+  if (beforeUtc != null) params.push(`before=${beforeUtc}`)
+  const url = `https://api.pullpush.io/reddit/search/submission/?${params.join('&')}`
   const controller = new AbortController()
   const timeoutId  = setTimeout(() => controller.abort(), REDDIT_FETCH_TIMEOUT_MS)
   try {
@@ -174,6 +186,65 @@ async function fetchFromPullPush(subreddit: string): Promise<NormalizedPost[]> {
   } finally {
     clearTimeout(timeoutId)
   }
+}
+
+/**
+ * Sprint FORSETI.BASELINE.1 — fetch ALL posts within `lookbackDays` window via
+ * paginated PullPush requests (walking back by `before` timestamp).
+ *
+ * Hard caps:
+ *   • MAX_PAGES = 20 (~2000 posts)
+ *   • Lookback floor: cutoffUtc = now - lookbackDays
+ *
+ * Returns flat de-duped list (by post.id) sorted oldest-first.
+ */
+async function fetchSubredditPostsBaseline(subreddit: string, lookbackDays: number): Promise<{
+  posts:  NormalizedPost[]
+  pages:  number
+  source: 'pullpush' | 'reddit_json'
+}> {
+  const MAX_PAGES = 20
+  const cutoffUtc = Math.floor(Date.now() / 1000) - lookbackDays * 86_400
+  const seen      = new Map<string, NormalizedPost>()
+  let beforeUtc:  number | undefined = undefined
+  let pages       = 0
+  let source: 'pullpush' | 'reddit_json' = 'pullpush'
+
+  for (let i = 0; i < MAX_PAGES; i++) {
+    let batch: NormalizedPost[] = []
+    try {
+       
+      batch = await fetchFromPullPush(subreddit, beforeUtc)
+    } catch (err) {
+      if (i === 0) {
+        console.warn(`[forseti-baseline] PullPush fail page 1 for r/${subreddit}, falling back to Reddit:`, err instanceof Error ? err.message : String(err))
+         
+        const fallback = await fetchFromRedditJson(subreddit)
+        for (const p of fallback) if (!seen.has(p.id)) seen.set(p.id, p)
+        source = 'reddit_json'
+        pages = 1
+        break
+      }
+      console.warn(`[forseti-baseline] PullPush fail page ${i + 1} for r/${subreddit}, stopping:`, err instanceof Error ? err.message : String(err))
+      break
+    }
+    pages++
+    if (batch.length === 0) break
+
+    let oldestInBatch = Infinity
+    for (const p of batch) {
+      if (!seen.has(p.id)) seen.set(p.id, p)
+      if (p.created_utc > 0 && p.created_utc < oldestInBatch) oldestInBatch = p.created_utc
+    }
+    if (oldestInBatch <= cutoffUtc) break
+    beforeUtc = Math.max(0, oldestInBatch - 1)
+  }
+
+  const posts = Array.from(seen.values())
+    .filter(p => p.created_utc >= cutoffUtc)
+    .sort((a, b) => a.created_utc - b.created_utc)
+
+  return { posts, pages, source }
 }
 
 async function fetchFromRedditJson(subreddit: string): Promise<NormalizedPost[]> {
@@ -253,7 +324,8 @@ export async function runForsetiScraper(
 
   const results: ScrapeResult[] = []
   for (const config of configs as SubredditConfig[]) {
-    const result = await scrapeOneConfig(db, config)
+     
+    const result = await scrapeOneConfig(db, config, opts.lookbackDays)
     results.push(result)
   }
   return results
@@ -263,8 +335,9 @@ export async function runForsetiScraper(
 
 async function scrapeOneConfig(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db:     SupabaseClient<any, any, any>,
-  config: SubredditConfig,
+  db:           SupabaseClient<any, any, any>,
+  config:       SubredditConfig,
+  lookbackDays?: number,
 ): Promise<ScrapeResult> {
   const start = Date.now()
 
@@ -272,9 +345,16 @@ async function scrapeOneConfig(
   let source: 'pullpush' | 'reddit_json' = 'pullpush'
 
   try {
-    const fetched = await fetchSubredditPosts(config.subreddit)
-    posts  = fetched.posts
-    source = fetched.source
+    if (lookbackDays && lookbackDays > 0) {
+      // Sprint FORSETI.BASELINE.1 — paginated historical backfill
+      const fetched = await fetchSubredditPostsBaseline(config.subreddit, lookbackDays)
+      posts  = fetched.posts
+      source = fetched.source
+    } else {
+      const fetched = await fetchSubredditPosts(config.subreddit)
+      posts  = fetched.posts
+      source = fetched.source
+    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     await db.from('forseti_subreddit_configs').update({

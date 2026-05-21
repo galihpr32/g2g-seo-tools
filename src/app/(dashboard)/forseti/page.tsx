@@ -46,8 +46,24 @@ export default function ForsetiTriagePage() {
   const [search,     setSearch]     = useState('')
   const [loading,    setLoading]    = useState(true)
   const [refreshTick, setRefreshTick] = useState(0)
-  const [scraping,   setScraping]   = useState(false)
-  const [scrapeMsg,  setScrapeMsg]  = useState<string | null>(null)
+  const [scraping,    setScraping]    = useState(false)
+  const [scrapeMsg,   setScrapeMsg]   = useState<string | null>(null)
+  // Sprint FORSETI.DIAG.1 — per-config result detail for debugging
+  const [scrapeDetail, setScrapeDetail] = useState<Array<{
+    config_id:   string
+    subreddit:   string
+    ok:          boolean
+    fetched:     number
+    matched:     number
+    inserted:    number
+    updated:     number
+    filtered:    number
+    source:      string
+    error?:      string
+    duration_ms: number
+  }>>([])
+  // Sprint FORSETI.BASELINE.1 — modal state
+  const [baselineOpen, setBaselineOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -83,7 +99,17 @@ export default function ForsetiTriagePage() {
         setScrapeMsg(`❌ ${data.error ?? 'Failed'}`)
       } else {
         const s = data.summary
-        setScrapeMsg(`✅ ${s.configs} sub${s.configs === 1 ? '' : 's'} polled · ${s.inserted} new · ${s.updated} updated${s.alerts_fired > 0 ? ` · ${s.alerts_fired} alerts fired` : ''}`)
+        // Sprint FORSETI.DIAG.1 — full diagnostic so user can see where drop-off happens.
+        // Most-likely-empty case (PullPush returned 0) is now obvious.
+        const sources = Array.from(new Set((data.per_config ?? []).map((c: { source?: string }) => c.source).filter(Boolean))).join(', ')
+        setScrapeMsg(
+          `✅ ${s.configs} sub${s.configs === 1 ? '' : 's'} polled · `
+          + `${s.fetched ?? 0} fetched · ${s.matched ?? 0} matched · `
+          + `${s.inserted} new · ${s.updated} updated · ${s.filtered ?? 0} filtered`
+          + (sources ? ` · source: ${sources}` : '')
+          + (s.alerts_fired > 0 ? ` · ${s.alerts_fired} alerts fired` : '')
+        )
+        setScrapeDetail(data.per_config ?? [])
         setRefreshTick(t => t + 1)
       }
     } catch (e) {
@@ -115,6 +141,14 @@ export default function ForsetiTriagePage() {
           <Link href="/forseti/history" className="px-3 py-2 text-sm text-gray-300 hover:text-white border border-gray-700 rounded-lg">History</Link>
           <Link href="/forseti/settings" className="px-3 py-2 text-sm text-gray-300 hover:text-white border border-gray-700 rounded-lg">Settings</Link>
           <button
+            onClick={() => setBaselineOpen(true)}
+            disabled={scraping}
+            className="px-3 py-2 bg-amber-700/80 hover:bg-amber-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
+            title="Backfill historical posts via paginated PullPush"
+          >
+            📅 Baseline scan
+          </button>
+          <button
             onClick={runScrapeAll}
             disabled={scraping}
             className="px-3 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
@@ -124,9 +158,65 @@ export default function ForsetiTriagePage() {
         </div>
       </div>
 
+      {baselineOpen && (
+        <BaselineModal
+          onClose={() => setBaselineOpen(false)}
+          onComplete={(msg, detail) => {
+            setScrapeMsg(msg)
+            setScrapeDetail(detail)
+            setRefreshTick(t => t + 1)
+            setBaselineOpen(false)
+          }}
+        />
+      )}
+
       {scrapeMsg && (
         <div className="rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-200">
-          {scrapeMsg}
+          <div>{scrapeMsg}</div>
+          {scrapeDetail.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[10px] text-gray-500 hover:text-gray-300">Per-config breakdown ({scrapeDetail.length})</summary>
+              <table className="w-full mt-2 text-[11px]">
+                <thead className="text-[9px] uppercase text-gray-500 tracking-wider">
+                  <tr>
+                    <th className="text-left  px-1.5 py-1">Subreddit</th>
+                    <th className="text-center px-1.5 py-1 w-16">Source</th>
+                    <th className="text-right  px-1.5 py-1 w-14">Fetched</th>
+                    <th className="text-right  px-1.5 py-1 w-14">Matched</th>
+                    <th className="text-right  px-1.5 py-1 w-12">New</th>
+                    <th className="text-right  px-1.5 py-1 w-14">Updated</th>
+                    <th className="text-right  px-1.5 py-1 w-14">Filtered</th>
+                    <th className="text-right  px-1.5 py-1 w-14">Time</th>
+                    <th className="text-left  px-1.5 py-1">Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {scrapeDetail.map(c => (
+                    <tr key={c.config_id} className="border-t border-gray-800">
+                      <td className="px-1.5 py-1 text-white">r/{c.subreddit}</td>
+                      <td className="px-1.5 py-1 text-center">
+                        <span className={`text-[9px] font-semibold px-1 py-0.5 rounded border ${c.source === 'pullpush' ? 'bg-violet-500/15 text-violet-300 border-violet-500/30' : c.source === 'reddit_json' ? 'bg-orange-500/15 text-orange-300 border-orange-500/30' : 'bg-gray-700 text-gray-300 border-gray-600'}`}>
+                          {c.source}
+                        </span>
+                      </td>
+                      <td className="px-1.5 py-1 text-right text-gray-200">{c.fetched}</td>
+                      <td className="px-1.5 py-1 text-right text-gray-200">{c.matched}</td>
+                      <td className="px-1.5 py-1 text-right text-emerald-300">{c.inserted}</td>
+                      <td className="px-1.5 py-1 text-right text-gray-300">{c.updated}</td>
+                      <td className="px-1.5 py-1 text-right text-gray-500">{c.filtered}</td>
+                      <td className="px-1.5 py-1 text-right text-gray-500">{c.duration_ms}ms</td>
+                      <td className="px-1.5 py-1 text-red-300">{c.error ?? ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="mt-2 text-[10px] text-gray-500 italic">
+                If <strong>Fetched=0</strong>, PullPush returned no posts — subreddit is quiet OR PullPush has lag.
+                If <strong>Fetched&gt;0 but Matched=0</strong>, the keyword filter dropped all posts — check /forseti/settings.
+                If <strong>source=reddit_json</strong>, PullPush failed and we fell back (may fail from Vercel).
+              </p>
+            </details>
+          )}
         </div>
       )}
 
@@ -326,6 +416,110 @@ function ThreadCard({ t, onPatch }: { t: Thread; onPatch: (p: Partial<Thread>) =
           <Link href={`/forseti/${t.id}`} className="text-purple-300 hover:text-purple-200 font-medium">
             View detail →
           </Link>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Sprint FORSETI.BASELINE.1 — duration picker modal for historical backfill
+interface BaselineDetailRow {
+  config_id:   string
+  subreddit:   string
+  ok:          boolean
+  fetched:     number
+  matched:     number
+  inserted:    number
+  updated:     number
+  filtered:    number
+  source:      string
+  error?:      string
+  duration_ms: number
+}
+function BaselineModal({ onClose, onComplete }: {
+  onClose:    () => void
+  onComplete: (msg: string, detail: BaselineDetailRow[]) => void
+}) {
+  const [days, setDays] = useState<7 | 14 | 30 | 60 | 90 | 180>(30)
+  const [running, setRunning] = useState(false)
+  const [errMsg,  setErrMsg]  = useState<string | null>(null)
+
+  async function run() {
+    setRunning(true); setErrMsg(null)
+    try {
+      const res = await fetch('/api/forseti/scraper/baseline', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ lookback_days: days }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setErrMsg(data.error ?? 'Failed')
+        setRunning(false)
+        return
+      }
+      const s = data.summary
+      const sources = Array.from(new Set((data.per_config ?? []).map((c: { source?: string }) => c.source).filter(Boolean))).join(', ')
+      const msg = `✅ Baseline ${days}d · ${s.configs} sub${s.configs === 1 ? '' : 's'} · `
+        + `${s.fetched} fetched · ${s.matched} matched · ${s.inserted} new · ${s.updated} updated · ${s.filtered} filtered`
+        + (sources ? ` · source: ${sources}` : '')
+      onComplete(msg, data.per_config ?? [])
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : String(e))
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-md p-5">
+        <h3 className="text-base font-semibold text-white mb-1">📅 Forseti Baseline Scan</h3>
+        <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+          Backfill historical posts via paginated PullPush. Fetches up to ~2000 posts walking back N days. Existing rows get updated (score refresh), new rows get classified and inserted.
+        </p>
+
+        <label className="block text-xs text-gray-400 mb-1">Lookback window</label>
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          {([7, 14, 30, 60, 90, 180] as const).map(d => (
+            <button
+              key={d}
+              onClick={() => setDays(d)}
+              disabled={running}
+              className={`px-2 py-2 rounded-md text-sm font-medium border ${
+                days === d
+                  ? 'bg-amber-600 border-amber-500 text-white'
+                  : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              {d} days
+            </button>
+          ))}
+        </div>
+
+        <p className="text-[10px] text-gray-500 italic mb-4">
+          {days} days ≈ up to <strong>{Math.min(2000, days * 50).toLocaleString()}</strong> posts per subreddit (capped at 2,000).
+          Expect 5-30s per sub depending on volume.
+        </p>
+
+        {errMsg && (
+          <div className="bg-red-900/20 border border-red-800/40 rounded p-2 text-xs text-red-300 mb-3">
+            {errMsg}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={running}
+            className="px-4 py-1.5 text-sm text-gray-300 hover:text-white bg-gray-800 border border-gray-700 rounded-md disabled:opacity-50"
+          >Cancel</button>
+          <button
+            onClick={run}
+            disabled={running}
+            className="px-4 py-1.5 text-sm bg-amber-600 hover:bg-amber-500 text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {running ? '⏳ Scanning…' : `Run ${days}-day baseline`}
+          </button>
         </div>
       </div>
     </div>
