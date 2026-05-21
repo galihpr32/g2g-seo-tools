@@ -16,6 +16,7 @@ interface PatchBody {
   tier?:             1 | 2
   product_name?:     string
   category?:         string | null
+  brand_canonical?:  string | null   // Sprint CLUSTER.RENAME.5 — canonical brand override
   relation_id?:      string | null
   url?:              string | null
   notes?:            string | null
@@ -48,9 +49,10 @@ export async function PUT(
     }
     patch.tier = body.tier
   }
-  if (body.product_name !== undefined) patch.product_name = body.product_name.trim()
-  if (body.category !== undefined)     patch.category     = body.category?.trim() || null
-  if (body.relation_id !== undefined)  patch.relation_id  = body.relation_id?.trim() || null
+  if (body.product_name !== undefined)    patch.product_name    = body.product_name.trim()
+  if (body.category !== undefined)        patch.category        = body.category?.trim() || null
+  if (body.brand_canonical !== undefined) patch.brand_canonical = body.brand_canonical?.trim() || null
+  if (body.relation_id !== undefined)     patch.relation_id     = body.relation_id?.trim() || null
   if (body.url !== undefined)          patch.url          = body.url?.trim() || null
   if (body.notes !== undefined)        patch.notes        = body.notes?.trim() || null
   if (body.restriction_type !== undefined) {

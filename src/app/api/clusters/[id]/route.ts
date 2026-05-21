@@ -105,16 +105,29 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ error: 'no editable fields supplied' }, { status: 400 })
   }
 
+  // Sprint CLUSTER.RENAME.3 — if topic changes but no slug supplied, compute it
+  if ('topic' in patch && typeof patch.topic === 'string' && !('topic_slug' in patch)) {
+    const t = patch.topic.trim()
+    if (!t) return NextResponse.json({ error: 'topic cannot be empty' }, { status: 400 })
+    patch.topic_slug = t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'untitled'
+  }
+
   const db = createServiceClient()
 
   // Ownership check first (so we don't leak existence of others' rows)
   const { data: existing } = await db
     .from('keyword_maps')
-    .select('id, owner_user_id, site_slug, level')
+    .select('id, owner_user_id, site_slug, level, topic, topic_original')
     .eq('id', id)
     .maybeSingle()
   if (!existing || existing.owner_user_id !== ownerId) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
+  // Sprint CLUSTER.RENAME.3 — first time topic is renamed, capture the original
+  // value so user can restore. Subsequent renames don't clobber the backup.
+  if ('topic' in patch && typeof patch.topic === 'string' && patch.topic !== existing.topic && !existing.topic_original) {
+    patch.topic_original = existing.topic
   }
 
   if ('parent_map_id' in patch && patch.parent_map_id) {

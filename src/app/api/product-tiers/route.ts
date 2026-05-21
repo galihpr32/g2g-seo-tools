@@ -17,6 +17,7 @@ interface TierBody {
   tier:              1 | 2
   product_name:      string
   category?:         string | null
+  brand_canonical?:  string | null   // Sprint CLUSTER.RENAME.5
   relation_id?:      string | null
   url?:              string | null
   notes?:            string | null
@@ -29,7 +30,7 @@ const VALID_MARKETS = ['us', 'id'] as const
 
 function normalizeBody(body: TierBody): {
   ok:    true
-  data:  { tier: 1 | 2; product_name: string; category: string | null; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null; market: 'us' | 'id' }
+  data:  { tier: 1 | 2; product_name: string; category: string | null; brand_canonical: string | null; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null; market: 'us' | 'id' }
 } | { ok: false; error: string } {
   if (body.tier !== 1 && body.tier !== 2) return { ok: false, error: 'tier must be 1 or 2' }
   if (!body.product_name?.trim())         return { ok: false, error: 'product_name is required' }
@@ -50,6 +51,7 @@ function normalizeBody(body: TierBody): {
       tier:             body.tier,
       product_name:     body.product_name.trim(),
       category:         body.category?.trim() || null,
+      brand_canonical:  body.brand_canonical?.trim() || null,
       relation_id:      body.relation_id?.trim() || null,
       url:              body.url?.trim() || null,
       notes:            body.notes?.trim() || null,

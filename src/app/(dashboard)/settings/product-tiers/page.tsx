@@ -22,6 +22,7 @@ interface TierRow {
   tier:             1 | 2
   product_name:     string
   category:         string | null
+  brand_canonical:  string | null   // Sprint CLUSTER.RENAME.5 — optional canonical brand override
   relation_id:      string | null
   url:              string | null
   notes:            string | null
@@ -194,6 +195,7 @@ export default function ProductTiersPage() {
           tier:             editing.tier,
           product_name:     editing.product_name?.trim(),
           category:         editing.category ?? null,
+          brand_canonical:  editing.brand_canonical?.trim() || null,
           relation_id:      editing.relation_id ?? null,
           url:              editing.url ?? null,
           notes:            editing.notes ?? null,
@@ -256,7 +258,7 @@ export default function ProductTiersPage() {
           </p>
         </div>
         <button
-          onClick={() => setEditing({ tier: 1, market: 'us', product_name: '', category: null, relation_id: null, url: null, notes: null })}
+          onClick={() => setEditing({ tier: 1, market: 'us', product_name: '', category: null, brand_canonical: null, relation_id: null, url: null, notes: null })}
           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition"
         >
           + Add Product
@@ -465,6 +467,22 @@ export default function ProductTiersPage() {
               <Field label="Product Name *" value={editing.product_name ?? ''}
                      onChange={v => setEditing({ ...editing, product_name: v })}
                      placeholder="e.g. Albion Online Global Account" />
+              {/* Sprint CLUSTER.RENAME.5 — canonical brand override for cluster naming */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Canonical brand name <span className="text-gray-600 normal-case">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={editing.brand_canonical ?? ''}
+                  onChange={e => setEditing({ ...editing, brand_canonical: e.target.value })}
+                  placeholder='Leave blank to auto-resolve. Override for cases like "CSGO" (vs "Counter Strike: Global Offensive")'
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600"
+                />
+                <p className="text-[10px] text-gray-500 mt-1">
+                  Used as the cluster name (Saga + /clusters page + Friday KPI). Auto-resolution falls back to: G2G catalog service_name → full product_name.
+                </p>
+              </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Category</label>
                 <input
