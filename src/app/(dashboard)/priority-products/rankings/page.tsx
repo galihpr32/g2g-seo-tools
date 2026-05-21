@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import { TIER_MARKETS, TIER_MARKET_CODES, type TierMarket } from '@/lib/ranking-tracker'
+import { detectBrandSearch, detectLanguage } from '@/lib/priority-products/discovery-claim'
 
 /**
  * /priority-products/rankings — Aggregate Keyword Rankings Dashboard
@@ -150,6 +151,10 @@ export default function RankingsDashboardPage() {
     : null) as Source | null
   const [source, setSource] = useState<Source>(initialSource ?? 'dfs')
 
+  // Sprint PP.DISCOVERY.CLAIM.1 — refresh trigger bumped after claim succeeds
+  // so the discovery table re-fetches and the just-claimed row flips to TRACKED.
+  const [refreshTrigger, setRefreshTrigger] = useState(0)
+
   // Filter state
   const [tier,     setTier]     = useState<'all' | '1' | '2'>('all')
   const [market,   setMarket]   = useState<string>('all')
@@ -221,7 +226,7 @@ export default function RankingsDashboardPage() {
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [source, tier, market, category, service, range, siteSlug])
+  }, [source, tier, market, category, service, range, siteSlug, refreshTrigger])
 
   // Sprint PP.GSC.TOGGLE.2 — keep source in URL for share-ability
   useEffect(() => {
@@ -279,9 +284,14 @@ export default function RankingsDashboardPage() {
           </p>
           {(source !== 'dfs') && data?.meta?.windowStart && (
             <p className="text-[10px] text-gray-500 mt-1">
-              Window: {data.meta.windowStart} → {data.meta.windowEnd}
-              {data.meta.priorStart && <> · Prior: {data.meta.priorStart} → {data.meta.priorEnd}</>}
+              Latest snapshot: <strong className="text-gray-300">{data.meta.windowStart}</strong>
+              {data.meta.priorStart && <> · Prior snapshot: <strong className="text-gray-300">{data.meta.priorStart}</strong></>}
               {' · '}{data.meta.snapshotsScanned.toLocaleString()} GSC rows scanned · {data.meta.queriesMatched.toLocaleString()} matched
+            </p>
+          )}
+          {(source !== 'dfs') && !data?.meta?.windowStart && data && !loading && (
+            <p className="text-[11px] text-amber-300 mt-1">
+              ⚠ No GSC snapshots found for this site yet. Run a <Link href="/hugin" className="underline">Hugin baseline scan</Link> to backfill historical data (30 days recommended) — it&apos;ll populate this view immediately.
             </p>
           )}
         </div>
@@ -447,7 +457,12 @@ export default function RankingsDashboardPage() {
 
           {/* Sprint PP.GSC.TOGGLE.2 — Discovery mode renders its own flat table */}
           {source === 'gsc-discovery' ? (
-            <DiscoverySection rows={data.discoveryRows ?? []} search={search} />
+            <DiscoverySection
+              rows={data.discoveryRows ?? []}
+              search={search}
+              siteSlug={siteSlug}
+              onClaimed={() => setRefreshTrigger(n => n + 1)}
+            />
           ) : (<>
           {/* Rankings Distribution Chart */}
           <section className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
@@ -645,27 +660,101 @@ function SourcePill({ active, onClick, children }: {
 }
 
 // Sprint PP.GSC.TOGGLE.2 — discovery view (gsc-discovery mode)
-function DiscoverySection({ rows, search }: { rows: DiscoveryRow[]; search: string }) {
+// Sprint PP.DISCOVERY.CLAIM.1 — claim UNTRACKED → tier_keywords with brand
+// search filter, language auto-detect, and confirmation modal.
+
+interface ClaimTarget { productId: string; productName: string; query: string; language: 'en' | 'id' }
+
+function DiscoverySection({ rows, search, siteSlug, onClaimed }: {
+  rows:        DiscoveryRow[]
+  search:      string
+  siteSlug:    string
+  onClaimed:   () => void
+}) {
+  const [hideBrand, setHideBrand] = useState(true)
+  const [selected,  setSelected]  = useState<Set<string>>(new Set())
+  const [claimModal, setClaimModal] = useState<ClaimTarget[] | null>(null)
+
+  // Annotate rows with brand-search flag once per render
+  const enrichedRows = useMemo(() => rows.map(r => ({
+    ...r,
+    isBrand: detectBrandSearch(r.query, siteSlug),
+  })), [rows, siteSlug])
+
   const filtered = useMemo(() => {
     const s = search.trim().toLowerCase()
-    if (!s) return rows
-    return rows.filter(r =>
-      r.productName.toLowerCase().includes(s) ||
-      r.query.toLowerCase().includes(s),
-    )
-  }, [rows, search])
+    return enrichedRows.filter(r => {
+      if (hideBrand && r.isBrand) return false
+      if (!s) return true
+      return r.productName.toLowerCase().includes(s) || r.query.toLowerCase().includes(s)
+    })
+  }, [enrichedRows, search, hideBrand])
+
+  const visibleRows = filtered.slice(0, 300)
+  const rowKey = (r: DiscoveryRow) => `${r.productId}|${r.query}`
+
+  const selectableKeys = visibleRows.filter(r => !r.isTracked).map(rowKey)
+  const allSelected    = selectableKeys.length > 0 && selectableKeys.every(k => selected.has(k))
+
+  function toggleOne(k: string) {
+    const next = new Set(selected)
+    if (next.has(k)) next.delete(k)
+    else             next.add(k)
+    setSelected(next)
+  }
+  function toggleAll() {
+    if (allSelected) setSelected(new Set())
+    else             setSelected(new Set(selectableKeys))
+  }
+  function buildTarget(r: DiscoveryRow): ClaimTarget {
+    return {
+      productId:   r.productId,
+      productName: r.productName,
+      query:       r.query,
+      language:    detectLanguage(r.query),
+    }
+  }
+  function openSingle(r: DiscoveryRow) {
+    setClaimModal([buildTarget(r)])
+  }
+  function openBulk() {
+    const targets = visibleRows
+      .filter(r => !r.isTracked && selected.has(rowKey(r)))
+      .map(buildTarget)
+    if (targets.length === 0) return
+    setClaimModal(targets)
+  }
 
   return (
     <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-sm font-semibold text-white">🔍 Discovery — Top GSC queries per product</h2>
           <p className="text-[10px] text-gray-500 mt-0.5">
             All GSC queries hitting tier product URLs in last 7d. Untracked rows = potential new keywords to add to tier_keywords.
           </p>
         </div>
-        <div className="text-[10px] text-gray-500">
-          {filtered.length.toLocaleString()} queries · {filtered.filter(r => !r.isTracked).length.toLocaleString()} untracked
+        <div className="flex items-center gap-3 text-[11px]">
+          <label className="inline-flex items-center gap-1.5 text-gray-400 cursor-pointer hover:text-gray-200">
+            <input
+              type="checkbox"
+              checked={hideBrand}
+              onChange={e => setHideBrand(e.target.checked)}
+              className="accent-violet-500"
+            />
+            Hide brand searches
+          </label>
+          {selected.size > 0 && (
+            <button
+              onClick={openBulk}
+              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs rounded-md font-medium"
+            >
+              Claim selected ({selected.size}) →
+            </button>
+          )}
+          <div className="text-gray-500">
+            {filtered.length.toLocaleString()} shown · {filtered.filter(r => !r.isTracked).length.toLocaleString()} untracked
+          </div>
         </div>
       </div>
       {filtered.length === 0 ? (
@@ -677,22 +766,54 @@ function DiscoverySection({ rows, search }: { rows: DiscoveryRow[]; search: stri
           <table className="w-full text-sm">
             <thead className="bg-gray-800/40 text-gray-400 text-[10px] uppercase tracking-wider">
               <tr>
+                <th className="px-3 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    className="accent-violet-500"
+                    title="Select all untracked visible rows"
+                  />
+                </th>
                 <th className="text-left  px-3 py-2">Product</th>
                 <th className="text-left  px-3 py-2">Query</th>
-                <th className="text-center px-3 py-2 w-20">Tracked?</th>
+                <th className="text-center px-3 py-2 w-20">Status</th>
                 <th className="text-right  px-3 py-2 w-24">Avg Pos</th>
                 <th className="text-right  px-3 py-2 w-24">Impressions</th>
                 <th className="text-right  px-3 py-2 w-20">Clicks</th>
                 <th className="text-right  px-3 py-2 w-20">CTR</th>
+                <th className="text-center px-3 py-2 w-24">Action</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 300).map((r, i) => {
+              {visibleRows.map((r, i) => {
                 const ctr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0
+                const k = rowKey(r)
+                const isSelected = selected.has(k)
                 return (
-                  <tr key={`${r.productId}-${r.query}-${i}`} className="border-t border-gray-800 hover:bg-gray-800/30">
+                  <tr
+                    key={`${r.productId}-${r.query}-${i}`}
+                    className={`border-t border-gray-800 hover:bg-gray-800/30 ${isSelected ? 'bg-violet-500/5' : ''}`}
+                  >
+                    <td className="px-3 py-2 text-center">
+                      {!r.isTracked && (
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleOne(k)}
+                          className="accent-violet-500"
+                        />
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-gray-200 truncate max-w-[180px]">{r.productName}</td>
-                    <td className="px-3 py-2 text-white">{r.query}</td>
+                    <td className="px-3 py-2 text-white">
+                      {r.query}
+                      {r.isBrand && (
+                        <span className="ml-2 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/30">
+                          🏷 BRAND
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-center">
                       {r.isTracked
                         ? <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">TRACKED</span>
@@ -704,6 +825,17 @@ function DiscoverySection({ rows, search }: { rows: DiscoveryRow[]; search: stri
                     <td className="px-3 py-2 text-right text-gray-200">{r.impressions.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right text-gray-200">{r.clicks.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right text-gray-400">{ctr.toFixed(1)}%</td>
+                    <td className="px-3 py-2 text-center">
+                      {!r.isTracked && (
+                        <button
+                          onClick={() => openSingle(r)}
+                          className="text-[11px] px-2 py-1 bg-gray-800 hover:bg-violet-600 hover:text-white text-gray-200 border border-gray-700 hover:border-violet-500 rounded"
+                          title={r.isBrand ? 'Heads-up: looks like a brand search — confirm carefully' : 'Add to tier_keywords'}
+                        >
+                          Claim
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 )
               })}
@@ -716,7 +848,183 @@ function DiscoverySection({ rows, search }: { rows: DiscoveryRow[]; search: stri
           )}
         </div>
       )}
+
+      {claimModal && (
+        <ClaimConfirmModal
+          targets={claimModal}
+          onCancel={() => setClaimModal(null)}
+          onDone={() => {
+            setClaimModal(null)
+            setSelected(new Set())
+            onClaimed()
+          }}
+        />
+      )}
     </section>
+  )
+}
+
+// ─── Claim confirmation modal ─────────────────────────────────────────────────
+
+function ClaimConfirmModal({ targets, onCancel, onDone }: {
+  targets:  ClaimTarget[]
+  onCancel: () => void
+  onDone:   () => void
+}) {
+  // Per-target language state — start from auto-detect, user can override each
+  const [perTargetLang, setPerTargetLang] = useState<Record<string, 'en' | 'id'>>(() => {
+    const m: Record<string, 'en' | 'id'> = {}
+    for (const t of targets) m[`${t.productId}|${t.query}`] = t.language
+    return m
+  })
+  const [submitting, setSubmitting] = useState(false)
+  const [results, setResults] = useState<Array<{ key: string; ok: boolean; error?: string }>>([])
+
+  const isBulk = targets.length > 1
+
+  async function submit() {
+    setSubmitting(true)
+    setResults([])
+    const out: Array<{ key: string; ok: boolean; error?: string }> = []
+    for (const t of targets) {
+      const key = `${t.productId}|${t.query}`
+      const language = perTargetLang[key] ?? t.language
+      try {
+        const res = await fetch(`/api/priority-products/${t.productId}/keywords`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword: t.query, language }),
+        })
+        if (res.ok) {
+          out.push({ key, ok: true })
+        } else {
+          const body = await res.json().catch(() => ({})) as { error?: string }
+          out.push({ key, ok: false, error: body.error ?? `HTTP ${res.status}` })
+        }
+      } catch (e) {
+        out.push({ key, ok: false, error: e instanceof Error ? e.message : String(e) })
+      }
+      // Optimistic: update results progressively so user sees progress on bulk
+      setResults([...out])
+    }
+    setSubmitting(false)
+    // If everything succeeded, auto-close after a short success flash
+    if (out.every(r => r.ok)) {
+      setTimeout(() => onDone(), 500)
+    }
+  }
+
+  function forceAllTo(lang: 'en' | 'id') {
+    const next: Record<string, 'en' | 'id'> = {}
+    for (const t of targets) next[`${t.productId}|${t.query}`] = lang
+    setPerTargetLang(next)
+  }
+
+  const successCount = results.filter(r => r.ok).length
+  const errorCount   = results.filter(r => !r.ok).length
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b border-gray-800">
+          <h3 className="text-base font-semibold text-white">
+            Claim {targets.length === 1 ? '1 keyword' : `${targets.length} keywords`}
+          </h3>
+          <p className="text-xs text-gray-500 mt-1">
+            Adds to <code className="text-violet-300">tier_keywords</code>. Cluster will be re-scored on next cron run.
+          </p>
+        </div>
+
+        {isBulk && (
+          <div className="px-5 py-3 border-b border-gray-800 flex items-center gap-3 text-xs">
+            <span className="text-gray-400">Force all to:</span>
+            <button
+              onClick={() => forceAllTo('en')}
+              className="px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded border border-gray-700"
+            >🇺🇸 EN</button>
+            <button
+              onClick={() => forceAllTo('id')}
+              className="px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded border border-gray-700"
+            >🇮🇩 ID</button>
+            <span className="text-gray-500 ml-auto italic">(or override individually below)</span>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto px-5 py-3">
+          <table className="w-full text-sm">
+            <thead className="text-[10px] text-gray-500 uppercase tracking-wider">
+              <tr>
+                <th className="text-left  px-2 py-1.5">Product</th>
+                <th className="text-left  px-2 py-1.5">Keyword</th>
+                <th className="text-center px-2 py-1.5 w-24">Language</th>
+                <th className="text-center px-2 py-1.5 w-24">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {targets.map(t => {
+                const key = `${t.productId}|${t.query}`
+                const lang = perTargetLang[key] ?? t.language
+                const result = results.find(r => r.key === key)
+                return (
+                  <tr key={key} className="border-t border-gray-800">
+                    <td className="px-2 py-2 text-gray-300 truncate max-w-[160px]">{t.productName}</td>
+                    <td className="px-2 py-2 text-white">{t.query}</td>
+                    <td className="px-2 py-2 text-center">
+                      <select
+                        value={lang}
+                        onChange={e => setPerTargetLang({ ...perTargetLang, [key]: e.target.value as 'en' | 'id' })}
+                        disabled={submitting || !!result?.ok}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-xs text-white"
+                      >
+                        <option value="en">🇺🇸 EN</option>
+                        <option value="id">🇮🇩 ID</option>
+                      </select>
+                    </td>
+                    <td className="px-2 py-2 text-center text-xs">
+                      {!result && (submitting ? <span className="text-gray-500">…</span> : <span className="text-gray-600">—</span>)}
+                      {result?.ok && <span className="text-emerald-400">✓ added</span>}
+                      {result && !result.ok && (
+                        <span className="text-red-400" title={result.error}>✗ {result.error?.slice(0, 30) ?? 'failed'}</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-800 flex items-center justify-between gap-3">
+          <div className="text-xs text-gray-500">
+            {results.length > 0 && (
+              <>
+                {successCount > 0 && <span className="text-emerald-400">{successCount} added</span>}
+                {successCount > 0 && errorCount > 0 && ' · '}
+                {errorCount > 0 && <span className="text-red-400">{errorCount} failed</span>}
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onCancel}
+              disabled={submitting}
+              className="px-4 py-1.5 text-sm text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-md disabled:opacity-50"
+            >
+              {results.length > 0 ? 'Close' : 'Cancel'}
+            </button>
+            {results.length === 0 && (
+              <button
+                onClick={submit}
+                disabled={submitting}
+                className="px-4 py-1.5 text-sm bg-violet-600 hover:bg-violet-500 text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {submitting ? 'Adding…' : 'Confirm'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 

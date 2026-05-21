@@ -24,9 +24,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-const GSC_LAG_DAYS         = 4    // GSC has a 3-4 day data lag
-const GSC_WINDOW_DAYS      = 7    // 7d rolling window
-const GSC_WOW_COMPARE_DAYS = 28   // 28d vs prior 28d for delta signals
+// Sprint PP.GSC.TOGGLE.FIX — snapshot-based semantics.
+// The window/lag constants are gone; we instead use whatever snapshot dates
+// are actually present in the data. Prior comparison still targets ~28d.
+const GSC_WOW_COMPARE_DAYS = 28
 const TOP_3_BOUNDARY       = 3.5
 
 // ─── Shared types (mirror existing /api/priority-products/rankings shape) ───
@@ -127,31 +128,8 @@ function addDays(d: Date, days: number): Date {
   return x
 }
 
-/**
- * Returns the canonical [windowEnd, windowStart, priorEnd, priorStart] date
- * tuple for GSC mode given the current date. Anchored at "today - lag" so we
- * never query an empty future window.
- *
- *   windowEnd   = today - lag
- *   windowStart = windowEnd - (window - 1)
- *   priorEnd    = windowStart - 1
- *   priorStart  = priorEnd - (window - 1)
- *
- * Same shape used for both the 7d-rolling fetch (impressions/clicks/avg pos
- * snapshot) and the 28d WoW comparison (different window value passed in).
- */
-function windowRange(now: Date, window: number, lag: number): {
-  windowStart: string
-  windowEnd:   string
-  priorStart:  string
-  priorEnd:    string
-} {
-  const wEnd   = addDays(now, -lag)
-  const wStart = addDays(wEnd, -(window - 1))
-  const pEnd   = addDays(wStart, -1)
-  const pStart = addDays(pEnd, -(window - 1))
-  return { windowStart: isoDate(wStart), windowEnd: isoDate(wEnd), priorStart: isoDate(pStart), priorEnd: isoDate(pEnd) }
-}
+// (windowRange helper removed in Sprint PP.GSC.TOGGLE.FIX — snapshot-based
+//  semantics make calendar windows unnecessary.)
 
 // ─── Input shapes (resolved upstream) ──────────────────────────────────────
 
@@ -189,16 +167,34 @@ export interface FetchOpts {
 /**
  * Build the rankings bundle from Google Search Console snapshot data.
  *
- * Matching strategy: for each product we know its `url` (page URL). We find
- * GSC rows whose `page` starts with `product.url` and whose `query` matches
- * a kw in tier_keywords for that product. Aggregating impressions/clicks
- * across the 7d window, and computing impression-weighted average position.
+ * Snapshot semantics (Sprint PP.GSC.TOGGLE.1 → revised 2026-05-21):
  *
- * For the 8-week distribution chart, we bucket each calendar week ending on
- * a Sunday across the past 8 weeks.
+ *   Each row in gsc_query_snapshots represents a 7-day GSC rollup CAPTURED
+ *   on a specific date. The cron writes with snapshot_date=today, and Hugin
+ *   baseline writes with snapshot_date=week.end. Both have the same shape:
+ *   one row per (page × query × snapshot_date) where the row's metrics are
+ *   already a 7-day aggregate ending at/around the snapshot_date.
  *
- * Strict reduction: rows with 0 impressions in the window are EXCLUDED
- * (GSC reports 0-impression rows sometimes, those tell us nothing).
+ *   So we treat each snapshot as a point-in-time observation. For each
+ *   (product × keyword) pair:
+ *     • current  = the LATEST snapshot we have
+ *     • prior    = a snapshot ~28 days earlier (closest match within ±5d)
+ *
+ *   The chart's X axis = the actual snapshot_dates present in the data,
+ *   not arbitrary calendar weeks. So if cron has run on May 7, 14, 21 we
+ *   show 3 buckets; if Hugin baseline filled in March data too, we show
+ *   those buckets as well.
+ *
+ *   This makes the page resilient to:
+ *     - Different cron cadences (daily vs weekly)
+ *     - Mixed data sources (baseline backfill + ongoing daily)
+ *     - Missing intermediate weeks (we just skip them)
+ *
+ * Matching strategy: for each product we know its `url`. We find GSC rows
+ * whose `page` starts with `product.url` AND whose `query` matches a kw in
+ * tier_keywords for that product.
+ *
+ * Rows with 0 impressions are EXCLUDED (no signal to draw from).
  */
 export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle> {
   const { db, ownerId, products, filters, categories, markets, gscPropertyUrl } = opts
@@ -227,22 +223,17 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
   const allKwLower = new Set<string>()
   for (const set of kwByProduct.values()) for (const k of set) allKwLower.add(k)
 
-  // ── Date windows ───────────────────────────────────────────────────────────
+  // ── Fetch ALL snapshots from the past 120 days (matches table retention) ──
+  // We bucket by snapshot_date in JS, then pick latest/prior per (kw, product).
   const now = new Date()
-  const w7  = windowRange(now, GSC_WINDOW_DAYS,      GSC_LAG_DAYS)
-  const w28 = windowRange(now, GSC_WOW_COMPARE_DAYS, GSC_LAG_DAYS)
-  // For chart: 8 weeks of weekly buckets, anchored on most recent window end.
-  const chartStart = isoDate(addDays(addDays(now, -GSC_LAG_DAYS), -8 * 7))
+  const fetchSince = isoDate(addDays(now, -120))
 
-  // ── Fetch GSC snapshots for the full chart range (covers w7 + w28 + history) ──
-  // We over-fetch slightly (8 weeks) and bucket in memory. This is cheaper
-  // than firing 3 separate queries against the same date range.
   const { data: snapsRaw, error } = await db
     .from('gsc_query_snapshots')
     .select('snapshot_date, page, query, clicks, impressions, position')
     .eq('site_url', gscPropertyUrl)
-    .gte('snapshot_date', chartStart)
-    .lte('snapshot_date', w7.windowEnd)
+    .gte('snapshot_date', fetchSince)
+    .order('snapshot_date', { ascending: false })
     .limit(50_000)
 
   if (error) {
@@ -258,8 +249,6 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
   }>
 
   // ── Helper: match GSC `page` to a product URL ──────────────────────────────
-  // The page can have query strings / trailing slashes / locale prefixes that
-  // the canonical product.url doesn't. Compare on pathname prefix.
   function pathOf(rawUrl: string): string {
     try { return new URL(rawUrl).pathname.replace(/\/+$/, '') } catch { return rawUrl.replace(/\/+$/, '') }
   }
@@ -271,10 +260,8 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
   }
   function matchProduct(page: string): typeof products[0] | null {
     const pPath = pathOf(page)
-    // Try exact match first (cheap, common case)
     const exact = productByPath.get(pPath)
     if (exact) return exact
-    // Fallback: longest prefix match (handles trailing locale, slugs)
     let best: typeof products[0] | null = null
     let bestLen = 0
     for (const [path, prod] of productByPath) {
@@ -286,71 +273,111 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
     return best
   }
 
-  // ── Aggregate per (product × kw) for the 7d window AND 28d windows ─────────
+  // ── Group all matching snapshots by (product × kw × snapshot_date) ────────
+  // Each cell aggregates if there are multiple rows for same (key, date)
+  // due to e.g. multiple sub-pages of same product. Then we pick the latest
+  // and prior per kw, regardless of calendar week.
   type AggCell = { impressions: number; clicks: number; posWeighted: number }
   function emptyCell(): AggCell { return { impressions: 0, clicks: 0, posWeighted: 0 } }
-
-  const agg7  = new Map<string, AggCell>()  // key: productId|kw
-  const agg28 = new Map<string, AggCell>()
-  const agg28Prior = new Map<string, AggCell>()
-  const productAgg7  = new Map<string, AggCell>()  // key: productId
-  const productAgg28 = new Map<string, AggCell>()
-  const productAgg28Prior = new Map<string, AggCell>()
-
-  // Per-week bucketing for the 8-week distribution chart. Key = ISO week-end
-  // date (Sunday). Each (kw × product) contributes its impression-weighted
-  // avg position to the bucket boundaries (top3/top10/etc.).
-  type WeekAgg = { kws: Map<string, AggCell> }  // key: productId|kw → cell
-  const weekly = new Map<string, WeekAgg>()
-
-  function bumpCell(map: Map<string, AggCell>, key: string, clicks: number, impressions: number, position: number): void {
-    const cell = map.get(key) ?? emptyCell()
+  function bumpCell(cell: AggCell, clicks: number, impressions: number, position: number): void {
     cell.clicks      += clicks
     cell.impressions += impressions
-    cell.posWeighted += position * impressions   // impression-weighted accumulator
-    map.set(key, cell)
+    cell.posWeighted += position * impressions
   }
 
+  // observations[productId|kw] = sorted list of { date, cell } latest-first
+  const observations = new Map<string, Array<{ date: string; cell: AggCell }>>()
+  const distinctDates = new Set<string>()
   let queriesMatched = 0
+
   for (const r of snaps) {
     const q = String(r.query ?? '').toLowerCase().trim()
     if (!q) continue
-    // Discovery mode allows all queries; here in tracked-mode we only care
-    // about queries on our kw list.
     if (!allKwLower.has(q)) continue
     const prod = matchProduct(r.page)
     if (!prod) continue
     const kwSet = kwByProduct.get(prod.id)
-    if (!kwSet?.has(q)) continue  // this kw isn't tracked for THIS product
+    if (!kwSet?.has(q)) continue
 
     queriesMatched++
     const key = `${prod.id}|${q}`
+    distinctDates.add(r.snapshot_date)
 
-    // Current 7d window
-    if (r.snapshot_date >= w7.windowStart && r.snapshot_date <= w7.windowEnd) {
-      bumpCell(agg7, key, r.clicks, r.impressions, r.position)
-      bumpCell(productAgg7, prod.id, r.clicks, r.impressions, r.position)
+    let list = observations.get(key)
+    if (!list) { list = []; observations.set(key, list) }
+    // Find or append the cell for this date
+    let entry = list.find(e => e.date === r.snapshot_date)
+    if (!entry) {
+      entry = { date: r.snapshot_date, cell: emptyCell() }
+      list.push(entry)
     }
-    // Current 28d window
-    if (r.snapshot_date >= w28.windowStart && r.snapshot_date <= w28.windowEnd) {
-      bumpCell(agg28, key, r.clicks, r.impressions, r.position)
-      bumpCell(productAgg28, prod.id, r.clicks, r.impressions, r.position)
-    }
-    // Prior 28d window
-    if (r.snapshot_date >= w28.priorStart && r.snapshot_date <= w28.priorEnd) {
-      bumpCell(agg28Prior, key, r.clicks, r.impressions, r.position)
-      bumpCell(productAgg28Prior, prod.id, r.clicks, r.impressions, r.position)
-    }
-
-    // Per-week bucket for chart — round snapshot_date forward to Sunday end-of-week
-    const d = new Date(r.snapshot_date)
-    const dayOfWeek = d.getUTCDay()                            // 0=Sun, 6=Sat
-    const sundayOffset = (7 - dayOfWeek) % 7
-    const weekEnd = isoDate(addDays(d, sundayOffset))
-    const wk = weekly.get(weekEnd) ?? { kws: new Map<string, AggCell>() }
-    bumpCell(wk.kws, key, r.clicks, r.impressions, r.position)
-    weekly.set(weekEnd, wk)
+    bumpCell(entry.cell, r.clicks, r.impressions, r.position)
   }
+  // Sort each list latest-first (snapshots come from DB sorted desc but
+  // re-sort after the inner-merge above just to be safe)
+  for (const list of observations.values()) {
+    list.sort((a, b) => b.date.localeCompare(a.date))
+  }
+
+  // ── Determine the canonical "current" + "prior" date for the whole report ─
+  // Current = the latest snapshot_date present across all observations.
+  // Prior   = a snapshot date roughly 28 days before current (closest within ±5d).
+  const sortedDates = Array.from(distinctDates).sort((a, b) => b.localeCompare(a))
+  const currentDate: string | null = sortedDates[0] ?? null
+  let priorDate: string | null = null
+  if (currentDate) {
+    const targetMs = new Date(currentDate).getTime() - GSC_WOW_COMPARE_DAYS * 86_400_000
+    let bestDiff = Infinity
+    for (const d of sortedDates) {
+      if (d >= currentDate) continue
+      const diff = Math.abs(new Date(d).getTime() - targetMs)
+      if (diff < bestDiff) { bestDiff = diff; priorDate = d }
+    }
+  }
+
+  // ── Aggregate per-kw using latest + prior snapshots ────────────────────────
+  const agg7  = new Map<string, AggCell>()  // latest snapshot per kw
+  const agg28Prior = new Map<string, AggCell>()
+  const productAgg7  = new Map<string, AggCell>()
+  const productAgg28Prior = new Map<string, AggCell>()
+
+  for (const [key, list] of observations) {
+    const productId = key.split('|')[0]
+    const latest = list[0]   // already sorted latest-first
+    if (latest) {
+      agg7.set(key, latest.cell)
+      const prodCell = productAgg7.get(productId) ?? emptyCell()
+      prodCell.clicks      += latest.cell.clicks
+      prodCell.impressions += latest.cell.impressions
+      prodCell.posWeighted += latest.cell.posWeighted
+      productAgg7.set(productId, prodCell)
+    }
+    // Find prior snapshot for this kw (closest to currentDate-28d)
+    if (currentDate) {
+      const targetMs = new Date(currentDate).getTime() - GSC_WOW_COMPARE_DAYS * 86_400_000
+      let bestEntry: { date: string; cell: AggCell } | null = null
+      let bestDiff = Infinity
+      for (const entry of list) {
+        if (entry.date >= currentDate) continue
+        const diff = Math.abs(new Date(entry.date).getTime() - targetMs)
+        if (diff < bestDiff) { bestDiff = diff; bestEntry = entry }
+      }
+      if (bestEntry) {
+        agg28Prior.set(key, bestEntry.cell)
+        const prodCell = productAgg28Prior.get(productId) ?? emptyCell()
+        prodCell.clicks      += bestEntry.cell.clicks
+        prodCell.impressions += bestEntry.cell.impressions
+        prodCell.posWeighted += bestEntry.cell.posWeighted
+        productAgg28Prior.set(productId, prodCell)
+      }
+    }
+  }
+
+  // The lib historically named these agg7/agg28; with the snapshot-based
+  // rewrite they're really "current" and "prior". Aliasing here so the
+  // downstream KPI/movers logic stays unchanged.
+  const agg28 = agg7
+  const productAgg28 = productAgg7
 
   // ── Compute KPIs from 7d window ────────────────────────────────────────────
   // Avg position = impression-weighted across all (product × kw) pairs.
@@ -435,12 +462,26 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
     totalClicksDelta:      totalClk28 - totalClk28Prior,
   }
 
-  // ── Distribution chart — 8 weeks ───────────────────────────────────────────
+  // ── Distribution chart — one bucket per snapshot_date we actually have ────
+  // No calendar-week bucketing. The X axis = chronological snapshot_dates.
+  // This matches the new snapshot-based semantics — if cron ran 5 times,
+  // we show 5 buckets. If Hugin baseline filled in March + cron has been
+  // adding daily since, all those dates show as separate buckets.
   const distribution: DistributionPoint[] = []
-  const sortedWeeks = Array.from(weekly.entries()).sort(([a], [b]) => a.localeCompare(b)).slice(-8)
-  for (const [weekEnd, wk] of sortedWeeks) {
+  const ascDates = sortedDates.slice().reverse().slice(-12)   // last 12 snapshot dates
+  // Build per-date aggregation by going through observations
+  const byDate = new Map<string, AggCell[]>()   // date → list of cells (per kw)
+  for (const list of observations.values()) {
+    for (const entry of list) {
+      const arr = byDate.get(entry.date) ?? []
+      arr.push(entry.cell)
+      byDate.set(entry.date, arr)
+    }
+  }
+  for (const date of ascDates) {
+    const cells = byDate.get(date) ?? []
     const buckets = { top3: 0, top10: 0, top20: 0, top50: 0, outside: 0 }
-    for (const [, cell] of wk.kws) {
+    for (const cell of cells) {
       if (cell.impressions === 0) { buckets.outside++; continue }
       const avgPos = cell.posWeighted / cell.impressions
       if (avgPos <= TOP_3_BOUNDARY)   buckets.top3++
@@ -449,7 +490,7 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
       else if (avgPos <= 50)           buckets.top50++
       else                              buckets.outside++
     }
-    distribution.push({ date: weekEnd, ...buckets })
+    distribution.push({ date, ...buckets })
   }
 
   // ── Movers (gainers + losers) — 28d vs prior 28d on avg position ───────────
@@ -535,10 +576,12 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
     categories,
     markets,
     meta: {
-      windowStart: w7.windowStart,
-      windowEnd:   w7.windowEnd,
-      priorStart:  w28.priorStart,
-      priorEnd:    w28.priorEnd,
+      // Snapshot-based: surface the actual current + prior dates we used.
+      // null when we don't have any data yet for that side.
+      windowStart: currentDate,
+      windowEnd:   currentDate,
+      priorStart:  priorDate,
+      priorEnd:    priorDate,
       snapshotsScanned: snaps.length,
       queriesMatched,
     },
@@ -592,15 +635,17 @@ export async function fetchRankingsGSCDiscovery(opts: FetchOpts): Promise<Rankin
     trackedSet.add(`${r.product_tier_id}|${String(r.keyword).toLowerCase().trim()}`)
   }
 
+  // Pull last 14 days of snapshots (forgiving — handles cron not running yesterday).
+  // Per (product × query) we'll use the LATEST snapshot to surface volume.
   const now = new Date()
-  const w7  = windowRange(now, GSC_WINDOW_DAYS, GSC_LAG_DAYS)
+  const fetchSinceDisc = isoDate(addDays(now, -14))
 
   const { data: snapsRaw, error } = await db
     .from('gsc_query_snapshots')
     .select('snapshot_date, page, query, clicks, impressions, position')
     .eq('site_url', gscPropertyUrl)
-    .gte('snapshot_date', w7.windowStart)
-    .lte('snapshot_date', w7.windowEnd)
+    .gte('snapshot_date', fetchSinceDisc)
+    .order('snapshot_date', { ascending: false })
     .limit(25_000)
 
   if (error) {
@@ -642,20 +687,24 @@ export async function fetchRankingsGSCDiscovery(opts: FetchOpts): Promise<Rankin
     return best
   }
 
-  // Aggregate per (product × query) over 7d
+  // Take the LATEST snapshot per (product × query). Since snapshots are
+  // already sorted desc by date, we just take the first occurrence of each key.
   type Cell = { impressions: number; clicks: number; posWeighted: number }
   const agg = new Map<string, Cell>()
+  const seen = new Set<string>()
   for (const r of snaps) {
     const q = String(r.query ?? '').toLowerCase().trim()
     if (!q) continue
     const prod = matchProduct(r.page)
     if (!prod) continue
     const key = `${prod.id}|${q}`
-    const cell = agg.get(key) ?? { impressions: 0, clicks: 0, posWeighted: 0 }
-    cell.impressions += r.impressions
-    cell.clicks      += r.clicks
-    cell.posWeighted += r.position * r.impressions
-    agg.set(key, cell)
+    if (seen.has(key)) continue   // already captured latest for this kw
+    seen.add(key)
+    agg.set(key, {
+      impressions: r.impressions,
+      clicks:      r.clicks,
+      posWeighted: r.position * r.impressions,
+    })
   }
 
   const discoveryRows = Array.from(agg.entries())
@@ -676,11 +725,13 @@ export async function fetchRankingsGSCDiscovery(opts: FetchOpts): Promise<Rankin
     .sort((a, b) => b.impressions - a.impressions)
     .slice(0, 500)   // cap for UI
 
+  // Latest snapshot_date present is our "window"
+  const latestDate = snaps[0]?.snapshot_date ?? null
   return {
     ...emptyBundle('gsc-discovery', filters, categories, markets),
     meta: {
-      windowStart: w7.windowStart,
-      windowEnd:   w7.windowEnd,
+      windowStart: latestDate,
+      windowEnd:   latestDate,
       priorStart:  null,
       priorEnd:    null,
       snapshotsScanned: snaps.length,
