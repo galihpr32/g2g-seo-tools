@@ -3,7 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
-import { stripLocale } from '@/lib/priority-products/data-source'
+// stripLocale used to live here pre-Sprint PP.GSC.KEYWORD.ANCHOR. URL match
+// dropped, so locale stripping is no longer needed in this endpoint.
 
 export const maxDuration = 30
 
@@ -120,29 +121,20 @@ export async function GET(
     clicks: number; impressions: number; position: number
   }>
 
-  // 5. Match `page` to product.url via path prefix.
-  // Sprint PP.GSC.URL.LOCALE — strip locale prefix (/id/, /cn/, /en/, etc)
-  // before comparing so localized URLs match the canonical product URL.
-  function pathOf(rawUrl: string): string {
-    let p: string
-    try { p = new URL(rawUrl).pathname } catch { p = rawUrl }
-    p = stripLocale(p).replace(/\/+$/, '')
-    return p
-  }
-  const productPath = pathOf(product.url)
-  function pageMatches(page: string): boolean {
-    const p = pathOf(page)
-    return p === productPath || p.startsWith(productPath + '/') || p.startsWith(productPath + '?')
-  }
-
-  // 6. Aggregate observations per (kw × snapshot_date)
+  // 5. Sprint PP.GSC.KEYWORD.ANCHOR — drop URL filter. Match purely by keyword.
+  // Aggregate impressions across ALL pages on the site (categories + offer
+  // pages + locale variants etc). Also track which page got the most impressions
+  // per kw so we can surface it as a "Top page" diagnostic column.
   type Cell = { impressions: number; clicks: number; posWeighted: number }
   const observations = new Map<string, Array<{ date: string; cell: Cell }>>()  // key: kw
+  // pageBreakdown[kw] = Map<page, { impressions, clicks }>
+  const pageBreakdown = new Map<string, Map<string, { impressions: number; clicks: number }>>()
+
   for (const r of snaps) {
     const q = String(r.query ?? '').toLowerCase().trim()
     if (!q || !kwLower.has(q)) continue
-    if (!pageMatches(r.page)) continue
 
+    // Aggregate by snapshot_date for current/prior calc
     let list = observations.get(q)
     if (!list) { list = []; observations.set(q, list) }
     let entry = list.find(e => e.date === r.snapshot_date)
@@ -153,6 +145,14 @@ export async function GET(
     entry.cell.impressions += r.impressions
     entry.cell.clicks      += r.clicks
     entry.cell.posWeighted += r.position * r.impressions
+
+    // Track per-page totals so user can see "which URL Google actually ranks"
+    let pages = pageBreakdown.get(q)
+    if (!pages) { pages = new Map(); pageBreakdown.set(q, pages) }
+    const cur = pages.get(r.page) ?? { impressions: 0, clicks: 0 }
+    cur.impressions += r.impressions
+    cur.clicks      += r.clicks
+    pages.set(r.page, cur)
   }
   for (const list of observations.values()) {
     list.sort((a, b) => b.date.localeCompare(a.date))
@@ -195,6 +195,18 @@ export async function GET(
     const clicks      = latest?.cell.clicks      ?? 0
     const ctr         = impressions > 0 ? +((clicks / impressions) * 100).toFixed(2) : 0
 
+    // Sprint PP.GSC.KEYWORD.ANCHOR — surface which page got the most
+    // impressions for this kw. Lets user see if their tier product.url is
+    // actually the ranking URL or if Google prefers an offer/sibling page.
+    const pages = pageBreakdown.get(q) ?? new Map<string, { impressions: number; clicks: number }>()
+    let topPage: { page: string; impressions: number; clicks: number } | null = null
+    for (const [page, tot] of pages) {
+      if (!topPage || tot.impressions > topPage.impressions) {
+        topPage = { page, impressions: tot.impressions, clicks: tot.clicks }
+      }
+    }
+    const distinctPages = pages.size
+
     return {
       keyword:       k.keyword,
       language:      k.language,
@@ -207,6 +219,9 @@ export async function GET(
       priorPosition: priorPos,
       deltaPosition: deltaPos,
       latestDate:    latest?.date ?? null,
+      topPage:       topPage?.page ?? null,
+      topPageShare:  (impressions > 0 && topPage) ? +((topPage.impressions / impressions) * 100).toFixed(0) : null,
+      distinctPages,
     }
   })
 

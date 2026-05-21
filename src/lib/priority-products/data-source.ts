@@ -281,38 +281,26 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
     position:      number
   }>
 
-  // ── Helper: match GSC `page` to a product URL ──────────────────────────────
-  function pathOf(rawUrl: string): string {
-    let p: string
-    try { p = new URL(rawUrl).pathname } catch { p = rawUrl }
-    p = stripLocale(p).replace(/\/+$/, '')
-    return p
-  }
-  const productByPath = new Map<string, typeof products[0]>()
-  for (const p of products) {
-    if (!p.url) continue
-    const path = pathOf(p.url)
-    if (path) productByPath.set(path, p)
-  }
-  function matchProduct(page: string): typeof products[0] | null {
-    const pPath = pathOf(page)
-    const exact = productByPath.get(pPath)
-    if (exact) return exact
-    let best: typeof products[0] | null = null
-    let bestLen = 0
-    for (const [path, prod] of productByPath) {
-      if (pPath.startsWith(path) && path.length > bestLen) {
-        best = prod
-        bestLen = path.length
-      }
+  // ── Build reverse index: keyword → [productIds that track it] ─────────────
+  // Sprint PP.GSC.KEYWORD.ANCHOR — dropped strict URL match. Tracked-mode GSC
+  // now aggregates impressions for a keyword across ALL pages on the site
+  // (categories, offer pages, locale variants), then attributes them to every
+  // product that tracks that keyword in tier_keywords. Reflects real-world
+  // visibility better than the brittle URL-prefix filter that missed ~95% of
+  // Valorant impressions because Google ranks offer + sibling pages too.
+  const productIdsByKw = new Map<string, string[]>()
+  for (const [productId, kwSet] of kwByProduct) {
+    for (const kw of kwSet) {
+      const arr = productIdsByKw.get(kw) ?? []
+      arr.push(productId)
+      productIdsByKw.set(kw, arr)
     }
-    return best
   }
 
   // ── Group all matching snapshots by (product × kw × snapshot_date) ────────
-  // Each cell aggregates if there are multiple rows for same (key, date)
-  // due to e.g. multiple sub-pages of same product. Then we pick the latest
-  // and prior per kw, regardless of calendar week.
+  // Each cell aggregates if there are multiple rows for same (key, date) —
+  // e.g. same query landing on both /categories/X and /categories/X/offer/Y
+  // gets summed into one cell. Then we pick the latest and prior per kw.
   type AggCell = { impressions: number; clicks: number; posWeighted: number }
   function emptyCell(): AggCell { return { impressions: 0, clicks: 0, posWeighted: 0 } }
   function bumpCell(cell: AggCell, clicks: number, impressions: number, position: number): void {
@@ -329,25 +317,28 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
   for (const r of snaps) {
     const q = String(r.query ?? '').toLowerCase().trim()
     if (!q) continue
-    if (!allKwLower.has(q)) continue
-    const prod = matchProduct(r.page)
-    if (!prod) continue
-    const kwSet = kwByProduct.get(prod.id)
-    if (!kwSet?.has(q)) continue
+    if (!allKwLower.has(q)) continue   // not on any tier_keyword list — skip
+
+    // Find all products that track this query. When >1, the impression is
+    // attributed to each (rare for product-specific phrases, but possible
+    // for generic keywords shared across tiers).
+    const ownerProductIds = productIdsByKw.get(q) ?? []
+    if (ownerProductIds.length === 0) continue
 
     queriesMatched++
-    const key = `${prod.id}|${q}`
     distinctDates.add(r.snapshot_date)
 
-    let list = observations.get(key)
-    if (!list) { list = []; observations.set(key, list) }
-    // Find or append the cell for this date
-    let entry = list.find(e => e.date === r.snapshot_date)
-    if (!entry) {
-      entry = { date: r.snapshot_date, cell: emptyCell() }
-      list.push(entry)
+    for (const productId of ownerProductIds) {
+      const key = `${productId}|${q}`
+      let list = observations.get(key)
+      if (!list) { list = []; observations.set(key, list) }
+      let entry = list.find(e => e.date === r.snapshot_date)
+      if (!entry) {
+        entry = { date: r.snapshot_date, cell: emptyCell() }
+        list.push(entry)
+      }
+      bumpCell(entry.cell, r.clicks, r.impressions, r.position)
     }
-    bumpCell(entry.cell, r.clicks, r.impressions, r.position)
   }
   // Sort each list latest-first (snapshots come from DB sorted desc but
   // re-sort after the inner-merge above just to be safe)

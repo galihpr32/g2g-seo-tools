@@ -145,6 +145,10 @@ interface GscLeaderboardBundle {
     priorPosition: number | null
     deltaPosition: number | null
     latestDate:    string | null
+    // Sprint PP.GSC.KEYWORD.ANCHOR — page diagnostics
+    topPage?:      string | null
+    topPageShare?: number | null   // % of impressions on the top page
+    distinctPages?: number
   }>
   matched:     number
   total:       number
@@ -741,6 +745,7 @@ function GscKeywordLeaderboard({ bundle }: { bundle: GscLeaderboardBundle }) {
             <th className="text-right  px-2 py-1.5 w-24">Impressions</th>
             <th className="text-right  px-2 py-1.5 w-20">Clicks</th>
             <th className="text-right  px-2 py-1.5 w-16">CTR</th>
+            <th className="text-left  px-2 py-1.5">Top page</th>
           </tr>
         </thead>
         <tbody>
@@ -769,6 +774,31 @@ function GscKeywordLeaderboard({ bundle }: { bundle: GscLeaderboardBundle }) {
               <td className="px-2 py-1.5 text-right text-gray-200">{r.impressions.toLocaleString()}</td>
               <td className="px-2 py-1.5 text-right text-gray-200">{r.clicks.toLocaleString()}</td>
               <td className="px-2 py-1.5 text-right text-gray-400">{r.ctr.toFixed(1)}%</td>
+              <td className="px-2 py-1.5">
+                {r.topPage ? (
+                  <div className="flex flex-col">
+                    <a
+                      href={r.topPage}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-blue-400 hover:text-blue-300 truncate max-w-[260px]"
+                      title={r.topPage}
+                    >
+                      {(() => {
+                        try { return new URL(r.topPage).pathname }
+                        catch { return r.topPage }
+                      })()}
+                    </a>
+                    {r.distinctPages != null && r.distinctPages > 1 && (
+                      <span className="text-[9px] text-gray-600">
+                        {r.topPageShare}% of {r.distinctPages} pages
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-[10px] text-gray-600">—</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
