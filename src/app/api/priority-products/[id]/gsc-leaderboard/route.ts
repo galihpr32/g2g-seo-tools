@@ -96,6 +96,10 @@ export async function GET(
   // Sprint PP.GSC.KEYWORD.ANCHOR — product.url is no longer required since we
   // match by keyword across all pages. URL only used as an optional fallback
   // hint elsewhere; if missing, that's fine.
+  // Sprint PP.GSC.REFRESH+ — also use product.url to compute page-level totals
+  // (all queries hitting the page, tracked + untracked), surfaced as a
+  // diagnostic header in the leaderboard so user sees the gap between
+  // "what I track" and "what page actually ranks for".
   const now = new Date()
   const fetchSince = isoDate(addDays(now, -120))
 
@@ -149,6 +153,67 @@ export async function GET(
   for (const list of observations.values()) {
     list.sort((a, b) => b.date.localeCompare(a.date))
   }
+
+  // ── 5b. Page-level totals + top untracked queries for THIS product URL ────
+  // Sprint PP.GSC.REFRESH+ — surfaces the "detail page card vs dashboard"
+  // discrepancy: detail page shows 2.8K clicks because it aggregates ALL
+  // queries to /categories/aion-2-kinah, while keyword-only mode only counts
+  // exact tier_keyword matches (often 0 because real searches are variants).
+  //
+  // We compute the latest-snapshot rollup for THIS product page, regardless
+  // of whether the query is tracked. Returns header diagnostic + top 5
+  // untracked queries so user knows what to claim.
+  type PageQueryAgg = { impressions: number; clicks: number; posWeighted: number }
+  const pageQueryAgg = new Map<string, PageQueryAgg>()   // query → totals at latest snapshot
+  let pageLatestDate: string | null = null
+  if (product.url) {
+    function pathOfLocal(u: string): string {
+      try { return new URL(u).pathname.replace(/\/+$/, '') }
+      catch { return u.replace(/\/+$/, '') }
+    }
+    const productPath = pathOfLocal(product.url)
+    // Find the latest snapshot_date that has any row matching this page
+    const datesWithPage = new Set<string>()
+    for (const r of snaps) {
+      const rp = pathOfLocal(r.page)
+      if (rp === productPath || rp.startsWith(productPath + '/') || rp.startsWith(productPath + '?')) {
+        datesWithPage.add(r.snapshot_date)
+      }
+    }
+    pageLatestDate = Array.from(datesWithPage).sort().reverse()[0] ?? null
+    if (pageLatestDate) {
+      for (const r of snaps) {
+        if (r.snapshot_date !== pageLatestDate) continue
+        const rp = pathOfLocal(r.page)
+        if (rp !== productPath && !rp.startsWith(productPath + '/') && !rp.startsWith(productPath + '?')) continue
+        const q = String(r.query ?? '').toLowerCase().trim()
+        if (!q) continue
+        const cell = pageQueryAgg.get(q) ?? { impressions: 0, clicks: 0, posWeighted: 0 }
+        cell.impressions += r.impressions
+        cell.clicks      += r.clicks
+        cell.posWeighted += r.position * r.impressions
+        pageQueryAgg.set(q, cell)
+      }
+    }
+  }
+
+  let pageTotalImpressions = 0
+  let pageTotalClicks      = 0
+  for (const cell of pageQueryAgg.values()) {
+    pageTotalImpressions += cell.impressions
+    pageTotalClicks      += cell.clicks
+  }
+  const topUntrackedQueries = Array.from(pageQueryAgg.entries())
+    .filter(([q]) => !kwLower.has(q))
+    .map(([q, cell]) => ({
+      query:       q,
+      impressions: cell.impressions,
+      clicks:      cell.clicks,
+      avgPosition: cell.impressions > 0 ? +(cell.posWeighted / cell.impressions).toFixed(2) : null,
+    }))
+    .sort((a, b) => b.impressions - a.impressions)
+    .slice(0, 10)
+  const untrackedCount = Array.from(pageQueryAgg.keys()).filter(q => !kwLower.has(q)).length
 
   // 7. For each tier keyword, build a leaderboard row
   let matched = 0
@@ -223,5 +288,15 @@ export async function GET(
     total: kws.length,
     productName: product.product_name,
     productUrl:  product.url ?? null,
+    // Sprint PP.GSC.REFRESH+ — page-level summary so user sees gap between
+    // "what tracked kws produced" vs "what the product page actually got"
+    pageTotals: {
+      impressions:         pageTotalImpressions,
+      clicks:              pageTotalClicks,
+      distinctQueries:     pageQueryAgg.size,
+      untrackedCount,
+      latestDate:          pageLatestDate,
+    },
+    topUntrackedQueries,
   })
 }

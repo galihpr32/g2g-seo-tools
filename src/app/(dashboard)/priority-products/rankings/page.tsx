@@ -153,8 +153,22 @@ interface GscLeaderboardBundle {
   matched:     number
   total:       number
   productName: string
-  productUrl:  string
+  productUrl:  string | null
   error?:      string
+  // Sprint PP.GSC.REFRESH+ — page-level diagnostic
+  pageTotals?: {
+    impressions:     number
+    clicks:          number
+    distinctQueries: number
+    untrackedCount:  number
+    latestDate:      string | null
+  }
+  topUntrackedQueries?: Array<{
+    query:       string
+    impressions: number
+    clicks:      number
+    avgPosition: number | null
+  }>
 }
 
 const RANGE_LABELS: Record<string, string> = {
@@ -336,12 +350,20 @@ export default function RankingsDashboardPage() {
             </p>
           )}
         </div>
-        <Link
-          href="/priority-products"
-          className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition border border-gray-700"
-        >
-          📦 Product cards →
-        </Link>
+        <div className="flex items-center gap-2">
+          {source !== 'dfs' && (
+            <RefreshGscButton
+              siteSlug={siteSlug}
+              onDone={() => setRefreshTrigger(n => n + 1)}
+            />
+          )}
+          <Link
+            href="/priority-products"
+            className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition border border-gray-700"
+          >
+            📦 Product cards →
+          </Link>
+        </div>
       </div>
 
       {/* Sprint PP.GSC.TOGGLE.2 — Data source toggle */}
@@ -719,12 +741,62 @@ export default function RankingsDashboardPage() {
 
 // ─── Subcomponents ───────────────────────────────────────────────────────────
 
+// Sprint PP.GSC.REFRESH — manual GSC pull button. Calls /api/priority-products/refresh-gsc
+// which hits Google's searchanalytics endpoint with current OAuth tokens and upserts
+// fresh (page × query) rows for the active site. Bumps refreshTrigger when done.
+function RefreshGscButton({ siteSlug, onDone }: {
+  siteSlug: string
+  onDone:   () => void
+}) {
+  const [running, setRunning] = useState(false)
+  const [msg,     setMsg]     = useState<string | null>(null)
+
+  async function refresh() {
+    setRunning(true); setMsg(null)
+    try {
+      const res = await fetch(`/api/priority-products/refresh-gsc?site=${encodeURIComponent(siteSlug)}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ window_days: 7 }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMsg(`❌ ${data.error ?? `HTTP ${res.status}`}`)
+        setRunning(false)
+        return
+      }
+      setMsg(`✅ ${data.fetched} rows fetched · ${data.written} written · ${data.snapshot_date}`)
+      onDone()
+      setTimeout(() => setMsg(null), 5000)
+    } catch (e) {
+      setMsg(`❌ ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        onClick={refresh}
+        disabled={running}
+        className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition border border-emerald-600"
+        title="Pull fresh GSC data from Google (last 7 days, lag-adjusted)"
+      >
+        {running ? '⏳ Pulling…' : '🔄 Refresh GSC'}
+      </button>
+      {msg && <span className="text-[10px] text-gray-400 whitespace-nowrap">{msg}</span>}
+    </div>
+  )
+}
+
 // Sprint PP.GSC.MATCH.HINT — GSC-mode inline leaderboard (replaces DFS market-grid)
 function GscKeywordLeaderboard({ bundle }: { bundle: GscLeaderboardBundle }) {
-  const { leaderboard, matched, total } = bundle
+  const { leaderboard, matched, total, pageTotals, topUntrackedQueries } = bundle
   // Find a representative latest date from the rows (use the most recent non-null)
   const dates = leaderboard.map(r => r.latestDate).filter(Boolean) as string[]
   const latestDate = dates.length ? dates.sort().reverse()[0] : null
+  const showUntracked = pageTotals && pageTotals.untrackedCount > 0 && topUntrackedQueries && topUntrackedQueries.length > 0
 
   return (
     <div>
@@ -735,6 +807,53 @@ function GscKeywordLeaderboard({ bundle }: { bundle: GscLeaderboardBundle }) {
         </span>
         {bundle.error && <span className="text-amber-300">{bundle.error}</span>}
       </div>
+
+      {/* Sprint PP.GSC.REFRESH+ — page-level diagnostic */}
+      {pageTotals && pageTotals.distinctQueries > 0 && (
+        <div className="mb-3 bg-amber-900/10 border border-amber-700/30 rounded p-2 text-[11px]">
+          <div className="text-amber-200">
+            📊 <strong>This product page</strong> got{' '}
+            <strong className="text-white">{pageTotals.clicks.toLocaleString()}</strong> clicks ·{' '}
+            <strong className="text-white">{pageTotals.impressions.toLocaleString()}</strong> impressions
+            {' '}from <strong className="text-white">{pageTotals.distinctQueries}</strong> queries
+            {pageTotals.untrackedCount > 0 && <> (<span className="text-amber-300">{pageTotals.untrackedCount} untracked</span>)</>}
+            {pageTotals.latestDate && <> · {pageTotals.latestDate}</>}
+          </div>
+          {matched === 0 && pageTotals.clicks > 0 && (
+            <p className="text-[10px] text-amber-400 italic mt-1">
+              ⚠ Your tracked keywords got 0 signal, but the page IS getting traffic from variant queries below. Consider claiming them.
+            </p>
+          )}
+        </div>
+      )}
+
+      {showUntracked && (
+        <div className="mb-3 bg-gray-900/40 border border-gray-700/40 rounded p-2">
+          <div className="text-[10px] text-gray-400 mb-1.5">
+            🔍 <strong>Top untracked queries on this page</strong> · candidates to claim
+          </div>
+          <table className="w-full text-[11px]">
+            <thead className="text-[9px] uppercase text-gray-500 tracking-wider">
+              <tr>
+                <th className="text-left  px-1.5 py-1">Query</th>
+                <th className="text-right px-1.5 py-1 w-20">Impressions</th>
+                <th className="text-right px-1.5 py-1 w-16">Clicks</th>
+                <th className="text-right px-1.5 py-1 w-16">Avg Pos</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topUntrackedQueries!.slice(0, 10).map((u, i) => (
+                <tr key={`${u.query}-${i}`} className="border-t border-gray-800/50">
+                  <td className="px-1.5 py-1 text-amber-200">{u.query}</td>
+                  <td className="px-1.5 py-1 text-right text-gray-300">{u.impressions.toLocaleString()}</td>
+                  <td className="px-1.5 py-1 text-right text-gray-300">{u.clicks.toLocaleString()}</td>
+                  <td className="px-1.5 py-1 text-right text-gray-400">{u.avgPosition != null ? `#${u.avgPosition.toFixed(1)}` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <table className="w-full text-xs">
         <thead className="text-[10px] text-gray-500 uppercase tracking-wider">
           <tr>
