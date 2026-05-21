@@ -3,9 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { buildFridayKpi, buildFridayKpiSlackBlocks } from '@/lib/reports/friday-kpi'
-import { resolveSlackWebhook } from '@/lib/slack/routing'
+import { deliverFridayKpi } from '@/lib/reports/friday-kpi-deliver'
 
 export const maxDuration = 60
+export const runtime     = 'nodejs'
 
 /**
  * Sprint FRIDAY.KPI — Session-authenticated manual trigger + preview.
@@ -69,52 +70,51 @@ export async function GET(req: Request) {
   }
 }
 
+/**
+ * Sprint FRIDAY.KPI.GRAPH.5 — POST flow now goes through deliverFridayKpi
+ * which tries PNG-upload first (files.uploadV2) then falls back to webhook
+ * text/blocks. Caller only needs to pass owner + sites; payload + render
+ * happen inside the deliver helper.
+ */
 export async function POST(req: Request) {
-  let res
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
   try {
-    res = await buildPayloadForCurrentUser(req)
+    const ownerId = await getEffectiveOwnerId(supabase, user.id)
+    const db      = createServiceClient()
+
+    const { data: sites } = await db
+      .from('site_configs')
+      .select('slug')
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true })
+    let siteSlugs = ((sites ?? []).map(s => String(s.slug))).filter(Boolean)
+    if (siteSlugs.length === 0) siteSlugs = ['g2g']
+
+    const url = new URL(req.url)
+    const override = url.searchParams.get('sites')
+    if (override) siteSlugs = override.split(',').map(s => s.trim()).filter(Boolean)
+
+    const result = await deliverFridayKpi({ db, ownerId, siteSlugs })
+
+    return NextResponse.json({
+      ok:           result.ok,
+      posted:       result.posted,
+      delivery:     result.delivery,
+      slack_status: result.slack_status,
+      reason:       result.reason,
+      hint:         result.hint,
+      sites:        siteSlugs,
+      summary:      result.summary,
+    }, { status: result.posted ? 200 : (result.delivery === 'none' ? 412 : 500) })
   } catch (err) {
-    console.error('[friday-kpi POST] build failed:', err)
+    console.error('[friday-kpi POST] build/deliver failed:', err)
     return NextResponse.json({
       ok:     false,
       posted: false,
       reason: `build_failed: ${err instanceof Error ? err.message : String(err)}`,
     }, { status: 500 })
   }
-  if ('error' in res) return NextResponse.json({ error: res.error }, { status: res.status })
-
-  const { ownerId, db, payload, finalSlugs } = res
-  const { text, blocks } = buildFridayKpiSlackBlocks(payload)
-
-  const webhookUrl = await resolveSlackWebhook(db, ownerId, 'friday_kpi')
-  if (!webhookUrl) {
-    return NextResponse.json({
-      ok:     false,
-      posted: false,
-      reason: 'no_webhook_configured',
-      hint:   'Set a Slack webhook for notification_type=friday_kpi in /settings/slack-routing.',
-      sites:  finalSlugs,
-    }, { status: 412 })
-  }
-
-  const slackRes = await fetch(webhookUrl, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ text, blocks }),
-  }).catch(e => ({ ok: false, status: 0, _err: String(e) } as Response & { _err?: string }))
-
-  const kwTotal = payload.brands.reduce(
-    (s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0,
-  )
-  return NextResponse.json({
-    ok:           slackRes.ok,
-    posted:       slackRes.ok,
-    slack_status: slackRes.status,
-    sites:        finalSlugs,
-    summary: {
-      total_kws:  kwTotal,
-      brands:     payload.brands.length,
-      iso_week:   payload.iso_week,
-    },
-  })
 }

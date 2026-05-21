@@ -21,6 +21,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { getRefreshedClientFull } from '@/lib/gsc/auth'
 import { getSearchAnalytics, getDateRange } from '@/lib/gsc/client'
 import { buildAiVisibilityForKpi, type FridayKpiAiSlice } from '@/lib/agents/freyja'
+import { getFridayKpiCanon, type CanonSource } from '@/lib/reports/friday-kpi-canon'
 
 export const MARKET_LABELS: Record<string, string> = { us: 'Global', id: 'ID' }
 const MARKETS = ['us', 'id'] as const
@@ -96,6 +97,10 @@ export interface FridayKpiPayload {
   forseti:         ForsetiBrandSlice[]
   /** Direct link to Forseti triage queue */
   forseti_url:     string
+  /** Sprint FRIDAY.KPI.GRAPH.1 — which data source is canonical for this report.
+   *  'gsc' = real-world impressions/clicks-weighted. 'dfs' = DataForSEO scrape.
+   *  Default 'gsc'. UI + PNG renderer show this as a tag. */
+  canon_source:    CanonSource
 }
 
 /**
@@ -109,6 +114,11 @@ export async function buildFridayKpi(
   ownerId:   string,
   siteSlugs: string[],
 ): Promise<FridayKpiPayload> {
+  // Sprint FRIDAY.KPI.GRAPH.1 — resolve canon source. Per-brand builders read
+  // this to decide whether to pull from tier_serp_snapshots (DFS) or
+  // gsc_query_snapshots (GSC, impression-weighted). Default 'gsc'.
+  const canonSource = await getFridayKpiCanon(db, ownerId)
+
   const brands: BrandKpi[] = []
   for (const slug of siteSlugs) {
     // eslint-disable-next-line no-await-in-loop
@@ -163,6 +173,7 @@ export async function buildFridayKpi(
     ai_visibility_url: `${appUrl}/reports/ai-visibility`,
     forseti,
     forseti_url:       `${appUrl}/forseti`,
+    canon_source:      canonSource,
   }
 }
 

@@ -41,7 +41,7 @@ export async function GET() {
 
   const { data, error } = await db
     .from('slack_routing_config')
-    .select('id, owner_user_id, site_slug, notification_type, webhook_url, channel_label, enabled, updated_at')
+    .select('id, owner_user_id, site_slug, notification_type, webhook_url, slack_channel_id, channel_label, enabled, updated_at')
     .eq('owner_user_id', ownerId)
     .order('notification_type', { ascending: true })
     .order('site_slug',        { ascending: true, nullsFirst: true })
@@ -89,6 +89,7 @@ export async function POST(req: Request) {
     site_slug?:          string | null
     notification_type?:  string
     webhook_url?:        string
+    slack_channel_id?:   string | null
     channel_label?:      string | null
     enabled?:            boolean
   }
@@ -101,11 +102,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'webhook_url must be a hooks.slack.com URL' }, { status: 400 })
   }
 
+  // Sprint FRIDAY.KPI.GRAPH.5 — optional channel ID for file uploads. Slack
+  // channel IDs always start with C/D/G and are alphanumeric.
+  const channelIdRaw = String(body.slack_channel_id ?? '').trim()
+  if (channelIdRaw && !/^[CDG][A-Z0-9]{6,}$/.test(channelIdRaw)) {
+    return NextResponse.json({ error: 'slack_channel_id must look like C01234ABCDE (start with C/D/G)' }, { status: 400 })
+  }
+
   const payload = {
     owner_user_id:     ownerId,
     site_slug:         body.site_slug || null,   // '' / undefined → null (site-agnostic)
     notification_type: body.notification_type,
     webhook_url:       url,
+    slack_channel_id:  channelIdRaw || null,
     channel_label:     body.channel_label?.toString().slice(0, 80) ?? null,
     enabled:           body.enabled !== false,    // default to true
     updated_at:        new Date().toISOString(),

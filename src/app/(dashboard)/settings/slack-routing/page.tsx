@@ -43,6 +43,7 @@ interface RoutingRow {
   site_slug:           string | null    // null = brand-agnostic
   notification_type:   string
   webhook_url:         string
+  slack_channel_id?:   string | null    // Sprint FRIDAY.KPI.GRAPH.5 — for files.upload
   channel_label:       string | null
   enabled:             boolean
   updated_at?:         string
@@ -149,6 +150,7 @@ export default function SlackRoutingPage() {
           site_slug:         row.site_slug || null,
           notification_type: row.notification_type,
           webhook_url:       row.webhook_url,
+          slack_channel_id:  row.slack_channel_id ?? null,
           channel_label:     row.channel_label,
           enabled:           row.enabled,
         }),
@@ -310,6 +312,21 @@ export default function SlackRoutingPage() {
                         ? updateRow(row.id, { channel_label: e.target.value })
                         : setDraft(t, { channel_label: e.target.value })}
                       className="w-full bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-sm text-gray-200"
+                    />
+                  </div>
+                  {/* Sprint FRIDAY.KPI.GRAPH.5 — channel ID enables PNG file uploads (Friday KPI). Optional. */}
+                  <div className="md:col-span-12">
+                    <label className="block text-[11px] text-gray-400 mb-1">
+                      Channel ID <span className="text-gray-600">(optional — enables PNG/file uploads, requires SLACK_BOT_TOKEN)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={row.slack_channel_id ?? ''}
+                      placeholder="C01234ABCDE"
+                      onChange={e => row.id
+                        ? updateRow(row.id, { slack_channel_id: e.target.value })
+                        : setDraft(t, { slack_channel_id: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-xs font-mono text-gray-200"
                     />
                   </div>
                   <div className="md:col-span-2 flex flex-col gap-1">

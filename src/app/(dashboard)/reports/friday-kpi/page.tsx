@@ -48,8 +48,17 @@ interface PreviewResponse {
     methodology_url: string
     priority_url:    string
     public_url:      string | null
+    canon_source?:   'dfs' | 'gsc'   // Sprint FRIDAY.KPI.GRAPH.1
   }
   error?: string
+}
+
+// Sprint FRIDAY.KPI.GRAPH.2 — action plan item shape from synthesizer
+interface ActionPlanItem {
+  index:     number
+  text:      string
+  sources:   string[]
+  is_manual: boolean
 }
 
 interface SendResult {
@@ -67,6 +76,13 @@ export default function FridayKpiPage() {
   const [error,   setError]   = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [sendResult, setSendResult] = useState<SendResult | null>(null)
+  // Sprint FRIDAY.KPI.GRAPH.1+2 — canon toggle + action plan state
+  const [canon, setCanon] = useState<'dfs' | 'gsc'>('gsc')
+  const [actionBrand, setActionBrand] = useState<string>('g2g')
+  const [actionPlan,  setActionPlan]  = useState<ActionPlanItem[] | null>(null)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [editingIdx,   setEditingIdx]   = useState<number | null>(null)
+  const [editingText,  setEditingText]  = useState('')
 
   async function loadPreview() {
     setLoading(true); setError(null)
@@ -88,6 +104,53 @@ export default function FridayKpiPage() {
   }
   useEffect(() => { void loadPreview() }, [])
 
+  // Sync canon from payload when preview loads
+  useEffect(() => {
+    if (preview?.payload?.canon_source) setCanon(preview.payload.canon_source)
+  }, [preview])
+
+  // Default action brand = first available
+  useEffect(() => {
+    if (preview?.sites?.[0] && actionBrand === 'g2g') setActionBrand(preview.sites[0])
+  }, [preview, actionBrand])
+
+  // Sprint FRIDAY.KPI.GRAPH.2 — load action plan whenever brand changes
+  async function loadActionPlan(brand: string) {
+    setActionLoading(true)
+    try {
+      const r = await fetch(`/api/reports/friday-kpi/action-plan?brand=${encodeURIComponent(brand)}`)
+      const d = await r.json()
+      if (r.ok && Array.isArray(d.plan)) setActionPlan(d.plan as ActionPlanItem[])
+    } finally { setActionLoading(false) }
+  }
+  useEffect(() => { void loadActionPlan(actionBrand) }, [actionBrand])
+
+  async function setCanonRemote(next: 'dfs' | 'gsc') {
+    setCanon(next)
+    await fetch('/api/reports/friday-kpi/canon', {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ canon: next }),
+    })
+    void loadPreview()
+  }
+
+  async function saveOverride(index: number, text: string) {
+    const week = preview?.payload ? `${new Date().getUTCFullYear()}-W${String(preview.payload.iso_week).padStart(2, '0')}` : ''
+    await fetch('/api/reports/friday-kpi/action-override', {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        week_iso:     week,
+        brand:        actionBrand,
+        action_index: index,
+        action_text:  text,
+      }),
+    })
+    setEditingIdx(null); setEditingText('')
+    void loadActionPlan(actionBrand)
+  }
+
   async function send() {
     if (!confirm('Send the Friday KPI digest to Slack now?')) return
     setSending(true); setSendResult(null)
@@ -103,12 +166,31 @@ export default function FridayKpiPage() {
   return (
     <div className="p-6 md:p-8 max-w-5xl mx-auto">
       <Link href="/reports/weekly" className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1 mb-2">← Reports</Link>
-      <h1 className="text-2xl font-bold text-white mb-1">📊 Friday KPI Digest</h1>
-      <p className="text-sm text-gray-400 mb-6">
-        Combined G2G + OffGamers weekly KPI wrap. Auto-fires every <strong className="text-white">Friday 15:00 WIB</strong>.
-        Layout matches the boss-meeting template:{' '}
-        Most Competitive Keyword Rankings + GSC Clicks/Impressions WoW per (brand × market).
-      </p>
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white mb-1">📊 Friday KPI Digest</h1>
+          <p className="text-sm text-gray-400">
+            Combined G2G + OffGamers weekly KPI wrap. Auto-fires every <strong className="text-white">Friday 15:00 WIB</strong>.
+            {' '}Source <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${canon === 'gsc' ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}>
+              {canon.toUpperCase()}
+            </span> = canonical numbers for this report.
+          </p>
+        </div>
+        {/* Sprint FRIDAY.KPI.GRAPH.1 — canon toggle */}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-gray-500">Canon source:</span>
+          <div className="inline-flex gap-1 bg-gray-900 rounded-lg p-1 border border-gray-800">
+            <button
+              onClick={() => setCanonRemote('dfs')}
+              className={`px-3 py-1 rounded-md ${canon === 'dfs' ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40' : 'text-gray-400 hover:text-gray-200'}`}
+            >DFS</button>
+            <button
+              onClick={() => setCanonRemote('gsc')}
+              className={`px-3 py-1 rounded-md ${canon === 'gsc' ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40' : 'text-gray-400 hover:text-gray-200'}`}
+            >GSC</button>
+          </div>
+        </div>
+      </div>
 
       <section className="bg-gradient-to-br from-purple-900/30 to-indigo-900/20 border border-purple-700/40 rounded-xl p-5 mb-6">
         <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -116,10 +198,20 @@ export default function FridayKpiPage() {
             <h2 className="text-white font-semibold mb-1">Manual trigger</h2>
             <p className="text-xs text-purple-200/80">Posts to <code>notification_type=friday_kpi</code> Slack route. Live preview below.</p>
           </div>
-          <button onClick={send} disabled={sending || loading}
-            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition">
-            {sending ? '📤 Sending…' : '📤 Send Friday KPI to Slack now'}
-          </button>
+          <div className="flex items-center gap-2">
+            <a
+              href="/api/reports/friday-kpi/render-png?download=1"
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg transition inline-flex items-center gap-1"
+            >
+              🖼️ Preview PNG
+            </a>
+            <button onClick={send} disabled={sending || loading}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition">
+              {sending ? '📤 Sending…' : '📤 Send Friday KPI to Slack now'}
+            </button>
+          </div>
         </div>
         {sendResult && (
           <div className={`mt-3 text-xs rounded-lg p-3 ${sendResult.posted ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-200' : 'bg-red-500/15 border border-red-500/40 text-red-200'}`}>
@@ -222,6 +314,99 @@ export default function FridayKpiPage() {
         )}
       </section>
 
+      {/* Sprint FRIDAY.KPI.GRAPH.2 — Action Plan (3 prioritized actions for next week) */}
+      <section className="bg-gradient-to-br from-emerald-900/20 to-teal-900/15 border border-emerald-700/40 rounded-xl p-5 mb-6">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div>
+            <h2 className="text-white font-semibold mb-0.5">🎯 Action Plan for Next Week</h2>
+            <p className="text-xs text-emerald-200/70">
+              Auto-synthesized from Mimir lessons, Forseti complaints, Hugin growers, and SERP movers. Click an action to edit (overrides survive re-runs).
+            </p>
+          </div>
+          <div className="inline-flex gap-1 bg-gray-900 rounded-lg p-1 border border-gray-800 text-xs">
+            {(preview?.sites ?? ['g2g', 'offgamers']).map(s => (
+              <button
+                key={s}
+                onClick={() => setActionBrand(s)}
+                className={`px-3 py-1 rounded-md ${actionBrand === s ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/40' : 'text-gray-400 hover:text-gray-200'}`}
+              >{s.toUpperCase()}</button>
+            ))}
+          </div>
+        </div>
+
+        {actionLoading && <p className="text-sm text-gray-500">Synthesizing actions…</p>}
+
+        {!actionLoading && actionPlan && (
+          <ol className="space-y-2">
+            {actionPlan.map(item => (
+              <li key={item.index} className="bg-gray-950/40 border border-gray-800 rounded-lg p-3">
+                <div className="flex items-start gap-3">
+                  <span className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${item.is_manual ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'}`}>
+                    {item.index + 1}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    {editingIdx === item.index ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editingText}
+                          onChange={e => setEditingText(e.target.value)}
+                          rows={3}
+                          maxLength={500}
+                          className="w-full bg-gray-900 border border-gray-700 rounded-md px-2 py-1.5 text-sm text-white"
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-2 text-xs">
+                          <button
+                            onClick={() => void saveOverride(item.index, editingText)}
+                            disabled={!editingText.trim()}
+                            className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded-md"
+                          >Save override</button>
+                          <button
+                            onClick={() => { setEditingIdx(null); setEditingText('') }}
+                            className="px-3 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-md"
+                          >Cancel</button>
+                          {item.is_manual && (
+                            <button
+                              onClick={() => void saveOverride(item.index, '')}
+                              className="px-3 py-1 bg-red-900/40 hover:bg-red-900/60 text-red-300 rounded-md ml-auto"
+                            >🔁 Revert to auto</button>
+                          )}
+                          <span className="text-gray-500 ml-auto">{editingText.length}/500</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="text-sm text-gray-100 leading-snug">{item.text}</p>
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          {item.is_manual && (
+                            <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                              ✎ manual override
+                            </span>
+                          )}
+                          {item.sources.map(src => (
+                            <span key={src} className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
+                              {sourceLabel(src)}
+                            </span>
+                          ))}
+                          <button
+                            onClick={() => { setEditingIdx(item.index); setEditingText(item.text) }}
+                            className="ml-auto text-[11px] text-gray-500 hover:text-emerald-300"
+                          >✎ edit</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {!actionLoading && actionPlan?.length === 0 && (
+          <p className="text-sm text-gray-500 italic">No actions synthesized yet. Trigger a scrape on Forseti/Hugin first.</p>
+        )}
+      </section>
+
       <section className="bg-gray-900/40 border border-gray-800 rounded-xl p-4 text-xs text-gray-400">
         <strong className="text-white">Schedule:</strong> Friday 08:00 UTC (15:00 WIB) · workflow_dispatch enabled ·
         Slack channel resolved via <Link href="/settings/slack-routing" className="text-blue-400 hover:underline">routing settings</Link> (notification_type=friday_kpi).
@@ -239,4 +424,15 @@ function pct(d: number | null): string {
   if (d == null) return '—'
   if (Math.abs(d) < 0.1) return 'flat'
   return d > 0 ? `↑${d.toFixed(0)}%` : `↓${Math.abs(d).toFixed(0)}%`
+}
+
+function sourceLabel(src: string): string {
+  switch (src) {
+    case 'mimir':   return '🧠 Mimir'
+    case 'forseti': return '⚖️ Forseti'
+    case 'hugin':   return '🐦 Hugin'
+    case 'loki':    return '🦊 Loki'
+    case 'serp':    return '📉 SERP'
+    default:        return src
+  }
 }

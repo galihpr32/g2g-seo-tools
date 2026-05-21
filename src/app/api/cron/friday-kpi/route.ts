@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
-import { buildFridayKpi, buildFridayKpiSlackBlocks } from '@/lib/reports/friday-kpi'
-import { resolveSlackWebhook } from '@/lib/slack/routing'
+import { deliverFridayKpi } from '@/lib/reports/friday-kpi-deliver'
 
 export const maxDuration = 120
+export const runtime     = 'nodejs'
 
 /**
  * GET /api/cron/friday-kpi
@@ -55,38 +55,28 @@ export async function GET(req: Request) {
   const siteSlugs = ((sites ?? []).map(s => String(s.slug))).filter(Boolean)
   if (siteSlugs.length === 0) siteSlugs.push('g2g')
 
-  const results: Array<{ ownerId: string; ok: boolean; posted: boolean; reason?: string; total_items?: number }> = []
+  const results: Array<{
+    ownerId:     string
+    ok:          boolean
+    posted:      boolean
+    delivery?:   'png_upload' | 'webhook' | 'none'
+    reason?:     string
+    total_items?: number
+  }> = []
 
   for (const ownerId of owners) {
     try {
-      // eslint-disable-next-line no-await-in-loop
-      const payload = await buildFridayKpi(db, ownerId, siteSlugs)
-      const { text, blocks } = buildFridayKpiSlackBlocks(payload)
-
-      // eslint-disable-next-line no-await-in-loop
-      const webhookUrl = await resolveSlackWebhook(db, ownerId, 'friday_kpi')
-      if (!webhookUrl) {
-        const kwTotal = payload.brands.reduce((s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0)
-        results.push({ ownerId, ok: true, posted: false, reason: 'no_webhook_configured', total_items: kwTotal })
-        continue
-      }
-
-      // eslint-disable-next-line no-await-in-loop
-      const res = await fetch(webhookUrl, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ text, blocks }),
-      })
-
-      const totalKws = payload.brands.reduce(
-        (s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0,
-      )
+      // Sprint FRIDAY.KPI.GRAPH.5 — deliverFridayKpi handles both PNG upload
+      // and webhook fallback in one call. Returns payload + summary so we
+      // can still report totals.
+      const result = await deliverFridayKpi({ db, ownerId, siteSlugs })
       results.push({
-        ok:           res.ok,
         ownerId,
-        posted:       res.ok,
-        reason:       res.ok ? undefined : `slack_${res.status}`,
-        total_items:  totalKws,
+        ok:          result.ok,
+        posted:      result.posted,
+        delivery:    result.delivery,
+        reason:      result.reason,
+        total_items: result.summary.total_kws,
       })
     } catch (e) {
       results.push({ ownerId, ok: false, posted: false, reason: e instanceof Error ? e.message : String(e) })
