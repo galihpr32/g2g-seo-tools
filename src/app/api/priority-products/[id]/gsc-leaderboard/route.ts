@@ -15,12 +15,14 @@ export const maxDuration = 30
  * inline expanded leaderboard should show GSC numbers (impressions, clicks,
  * impression-weighted avg position) per tier_keyword instead of DFS positions.
  *
- * Algorithm mirrors fetchRankingsGSC (snapshot-based):
+ * Algorithm mirrors fetchRankingsGSC (snapshot-based, keyword-anchored):
  *   1. Load tier_keywords for this product
  *   2. Resolve site_url from site_configs
- *   3. Pull gsc_query_snapshots for the last 120d where page matches product.url
- *      and query matches one of the tier_keywords
+ *   3. Pull gsc_query_snapshots for last 120d where query matches one of the
+ *      tier_keywords (URL filter dropped in Sprint PP.GSC.KEYWORD.ANCHOR —
+ *      aggregate impressions across all pages site-wide)
  *   4. For each kw: latest snapshot = current, snapshot ~28d before latest = prior
+ *   5. Also track per-page breakdown so user sees which URL Google ranks
  *
  * Returns:
  *   leaderboard: [{ keyword, is_main, has_signal, impressions, clicks, ctr,
@@ -91,21 +93,11 @@ export async function GET(
   }
 
   // 4. Pull snapshots for the past 120d
+  // Sprint PP.GSC.KEYWORD.ANCHOR — product.url is no longer required since we
+  // match by keyword across all pages. URL only used as an optional fallback
+  // hint elsewhere; if missing, that's fine.
   const now = new Date()
   const fetchSince = isoDate(addDays(now, -120))
-
-  if (!product.url) {
-    return NextResponse.json({
-      leaderboard: kws.map(k => ({
-        keyword: k.keyword, language: k.language, is_main: k.is_main,
-        has_signal: false, impressions: 0, clicks: 0, ctr: 0,
-        avgPosition: null, priorPosition: null, deltaPosition: null, latestDate: null,
-      })),
-      matched: 0,
-      total: kws.length,
-      error: 'Product has no URL configured',
-    })
-  }
 
   const { data: snapsRaw, error } = await db
     .from('gsc_query_snapshots')
@@ -230,6 +222,6 @@ export async function GET(
     matched,
     total: kws.length,
     productName: product.product_name,
-    productUrl:  product.url,
+    productUrl:  product.url ?? null,
   })
 }
