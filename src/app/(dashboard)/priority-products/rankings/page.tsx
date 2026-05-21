@@ -32,6 +32,11 @@ interface Kpis {
   top20:            number
   notRanking:       number
   notRankingDelta:  number
+  // Sprint PP.GSC.TOGGLE.2 — GSC-only extras, null in DFS mode
+  totalImpressions?:      number | null
+  totalImpressionsDelta?: number | null
+  totalClicks?:           number | null
+  totalClicksDelta?:      number | null
 }
 
 interface DistributionPoint {
@@ -65,6 +70,20 @@ interface ProductSummary {
   top3:             number
   top10:            number
   wowDelta:         number | null
+  // Sprint PP.GSC.TOGGLE.2 — GSC-only extras
+  impressions?:     number | null
+  clicks?:          number | null
+}
+
+// Sprint PP.GSC.TOGGLE.2 — discovery rows when source='gsc-discovery'
+interface DiscoveryRow {
+  productId:   string
+  productName: string
+  query:       string
+  impressions: number
+  clicks:      number
+  avgPosition: number
+  isTracked:   boolean
 }
 
 interface CompetitorRow {
@@ -74,15 +93,29 @@ interface CompetitorRow {
 }
 
 interface ApiBundle {
-  filters: { tier: string; market: string; category: string; range: string }
-  kpis:    Kpis
+  source?:     'dfs' | 'gsc' | 'gsc-discovery'   // Sprint PP.GSC.TOGGLE.2
+  filters:     Record<string, string>
+  kpis:        Kpis
   distribution: DistributionPoint[]
   topMovers:   { gainers: Mover[]; losers: Mover[] }
   products:    ProductSummary[]
   competitors: CompetitorRow[]
   categories:  string[]
   markets:     readonly string[]
+  // Sprint PP.GSC.TOGGLE.2 — present in GSC modes only
+  meta?: {
+    windowStart: string | null
+    windowEnd:   string | null
+    priorStart:  string | null
+    priorEnd:    string | null
+    snapshotsScanned: number
+    queriesMatched:   number
+  }
+  // Sprint PP.GSC.TOGGLE.2 — present in gsc-discovery mode only
+  discoveryRows?: DiscoveryRow[]
 }
+
+type Source = 'dfs' | 'gsc' | 'gsc-discovery'
 
 // Shape returned by /api/priority-products/[id] — used to populate the
 // expanded leaderboard row inline.
@@ -109,6 +142,13 @@ export default function RankingsDashboardPage() {
   const [data,    setData]    = useState<ApiBundle | null>(null)
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
+
+  // Sprint PP.GSC.TOGGLE.2 — data source toggle
+  // Read initial source from URL so back/forward + bookmarking work
+  const initialSource = (typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('source')
+    : null) as Source | null
+  const [source, setSource] = useState<Source>(initialSource ?? 'dfs')
 
   // Filter state
   const [tier,     setTier]     = useState<'all' | '1' | '2'>('all')
@@ -174,14 +214,23 @@ export default function RankingsDashboardPage() {
     let cancelled = false
     setLoading(true)
     setError(null)
-    const params = new URLSearchParams({ tier, market, category, service, range })
+    const params = new URLSearchParams({ source, tier, market, category, service, range })
     fetch(`/api/priority-products/rankings?${params.toString()}`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then((body: ApiBundle) => { if (!cancelled) setData(body) })
       .catch(e => { if (!cancelled) setError(e instanceof Error ? e.message : String(e)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [tier, market, category, service, range, siteSlug])
+  }, [source, tier, market, category, service, range, siteSlug])
+
+  // Sprint PP.GSC.TOGGLE.2 — keep source in URL for share-ability
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    if (source === 'dfs') url.searchParams.delete('source')
+    else                  url.searchParams.set('source', source)
+    window.history.replaceState({}, '', url.toString())
+  }, [source])
 
   const filteredProducts = useMemo(() => {
     if (!data) return []
@@ -224,8 +273,17 @@ export default function RankingsDashboardPage() {
           <h1 className="text-2xl font-bold text-white mb-1">📊 Rankings Dashboard</h1>
           <p className="text-sm text-gray-400">
             Aggregate SERP positions across all Tier 1 + Tier 2 products on <strong className="text-white">{siteSlug.toUpperCase()}</strong>.
-            Data refreshed weekly from DataForSEO across {TIER_MARKET_CODES.length} markets.
+            {source === 'dfs'           && <> Data refreshed weekly from DataForSEO across {TIER_MARKET_CODES.length} markets.</>}
+            {source === 'gsc'           && <> GSC impression-weighted average position, 7d rolling with 4d lag, WoW vs prior 28d.</>}
+            {source === 'gsc-discovery' && <> Top GSC queries per product URL — surfaces what people actually search for, regardless of curated keywords.</>}
           </p>
+          {(source !== 'dfs') && data?.meta?.windowStart && (
+            <p className="text-[10px] text-gray-500 mt-1">
+              Window: {data.meta.windowStart} → {data.meta.windowEnd}
+              {data.meta.priorStart && <> · Prior: {data.meta.priorStart} → {data.meta.priorEnd}</>}
+              {' · '}{data.meta.snapshotsScanned.toLocaleString()} GSC rows scanned · {data.meta.queriesMatched.toLocaleString()} matched
+            </p>
+          )}
         </div>
         <Link
           href="/priority-products"
@@ -233,6 +291,21 @@ export default function RankingsDashboardPage() {
         >
           📦 Product cards →
         </Link>
+      </div>
+
+      {/* Sprint PP.GSC.TOGGLE.2 — Data source toggle */}
+      <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-2 mb-3 flex items-center gap-2 flex-wrap text-xs">
+        <span className="text-gray-500 px-1">Data source:</span>
+        <div className="inline-flex gap-1 bg-gray-900 rounded-lg p-1 border border-gray-800">
+          <SourcePill active={source === 'dfs'}           onClick={() => setSource('dfs')}>           DFS (tracked)        </SourcePill>
+          <SourcePill active={source === 'gsc'}           onClick={() => setSource('gsc')}>           GSC                  </SourcePill>
+          <SourcePill active={source === 'gsc-discovery'} onClick={() => setSource('gsc-discovery')}> GSC + Discovery 🔍   </SourcePill>
+        </div>
+        <span className="text-[10px] text-gray-500 ml-1">
+          {source === 'dfs'           && 'External view — DataForSEO weekly SERP scrape'}
+          {source === 'gsc'           && 'Real performance — what Google reports for our tracked kws'}
+          {source === 'gsc-discovery' && 'Untracked winners — top GSC queries per product URL'}
+        </span>
       </div>
 
       {/* Filter bar */}
@@ -315,22 +388,22 @@ export default function RankingsDashboardPage() {
         <p className="text-sm text-gray-500 py-12 text-center">Loading rankings data…</p>
       ) : !data ? null : (
         <>
-          {/* KPI Strip */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+          {/* KPI Strip — DFS = 5 cards, GSC adds Impressions + Clicks (7 cards) */}
+          <div className={`grid grid-cols-2 ${source === 'gsc' ? 'md:grid-cols-7' : 'md:grid-cols-5'} gap-3 mb-6`}>
             <KpiCard label="Keywords tracked" value={data.kpis.kwTracked.toString()} accent="#6366f1" />
             <KpiCard
-              label="Avg position"
+              label={source === 'gsc' ? 'Avg position (impression-weighted)' : 'Avg position'}
               value={data.kpis.avgPosition != null ? `#${data.kpis.avgPosition.toFixed(1)}` : '—'}
               delta={data.kpis.avgPositionDelta}
-              deltaLabel={`vs ${RANGE_LABELS[range]} ago`}
+              deltaLabel={source === 'dfs' ? `vs ${RANGE_LABELS[range]} ago` : 'vs prior 28d'}
               accent="#f59e0b"
               positiveIsGood
             />
             <KpiCard
-              label="Top 3"
+              label={source === 'gsc' ? 'Top 3 (≤3.5)' : 'Top 3'}
               value={data.kpis.top3.toString()}
               delta={data.kpis.top3Delta}
-              deltaLabel="WoW"
+              deltaLabel={source === 'dfs' ? 'WoW' : '28d Δ'}
               accent="#10b981"
               positiveIsGood
             />
@@ -338,7 +411,7 @@ export default function RankingsDashboardPage() {
               label="Top 10"
               value={data.kpis.top10.toString()}
               delta={data.kpis.top10Delta}
-              deltaLabel="WoW"
+              deltaLabel={source === 'dfs' ? 'WoW' : '28d Δ'}
               accent="#3b82f6"
               positiveIsGood
             />
@@ -346,12 +419,36 @@ export default function RankingsDashboardPage() {
               label="Not ranking"
               value={data.kpis.notRanking.toString()}
               delta={data.kpis.notRankingDelta}
-              deltaLabel="WoW"
+              deltaLabel={source === 'dfs' ? 'WoW' : '28d Δ'}
               accent="#ef4444"
-              positiveIsGood={false}   // negative is good (fewer outside top 50)
+              positiveIsGood={false}
             />
+            {source === 'gsc' && data.kpis.totalImpressions != null && (
+              <KpiCard
+                label="Impressions (7d)"
+                value={data.kpis.totalImpressions.toLocaleString()}
+                delta={data.kpis.totalImpressionsDelta ?? null}
+                deltaLabel="28d Δ"
+                accent="#a855f7"
+                positiveIsGood
+              />
+            )}
+            {source === 'gsc' && data.kpis.totalClicks != null && (
+              <KpiCard
+                label="Clicks (7d)"
+                value={data.kpis.totalClicks.toLocaleString()}
+                delta={data.kpis.totalClicksDelta ?? null}
+                deltaLabel="28d Δ"
+                accent="#22d3ee"
+                positiveIsGood
+              />
+            )}
           </div>
 
+          {/* Sprint PP.GSC.TOGGLE.2 — Discovery mode renders its own flat table */}
+          {source === 'gsc-discovery' ? (
+            <DiscoverySection rows={data.discoveryRows ?? []} search={search} />
+          ) : (<>
           {/* Rankings Distribution Chart */}
           <section className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-6">
             <div className="flex items-start justify-between mb-3">
@@ -482,7 +579,8 @@ export default function RankingsDashboardPage() {
             )}
           </section>
 
-          {/* Outranking Competitors */}
+          {/* Outranking Competitors — DFS only (GSC doesn't expose competitor SERPs) */}
+          {source === 'dfs' && (
           <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-800">
               <h2 className="text-sm font-semibold text-white">🥷 Top Outranking Competitors</h2>
@@ -511,6 +609,13 @@ export default function RankingsDashboardPage() {
               </table>
             )}
           </section>
+          )}
+          {source === 'gsc' && (
+            <p className="text-[11px] text-gray-500 italic py-2 px-1">
+              Note: Outranking Competitors data only available in DFS mode (GSC API doesn&apos;t expose SERP for other domains).
+            </p>
+          )}
+          </>)}
         </>
       )}
     </div>
@@ -518,6 +623,102 @@ export default function RankingsDashboardPage() {
 }
 
 // ─── Subcomponents ───────────────────────────────────────────────────────────
+
+// Sprint PP.GSC.TOGGLE.2 — pill toggle for data source
+function SourcePill({ active, onClick, children }: {
+  active:   boolean
+  onClick:  () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1 rounded-md text-xs whitespace-nowrap transition ${
+        active
+          ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40 font-medium'
+          : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 border border-transparent'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// Sprint PP.GSC.TOGGLE.2 — discovery view (gsc-discovery mode)
+function DiscoverySection({ rows, search }: { rows: DiscoveryRow[]; search: string }) {
+  const filtered = useMemo(() => {
+    const s = search.trim().toLowerCase()
+    if (!s) return rows
+    return rows.filter(r =>
+      r.productName.toLowerCase().includes(s) ||
+      r.query.toLowerCase().includes(s),
+    )
+  }, [rows, search])
+
+  return (
+    <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
+      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-white">🔍 Discovery — Top GSC queries per product</h2>
+          <p className="text-[10px] text-gray-500 mt-0.5">
+            All GSC queries hitting tier product URLs in last 7d. Untracked rows = potential new keywords to add to tier_keywords.
+          </p>
+        </div>
+        <div className="text-[10px] text-gray-500">
+          {filtered.length.toLocaleString()} queries · {filtered.filter(r => !r.isTracked).length.toLocaleString()} untracked
+        </div>
+      </div>
+      {filtered.length === 0 ? (
+        <p className="p-6 text-sm text-gray-500">
+          No GSC data yet for these products. Make sure GSC connection is configured and snapshots have populated.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-800/40 text-gray-400 text-[10px] uppercase tracking-wider">
+              <tr>
+                <th className="text-left  px-3 py-2">Product</th>
+                <th className="text-left  px-3 py-2">Query</th>
+                <th className="text-center px-3 py-2 w-20">Tracked?</th>
+                <th className="text-right  px-3 py-2 w-24">Avg Pos</th>
+                <th className="text-right  px-3 py-2 w-24">Impressions</th>
+                <th className="text-right  px-3 py-2 w-20">Clicks</th>
+                <th className="text-right  px-3 py-2 w-20">CTR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0, 300).map((r, i) => {
+                const ctr = r.impressions > 0 ? (r.clicks / r.impressions) * 100 : 0
+                return (
+                  <tr key={`${r.productId}-${r.query}-${i}`} className="border-t border-gray-800 hover:bg-gray-800/30">
+                    <td className="px-3 py-2 text-gray-200 truncate max-w-[180px]">{r.productName}</td>
+                    <td className="px-3 py-2 text-white">{r.query}</td>
+                    <td className="px-3 py-2 text-center">
+                      {r.isTracked
+                        ? <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">TRACKED</span>
+                        : <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">UNTRACKED</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <PositionCell position={r.avgPosition} />
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-200">{r.impressions.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right text-gray-200">{r.clicks.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right text-gray-400">{ctr.toFixed(1)}%</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {filtered.length > 300 && (
+            <p className="px-4 py-2 text-[10px] text-gray-500 italic border-t border-gray-800">
+              Showing top 300 of {filtered.length.toLocaleString()} — narrow with search.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
 
 function KpiCard({ label, value, delta, deltaLabel, accent, positiveIsGood = true }: {
   label:           string

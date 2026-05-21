@@ -45,6 +45,13 @@ export async function GET(req: Request) {
   const q        = (searchParams.get('q') ?? '').trim()
   const limit    = Math.min(1000, parseInt(searchParams.get('limit') ?? '200', 10) || 200)
 
+  // Sprint HUGIN.FILTER.SORT — extra filters
+  const matchStatus = (searchParams.get('match_status') ?? 'all').toLowerCase() // all | matched | unmatched
+  const dmcaMode    = (searchParams.get('dmca')         ?? 'all').toLowerCase() // all | hide | only
+  const minGrowth   = parseInt(searchParams.get('min_growth')    ?? '0', 10) || 0
+  const minPosDelta = parseInt(searchParams.get('min_pos_delta') ?? '0', 10) || 0
+  const phraseOnly  = searchParams.get('phrase_only') === '1'
+
   let query = db
     .from('hugin_queries')
     .select('*')
@@ -54,6 +61,15 @@ export async function GET(req: Request) {
     .gte('word_count',   minWords)
     .gte('total_impressions', minImp)
     .limit(limit)
+
+  // Apply universal filters (orthogonal to tab)
+  if (matchStatus === 'matched')    query = query.not('auto_matched_product_id', 'is', null)
+  if (matchStatus === 'unmatched')  query = query.is('auto_matched_product_id', null)
+  if (dmcaMode === 'hide')          query = query.eq('dmca_flag', false)
+  if (dmcaMode === 'only')          query = query.eq('dmca_flag', true)
+  if (minGrowth > 0)                query = query.not('growth_pct', 'is', null).gte('growth_pct', minGrowth)
+  if (minPosDelta > 0)              query = query.not('position_delta', 'is', null).gte('position_delta', minPosDelta)
+  if (phraseOnly)                   query = query.eq('phrase_pattern_match', true)
 
   // Tab-specific filters + ordering
   if (tab === 'growing') {
@@ -105,8 +121,10 @@ export async function GET(req: Request) {
     rows = rows.filter(r => Number(r.ctr_current) > Number(r.ctr_prior))
   }
 
-  // Compute per-tab counts (same filters minus tab-specific) for header badges
-  const { data: countRows } = await db
+  // Compute per-tab counts (same filters minus tab-specific) for header badges.
+  // Sprint HUGIN.FILTER.SORT — counts also respect the new orthogonal filters
+  // so badge numbers match what's visible in the table.
+  let countQ = db
     .from('hugin_queries')
     .select('status, growth_pct, is_new, position_delta, ctr_current, ctr_prior')
     .eq('owner_user_id', ownerId)
@@ -115,6 +133,14 @@ export async function GET(req: Request) {
     .gte('word_count',   minWords)
     .gte('total_impressions', minImp)
     .limit(5000)
+  if (matchStatus === 'matched')    countQ = countQ.not('auto_matched_product_id', 'is', null)
+  if (matchStatus === 'unmatched')  countQ = countQ.is('auto_matched_product_id', null)
+  if (dmcaMode === 'hide')          countQ = countQ.eq('dmca_flag', false)
+  if (dmcaMode === 'only')          countQ = countQ.eq('dmca_flag', true)
+  if (minGrowth > 0)                countQ = countQ.not('growth_pct', 'is', null).gte('growth_pct', minGrowth)
+  if (minPosDelta > 0)              countQ = countQ.not('position_delta', 'is', null).gte('position_delta', minPosDelta)
+  if (phraseOnly)                   countQ = countQ.eq('phrase_pattern_match', true)
+  const { data: countRows } = await countQ
 
   const counts = { growing: 0, new: 0, climbing: 0, ctr_rising: 0, all: 0, claimed: 0, covered: 0, ignored: 0 }
   for (const r of countRows ?? []) {

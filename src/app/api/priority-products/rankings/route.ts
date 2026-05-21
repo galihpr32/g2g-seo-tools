@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
 import { TIER_MARKET_CODES } from '@/lib/ranking-tracker'
+import { fetchRankingsGSC, fetchRankingsGSCDiscovery, type DataSource } from '@/lib/priority-products/data-source'
 
 export const maxDuration = 30
 
@@ -16,12 +17,20 @@ export const maxDuration = 30
  * per-product summary, outranking competitors.
  *
  * Query params:
+ *   source:   'dfs' | 'gsc' | 'gsc-discovery'                        (default dfs)
  *   tier:     'all' | '1' | '2'                                    (default all)
  *   market:   'all' | 'us' | 'de' | 'fr' | 'my' | 'id'              (default all)
  *   category: 'all' | <free-form category>                           (default all)
  *   range:    '1d' | '1w' | '4w' | '8w' | '12w'                     (default 1w)
  *
- * Range affects:
+ * Source modes (Sprint PP.GSC.TOGGLE.1):
+ *   • dfs            — DataForSEO weekly SERP scrape; existing default behavior
+ *   • gsc            — Google Search Console impression-weighted avg position
+ *                      (7d rolling, lag 4d, WoW vs prior 28d)
+ *   • gsc-discovery  — Top GSC queries per product URL regardless of
+ *                      tier_keywords curation; surfaces untracked winners
+ *
+ * Range affects (DFS mode only):
  *   • Chart history depth (how far back the distribution chart goes)
  *   • WoW delta comparison (latest snapshot vs N-time-ago snapshot)
  *   • Top-movers calculation
@@ -70,6 +79,8 @@ export async function GET(req: Request) {
   const db       = createServiceClient()
 
   const url      = new URL(req.url)
+  const sourceRaw = (url.searchParams.get('source') ?? 'dfs').toLowerCase()
+  const source: DataSource = (sourceRaw === 'gsc' || sourceRaw === 'gsc-discovery') ? sourceRaw : 'dfs'
   const tier     = url.searchParams.get('tier')     ?? 'all'
   const market   = url.searchParams.get('market')   ?? 'all'
   const category = url.searchParams.get('category') ?? 'all'
@@ -116,8 +127,44 @@ export async function GET(req: Request) {
 
   const products = (productsRaw ?? []) as ProductMeta[]
 
+  // ── Sprint PP.GSC.TOGGLE.1 — branch to GSC builder if source != dfs ────────
+  // GSC modes need the GSC property URL from site_configs (NOT from
+  // gsc_connections — that table is keyed by user_id only and has no slug
+  // mapping). Fall back to DFS empty bundle if site_configs not configured.
+  if (source === 'gsc' || source === 'gsc-discovery') {
+    const { data: siteCfg } = await db
+      .from('site_configs')
+      .select('gsc_property')
+      .eq('slug', siteSlug)
+      .maybeSingle()
+    const gscPropertyUrl = (siteCfg?.gsc_property as string | undefined) ?? null
+
+    const categoriesList = Array.from(new Set(products.map(p => p.category).filter(Boolean))) as string[]
+    categoriesList.sort()
+
+    const sharedOpts = {
+      db,
+      ownerId,
+      siteSlug,
+      gscPropertyUrl,
+      products,
+      filters:    { source, tier, market, category, service, range },
+      range,
+      categories: categoriesList,
+      markets:    TIER_MARKET_CODES,
+    }
+
+    if (source === 'gsc-discovery') {
+      const bundle = await fetchRankingsGSCDiscovery(sharedOpts)
+      return NextResponse.json(bundle)
+    }
+    const bundle = await fetchRankingsGSC(sharedOpts)
+    return NextResponse.json(bundle)
+  }
+
   if (products.length === 0) {
     return NextResponse.json({
+      source: 'dfs',
       filters: { tier, market, category, service, range },
       kpis: emptyKpis(),
       distribution: [],
@@ -369,7 +416,8 @@ export async function GET(req: Request) {
   allCategories.sort()
 
   return NextResponse.json({
-    filters: { tier, market, category, service, range },
+    source: 'dfs',
+    filters: { source, tier, market, category, service, range },
     kpis,
     distribution,
     topMovers: { gainers, losers },

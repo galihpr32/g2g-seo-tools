@@ -99,6 +99,24 @@ function HuginPageInner() {
   const [minImp,   setMinImp]   = useState<number>(parseInt(sp.get('min_impressions') ?? '30', 10) || 30)
   const [search,   setSearch]   = useState(sp.get('q') ?? '')
 
+  // Sprint HUGIN.FILTER.SORT — extra filters
+  const [matchStatus, setMatchStatus] = useState<'all'|'matched'|'unmatched'>((sp.get('match_status') as 'all'|'matched'|'unmatched') || 'all')
+  const [dmcaMode,    setDmcaMode]    = useState<'all'|'hide'|'only'>((sp.get('dmca') as 'all'|'hide'|'only') || 'all')
+  const [minGrowth,   setMinGrowth]   = useState<number>(parseInt(sp.get('min_growth') ?? '0', 10) || 0)
+  const [minPosDelta, setMinPosDelta] = useState<number>(parseInt(sp.get('min_pos_delta') ?? '0', 10) || 0)
+  const [phraseOnly,  setPhraseOnly]  = useState<boolean>(sp.get('phrase_only') === '1')
+
+  // Sprint HUGIN.FILTER.SORT — sortable columns (client-side over loaded rows)
+  type SortKey = 'query' | 'word_count' | 'total_impressions' | 'growth_pct' | 'position_avg' | 'position_delta' | 'ctr_current'
+  const [sortKey, setSortKey] = useState<SortKey | null>((sp.get('sort_key') as SortKey) || null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>((sp.get('sort_dir') as 'asc' | 'desc') || 'desc')
+  function toggleSort(key: SortKey) {
+    if (sortKey !== key) { setSortKey(key); setSortDir('desc'); return }
+    if (sortDir === 'desc') { setSortDir('asc'); return }
+    // asc → reset
+    setSortKey(null); setSortDir('desc')
+  }
+
   // Multi-select
   const [selected,    setSelected]    = useState<Set<string>>(new Set())
   const [clusterOpen, setClusterOpen] = useState(false)
@@ -113,11 +131,17 @@ function HuginPageInner() {
     const params = new URLSearchParams()
     params.set('period', String(period))
     params.set('tab',    tab)
-    if (minWords !== 4) params.set('min_words',       String(minWords))
-    if (minImp !== 30)  params.set('min_impressions', String(minImp))
-    if (search.trim())  params.set('q', search.trim())
+    if (minWords !== 4)            params.set('min_words',       String(minWords))
+    if (minImp !== 30)             params.set('min_impressions', String(minImp))
+    if (search.trim())             params.set('q', search.trim())
+    if (matchStatus !== 'all')     params.set('match_status',  matchStatus)
+    if (dmcaMode !== 'all')        params.set('dmca',          dmcaMode)
+    if (minGrowth > 0)             params.set('min_growth',    String(minGrowth))
+    if (minPosDelta > 0)           params.set('min_pos_delta', String(minPosDelta))
+    if (phraseOnly)                params.set('phrase_only',   '1')
+    if (sortKey)                   { params.set('sort_key', sortKey); params.set('sort_dir', sortDir) }
     router.replace(`?${params.toString()}`, { scroll: false })
-  }, [period, tab, minWords, minImp, search, router])
+  }, [period, tab, minWords, minImp, search, matchStatus, dmcaMode, minGrowth, minPosDelta, phraseOnly, sortKey, sortDir, router])
 
   // Fetch rows
   useEffect(() => {
@@ -131,7 +155,12 @@ function HuginPageInner() {
         params.set('tab',    tab)
         params.set('min_words',       String(minWords))
         params.set('min_impressions', String(minImp))
-        if (search.trim()) params.set('q', search.trim())
+        if (search.trim())             params.set('q', search.trim())
+        if (matchStatus !== 'all')     params.set('match_status',  matchStatus)
+        if (dmcaMode !== 'all')        params.set('dmca',          dmcaMode)
+        if (minGrowth > 0)             params.set('min_growth',    String(minGrowth))
+        if (minPosDelta > 0)           params.set('min_pos_delta', String(minPosDelta))
+        if (phraseOnly)                params.set('phrase_only',   '1')
         const res  = await fetch(`/api/hugin/queries?${params}`)
         const data = await res.json()
         if (cancelled) return
@@ -141,7 +170,25 @@ function HuginPageInner() {
       finally { if (!cancelled) setLoading(false) }
     })()
     return () => { cancelled = true }
-  }, [period, tab, minWords, minImp, search, refreshTick])
+  }, [period, tab, minWords, minImp, search, matchStatus, dmcaMode, minGrowth, minPosDelta, phraseOnly, refreshTick])
+
+  // Sprint HUGIN.FILTER.SORT — client-side sort over loaded rows. Tab default
+  // sort comes from server; this overrides when user clicks a header.
+  const sortedRows = useMemo(() => {
+    if (!sortKey) return rows
+    const compare = (a: HuginRow, b: HuginRow): number => {
+      const av: string | number | null = (a[sortKey] ?? null) as string | number | null
+      const bv: string | number | null = (b[sortKey] ?? null) as string | number | null
+      // Null-last regardless of direction (otherwise sort feels broken)
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (typeof av === 'number' && typeof bv === 'number') return av - bv
+      return String(av).localeCompare(String(bv))
+    }
+    const arr = [...rows].sort(compare)
+    return sortDir === 'desc' ? arr.reverse() : arr
+  }, [rows, sortKey, sortDir])
 
   async function patchRow(id: string, patch: Record<string, unknown>) {
     const res = await fetch(`/api/hugin/queries?id=${id}`, {
@@ -225,35 +272,85 @@ function HuginPageInner() {
       </div>
 
       {/* Filters */}
-      <div className="rounded-lg border border-gray-800 bg-gray-900 p-3 flex flex-wrap items-center gap-2 text-sm">
-        <label className="flex items-center gap-1">
-          <span className="text-gray-500">Period:</span>
-          <select value={period} onChange={e => setPeriod(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
-            <option value={7}>7d</option>
-            <option value={30}>30d</option>
-            <option value={60}>60d</option>
-            <option value={90}>90d</option>
-          </select>
-        </label>
-        <label className="flex items-center gap-1">
-          <span className="text-gray-500">Min words:</span>
-          <select value={minWords} onChange={e => setMinWords(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
-            {[3, 4, 5, 6, 7].map(n => <option key={n} value={n}>≥ {n}</option>)}
-          </select>
-        </label>
-        <label className="flex items-center gap-1">
-          <span className="text-gray-500">Min impressions:</span>
-          <select value={minImp} onChange={e => setMinImp(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
-            {[10, 30, 50, 100, 250, 500].map(n => <option key={n} value={n}>≥ {n}</option>)}
-          </select>
-        </label>
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search query text…"
-          className="bg-gray-950 border border-gray-700 rounded-md px-3 py-1.5 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-purple-500 flex-1 min-w-[200px]"
-        />
+      <div className="rounded-lg border border-gray-800 bg-gray-900 p-3 space-y-2 text-sm">
+        {/* Row 1: primary filters + search */}
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Period:</span>
+            <select value={period} onChange={e => setPeriod(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+              <option value={7}>7d</option>
+              <option value={30}>30d</option>
+              <option value={60}>60d</option>
+              <option value={90}>90d</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Min words:</span>
+            <select value={minWords} onChange={e => setMinWords(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+              {[3, 4, 5, 6, 7].map(n => <option key={n} value={n}>≥ {n}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Min imp:</span>
+            <select value={minImp} onChange={e => setMinImp(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1.5 text-gray-200">
+              {[10, 30, 50, 100, 250, 500].map(n => <option key={n} value={n}>≥ {n}</option>)}
+            </select>
+          </label>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search query text…"
+            className="bg-gray-950 border border-gray-700 rounded-md px-3 py-1.5 text-gray-200 placeholder:text-gray-600 focus:outline-none focus:border-purple-500 flex-1 min-w-[200px]"
+          />
+        </div>
+
+        {/* Row 2: Sprint HUGIN.FILTER.SORT — extra filters */}
+        <div className="flex flex-wrap items-center gap-2 text-xs pt-1 border-t border-gray-800">
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Match:</span>
+            <select value={matchStatus} onChange={e => setMatchStatus(e.target.value as 'all'|'matched'|'unmatched')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1 text-gray-200">
+              <option value="all">All</option>
+              <option value="matched">Matched</option>
+              <option value="unmatched">Unmatched</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">DMCA:</span>
+            <select value={dmcaMode} onChange={e => setDmcaMode(e.target.value as 'all'|'hide'|'only')} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1 text-gray-200">
+              <option value="all">All</option>
+              <option value="hide">Hide</option>
+              <option value="only">Only</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Min Δ%:</span>
+            <select value={minGrowth} onChange={e => setMinGrowth(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1 text-gray-200">
+              {[0, 20, 50, 100, 200, 500].map(n => <option key={n} value={n}>{n === 0 ? '—' : `≥ ${n}%`}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1">
+            <span className="text-gray-500">Min ΔPos:</span>
+            <select value={minPosDelta} onChange={e => setMinPosDelta(parseInt(e.target.value, 10))} className="bg-gray-950 border border-gray-700 rounded-md px-2 py-1 text-gray-200">
+              {[0, 1, 3, 5].map(n => <option key={n} value={n}>{n === 0 ? '—' : `≥ ${n}`}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5 text-gray-400">
+            <input type="checkbox" checked={phraseOnly} onChange={e => setPhraseOnly(e.target.checked)} />
+            Phrase-pattern only
+          </label>
+          {(matchStatus !== 'all' || dmcaMode !== 'all' || minGrowth > 0 || minPosDelta > 0 || phraseOnly || sortKey) && (
+            <button
+              onClick={() => {
+                setMatchStatus('all'); setDmcaMode('all'); setMinGrowth(0); setMinPosDelta(0)
+                setPhraseOnly(false); setSortKey(null); setSortDir('desc')
+              }}
+              className="ml-auto text-gray-400 hover:text-purple-300 underline"
+            >
+              Clear extras
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Tabs */}
@@ -271,7 +368,7 @@ function HuginPageInner() {
       {/* Table */}
       {loading ? (
         <div className="text-center py-12 text-gray-500">Loading…</div>
-      ) : rows.length === 0 ? (
+      ) : sortedRows.length === 0 ? (
         <EmptyState tab={tab} />
       ) : (
         <div className="overflow-x-auto rounded-lg border border-gray-800">
@@ -284,18 +381,18 @@ function HuginPageInner() {
                     checked={allSelected}
                     onChange={e => {
                       const next = new Set<string>()
-                      if (e.target.checked) for (const r of rows) next.add(r.id)
+                      if (e.target.checked) for (const r of sortedRows) next.add(r.id)
                       setSelected(next)
                     }}
                   />
                 </Th>
-                <Th>Query</Th>
-                <Th>W</Th>
-                <Th className="text-right">Imp</Th>
-                <Th className="text-right">Δ%</Th>
-                <Th className="text-right">Pos</Th>
-                <Th className="text-right">ΔPos</Th>
-                <Th className="text-right">CTR</Th>
+                <SortableTh label="Query"      sortKey="query"             current={sortKey} dir={sortDir} onClick={toggleSort} />
+                <SortableTh label="W"          sortKey="word_count"        current={sortKey} dir={sortDir} onClick={toggleSort} />
+                <SortableTh label="Imp"        sortKey="total_impressions" current={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                <SortableTh label="Δ%"         sortKey="growth_pct"        current={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                <SortableTh label="Pos"        sortKey="position_avg"      current={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                <SortableTh label="ΔPos"       sortKey="position_delta"    current={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                <SortableTh label="CTR"        sortKey="ctr_current"       current={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
                 <Th>Top page</Th>
                 <Th>Auto-match</Th>
                 <Th>Flags</Th>
@@ -303,7 +400,7 @@ function HuginPageInner() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
+              {sortedRows.map(r => (
                 <RowItem
                   key={r.id}
                   r={r}
@@ -461,6 +558,33 @@ function EmptyState({ tab }: { tab: Tab }) {
 
 function Th({ children, className = '' }: { children?: React.ReactNode; className?: string }) {
   return <th className={`px-3 py-2 text-left font-medium ${className}`}>{children}</th>
+}
+
+// Sprint HUGIN.FILTER.SORT — sortable header. 3-state cycle: desc → asc → reset.
+function SortableTh<K extends string>({
+  label, sortKey, current, dir, onClick, align,
+}: {
+  label:   string
+  sortKey: K
+  current: K | null
+  dir:     'asc' | 'desc'
+  onClick: (k: K) => void
+  align?:  'left' | 'right'
+}) {
+  const isActive = current === sortKey
+  const caret    = !isActive ? '' : dir === 'desc' ? ' ↓' : ' ↑'
+  const justify  = align === 'right' ? 'justify-end' : 'justify-start'
+  return (
+    <th className={`px-3 py-2 ${align === 'right' ? 'text-right' : 'text-left'} font-medium`}>
+      <button
+        onClick={() => onClick(sortKey)}
+        className={`inline-flex items-center gap-0.5 ${justify} hover:text-white transition-colors ${isActive ? 'text-purple-300' : 'text-gray-400'}`}
+        title="Click to sort. Cycle: desc → asc → reset."
+      >
+        {label}{caret}
+      </button>
+    </th>
+  )
 }
 function Td({ children, className = '' }: { children?: React.ReactNode; className?: string }) {
   return <td className={`px-3 py-2 ${className}`}>{children}</td>
