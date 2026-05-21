@@ -67,6 +67,7 @@ interface ProductSummary {
   restriction_type: string | null   // Sprint DMCA.TAGGING — 'DMCA' | 'Trademark' | 'RegionLock' | 'TOS' | null
   market:           'us' | 'id'      // Sprint TIER.PER.MARKET
   kwCount:          number
+  matchedKws?:      number | null   // Sprint PP.GSC.MATCH.HINT — GSC-impressions-matched kw count
   avgPosition:      number | null
   top3:             number
   top10:            number
@@ -129,6 +130,29 @@ interface ProductDetailBundle {
   markets: string[]
 }
 
+// Sprint PP.GSC.MATCH.HINT — GSC mode swaps the DFS detail bundle with this
+// shape from /api/priority-products/[id]/gsc-leaderboard.
+interface GscLeaderboardBundle {
+  leaderboard: Array<{
+    keyword:       string
+    language:      string | null
+    is_main:       boolean
+    has_signal:    boolean
+    impressions:   number
+    clicks:        number
+    ctr:           number
+    avgPosition:   number | null
+    priorPosition: number | null
+    deltaPosition: number | null
+    latestDate:    string | null
+  }>
+  matched:     number
+  total:       number
+  productName: string
+  productUrl:  string
+  error?:      string
+}
+
 const RANGE_LABELS: Record<string, string> = {
   '1d':  '1 day',
   '1w':  '1 week',
@@ -187,8 +211,9 @@ export default function RankingsDashboardPage() {
   // Expanded row state — which products show their keyword × market leaderboard
   // inline. Lazy-loaded from /api/priority-products/[id] on first expand.
   const [expanded,  setExpanded]  = useState<Set<string>>(new Set())
-  const [detailCache, setDetailCache] = useState<Record<string, ProductDetailBundle>>({})
-  const [detailLoading, setDetailLoading] = useState<Set<string>>(new Set())
+  const [detailCache,    setDetailCache]    = useState<Record<string, ProductDetailBundle>>({})
+  const [gscDetailCache, setGscDetailCache] = useState<Record<string, GscLeaderboardBundle>>({})
+  const [detailLoading,  setDetailLoading]  = useState<Set<string>>(new Set())
 
   async function toggleExpand(productId: string) {
     const next = new Set(expanded)
@@ -200,14 +225,20 @@ export default function RankingsDashboardPage() {
     next.add(productId)
     setExpanded(next)
 
-    if (detailCache[productId]) return  // already loaded
+    // Sprint PP.GSC.MATCH.HINT — pick endpoint by current source
+    if (source === 'dfs' && detailCache[productId]) return
+    if (source !== 'dfs' && gscDetailCache[productId]) return
 
     setDetailLoading(prev => new Set(prev).add(productId))
     try {
-      const res = await fetch(`/api/priority-products/${productId}`)
+      const url = source === 'dfs'
+        ? `/api/priority-products/${productId}`
+        : `/api/priority-products/${productId}/gsc-leaderboard`
+      const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const body: ProductDetailBundle = await res.json()
-      setDetailCache(prev => ({ ...prev, [productId]: body }))
+      const body = await res.json()
+      if (source === 'dfs') setDetailCache(prev => ({ ...prev, [productId]: body as ProductDetailBundle }))
+      else                  setGscDetailCache(prev => ({ ...prev, [productId]: body as GscLeaderboardBundle }))
     } catch (e) {
       console.error('Failed to load detail for', productId, e)
     } finally {
@@ -235,6 +266,12 @@ export default function RankingsDashboardPage() {
     if (source === 'dfs') url.searchParams.delete('source')
     else                  url.searchParams.set('source', source)
     window.history.replaceState({}, '', url.toString())
+  }, [source])
+
+  // Sprint PP.GSC.MATCH.HINT — when source flips, collapse all expanded rows so
+  // user doesn't see stale leaderboard from the other source's cache.
+  useEffect(() => {
+    setExpanded(new Set())
   }, [source])
 
   const filteredProducts = useMemo(() => {
@@ -505,7 +542,12 @@ export default function RankingsDashboardPage() {
                     <th className="text-left  px-3 py-2">Product</th>
                     <th className="text-left  px-3 py-2 w-16">Tier</th>
                     <th className="text-left  px-3 py-2 hidden md:table-cell">Category</th>
-                    <th className="text-right px-3 py-2">KWs</th>
+                    <th
+                      className="text-right px-3 py-2"
+                      title={source === 'dfs' ? 'Total tracked keywords' : 'GSC-matched (with impressions) / Total tracked. Untracked = 0 impressions in window.'}
+                    >
+                      {source === 'dfs' ? 'KWs' : 'KWs (matched/total)'}
+                    </th>
                     <th className="text-right px-3 py-2">Avg Pos</th>
                     <th className="text-right px-3 py-2 hidden md:table-cell">Top 3</th>
                     <th className="text-right px-3 py-2 hidden md:table-cell">Top 10</th>
@@ -518,10 +560,13 @@ export default function RankingsDashboardPage() {
                     const isOpen = expanded.has(p.id)
                     const detail = detailCache[p.id]
                     const isLoading = detailLoading.has(p.id)
+                    // Sprint PP.GSC.MATCH.HINT — fade rows with 0 GSC signal so the
+                    // "no impressions" state is obvious at a glance.
+                    const noGscSignal = source !== 'dfs' && p.matchedKws === 0 && p.kwCount > 0
                     return (
                       <Fragment key={p.id}>
                         <tr
-                          className="border-t border-gray-800 hover:bg-gray-800/30 cursor-pointer"
+                          className={`border-t border-gray-800 hover:bg-gray-800/30 cursor-pointer ${noGscSignal ? 'opacity-50' : ''}`}
                           onClick={() => toggleExpand(p.id)}
                         >
                           <td className="px-3 py-2.5">
@@ -531,6 +576,14 @@ export default function RankingsDashboardPage() {
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   <p className="text-white font-medium truncate">{p.productName}</p>
                                   <RestrictionBadge restriction={p.restriction_type} />
+                                  {noGscSignal && (
+                                    <span
+                                      title="No GSC impressions for any tracked keyword in the current window"
+                                      className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-gray-700/40 text-gray-400 border border-gray-600 italic"
+                                    >
+                                      no GSC signal
+                                    </span>
+                                  )}
                                 </div>
                                 {p.url && <p className="text-[10px] text-gray-500 truncate">{p.url}</p>}
                               </div>
@@ -554,7 +607,19 @@ export default function RankingsDashboardPage() {
                             </div>
                           </td>
                           <td className="px-3 py-2.5 text-gray-400 hidden md:table-cell text-xs">{p.category ?? '—'}</td>
-                          <td className="px-3 py-2.5 text-right text-gray-200">{p.kwCount}</td>
+                          <td className="px-3 py-2.5 text-right text-gray-200">
+                            {source === 'dfs'
+                              ? p.kwCount
+                              : (
+                                <span title={`${p.matchedKws ?? 0} of ${p.kwCount} tier keywords have GSC impressions in the current window`}>
+                                  <span className={(p.matchedKws ?? 0) === 0 ? 'text-gray-600' : 'text-gray-200'}>
+                                    {p.matchedKws ?? 0}
+                                  </span>
+                                  <span className="text-gray-600">/{p.kwCount}</span>
+                                </span>
+                              )
+                            }
+                          </td>
                           <td className="px-3 py-2.5 text-right">
                             <PositionCell position={p.avgPosition} />
                           </td>
@@ -576,12 +641,23 @@ export default function RankingsDashboardPage() {
                             <td colSpan={9} className="px-4 py-3">
                               {isLoading ? (
                                 <p className="text-xs text-gray-500 italic">Loading keyword breakdown…</p>
-                              ) : !detail || detail.leaderboard.length === 0 ? (
-                                <p className="text-xs text-gray-500 italic">
-                                  No keyword data yet. <Link href={`/priority-products/${p.id}`} className="text-blue-400 hover:text-blue-300">Open detail page</Link> to add keywords.
-                                </p>
+                              ) : source === 'dfs' ? (
+                                !detail || detail.leaderboard.length === 0 ? (
+                                  <p className="text-xs text-gray-500 italic">
+                                    No keyword data yet. <Link href={`/priority-products/${p.id}`} className="text-blue-400 hover:text-blue-300">Open detail page</Link> to add keywords.
+                                  </p>
+                                ) : (
+                                  <KeywordLeaderboard rows={detail.leaderboard} markets={detail.markets} />
+                                )
                               ) : (
-                                <KeywordLeaderboard rows={detail.leaderboard} markets={detail.markets} />
+                                // Sprint PP.GSC.MATCH.HINT — GSC mode leaderboard
+                                !gscDetailCache[p.id] || gscDetailCache[p.id].leaderboard.length === 0 ? (
+                                  <p className="text-xs text-gray-500 italic">
+                                    No tracked keywords for this product. <Link href={`/priority-products/${p.id}`} className="text-blue-400 hover:text-blue-300">Add some</Link> first.
+                                  </p>
+                                ) : (
+                                  <GscKeywordLeaderboard bundle={gscDetailCache[p.id]} />
+                                )
                               )}
                             </td>
                           </tr>
@@ -638,6 +714,68 @@ export default function RankingsDashboardPage() {
 }
 
 // ─── Subcomponents ───────────────────────────────────────────────────────────
+
+// Sprint PP.GSC.MATCH.HINT — GSC-mode inline leaderboard (replaces DFS market-grid)
+function GscKeywordLeaderboard({ bundle }: { bundle: GscLeaderboardBundle }) {
+  const { leaderboard, matched, total } = bundle
+  // Find a representative latest date from the rows (use the most recent non-null)
+  const dates = leaderboard.map(r => r.latestDate).filter(Boolean) as string[]
+  const latestDate = dates.length ? dates.sort().reverse()[0] : null
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2 text-[10px] text-gray-500">
+        <span>
+          GSC keyword leaderboard · <strong className="text-gray-300">{matched}/{total}</strong> with signal in window
+          {latestDate && <> · latest snapshot {latestDate}</>}
+        </span>
+        {bundle.error && <span className="text-amber-300">{bundle.error}</span>}
+      </div>
+      <table className="w-full text-xs">
+        <thead className="text-[10px] text-gray-500 uppercase tracking-wider">
+          <tr>
+            <th className="text-left  px-2 py-1.5">Keyword</th>
+            <th className="text-center px-2 py-1.5 w-16">Lang</th>
+            <th className="text-right  px-2 py-1.5 w-20">Avg Pos</th>
+            <th className="text-right  px-2 py-1.5 w-16">Δ 28d</th>
+            <th className="text-right  px-2 py-1.5 w-24">Impressions</th>
+            <th className="text-right  px-2 py-1.5 w-20">Clicks</th>
+            <th className="text-right  px-2 py-1.5 w-16">CTR</th>
+          </tr>
+        </thead>
+        <tbody>
+          {leaderboard.map((r, i) => (
+            <tr key={`${r.keyword}-${i}`} className={`border-t border-gray-800 ${!r.has_signal ? 'opacity-40' : ''}`}>
+              <td className="px-2 py-1.5 text-white">
+                {r.is_main && <span className="text-yellow-400 mr-1">★</span>}
+                {r.keyword}
+                {!r.has_signal && (
+                  <span className="ml-2 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-gray-700/40 text-gray-400 border border-gray-600 italic">
+                    no signal
+                  </span>
+                )}
+              </td>
+              <td className="px-2 py-1.5 text-center">
+                <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700">
+                  {(r.language ?? 'en').toUpperCase()}
+                </span>
+              </td>
+              <td className="px-2 py-1.5 text-right">
+                <PositionCell position={r.avgPosition} />
+              </td>
+              <td className="px-2 py-1.5 text-right">
+                <DeltaPill delta={r.deltaPosition} />
+              </td>
+              <td className="px-2 py-1.5 text-right text-gray-200">{r.impressions.toLocaleString()}</td>
+              <td className="px-2 py-1.5 text-right text-gray-200">{r.clicks.toLocaleString()}</td>
+              <td className="px-2 py-1.5 text-right text-gray-400">{r.ctr.toFixed(1)}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
 
 // Sprint PP.GSC.TOGGLE.2 — pill toggle for data source
 function SourcePill({ active, onClick, children }: {

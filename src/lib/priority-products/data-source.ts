@@ -77,6 +77,10 @@ export interface ProductSummary {
   restriction_type: string | null
   market:           'us' | 'id'
   kwCount:          number
+  /** Sprint PP.GSC.MATCH.HINT — How many tier_keywords actually have GSC impressions in the current window.
+   *  Always null in DFS mode (DFS scrapes every kw regardless of search volume).
+   *  In GSC modes, `matchedKws / kwCount` tells the user "how much real-world signal we have". */
+  matchedKws:       number | null
   avgPosition:      number | null
   top3:             number
   top10:            number
@@ -530,9 +534,11 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
     const productKws = kwByProduct.get(p.id)?.size ?? 0
     const avgPos = (cell7 && cell7.impressions > 0) ? +(cell7.posWeighted / cell7.impressions).toFixed(2) : null
     let top3 = 0, top10 = 0
+    let matchedKws = 0   // Sprint PP.GSC.MATCH.HINT — count tier_keywords that actually have GSC signal
     for (const [key, cell] of agg7) {
       if (!key.startsWith(`${p.id}|`)) continue
       if (cell.impressions === 0) continue
+      matchedKws++
       const ap = cell.posWeighted / cell.impressions
       if (ap <= TOP_3_BOUNDARY) top3++
       else if (ap <= 10)         top10++
@@ -553,6 +559,7 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
       restriction_type: p.restriction_type,
       market:           p.market,
       kwCount:          productKws,
+      matchedKws,
       avgPosition:      avgPos,
       top3,
       top10,
