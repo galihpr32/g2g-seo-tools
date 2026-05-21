@@ -135,6 +135,35 @@ function addDays(d: Date, days: number): Date {
 // (windowRange helper removed in Sprint PP.GSC.TOGGLE.FIX — snapshot-based
 //  semantics make calendar windows unnecessary.)
 
+// ─── Locale prefix stripping (Sprint PP.GSC.URL.LOCALE) ────────────────────
+//
+// G2G and OffGamers serve localized URLs like /id/categories/X, /cn/categories/X.
+// Canonical product_tiers.url is stored without locale prefix, so a naive path
+// match misses all localized impressions. Strip the prefix before comparing.
+const LOCALE_PREFIXES = [
+  // Asia
+  'id', 'cn', 'jp', 'kr', 'tw', 'hk', 'sg', 'my', 'ph', 'th', 'vi', 'in',
+  // EU
+  'en', 'de', 'fr', 'es', 'it', 'pt', 'ru', 'pl', 'nl', 'tr', 'sv', 'no', 'da', 'fi',
+  // Americas
+  'us', 'br', 'mx', 'ar',
+  // Other
+  'ar-sa', 'pt-br', 'zh-cn', 'zh-tw', 'en-us', 'en-gb', 'es-mx',
+]
+const LOCALE_SET = new Set(LOCALE_PREFIXES)
+
+/** Strip locale prefix from a pathname. Idempotent. */
+export function stripLocale(path: string): string {
+  if (!path || path === '/') return path
+  const trimmed = path.replace(/^\/+/, '')
+  const slashIdx = trimmed.indexOf('/')
+  const firstSeg = slashIdx === -1 ? trimmed : trimmed.slice(0, slashIdx)
+  if (LOCALE_SET.has(firstSeg.toLowerCase())) {
+    return slashIdx === -1 ? '/' : '/' + trimmed.slice(slashIdx + 1)
+  }
+  return path
+}
+
 // ─── Input shapes (resolved upstream) ──────────────────────────────────────
 
 export interface FetchOpts {
@@ -254,7 +283,10 @@ export async function fetchRankingsGSC(opts: FetchOpts): Promise<RankingsBundle>
 
   // ── Helper: match GSC `page` to a product URL ──────────────────────────────
   function pathOf(rawUrl: string): string {
-    try { return new URL(rawUrl).pathname.replace(/\/+$/, '') } catch { return rawUrl.replace(/\/+$/, '') }
+    let p: string
+    try { p = new URL(rawUrl).pathname } catch { p = rawUrl }
+    p = stripLocale(p).replace(/\/+$/, '')
+    return p
   }
   const productByPath = new Map<string, typeof products[0]>()
   for (const p of products) {
@@ -671,7 +703,10 @@ export async function fetchRankingsGSCDiscovery(opts: FetchOpts): Promise<Rankin
   }>
 
   function pathOf(rawUrl: string): string {
-    try { return new URL(rawUrl).pathname.replace(/\/+$/, '') } catch { return rawUrl.replace(/\/+$/, '') }
+    let p: string
+    try { p = new URL(rawUrl).pathname } catch { p = rawUrl }
+    p = stripLocale(p).replace(/\/+$/, '')
+    return p
   }
   const productByPath = new Map<string, typeof products[0]>()
   for (const p of products) {

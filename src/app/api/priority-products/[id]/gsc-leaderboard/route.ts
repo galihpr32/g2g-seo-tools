@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { resolveSiteSlugFromRequest } from '@/lib/sites'
+import { stripLocale } from '@/lib/priority-products/data-source'
 
 export const maxDuration = 30
 
@@ -119,14 +120,19 @@ export async function GET(
     clicks: number; impressions: number; position: number
   }>
 
-  // 5. Match `page` to product.url via path prefix
+  // 5. Match `page` to product.url via path prefix.
+  // Sprint PP.GSC.URL.LOCALE — strip locale prefix (/id/, /cn/, /en/, etc)
+  // before comparing so localized URLs match the canonical product URL.
   function pathOf(rawUrl: string): string {
-    try { return new URL(rawUrl).pathname.replace(/\/+$/, '') } catch { return rawUrl.replace(/\/+$/, '') }
+    let p: string
+    try { p = new URL(rawUrl).pathname } catch { p = rawUrl }
+    p = stripLocale(p).replace(/\/+$/, '')
+    return p
   }
   const productPath = pathOf(product.url)
   function pageMatches(page: string): boolean {
     const p = pathOf(page)
-    return p === productPath || p.startsWith(productPath)
+    return p === productPath || p.startsWith(productPath + '/') || p.startsWith(productPath + '?')
   }
 
   // 6. Aggregate observations per (kw × snapshot_date)
