@@ -12,6 +12,16 @@ import type { Browser } from 'puppeteer-core'
 
 const IS_LAMBDA = !!process.env.AWS_LAMBDA_FUNCTION_VERSION || !!process.env.VERCEL
 
+// @sparticuz/chromium v123+ doesn't ship the binary in the npm package (too
+// big for Vercel's 50MB function budget). We have to pull the matching brotli
+// tarball from the sparticuz GitHub releases at cold-start time. Version
+// MUST match the installed @sparticuz/chromium version (see package.json).
+//
+// Override via env CHROMIUM_PACK_URL if you want to self-host the tarball
+// (e.g. on S3/R2) for faster cold starts.
+const CHROMIUM_PACK_URL = process.env.CHROMIUM_PACK_URL
+  ?? 'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.x64.tar'
+
 export async function launchBrowser(): Promise<Browser> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const puppeteer = require('puppeteer-core') as typeof import('puppeteer-core')
@@ -28,7 +38,9 @@ export async function launchBrowser(): Promise<Browser> {
     return puppeteer.launch({
       args: chromium.args,
       defaultViewport: { width: 1280, height: 1800, deviceScaleFactor: 2 },
-      executablePath: await chromium.executablePath(),
+      // Pass the pack URL — sparticuz downloads, extracts to /tmp, and sets
+      // LD_LIBRARY_PATH so the binary can find libnss3.so + friends.
+      executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
       headless: true,
     })
   }
