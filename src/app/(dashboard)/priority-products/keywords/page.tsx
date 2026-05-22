@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 import type { KeywordMasterRow, KeywordMasterSummary } from '@/app/api/keyword-master/route'
+import { ContentKitModal } from '@/components/content-kit/ContentKitModal'
 
 /**
  * /priority-products/keywords — Sprint KW.MASTER.2
@@ -46,6 +47,9 @@ export default function KeywordMasterPage() {
 
   const [rescoreMsg, setRescoreMsg] = useState<string | null>(null)
   const [rescoring,  setRescoring]  = useState(false)
+
+  // Sprint CKB.4 — Content Kit modal trigger state
+  const [kitForKw, setKitForKw] = useState<KeywordMasterRow | null>(null)
 
   // Sprint KW.MASTER.3 — pre-apply product filter via ?product_id=
   const [productIdFilter, setProductIdFilter] = useState<string | null>(null)
@@ -328,15 +332,25 @@ export default function KeywordMasterPage() {
           </p>
         </div>
       ) : (
-        <KeywordTable rows={filtered} />
+        <KeywordTable rows={filtered} onBuildKit={r => setKitForKw(r)} />
       )}
+
+      {/* Sprint CKB.4 — Content Kit Builder modal (page-level singleton) */}
+      <ContentKitModal
+        open={!!kitForKw}
+        onClose={() => setKitForKw(null)}
+        primaryKeywordId={kitForKw?.id ?? ''}
+        productTierId={kitForKw?.product_tier_id ?? ''}
+        primaryKeyword={kitForKw?.keyword ?? ''}
+        productName={kitForKw?.product_name ?? ''}
+      />
     </div>
   )
 }
 
 // ─── Sub-components ────────────────────────────────────────────────────
 
-function KeywordTable({ rows }: { rows: KeywordMasterRow[] }) {
+function KeywordTable({ rows, onBuildKit }: { rows: KeywordMasterRow[]; onBuildKit: (r: KeywordMasterRow) => void }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
       <div className="overflow-x-auto">
@@ -357,7 +371,7 @@ function KeywordTable({ rows }: { rows: KeywordMasterRow[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => <KeywordRow key={r.id} r={r} />)}
+            {rows.map(r => <KeywordRow key={r.id} r={r} onBuildKit={() => onBuildKit(r)} />)}
           </tbody>
         </table>
       </div>
@@ -365,7 +379,7 @@ function KeywordTable({ rows }: { rows: KeywordMasterRow[] }) {
   )
 }
 
-function KeywordRow({ r }: { r: KeywordMasterRow }) {
+function KeywordRow({ r, onBuildKit }: { r: KeywordMasterRow; onBuildKit: () => void }) {
   const dmca = r.restriction_type?.startsWith('dmca') ?? false
   const wowCls = r.position_wow == null
     ? 'text-gray-500'
@@ -443,12 +457,23 @@ function KeywordRow({ r }: { r: KeywordMasterRow }) {
         {r.position_wow == null ? '—' : `${r.position_wow > 0 ? '↑+' : r.position_wow < 0 ? '↓' : ''}${Math.abs(r.position_wow).toFixed(1)}`}
       </td>
       <td className="px-3 py-2 align-middle text-right">
-        <Link
-          href={`/priority-products/${r.product_tier_id}`}
-          className="text-[10px] text-blue-400 hover:text-blue-300 whitespace-nowrap"
-        >
-          Open →
-        </Link>
+        <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+          {r.is_cluster_winner && (
+            <button
+              onClick={onBuildKit}
+              title="Build Content Kit — generate H2 blueprint, FAQ, fan-out passages, cross-links + send to Bragi"
+              className="text-[10px] text-amber-400 hover:text-amber-300"
+            >
+              🎯 Kit
+            </button>
+          )}
+          <Link
+            href={`/priority-products/${r.product_tier_id}`}
+            className="text-[10px] text-blue-400 hover:text-blue-300"
+          >
+            Open →
+          </Link>
+        </div>
       </td>
     </tr>
   )

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, use } from 'react'
 import Link from 'next/link'
 import { TIER_MARKET_CODES } from '@/lib/ranking-tracker'
 import SignalModal from '@/components/priority-products/SignalModal'
+import { ContentKitModal } from '@/components/content-kit/ContentKitModal'
 
 /**
  * /priority-products/[id]
@@ -83,6 +84,9 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
   const [data,    setData]    = useState<ApiBundle | null>(null)
   const [loading, setLoading] = useState(true)
   const [error,   setError]   = useState<string | null>(null)
+
+  // Sprint CKB.4 — Content Kit modal trigger (one winner at a time)
+  const [kitForKw, setKitForKw] = useState<{ id: string; keyword: string } | null>(null)
 
   // Keyword form state
   const [newKeyword,  setNewKeyword]  = useState('')
@@ -238,6 +242,16 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
         onClose={() => setSignalOpen(false)}
       />
 
+      {/* Sprint CKB.4 — Content Kit Builder modal */}
+      <ContentKitModal
+        open={!!kitForKw}
+        onClose={() => setKitForKw(null)}
+        primaryKeywordId={kitForKw?.id ?? ''}
+        productTierId={product.id}
+        primaryKeyword={kitForKw?.keyword ?? ''}
+        productName={product.product_name}
+      />
+
       {/* ── Charts row ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         <ChartPanel title="GSC — Clicks & Position (90d)" subtitle="From Google Search Console daily snapshot">
@@ -364,18 +378,28 @@ export default function PriorityProductDetailPage({ params }: { params: Promise<
                     {kw.is_main && <span className="text-amber-400">★</span>}
                     {/* Sprint COMPETITIVE.SCORER.6 — cluster winner badge with score tooltip */}
                     {kw.is_cluster_winner && (
-                      <span
-                        className={`text-[9px] font-bold px-1 py-0.5 rounded border bg-purple-500/20 text-purple-200 border-purple-500/40`}
-                        title={
-                          `Cluster winner #${kw.cluster_rank ?? '?'}\n`
-                          + `Score: ${kw.competitive_score ?? '—'}/100\n`
-                          + `SV norm: ${kw.sv_volume_norm ?? '—'} (raw ${kw.sv_volume ?? '—'})\n`
-                          + `Density: ${kw.serp_density ?? '—'} · Intent: ${kw.intent_score ?? '—'}`
-                          + (kw.last_scored_at ? `\nLast scored: ${new Date(kw.last_scored_at).toLocaleString()}` : '')
-                        }
-                      >
-                        🥇{kw.cluster_rank ? ` #${kw.cluster_rank}` : ''}
-                      </span>
+                      <>
+                        <span
+                          className={`text-[9px] font-bold px-1 py-0.5 rounded border bg-purple-500/20 text-purple-200 border-purple-500/40`}
+                          title={
+                            `Cluster winner #${kw.cluster_rank ?? '?'}\n`
+                            + `Score: ${kw.competitive_score ?? '—'}/100\n`
+                            + `SV norm: ${kw.sv_volume_norm ?? '—'} (raw ${kw.sv_volume ?? '—'})\n`
+                            + `Density: ${kw.serp_density ?? '—'} · Intent: ${kw.intent_score ?? '—'}`
+                            + (kw.last_scored_at ? `\nLast scored: ${new Date(kw.last_scored_at).toLocaleString()}` : '')
+                          }
+                        >
+                          🥇{kw.cluster_rank ? ` #${kw.cluster_rank}` : ''}
+                        </span>
+                        {/* Sprint CKB.4 — Content Kit Builder trigger (winners only) */}
+                        <button
+                          onClick={() => setKitForKw({ id: kw.id, keyword: kw.keyword })}
+                          title="Build Content Kit — H2 blueprint, FAQ, fan-out passages, cross-links + Bragi handoff"
+                          className="text-[9px] font-bold px-1 py-0.5 rounded border bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30"
+                        >
+                          🎯 Kit
+                        </button>
+                      </>
                     )}
                     {/* Sprint TIER.PER.MARKET.KW — language badge */}
                     <span
