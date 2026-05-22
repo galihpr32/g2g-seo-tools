@@ -21,15 +21,30 @@ export const maxDuration = 15
  */
 
 // ─── GET ────────────────────────────────────────────────────────────────────
+// Two modes:
+//   GET ?id=X     → single report row (existing behaviour)
+//   GET (no id)   → list latest 20 reports for this owner, so the curate
+//                   page can show a picker instead of a "missing id" error.
+//                   Sprint FRIDAY.KPI.PUBLIC-BYPASS-LIST.
 export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const id = new URL(req.url).searchParams.get('id')
-  if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 })
-
   const db = createServiceClient()
+
+  if (!id) {
+    const { data, error } = await db
+      .from('weekly_reports')
+      .select('id, site_slug, week_start, week_end, publish_status, public_token, published_at')
+      .eq('owner_user_id', user.id)
+      .order('week_start', { ascending: false })
+      .limit(20)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    return NextResponse.json({ reports: data ?? [] })
+  }
+
   const { data, error } = await db
     .from('weekly_reports')
     .select('id, owner_user_id, site_slug, week_start, week_end, publish_status, public_token, ai_narrative, ai_action_plan, curatorial_edits, report_data, published_at')
