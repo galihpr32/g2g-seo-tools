@@ -12,6 +12,15 @@ import type { ActionPlanItem } from './action-plan-synthesizer'
 interface BuildOptions {
   payload:     FridayKpiPayload
   actionPlans: Array<{ brand: string; plan: ActionPlanItem[] }>
+  /**
+   * Sprint FRIDAY.KPI.PNG-SPLIT — controls which sections render.
+   * 'main'    → chart + competitive table + traffic table  (Image 1)
+   * 'ai'      → AI Visibility table only                    (Image 2)
+   * 'actions' → Action Plan only                            (Image 3)
+   * 'all'     → everything (kept for in-app /reports/friday-kpi preview).
+   * Default: 'all'.
+   */
+  mode?: 'main' | 'ai' | 'actions' | 'all'
 }
 
 // Color tokens (kept in sync with app brand palette where it matters)
@@ -229,13 +238,26 @@ function actionPlanSection(plans: BuildOptions['actionPlans']): string {
 }
 
 export function renderFridayKpiHtml(opts: BuildOptions): string {
-  const { payload, actionPlans } = opts
+  const { payload, actionPlans, mode = 'all' } = opts
   const canonBadge = payload.canon_source === 'gsc'
     ? `<span class="canon-pill canon-gsc">GSC</span>`
     : `<span class="canon-pill canon-dfs">DFS</span>`
   const generatedAt = new Date(payload.generated_at).toLocaleString('en-US', {
     timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short',
   })
+
+  // Sprint FRIDAY.KPI.PNG-SPLIT — section gates per mode. Only the chart
+  // block renders Chart.js, so 'ai' and 'actions' modes can skip the JS
+  // bootstrap entirely and signal kpiReady immediately.
+  const showChart   = mode === 'main' || mode === 'all'
+  const showSerp    = mode === 'main' || mode === 'all'
+  const showTraffic = mode === 'main' || mode === 'all'
+  const showAi      = mode === 'ai'   || mode === 'all'
+  const showActions = mode === 'actions' || mode === 'all'
+  const modeTag = mode === 'main'    ? ' · 📈 Metrics'
+                : mode === 'ai'      ? ' · 🤖 AI Visibility'
+                : mode === 'actions' ? ' · 🎯 Action Plan'
+                : ''
 
   return `<!doctype html>
 <html lang="en">
@@ -334,7 +356,7 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
 <body>
   <header>
     <div>
-      <h1>📊 Friday KPI Digest <span style="color:${COLORS.muted};font-weight:400;font-size:14px;">· ${escapeHtml(payload.week_label)}</span></h1>
+      <h1>📊 Weekly Report <span style="color:${COLORS.muted};font-weight:400;font-size:14px;">· ${escapeHtml(payload.week_label)}${modeTag}</span></h1>
       <div class="meta">
         Canon source ${canonBadge}
         · ${payload.brands.length} brand${payload.brands.length === 1 ? '' : 's'}
@@ -347,16 +369,17 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     </div>
   </header>
 
-  ${chartSection(payload.brands)}
+  ${showChart ? chartSection(payload.brands) : ''}
 
-  <div class="grid">
-    ${competitiveSection(payload.brands)}
-    ${trafficSection(payload.brands)}
-  </div>
+  ${showSerp && showTraffic ? `
+    <div class="grid">
+      ${competitiveSection(payload.brands)}
+      ${trafficSection(payload.brands)}
+    </div>
+  ` : ''}
 
-  ${aiVisibilitySection(payload)}
-
-  ${actionPlanSection(actionPlans)}
+  ${showAi      ? aiVisibilitySection(payload) : ''}
+  ${showActions ? actionPlanSection(actionPlans) : ''}
 
   <footer>
     <span>🎯 ${escapeHtml(payload.methodology_url)}</span>
@@ -367,7 +390,17 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     // Sprint FRIDAY.KPI.PNG-CHART-SWAP (314) — render Top 3 / Top 10 bars
     // with WoW delta tags drawn ABOVE each bar. Custom plugin handles the
     // delta annotations so we don't have to pull in chartjs-plugin-datalabels.
+    //
+    // Sprint FRIDAY.KPI.PNG-SPLIT (319) — when the chart canvases aren't on
+    // the page (ai / actions modes), short-circuit and signal kpiReady so
+    // puppeteer can screenshot without waiting on Chart.js.
     (function () {
+      const top3El  = document.getElementById('chart-top3');
+      const top10El = document.getElementById('chart-top10');
+      if (!top3El || !top10El) {
+        requestAnimationFrame(() => requestAnimationFrame(() => { window.kpiReady = true; }));
+        return;
+      }
       const d = window.__chartData || { labels: [], top3: [], top3Delta: [], top10: [], top10Delta: [], colors: [] };
 
       function fmtDelta(v) {
@@ -412,7 +445,7 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
         },
       };
 
-      new Chart(document.getElementById('chart-top3').getContext('2d'), {
+      new Chart(top3El.getContext('2d'), {
         ...common,
         data: { labels: d.labels, datasets: [{ label: 'Top 3', data: d.top3, backgroundColor: d.colors, borderRadius: 4 }] },
         options: {
@@ -424,7 +457,7 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
         },
         plugins: [deltaLabelPlugin(d.top3Delta)],
       });
-      new Chart(document.getElementById('chart-top10').getContext('2d'), {
+      new Chart(top10El.getContext('2d'), {
         ...common,
         data: { labels: d.labels, datasets: [{ label: 'Top 10', data: d.top10, backgroundColor: d.colors, borderRadius: 4 }] },
         options: {

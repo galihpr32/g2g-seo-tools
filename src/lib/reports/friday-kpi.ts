@@ -438,27 +438,84 @@ async function buildBrandTraffic(
     // /reports/weekly. Was previously rolling 7d minus 3-day GSC lag.
     const { curStart, curEnd, prevStart, prevEnd } = getThuWedWindows()
 
-    const [curRows, prevRows] = await Promise.all([
+    // Sprint FRIDAY.KPI.GSC-TOTAL — Google's privacy-filtering of GSC API
+    // results is dimension-dependent: querying ['country'] returns a smaller
+    // sum than querying ['page'] (or no-dim) for the same date range. To
+    // make Friday KPI numbers AGREE with Weekly Pulse, we now fetch:
+    //   (1) `[]` no-dim → authoritative brand total
+    //   (2) `['country']` → ratio for ID vs Global split
+    // Then we allocate the no-dim total to buckets proportionally to the
+    // country sum. The bucket numbers may not exactly match `['country']`
+    // returns, but they SUM to the authoritative total, which is what
+    // matters for cross-report consistency.
+    const [curRows, prevRows, curTotalRows, prevTotalRows] = await Promise.all([
       getSearchAnalytics(auth, siteUrl, curStart,  curEnd,  ['country'], 1000),
       getSearchAnalytics(auth, siteUrl, prevStart, prevEnd, ['country'], 1000),
+      getSearchAnalytics(auth, siteUrl, curStart,  curEnd,  [],          1),
+      getSearchAnalytics(auth, siteUrl, prevStart, prevEnd, [],          1),
     ])
 
     // Aggregate per country bucket: 'idn' → ID, everything else → Global.
     type Totals = { clicks: number; imp: number }
-    const cur:  Record<'us' | 'id', Totals> = { us: { clicks: 0, imp: 0 }, id: { clicks: 0, imp: 0 } }
-    const prev: Record<'us' | 'id', Totals> = { us: { clicks: 0, imp: 0 }, id: { clicks: 0, imp: 0 } }
+    const curCty:  Record<'us' | 'id', Totals> = { us: { clicks: 0, imp: 0 }, id: { clicks: 0, imp: 0 } }
+    const prevCty: Record<'us' | 'id', Totals> = { us: { clicks: 0, imp: 0 }, id: { clicks: 0, imp: 0 } }
 
     for (const r of curRows) {
       const country = (r.keys?.[0] ?? '').toLowerCase()
       const bucket  = country === 'idn' ? 'id' : 'us'
-      cur[bucket].clicks += Number(r.clicks      ?? 0)
-      cur[bucket].imp    += Number(r.impressions ?? 0)
+      curCty[bucket].clicks += Number(r.clicks      ?? 0)
+      curCty[bucket].imp    += Number(r.impressions ?? 0)
     }
     for (const r of prevRows) {
       const country = (r.keys?.[0] ?? '').toLowerCase()
       const bucket  = country === 'idn' ? 'id' : 'us'
-      prev[bucket].clicks += Number(r.clicks      ?? 0)
-      prev[bucket].imp    += Number(r.impressions ?? 0)
+      prevCty[bucket].clicks += Number(r.clicks      ?? 0)
+      prevCty[bucket].imp    += Number(r.impressions ?? 0)
+    }
+
+    // Authoritative brand totals from the no-dim call (the single row).
+    const curTotalClicks  = Number(curTotalRows[0]?.clicks      ?? 0)
+    const curTotalImps    = Number(curTotalRows[0]?.impressions ?? 0)
+    const prevTotalClicks = Number(prevTotalRows[0]?.clicks      ?? 0)
+    const prevTotalImps   = Number(prevTotalRows[0]?.impressions ?? 0)
+
+    // Helper: scale country-bucket value so the two buckets sum to the
+    // authoritative total. If country sum is zero, fall through to even
+    // split — shouldn't happen in practice but avoids /0.
+    const allocate = (
+      countryVal: number,
+      countrySum: number,
+      total:      number,
+    ): number => {
+      if (total <= 0)      return 0
+      if (countrySum <= 0) return total / 2
+      return Math.round(total * (countryVal / countrySum))
+    }
+
+    const curCountrySumClicks  = curCty.us.clicks + curCty.id.clicks
+    const curCountrySumImps    = curCty.us.imp    + curCty.id.imp
+    const prevCountrySumClicks = prevCty.us.clicks + prevCty.id.clicks
+    const prevCountrySumImps   = prevCty.us.imp    + prevCty.id.imp
+
+    const cur:  Record<'us' | 'id', Totals> = {
+      us: {
+        clicks: allocate(curCty.us.clicks, curCountrySumClicks, curTotalClicks),
+        imp:    allocate(curCty.us.imp,    curCountrySumImps,   curTotalImps),
+      },
+      id: {
+        clicks: allocate(curCty.id.clicks, curCountrySumClicks, curTotalClicks),
+        imp:    allocate(curCty.id.imp,    curCountrySumImps,   curTotalImps),
+      },
+    }
+    const prev: Record<'us' | 'id', Totals> = {
+      us: {
+        clicks: allocate(prevCty.us.clicks, prevCountrySumClicks, prevTotalClicks),
+        imp:    allocate(prevCty.us.imp,    prevCountrySumImps,   prevTotalImps),
+      },
+      id: {
+        clicks: allocate(prevCty.id.clicks, prevCountrySumClicks, prevTotalClicks),
+        imp:    allocate(prevCty.id.imp,    prevCountrySumImps,   prevTotalImps),
+      },
     }
 
     const pct = (c: number, p: number): number | null => {

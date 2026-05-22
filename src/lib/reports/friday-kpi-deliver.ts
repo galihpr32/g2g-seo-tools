@@ -133,7 +133,12 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
     }
   }
 
-  // 3. Try PNG upload first
+  // 3. Try PNG upload first — Sprint FRIDAY.KPI.PNG-SPLIT delivers THREE
+  // sequential PNGs to the same channel so each section reads cleanly:
+  //   (1) Metrics: chart + competitive + traffic   ← initial_comment + buttons
+  //   (2) AI Visibility                            ← no initial_comment
+  //   (3) Action Plan                              ← short caption
+  // If any upload fails, mark the whole flow failed and fall back to webhook.
   if (channelId && botTokenPresent) {
     pngDiag.upload_attempted = true
     try {
@@ -144,37 +149,53 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
           plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
         })),
       )
-      const html = renderFridayKpiHtml({ payload, actionPlans })
-      const png  = await htmlToPng(html)
-      // Sprint FRIDAY.KPI.SLACK-BUTTONS — append inline action links to
-      // initial_comment (Slack markdown <url|label> renders as clickable).
-      const overview = buildPngOverviewComment(payload)
-      const links    = buildInlineLinks(payload)
-      const comment  = links ? `${overview}\n${links}` : overview
-      const up   = await postPngToSlack({
-        buffer:         png,
-        filename:       `weekly-report-${week}.png`,
-        channelId,
-        initialComment: comment,
-        title:          `Weekly Report · ${payload.week_label}`,
-      })
-      if (up.ok) {
-        return {
-          ok:          true,
-          posted:      true,
-          delivery:    'png_upload',
-          slack_status: up.status,
-          png_diagnostic: pngDiag,
-          payload,
-          summary,
+
+      // Render three HTML variants in parallel, then puppeteer them in
+      // sequence (puppeteer-launcher reuses the browser, so concurrent
+      // htmlToPng() calls would step on each other).
+      const htmlMain    = renderFridayKpiHtml({ payload, actionPlans, mode: 'main' })
+      const htmlAi      = renderFridayKpiHtml({ payload, actionPlans, mode: 'ai' })
+      const htmlActions = renderFridayKpiHtml({ payload, actionPlans, mode: 'actions' })
+      const pngMain    = await htmlToPng(htmlMain)
+      const pngAi      = await htmlToPng(htmlAi)
+      const pngActions = await htmlToPng(htmlActions)
+
+      // Build per-image captions. Only the first carries the brand overview
+      // + action-link buttons; the next two are short identifiers.
+      const overview     = buildPngOverviewComment(payload)
+      const links        = buildInlineLinks(payload)
+      const mainComment  = links ? `${overview}\n${links}` : overview
+      const aiComment    = `🤖 AI Visibility · Week ${payload.iso_week}`
+      const actComment   = `🎯 Action Plan · Week ${payload.iso_week}`
+
+      const uploads = [
+        { buffer: pngMain,    filename: `weekly-report-${week}-1-metrics.png`,      initialComment: mainComment, title: `Weekly Report · ${payload.week_label} · Metrics` },
+        { buffer: pngAi,      filename: `weekly-report-${week}-2-ai-visibility.png`, initialComment: aiComment,   title: `Weekly Report · ${payload.week_label} · AI Visibility` },
+        { buffer: pngActions, filename: `weekly-report-${week}-3-action-plan.png`,  initialComment: actComment,  title: `Weekly Report · ${payload.week_label} · Action Plan` },
+      ]
+
+      let lastStatus: number | undefined
+      for (const u of uploads) {
+        const up = await postPngToSlack({ channelId, ...u })
+        lastStatus = up.status
+        if (!up.ok) {
+          pngDiag.upload_error = up.error ?? `slack_${up.status}`
+          throw new Error(`PNG upload failed at "${u.filename}": ${pngDiag.upload_error}`)
         }
       }
-      // PNG upload failed — log + fall through to webhook
-      pngDiag.upload_error = up.error ?? `slack_${up.status}`
-      console.warn('[friday-kpi deliver] PNG upload failed, falling back to webhook:', pngDiag.upload_error)
+
+      return {
+        ok:          true,
+        posted:      true,
+        delivery:    'png_upload',
+        slack_status: lastStatus,
+        png_diagnostic: pngDiag,
+        payload,
+        summary,
+      }
     } catch (e) {
-      pngDiag.upload_error = e instanceof Error ? e.message : String(e)
-      console.warn('[friday-kpi deliver] PNG render/upload threw, falling back to webhook:', pngDiag.upload_error)
+      if (!pngDiag.upload_error) pngDiag.upload_error = e instanceof Error ? e.message : String(e)
+      console.warn('[friday-kpi deliver] PNG split upload failed, falling back to webhook:', pngDiag.upload_error)
     }
   }
 
