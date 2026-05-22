@@ -5,6 +5,10 @@ import { LottieLoader } from '@/components/ui/LottieLoader'
 import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
 import MimirPanel from '@/components/agents/MimirPanel'
 
+// Sprint WEEKLY.REPORT.SEMRUSH-HIDE — SEMrush API tracking is paused pending
+// plan decision. Flip this flag back to `true` once subscription is restored.
+const SHOW_SEMRUSH_WIDGETS = false
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface GscData {
@@ -719,8 +723,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 )}
               </div>
 
-              {/* ── Domain Authority (SEMrush) ── */}
-              {d.domainAuthority && (
+              {/* ── Domain Authority (SEMrush) ── Sprint WEEKLY.REPORT.SEMRUSH-HIDE */}
+              {SHOW_SEMRUSH_WIDGETS && d.domainAuthority && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-white mb-4">🔰 Domain Strength (SEMrush)</h3>
                   <div className="grid grid-cols-3 gap-4">
@@ -748,8 +752,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 initialChecks={report.task_checks ?? {}}
               />
 
-              {/* ── Traffic + Keywords ── */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* ── Traffic + Keywords ── grid collapses to 1 col when SEMrush hidden */}
+              <div className={`grid grid-cols-1 ${SHOW_SEMRUSH_WIDGETS ? 'md:grid-cols-2' : ''} gap-4`}>
 
                 {/* GSC movers */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -791,7 +795,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                   )}
                 </div>
 
-                {/* Keyword movers */}
+                {/* Keyword movers (SEMrush) — Sprint WEEKLY.REPORT.SEMRUSH-HIDE */}
+                {SHOW_SEMRUSH_WIDGETS && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-semibold text-white">🎯 Keyword Movement</h3>
@@ -836,6 +841,7 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                     <p className="text-xs text-gray-500">No SEMrush data available.</p>
                   )}
                 </div>
+                )}
               </div>
 
               {/* ── GA4 top pages ── */}

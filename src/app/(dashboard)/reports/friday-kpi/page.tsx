@@ -152,7 +152,7 @@ export default function FridayKpiPage() {
   }
 
   async function send() {
-    if (!confirm('Send the Friday KPI digest to Slack now?')) return
+    if (!confirm('Send the Weekly Report to Slack now?')) return
     setSending(true); setSendResult(null)
     try {
       const res  = await fetch('/api/reports/friday-kpi', { method: 'POST' })
@@ -168,7 +168,7 @@ export default function FridayKpiPage() {
       <Link href="/reports/weekly" className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1 mb-2">← Reports</Link>
       <div className="flex items-start justify-between flex-wrap gap-3 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-white mb-1">📊 Friday KPI Digest</h1>
+          <h1 className="text-2xl font-bold text-white mb-1">📊 Weekly Report</h1>
           <p className="text-sm text-gray-400">
             Combined G2G + OffGamers weekly KPI wrap. Auto-fires every <strong className="text-white">Friday 15:00 WIB</strong>.
             {' '}Source <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${canon === 'gsc' ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'}`}>
@@ -209,7 +209,7 @@ export default function FridayKpiPage() {
             </a>
             <button onClick={send} disabled={sending || loading}
               className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition">
-              {sending ? '📤 Sending…' : '📤 Send Friday KPI to Slack now'}
+              {sending ? '📤 Sending…' : '📤 Send Weekly Report to Slack now'}
             </button>
           </div>
         </div>

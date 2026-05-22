@@ -180,29 +180,11 @@ function aiVisibilitySection(payload: FridayKpiPayload): string {
   `
 }
 
-function forsetiSection(payload: FridayKpiPayload): string {
-  if (!payload.forseti?.length) return ''
-  const rows = payload.forseti.map(f => `
-    <tr>
-      <td class="brand"><span class="dot" style="background:${brandColor(f.site_slug)}"></span>${f.site_slug.toUpperCase()}</td>
-      <td class="num">${f.spotted_this_week}</td>
-      <td class="num">${f.responded}</td>
-      <td class="num">${f.response_rate_pct}%</td>
-      <td class="num ${f.sev4plus_pending > 0 ? 'down' : 'up'}">${f.sev4plus_pending}</td>
-    </tr>
-  `).join('')
-  return `
-    <section class="card">
-      <h2>⚖️ Forseti — Community Response</h2>
-      <table>
-        <thead>
-          <tr><th>Brand</th><th class="num">Spotted</th><th class="num">Responded</th><th class="num">Rate</th><th class="num">Sev-4+ Pending</th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </section>
-  `
-}
+// Sprint FRIDAY.KPI.GRAPH.NO-FORSETI — Forseti section removed from PNG
+// digest per Galih request (2026-05-22). Data still surfaced in /forseti
+// page + action plan signal collector; just not rendered in the weekly PNG
+// to keep the report focused on commercial metrics. Helper deleted to keep
+// the file lean — recreate from git history if/when re-enabling.
 
 function actionPlanSection(plans: BuildOptions['actionPlans']): string {
   if (plans.length === 0) return ''
@@ -362,7 +344,6 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
   </div>
 
   ${aiVisibilitySection(payload)}
-  ${forsetiSection(payload)}
 
   ${actionPlanSection(actionPlans)}
 

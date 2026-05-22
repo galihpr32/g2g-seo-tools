@@ -9,7 +9,7 @@
 // looping happens upstream in the cron route.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { buildFridayKpi, buildFridayKpiSlackBlocks, type FridayKpiPayload } from './friday-kpi'
+import { buildFridayKpi, buildFridayKpiSlackBlocks, buildPngOverviewComment, type FridayKpiPayload } from './friday-kpi'
 import { buildActionPlan } from './action-plan-synthesizer'
 import { renderFridayKpiHtml } from './friday-kpi-html'
 import { htmlToPng } from './puppeteer-launcher'
@@ -89,12 +89,15 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
       )
       const html = renderFridayKpiHtml({ payload, actionPlans })
       const png  = await htmlToPng(html)
+      // Sprint FRIDAY.KPI.SLACK-SIMPLIFY — PNG already shows full tables;
+      // the Slack initial_comment is now a short brief, not duplicated blocks.
+      const overview = buildPngOverviewComment(payload)
       const up   = await postPngToSlack({
         buffer:         png,
-        filename:       `friday-kpi-${week}.png`,
+        filename:       `weekly-report-${week}.png`,
         channelId,
-        initialComment: text,
-        title:          `Friday KPI · ${payload.week_label}`,
+        initialComment: overview,
+        title:          `Weekly Report · ${payload.week_label}`,
       })
       if (up.ok) {
         return {

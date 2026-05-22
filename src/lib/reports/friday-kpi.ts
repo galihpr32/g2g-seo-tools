@@ -488,7 +488,51 @@ function isoWeek(d: Date = new Date()): number {
   return Math.ceil(((date.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7)
 }
 
-// ─── Slack block-kit builder ─────────────────────────────────────────────────
+// ─── Slack PNG overview (short comment) ─────────────────────────────────────
+//
+// Sprint FRIDAY.KPI.SLACK-SIMPLIFY — When the digest is delivered as a PNG
+// attachment, the image already contains all KPI tables. The Slack message
+// only needs a brief 2-3 line overview as `initial_comment`. Use this helper
+// instead of buildFridayKpiSlackBlocks() to avoid duplicating data.
+
+export function buildPngOverviewComment(p: FridayKpiPayload): string {
+  const totalClicks = p.brands.reduce(
+    (s, b) => s + b.traffic.reduce((ss, t) => ss + t.clicks, 0), 0,
+  )
+  const totalImps = p.brands.reduce(
+    (s, b) => s + b.traffic.reduce((ss, t) => ss + t.impressions, 0), 0,
+  )
+  const totalWinners = p.brands.reduce(
+    (s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0,
+  )
+
+  // Compute weighted-avg WoW clicks change across all (brand × market) cells
+  let weightedDelta = 0, baseline = 0
+  for (const b of p.brands) {
+    for (const t of b.traffic) {
+      if (t.clicks_pct != null && t.clicks > 0) {
+        weightedDelta += t.clicks * t.clicks_pct
+        baseline      += t.clicks
+      }
+    }
+  }
+  const avgWow = baseline > 0 ? (weightedDelta / baseline) : null
+  const wowTxt = avgWow == null ? 'flat' :
+    avgWow > 0  ? `↑${avgWow.toFixed(1)}%` :
+                  `↓${Math.abs(avgWow).toFixed(1)}%`
+
+  const brandNames = p.brands.map(b => b.site_slug.toUpperCase()).join(' + ')
+  const canon      = p.canon_source === 'gsc' ? 'GSC' : 'DataForSEO'
+
+  return [
+    `📊 *Weekly Report · ${p.week_label}*`,
+    `${brandNames} · Source ${canon} · ${totalWinners} competitive KWs tracked`,
+    `🔍 ${totalClicks.toLocaleString()} clicks · ${totalImps.toLocaleString()} impressions · WoW ${wowTxt} (clicks-weighted)`,
+    `📎 Full breakdown in attached PNG. Action Plan + competitive details inside.`,
+  ].join('\n')
+}
+
+// ─── Slack block-kit builder (webhook fallback only) ────────────────────────
 
 export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
   text:   string
@@ -498,7 +542,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
 
   blocks.push({
     type: 'header',
-    text: { type: 'plain_text', text: `📊 Weekly Friday KPI Wrap · ${p.week_label}`, emoji: true },
+    text: { type: 'plain_text', text: `📊 Weekly Report · ${p.week_label}`, emoji: true },
   })
 
   // ── SERP rankings section ──
