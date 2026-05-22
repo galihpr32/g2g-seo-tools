@@ -7,10 +7,48 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { buildFridayKpi, buildPngOverviewComment, type FridayKpiPayload } from './friday-kpi'
 import { buildActionPlan } from './action-plan-synthesizer'
-import { renderFridayKpiHtml } from './friday-kpi-html'
+import { renderFridayKpiHtml, type AiVisibilityHistory } from './friday-kpi-html'
 import { htmlToPng } from './puppeteer-launcher'
 import { resolveSlackWebhook } from '@/lib/slack/routing'
 import { resolveSlackChannelId, postPngToSlack } from '@/lib/slack/files'
+
+/**
+ * Sprint FRIDAY.KPI.PNG-UNSPLIT — load the last N days of Bing AI snapshots
+ * per brand so the PNG renderer can draw a multi-line citations chart. If
+ * no rows exist (Galih hasn't imported yet), returns empty arrays per brand
+ * and the renderer just omits the chart section gracefully.
+ */
+async function loadAiVisibilityHistory(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:        SupabaseClient<any>,
+  ownerId:   string,
+  siteSlugs: string[],
+  days:      number,
+): Promise<AiVisibilityHistory> {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10)
+  const { data } = await db
+    .from('ai_visibility_snapshots')
+    .select('site_slug, snapshot_date, citations, cited_pages, llm_source')
+    .eq('owner_user_id', ownerId)
+    .in('site_slug', siteSlugs)
+    .eq('llm_source', 'bing_ai')
+    .gte('snapshot_date', since)
+    .order('snapshot_date', { ascending: true })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = (data ?? []) as any[]
+
+  const perBrand: AiVisibilityHistory = {}
+  for (const slug of siteSlugs) perBrand[slug] = { dates: [], citations: [], cited_pages: [] }
+  for (const r of rows) {
+    const slug = String(r.site_slug)
+    const bucket = perBrand[slug]
+    if (!bucket) continue
+    bucket.dates.push(String(r.snapshot_date))
+    bucket.citations.push(Number(r.citations  ?? 0))
+    bucket.cited_pages.push(Number(r.cited_pages ?? 0))
+  }
+  return perBrand
+}
 
 function currentWeekIso(): string {
   const d = new Date()
@@ -133,12 +171,11 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
     }
   }
 
-  // 3. Try PNG upload first — Sprint FRIDAY.KPI.PNG-SPLIT delivers THREE
-  // sequential PNGs to the same channel so each section reads cleanly:
-  //   (1) Metrics: chart + competitive + traffic   ← initial_comment + buttons
-  //   (2) AI Visibility                            ← no initial_comment
-  //   (3) Action Plan                              ← short caption
-  // If any upload fails, mark the whole flow failed and fall back to webhook.
+  // 3. Try PNG upload first — Sprint FRIDAY.KPI.PNG-UNSPLIT reverts to a
+  // single combined PNG (the 3-PNG split looked unbalanced because each
+  // sub-image got rendered at full viewport height regardless of content).
+  // One image, one upload, one Slack message — auto-sized via puppeteer's
+  // fullPage: true.
   if (channelId && botTokenPresent) {
     pngDiag.upload_attempted = true
     try {
@@ -150,52 +187,40 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
         })),
       )
 
-      // Render three HTML variants in parallel, then puppeteer them in
-      // sequence (puppeteer-launcher reuses the browser, so concurrent
-      // htmlToPng() calls would step on each other).
-      const htmlMain    = renderFridayKpiHtml({ payload, actionPlans, mode: 'main' })
-      const htmlAi      = renderFridayKpiHtml({ payload, actionPlans, mode: 'ai' })
-      const htmlActions = renderFridayKpiHtml({ payload, actionPlans, mode: 'actions' })
-      const pngMain    = await htmlToPng(htmlMain)
-      const pngAi      = await htmlToPng(htmlAi)
-      const pngActions = await htmlToPng(htmlActions)
+      // Fetch historical AI visibility data (last 84 days, bing_ai source)
+      // for the chart inside the PNG. Returns empty array if no data yet.
+      const aiHistory = await loadAiVisibilityHistory(db, ownerId, siteSlugs, 84)
 
-      // Build per-image captions. Only the first carries the brand overview
-      // + action-link buttons; the next two are short identifiers.
-      const overview     = buildPngOverviewComment(payload)
-      const links        = buildInlineLinks(payload)
-      const mainComment  = links ? `${overview}\n${links}` : overview
-      const aiComment    = `🤖 AI Visibility · Week ${payload.iso_week}`
-      const actComment   = `🎯 Action Plan · Week ${payload.iso_week}`
+      const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory })
+      const png  = await htmlToPng(html)
 
-      const uploads = [
-        { buffer: pngMain,    filename: `weekly-report-${week}-1-metrics.png`,      initialComment: mainComment, title: `Weekly Report · ${payload.week_label} · Metrics` },
-        { buffer: pngAi,      filename: `weekly-report-${week}-2-ai-visibility.png`, initialComment: aiComment,   title: `Weekly Report · ${payload.week_label} · AI Visibility` },
-        { buffer: pngActions, filename: `weekly-report-${week}-3-action-plan.png`,  initialComment: actComment,  title: `Weekly Report · ${payload.week_label} · Action Plan` },
-      ]
+      const overview = buildPngOverviewComment(payload)
+      const links    = buildInlineLinks(payload)
+      const comment  = links ? `${overview}\n${links}` : overview
 
-      let lastStatus: number | undefined
-      for (const u of uploads) {
-        const up = await postPngToSlack({ channelId, ...u })
-        lastStatus = up.status
-        if (!up.ok) {
-          pngDiag.upload_error = up.error ?? `slack_${up.status}`
-          throw new Error(`PNG upload failed at "${u.filename}": ${pngDiag.upload_error}`)
+      const up = await postPngToSlack({
+        buffer:         png,
+        filename:       `weekly-report-${week}.png`,
+        channelId,
+        initialComment: comment,
+        title:          `Weekly Report · ${payload.week_label}`,
+      })
+      if (up.ok) {
+        return {
+          ok:          true,
+          posted:      true,
+          delivery:    'png_upload',
+          slack_status: up.status,
+          png_diagnostic: pngDiag,
+          payload,
+          summary,
         }
       }
-
-      return {
-        ok:          true,
-        posted:      true,
-        delivery:    'png_upload',
-        slack_status: lastStatus,
-        png_diagnostic: pngDiag,
-        payload,
-        summary,
-      }
+      pngDiag.upload_error = up.error ?? `slack_${up.status}`
+      console.warn('[friday-kpi deliver] PNG upload failed, falling back to webhook:', pngDiag.upload_error)
     } catch (e) {
-      if (!pngDiag.upload_error) pngDiag.upload_error = e instanceof Error ? e.message : String(e)
-      console.warn('[friday-kpi deliver] PNG split upload failed, falling back to webhook:', pngDiag.upload_error)
+      pngDiag.upload_error = e instanceof Error ? e.message : String(e)
+      console.warn('[friday-kpi deliver] PNG render/upload threw, falling back to webhook:', pngDiag.upload_error)
     }
   }
 

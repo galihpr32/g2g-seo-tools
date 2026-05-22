@@ -9,18 +9,28 @@
 import type { FridayKpiPayload, BrandKpi } from './friday-kpi'
 import type { ActionPlanItem } from './action-plan-synthesizer'
 
+/**
+ * Sprint FRIDAY.KPI.PNG-UNSPLIT — historical AI Visibility series per brand.
+ * Loaded by friday-kpi-deliver from ai_visibility_snapshots (bing_ai source).
+ * Empty arrays = no data, renderer hides the chart section in that case.
+ */
+export interface AiVisibilityHistory {
+  [siteSlug: string]: {
+    dates:       string[]   // 'YYYY-MM-DD'
+    citations:   number[]
+    cited_pages: number[]
+  }
+}
+
 interface BuildOptions {
   payload:     FridayKpiPayload
   actionPlans: Array<{ brand: string; plan: ActionPlanItem[] }>
   /**
-   * Sprint FRIDAY.KPI.PNG-SPLIT — controls which sections render.
-   * 'main'    → chart + competitive table + traffic table  (Image 1)
-   * 'ai'      → AI Visibility table only                    (Image 2)
-   * 'actions' → Action Plan only                            (Image 3)
-   * 'all'     → everything (kept for in-app /reports/friday-kpi preview).
-   * Default: 'all'.
+   * Sprint FRIDAY.KPI.PNG-UNSPLIT — optional historical data for the new
+   * AI Visibility chart section. When omitted or empty, renderer falls back
+   * to the existing summary table (or nothing if no data at all).
    */
-  mode?: 'main' | 'ai' | 'actions' | 'all'
+  aiHistory?: AiVisibilityHistory
 }
 
 // Color tokens (kept in sync with app brand palette where it matters)
@@ -206,6 +216,53 @@ function aiVisibilitySection(payload: FridayKpiPayload): string {
 // to keep the report focused on commercial metrics. Helper deleted to keep
 // the file lean — recreate from git history if/when re-enabling.
 
+/**
+ * Sprint FRIDAY.KPI.PNG-UNSPLIT — AI Visibility historical chart.
+ * Side-by-side line charts: Citations (left) + Cited Pages (right), each
+ * with one line per brand colored by brandColor(). Drawn by the same
+ * Chart.js script at the bottom of the HTML; data is stashed in
+ * window.__aiHistoryData.
+ */
+function aiHistoryChartSection(history: AiVisibilityHistory, brands: string[]): string {
+  // Build a unified date axis across all brands (sorted union).
+  const allDates = Array.from(new Set(brands.flatMap(b => history[b]?.dates ?? []))).sort()
+  // Per-brand series aligned to unified axis (null for missing days).
+  const series = brands.map(slug => {
+    const h = history[slug]
+    if (!h) return { slug, citations: [] as (number | null)[], cited_pages: [] as (number | null)[] }
+    const map = new Map<string, { c: number; p: number }>()
+    h.dates.forEach((d, i) => map.set(d, { c: h.citations[i] ?? 0, p: h.cited_pages[i] ?? 0 }))
+    return {
+      slug,
+      citations:   allDates.map(d => map.get(d)?.c ?? null),
+      cited_pages: allDates.map(d => map.get(d)?.p ?? null),
+    }
+  })
+  const totalDays = allDates.length
+
+  return `
+    <section class="card">
+      <h2>🤖 AI Visibility — Bing AI Performance (last ${totalDays} days)</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div><canvas id="chart-ai-citations"   width="540" height="240"></canvas></div>
+        <div><canvas id="chart-ai-cited-pages" width="540" height="240"></canvas></div>
+      </div>
+      <p class="caption">Daily counts from Bing Webmaster Tools · Citations = times brand was cited as source · Cited Pages = distinct URLs cited.</p>
+      <script>
+        window.__aiHistoryData = {
+          labels:  ${JSON.stringify(allDates)},
+          series:  ${JSON.stringify(series.map(s => ({
+            slug:        s.slug,
+            color:       brandColor(s.slug),
+            citations:   s.citations,
+            cited_pages: s.cited_pages,
+          })))},
+        };
+      </script>
+    </section>
+  `
+}
+
 function actionPlanSection(plans: BuildOptions['actionPlans']): string {
   if (plans.length === 0) return ''
   const blocks = plans.map(p => {
@@ -238,7 +295,7 @@ function actionPlanSection(plans: BuildOptions['actionPlans']): string {
 }
 
 export function renderFridayKpiHtml(opts: BuildOptions): string {
-  const { payload, actionPlans, mode = 'all' } = opts
+  const { payload, actionPlans, aiHistory } = opts
   const canonBadge = payload.canon_source === 'gsc'
     ? `<span class="canon-pill canon-gsc">GSC</span>`
     : `<span class="canon-pill canon-dfs">DFS</span>`
@@ -246,18 +303,10 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'short',
   })
 
-  // Sprint FRIDAY.KPI.PNG-SPLIT — section gates per mode. Only the chart
-  // block renders Chart.js, so 'ai' and 'actions' modes can skip the JS
-  // bootstrap entirely and signal kpiReady immediately.
-  const showChart   = mode === 'main' || mode === 'all'
-  const showSerp    = mode === 'main' || mode === 'all'
-  const showTraffic = mode === 'main' || mode === 'all'
-  const showAi      = mode === 'ai'   || mode === 'all'
-  const showActions = mode === 'actions' || mode === 'all'
-  const modeTag = mode === 'main'    ? ' · 📈 Metrics'
-                : mode === 'ai'      ? ' · 🤖 AI Visibility'
-                : mode === 'actions' ? ' · 🎯 Action Plan'
-                : ''
+  // Sprint FRIDAY.KPI.PNG-UNSPLIT — does the AI history chart have data?
+  const aiHistoryBrands = Object.keys(aiHistory ?? {})
+    .filter(slug => (aiHistory?.[slug]?.dates?.length ?? 0) > 0)
+  const showAiHistoryChart = aiHistoryBrands.length > 0
 
   return `<!doctype html>
 <html lang="en">
@@ -356,7 +405,7 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
 <body>
   <header>
     <div>
-      <h1>📊 Weekly Report <span style="color:${COLORS.muted};font-weight:400;font-size:14px;">· ${escapeHtml(payload.week_label)}${modeTag}</span></h1>
+      <h1>📊 Weekly Report <span style="color:${COLORS.muted};font-weight:400;font-size:14px;">· ${escapeHtml(payload.week_label)}</span></h1>
       <div class="meta">
         Canon source ${canonBadge}
         · ${payload.brands.length} brand${payload.brands.length === 1 ? '' : 's'}
@@ -369,17 +418,18 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     </div>
   </header>
 
-  ${showChart ? chartSection(payload.brands) : ''}
+  ${chartSection(payload.brands)}
 
-  ${showSerp && showTraffic ? `
-    <div class="grid">
-      ${competitiveSection(payload.brands)}
-      ${trafficSection(payload.brands)}
-    </div>
-  ` : ''}
+  <div class="grid">
+    ${competitiveSection(payload.brands)}
+    ${trafficSection(payload.brands)}
+  </div>
 
-  ${showAi      ? aiVisibilitySection(payload) : ''}
-  ${showActions ? actionPlanSection(actionPlans) : ''}
+  ${aiVisibilitySection(payload)}
+
+  ${showAiHistoryChart ? aiHistoryChartSection(aiHistory!, aiHistoryBrands) : ''}
+
+  ${actionPlanSection(actionPlans)}
 
   <footer>
     <span>🎯 ${escapeHtml(payload.methodology_url)}</span>
@@ -395,8 +445,59 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     // the page (ai / actions modes), short-circuit and signal kpiReady so
     // puppeteer can screenshot without waiting on Chart.js.
     (function () {
-      const top3El  = document.getElementById('chart-top3');
-      const top10El = document.getElementById('chart-top10');
+      const top3El      = document.getElementById('chart-top3');
+      const top10El     = document.getElementById('chart-top10');
+      const aiCitEl     = document.getElementById('chart-ai-citations');
+      const aiPagesEl   = document.getElementById('chart-ai-cited-pages');
+
+      // ── AI Visibility historical line charts (independent of top3/top10) ──
+      function renderAiHistory() {
+        const d = window.__aiHistoryData;
+        if (!d || !aiCitEl || !aiPagesEl) return;
+        const buildLineConfig = (yKey, title) => ({
+          type: 'line',
+          data: {
+            labels: d.labels,
+            datasets: d.series.map(s => ({
+              label:           s.slug.toUpperCase(),
+              data:            s[yKey],
+              borderColor:     s.color,
+              backgroundColor: s.color,
+              pointRadius:     0,
+              pointHoverRadius:3,
+              borderWidth:     2,
+              tension:         0.25,
+              spanGaps:        true,
+            })),
+          },
+          options: {
+            responsive: false,
+            animation:  false,
+            plugins: {
+              legend: { display: true, labels: { color: '${COLORS.text}', font: { size: 10 }, boxWidth: 12 } },
+              title:  { display: true, text: title, color: '${COLORS.text}', font: { size: 12 } },
+            },
+            scales: {
+              x: {
+                ticks: {
+                  color: '${COLORS.muted}', font: { size: 9 },
+                  maxTicksLimit: 6, autoSkip: true,
+                },
+                grid: { color: '${COLORS.borderSoft}' },
+              },
+              y: {
+                ticks: { color: '${COLORS.muted}', font: { size: 10 } },
+                grid:  { color: '${COLORS.borderSoft}' },
+                beginAtZero: true,
+              },
+            },
+          },
+        });
+        new Chart(aiCitEl.getContext('2d'),   buildLineConfig('citations',   'Citations / day'));
+        new Chart(aiPagesEl.getContext('2d'), buildLineConfig('cited_pages', 'Cited pages / day'));
+      }
+      renderAiHistory();
+
       if (!top3El || !top10El) {
         requestAnimationFrame(() => requestAnimationFrame(() => { window.kpiReady = true; }));
         return;
