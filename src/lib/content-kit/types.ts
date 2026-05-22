@@ -24,7 +24,13 @@ export interface KitSection {
   intent_class:  IntentClass               // intent of the target KW
   body_outline:  string                    // 2-3 sentence guidance for Bragi
   cta_bridge:    boolean                   // whether section needs a "buy now" CTA at end
-  source:        'primary' | 'related_searches' | 'dfs_labs' | 'hugin' | 'paa'
+  /** Sprint CKB.REL.1 — dropped 'dfs_labs', added 'sibling_tier'.
+   *  related_searches & paa = pulled from primary SERP (most contextual).
+   *  sibling_tier = other tier_keywords curated for same product.
+   *  hugin = GSC long-tail discoveries matching primary tokens. */
+  source:        'primary' | 'related_searches' | 'sibling_tier' | 'hugin' | 'paa'
+  /** Sprint CKB.REL.1 — relevance score (0-100) used for ranking. Higher = better. */
+  relevance:     number
 }
 
 /** Single FAQ pair, EN + ID side-by-side. */
@@ -90,6 +96,14 @@ export interface KitMeta {
   candidates_total:      number               // KWs evaluated
   candidates_passed:     number               // passed intent filter
   candidates_skipped:    number               // rejected (informational-pure etc.)
+  /** Sprint CKB.REL.1 — how many candidates failed the brand-token filter
+   *  before intent classification ran. High = primary KW is niche and few
+   *  contextually-related candidates exist. */
+  candidates_off_brand:  number
+  /** Sprint CKB.REL.1 — how many sections the user originally requested. If
+   *  delivered < target, kit was built with-available (no padding). */
+  target_sections:       number
+  delivered_sections:    number
 }
 
 /** The full kit. Lives in content_kits.kit_data JSONB. */

@@ -123,7 +123,9 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
   // Variables `text` and `blocks` are kept above for compat but no longer
   // sent — webhook path uses short overview just like PNG mode.
   if (webhookUrl) {
-    const overview = buildPngOverviewComment(payload)
+    // Webhook mode: no PNG attachment possible, so overview tells user
+    // to open the dashboard for the visual.
+    const overview = buildPngOverviewComment(payload, { withPng: false })
     const appUrl   = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/+$/, '')
     const dashLink = appUrl ? `${appUrl}/reports/friday-kpi` : ''
     const slimText = dashLink

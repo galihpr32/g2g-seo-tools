@@ -495,40 +495,62 @@ function isoWeek(d: Date = new Date()): number {
 // only needs a brief 2-3 line overview as `initial_comment`. Use this helper
 // instead of buildFridayKpiSlackBlocks() to avoid duplicating data.
 
-export function buildPngOverviewComment(p: FridayKpiPayload): string {
-  const totalClicks = p.brands.reduce(
-    (s, b) => s + b.traffic.reduce((ss, t) => ss + t.clicks, 0), 0,
-  )
-  const totalImps = p.brands.reduce(
-    (s, b) => s + b.traffic.reduce((ss, t) => ss + t.impressions, 0), 0,
-  )
+export function buildPngOverviewComment(
+  p: FridayKpiPayload,
+  opts: { withPng?: boolean } = {},
+): string {
+  const withPng = opts.withPng !== false  // default true (PNG upload mode)
+
   const totalWinners = p.brands.reduce(
     (s, b) => s + b.serp.reduce((ss, m) => ss + m.kw_count, 0), 0,
   )
 
-  // Compute weighted-avg WoW clicks change across all (brand × market) cells
-  let weightedDelta = 0, baseline = 0
-  for (const b of p.brands) {
+  const canon = p.canon_source === 'gsc' ? 'GSC' : 'DataForSEO'
+
+  // Sprint FRIDAY.KPI.SLACK-PER-BRAND — per-brand clicks/impressions line.
+  // Each brand gets its own 🔍 line with totals + WoW deltas (clicks-weighted).
+  function fmtPct(pct: number | null): string {
+    if (pct == null || Math.abs(pct) < 0.5) return 'flat'
+    return pct > 0 ? `↑${pct.toFixed(0)}%` : `↓${Math.abs(pct).toFixed(0)}%`
+  }
+  function fmtCompact(n: number): string {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+    if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
+    return n.toLocaleString()
+  }
+
+  const brandLines = p.brands.map(b => {
+    const totalClicks = b.traffic.reduce((s, t) => s + t.clicks, 0)
+    const totalImps   = b.traffic.reduce((s, t) => s + t.impressions, 0)
+    // clicks-weighted WoW for this brand
+    let weightedDelta = 0, baseline = 0
+    let weightedImpDelta = 0, impBaseline = 0
     for (const t of b.traffic) {
       if (t.clicks_pct != null && t.clicks > 0) {
         weightedDelta += t.clicks * t.clicks_pct
         baseline      += t.clicks
       }
+      if (t.imp_pct != null && t.impressions > 0) {
+        weightedImpDelta += t.impressions * t.imp_pct
+        impBaseline      += t.impressions
+      }
     }
-  }
-  const avgWow = baseline > 0 ? (weightedDelta / baseline) : null
-  const wowTxt = avgWow == null ? 'flat' :
-    avgWow > 0  ? `↑${avgWow.toFixed(1)}%` :
-                  `↓${Math.abs(avgWow).toFixed(1)}%`
+    const clicksPct = baseline > 0 ? weightedDelta / baseline : null
+    const impsPct   = impBaseline > 0 ? weightedImpDelta / impBaseline : null
+    return `🔍 *${b.site_slug.toUpperCase()}* · ${fmtCompact(totalClicks)} clicks (${fmtPct(clicksPct)}) · ${fmtCompact(totalImps)} imps (${fmtPct(impsPct)})`
+  })
 
-  const brandNames = p.brands.map(b => b.site_slug.toUpperCase()).join(' + ')
-  const canon      = p.canon_source === 'gsc' ? 'GSC' : 'DataForSEO'
+  // Adapt last line to delivery mode. withPng=true → "see attached PNG".
+  // withPng=false (webhook) → "open dashboard to view chart".
+  const tail = withPng
+    ? `📎 Full breakdown in attached PNG. Action Plan + competitive details inside.`
+    : `🖼️  Visual breakdown + Action Plan available in the dashboard (link below).`
 
   return [
     `📊 *Weekly Report · ${p.week_label}*`,
-    `${brandNames} · Source ${canon} · ${totalWinners} competitive KWs tracked`,
-    `🔍 ${totalClicks.toLocaleString()} clicks · ${totalImps.toLocaleString()} impressions · WoW ${wowTxt} (clicks-weighted)`,
-    `📎 Full breakdown in attached PNG. Action Plan + competitive details inside.`,
+    `Source ${canon} · ${totalWinners} competitive KWs tracked across ${p.brands.length} brand${p.brands.length === 1 ? '' : 's'}`,
+    ...brandLines,
+    tail,
   ].join('\n')
 }
 
