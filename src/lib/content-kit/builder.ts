@@ -61,7 +61,7 @@ async function loadHuginCandidates(
   db: SupabaseClient<any>, ownerId: string, siteSlug: string, primaryKeyword: string,
 ): Promise<string[]> {
   // Pull discovered queries that contain primary keyword tokens.
-  const tokens = primaryKeyword.toLowerCase().split(/\s+/).filter(t => t.length >= 3)
+  const tokens = String(primaryKeyword ?? '').toLowerCase().split(/\s+/).filter(t => t.length >= 3)
   if (tokens.length === 0) return []
   const { data } = await db
     .from('hugin_queries')
@@ -79,10 +79,11 @@ async function loadHuginCandidates(
   return rows
     .filter(r => r.intent_class !== 'informational-pure' && r.intent_class !== 'diy-competing')
     .filter(r => {
-      const q = r.query.toLowerCase()
+      if (!r.query) return false
+      const q = String(r.query).toLowerCase()
       return tokens.some(t => q.includes(t))
     })
-    .map(r => r.query)
+    .map(r => String(r.query))
     .slice(0, 10)
 }
 
@@ -95,13 +96,18 @@ interface CandidateKw {
 }
 
 function dedupeCandidates(items: CandidateKw[], primary: string): CandidateKw[] {
-  const seen = new Set([primary.toLowerCase()])
+  // Sprint CKB.HARDEN — DFS Labs + SERP sometimes return entries with
+  // missing/empty keyword field. Filter null/undefined/empty BEFORE we
+  // call .toLowerCase() to avoid runtime crash on niche queries.
+  const seen = new Set([String(primary ?? '').toLowerCase()])
   const out: CandidateKw[] = []
   for (const c of items) {
-    const k = c.keyword.toLowerCase().trim()
-    if (!k || seen.has(k)) continue
+    const raw = (c?.keyword ?? '').toString().trim()
+    if (!raw) continue
+    const k = raw.toLowerCase()
+    if (seen.has(k)) continue
     seen.add(k)
-    out.push(c)
+    out.push({ keyword: raw, source: c.source })
   }
   return out
 }
@@ -224,6 +230,7 @@ export async function buildContentKit(
   const passed: Array<CandidateKw & { intent_class: IntentClass }> = []
   let candidates_skipped = 0
   for (const c of candidates) {
+    if (!c.keyword) { candidates_skipped++; continue }
     const v = intentMap.get(c.keyword.toLowerCase())
     if (!v) { candidates_skipped++; continue }
     if (v.intent_class === 'commercial-supportive') {

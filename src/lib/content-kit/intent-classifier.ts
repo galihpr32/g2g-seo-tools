@@ -63,8 +63,11 @@ type PageType =
   | 'other'
 
 function classifyResult(r: SerpOrganicResult): PageType {
-  const domain = r.domain.toLowerCase()
-  const url = r.url.toLowerCase()
+  // Sprint CKB.HARDEN — guard against malformed SERP rows (DFS sometimes
+  // returns entries missing domain or url on niche queries).
+  const domain = String(r?.domain ?? '').toLowerCase()
+  const url    = String(r?.url    ?? '').toLowerCase()
+  if (!domain && !url) return 'other'
 
   // 1) Commercial domains first (strongest signal)
   if (COMMERCIAL_DOMAIN_KEYWORDS.some(d => domain === d || domain.endsWith('.' + d))) {
@@ -191,18 +194,23 @@ export async function classifyKeywordsBulk(
   concurrency = 5,
 ): Promise<Map<string, ClassifyVerdict>> {
   const out = new Map<string, ClassifyVerdict>()
-  const queue = [...keywords]
+  // Sprint CKB.HARDEN — strip falsy/empty entries upfront so workers never
+  // see undefined. Caller may pass arrays with holes (DFS Labs malformed rows).
+  const queue: string[] = keywords
+    .filter((k): k is string => typeof k === 'string' && k.trim().length > 0)
+    .map(k => k.trim())
 
   async function worker() {
     while (queue.length > 0) {
       const kw = queue.shift()
       if (!kw) return
+      const key = kw.toLowerCase()
       try {
         const v = await classifyKeywordIntent(kw, { market })
-        out.set(kw.toLowerCase(), v)
+        out.set(key, v)
       } catch (e) {
         console.warn('[intent-classifier]', kw, e instanceof Error ? e.message : String(e))
-        out.set(kw.toLowerCase(), {
+        out.set(key, {
           intent_class:   'commercial-investigation',
           type_counts:    { ecommerce: 0, informational: 0, video: 0, 'diy-tutorial': 0, other: 0 },
           total_analyzed: 0,

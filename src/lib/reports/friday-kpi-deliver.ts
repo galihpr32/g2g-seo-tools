@@ -116,14 +116,28 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
     }
   }
 
-  // 4. Webhook fallback
+  // 4. Webhook fallback — Sprint FRIDAY.KPI.SLACK-SIMPLIFY hardening.
+  // Even without bot-token setup, we send a SLIM overview text + link to
+  // the dashboard, NOT the bloated tabular blocks. The full data lives in
+  // /reports/friday-kpi (where user can click Preview PNG manually).
+  // Variables `text` and `blocks` are kept above for compat but no longer
+  // sent — webhook path uses short overview just like PNG mode.
   if (webhookUrl) {
+    const overview = buildPngOverviewComment(payload)
+    const appUrl   = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/+$/, '')
+    const dashLink = appUrl ? `${appUrl}/reports/friday-kpi` : ''
+    const slimText = dashLink
+      ? `${overview}\n👉 View live dashboard + download PNG: ${dashLink}`
+      : overview
+
     try {
       const res = await fetch(webhookUrl, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ text, blocks }),
+        body:    JSON.stringify({ text: slimText }),
       })
+      // Silence unused-var lint for `text` and `blocks` from earlier build.
+      void text; void blocks
       return {
         ok:           res.ok,
         posted:       res.ok,
