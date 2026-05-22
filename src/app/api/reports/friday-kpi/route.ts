@@ -106,6 +106,7 @@ export async function POST(req: Request) {
       slack_status: result.slack_status,
       reason:       result.reason,
       hint:         result.hint,
+      png_diagnostic: result.png_diagnostic,
       sites:        siteSlugs,
       summary:      result.summary,
     }, { status: result.posted ? 200 : (result.delivery === 'none' ? 412 : 500) })

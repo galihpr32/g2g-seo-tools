@@ -130,25 +130,36 @@ function trafficSection(brands: BrandKpi[]): string {
 }
 
 function chartSection(brands: BrandKpi[]): string {
-  // Build chart data: 1 group per brand × market, bars = clicks & impressions
-  // Impressions divided by 100 to keep visually comparable next to clicks
-  const labels = brands.flatMap(b => b.traffic.map(t => `${b.site_slug.toUpperCase()} · ${t.market_label}`))
-  const clicks = brands.flatMap(b => b.traffic.map(t => t.clicks))
-  const impressions = brands.flatMap(b => b.traffic.map(t => t.impressions))
-  const colors = brands.flatMap(b => b.traffic.map(() => brandColor(b.site_slug)))
+  // Sprint FRIDAY.KPI.PNG-CHART-SWAP (314) ─────────────────────────────────
+  // Replaces the prior Clicks/Impressions bars with Top 3 + Top 10 keyword
+  // count bars per brand × market, each annotated with WoW delta (+/-).
+  // Rationale: ranking position counts are the truer "did we win this week"
+  // signal for a competitive-keywords-first weekly report. Clicks/imp data
+  // is still in the traffic table further down the report.
+  const labels = brands.flatMap(b =>
+    b.serp.map(m => `${b.site_slug.toUpperCase()} · ${m.market_label}`),
+  )
+  const top3        = brands.flatMap(b => b.serp.map(m => m.top3))
+  const top3Delta   = brands.flatMap(b => b.serp.map(m => m.top3_delta))
+  const top10       = brands.flatMap(b => b.serp.map(m => m.top10))
+  const top10Delta  = brands.flatMap(b => b.serp.map(m => m.top10_delta))
+  const colors      = brands.flatMap(b => b.serp.map(() => brandColor(b.site_slug)))
   return `
     <section class="card">
-      <h2>📊 This Week — GSC Clicks & Impressions</h2>
+      <h2>📊 This Week — Top 3 &amp; Top 10 Rank Count (WoW Δ)</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-        <div><canvas id="chart-clicks" width="540" height="240"></canvas></div>
-        <div><canvas id="chart-impressions" width="540" height="240"></canvas></div>
+        <div><canvas id="chart-top3" width="540" height="240"></canvas></div>
+        <div><canvas id="chart-top10" width="540" height="240"></canvas></div>
       </div>
+      <p class="caption">Bars = current week count of keywords ranking in Top 3 / Top 10. Labels above bars show change vs prior week.</p>
       <script>
         window.__chartData = {
-          labels: ${JSON.stringify(labels)},
-          clicks: ${JSON.stringify(clicks)},
-          impressions: ${JSON.stringify(impressions)},
-          colors: ${JSON.stringify(colors)},
+          labels:     ${JSON.stringify(labels)},
+          top3:       ${JSON.stringify(top3)},
+          top3Delta:  ${JSON.stringify(top3Delta)},
+          top10:      ${JSON.stringify(top10)},
+          top10Delta: ${JSON.stringify(top10Delta)},
+          colors:     ${JSON.stringify(colors)},
         };
       </script>
     </section>
@@ -353,31 +364,79 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
   </footer>
 
   <script>
-    // Render charts then flag ready so puppeteer screenshots after paint.
+    // Sprint FRIDAY.KPI.PNG-CHART-SWAP (314) — render Top 3 / Top 10 bars
+    // with WoW delta tags drawn ABOVE each bar. Custom plugin handles the
+    // delta annotations so we don't have to pull in chartjs-plugin-datalabels.
     (function () {
-      const d = window.__chartData || { labels: [], clicks: [], impressions: [], colors: [] };
+      const d = window.__chartData || { labels: [], top3: [], top3Delta: [], top10: [], top10Delta: [], colors: [] };
+
+      function fmtDelta(v) {
+        if (v == null || v === 0) return '·';
+        return v > 0 ? '+' + v : String(v);
+      }
+      function deltaColor(v) {
+        if (v == null || v === 0) return '${COLORS.muted}';
+        return v > 0 ? '${COLORS.emerald}' : '${COLORS.red}';
+      }
+
+      // Custom plugin: draw delta text above each bar in the dataset.
+      const deltaLabelPlugin = (deltas) => ({
+        id: 'deltaLabel-' + Math.random().toString(36).slice(2),
+        afterDatasetsDraw(chart) {
+          const { ctx } = chart;
+          const meta = chart.getDatasetMeta(0);
+          ctx.save();
+          ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          meta.data.forEach((bar, i) => {
+            const v = deltas[i];
+            ctx.fillStyle = deltaColor(v);
+            ctx.fillText(fmtDelta(v), bar.x, bar.y - 4);
+          });
+          ctx.restore();
+        },
+      });
+
       const common = {
         type: 'bar',
         options: {
           responsive: false,
           animation: false,
+          layout: { padding: { top: 20 } },
           plugins: { legend: { display: false } },
           scales: {
             x: { ticks: { color: '${COLORS.muted}', font: { size: 10 } }, grid: { color: '${COLORS.borderSoft}' } },
-            y: { ticks: { color: '${COLORS.muted}', font: { size: 10 } }, grid: { color: '${COLORS.borderSoft}' }, beginAtZero: true },
+            y: { ticks: { color: '${COLORS.muted}', font: { size: 10 } }, grid: { color: '${COLORS.borderSoft}' }, beginAtZero: true, precision: 0 },
           },
         },
       };
-      new Chart(document.getElementById('chart-clicks').getContext('2d'), {
+
+      new Chart(document.getElementById('chart-top3').getContext('2d'), {
         ...common,
-        data: { labels: d.labels, datasets: [{ label: 'Clicks', data: d.clicks, backgroundColor: d.colors, borderRadius: 4 }] },
-        options: { ...common.options, plugins: { ...common.options.plugins, title: { display: true, text: 'Clicks (this week)', color: '${COLORS.text}', font: { size: 12 } } } },
+        data: { labels: d.labels, datasets: [{ label: 'Top 3', data: d.top3, backgroundColor: d.colors, borderRadius: 4 }] },
+        options: {
+          ...common.options,
+          plugins: {
+            ...common.options.plugins,
+            title: { display: true, text: 'Top 3 keyword count (Δ vs last week)', color: '${COLORS.text}', font: { size: 12 } },
+          },
+        },
+        plugins: [deltaLabelPlugin(d.top3Delta)],
       });
-      new Chart(document.getElementById('chart-impressions').getContext('2d'), {
+      new Chart(document.getElementById('chart-top10').getContext('2d'), {
         ...common,
-        data: { labels: d.labels, datasets: [{ label: 'Impressions', data: d.impressions, backgroundColor: d.colors, borderRadius: 4 }] },
-        options: { ...common.options, plugins: { ...common.options.plugins, title: { display: true, text: 'Impressions (this week)', color: '${COLORS.text}', font: { size: 12 } } } },
+        data: { labels: d.labels, datasets: [{ label: 'Top 10', data: d.top10, backgroundColor: d.colors, borderRadius: 4 }] },
+        options: {
+          ...common.options,
+          plugins: {
+            ...common.options.plugins,
+            title: { display: true, text: 'Top 10 keyword count (Δ vs last week)', color: '${COLORS.text}', font: { size: 12 } },
+          },
+        },
+        plugins: [deltaLabelPlugin(d.top10Delta)],
       });
+
       // give Chart.js one frame to paint, then signal ready
       requestAnimationFrame(() => requestAnimationFrame(() => { window.kpiReady = true; }));
     })();

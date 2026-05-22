@@ -67,6 +67,25 @@ const SITE_OPTIONS = [
   { value: 'offgamers',label: 'OffGamers' },
 ]
 
+// ── Test channel prefill ────────────────────────────────────────────────────
+// One-click stuffer for a Slack test channel. Reads from NEXT_PUBLIC_TEST_*
+// env vars so the secret webhook URL never lives in git (GitHub Secret
+// Scanning will block a push that contains a `hooks.slack.com/services/…`
+// literal). Set these locally in .env.local + on Vercel project settings:
+//
+//   NEXT_PUBLIC_TEST_SLACK_WEBHOOK     = https://hooks.slack.com/services/…
+//   NEXT_PUBLIC_TEST_SLACK_CHANNEL_ID  = C01234ABCDE
+//   NEXT_PUBLIC_TEST_SLACK_CHANNEL_LBL = #writer-rangers
+//
+// If NEXT_PUBLIC_TEST_SLACK_WEBHOOK isn't set, the 🪄 Prefill button is
+// hidden entirely — no broken UI.
+const TEST_PREFILL = {
+  webhook_url:      process.env.NEXT_PUBLIC_TEST_SLACK_WEBHOOK     ?? '',
+  channel_label:    process.env.NEXT_PUBLIC_TEST_SLACK_CHANNEL_LBL ?? '',
+  slack_channel_id: process.env.NEXT_PUBLIC_TEST_SLACK_CHANNEL_ID  ?? '',
+} as const
+const TEST_PREFILL_ENABLED = !!TEST_PREFILL.webhook_url
+
 export default function SlackRoutingPage() {
   const [rows,    setRows]    = useState<RoutingRow[]>([])
   const [types,   setTypes]   = useState<string[]>([])
@@ -136,6 +155,37 @@ export default function SlackRoutingPage() {
 
   function updateRow(id: string, patch: Partial<RoutingRow>) {
     setRows(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r))
+  }
+
+  /**
+   * Prefill a draft for `type` with the #writer-rangers test channel —
+   * webhook URL + channel label + Slack channel ID in one click. If a draft
+   * already exists for this type, just patches its empty fields (won't blow
+   * away anything the user already typed). If none exists, creates one.
+   */
+  function prefillTest(type: string) {
+    setRows(prev => {
+      const draftIdx = prev.findIndex(r => r.notification_type === type && r.id === undefined)
+      if (draftIdx >= 0) {
+        const cur = prev[draftIdx]
+        const next = [...prev]
+        next[draftIdx] = {
+          ...cur,
+          webhook_url:      cur.webhook_url      || TEST_PREFILL.webhook_url,
+          channel_label:    cur.channel_label    || TEST_PREFILL.channel_label,
+          slack_channel_id: cur.slack_channel_id || TEST_PREFILL.slack_channel_id,
+        }
+        return next
+      }
+      return [...prev, {
+        site_slug:         null,
+        notification_type: type,
+        webhook_url:       TEST_PREFILL.webhook_url,
+        channel_label:     TEST_PREFILL.channel_label,
+        slack_channel_id:  TEST_PREFILL.slack_channel_id,
+        enabled:           true,
+      }]
+    })
   }
 
   async function save(row: RoutingRow) {
@@ -382,11 +432,34 @@ export default function SlackRoutingPage() {
             })}
 
             {!hasDraft && (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setDraft(t, {})}
+                  className="text-xs text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
+                >
+                  + Add route for {info.title.toLowerCase()}
+                </button>
+                {TEST_PREFILL_ENABLED && (
+                  <>
+                    <span className="text-gray-700">·</span>
+                    <button
+                      onClick={() => prefillTest(t)}
+                      title={`Prefill webhook + channel ID for ${TEST_PREFILL.channel_label || 'the test channel'}`}
+                      className="text-xs text-pink-300 hover:text-pink-200 underline-offset-2 hover:underline"
+                    >
+                      🪄 Prefill {TEST_PREFILL.channel_label || 'test channel'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            {hasDraft && TEST_PREFILL_ENABLED && (
               <button
-                onClick={() => setDraft(t, {})}
-                className="text-xs text-blue-300 hover:text-blue-200 underline-offset-2 hover:underline"
+                onClick={() => prefillTest(t)}
+                title={`Fill blank webhook + channel ID fields with ${TEST_PREFILL.channel_label || 'the test channel'} values`}
+                className="text-xs text-pink-300 hover:text-pink-200 underline-offset-2 hover:underline"
               >
-                + Add route for {info.title.toLowerCase()}
+                🪄 Prefill {TEST_PREFILL.channel_label || 'test channel'} into draft
               </button>
             )}
           </section>

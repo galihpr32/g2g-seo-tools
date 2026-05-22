@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS public.slack_routing_config (
 
   notification_type   text NOT NULL CHECK (notification_type IN (
     'agent_performance', 'tier_summary', 'weekly_report',
+    'friday_kpi', 'forseti_severe',
     'daily_alerts', 'cms_alerts', 'bug_reports', 'general'
   )),
   webhook_url         text NOT NULL,

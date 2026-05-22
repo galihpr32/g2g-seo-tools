@@ -64,9 +64,16 @@ interface ActionPlanItem {
 interface SendResult {
   ok:           boolean
   posted:       boolean
+  delivery?:    'png_upload' | 'webhook' | 'none'
   slack_status?: number
   reason?:      string
   hint?:        string
+  png_diagnostic?: {
+    channel_id_configured:  boolean
+    bot_token_present:      boolean
+    upload_attempted:       boolean
+    upload_error?:          string
+  }
   summary?:     { total_kws: number; brands: number; iso_week: number }
 }
 
@@ -216,8 +223,29 @@ export default function FridayKpiPage() {
         {sendResult && (
           <div className={`mt-3 text-xs rounded-lg p-3 ${sendResult.posted ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-200' : 'bg-red-500/15 border border-red-500/40 text-red-200'}`}>
             {sendResult.posted
-              ? <>✅ Sent · Slack {sendResult.slack_status} · {sendResult.summary?.total_kws ?? 0} kws · {sendResult.summary?.brands ?? 0} brands · Week {sendResult.summary?.iso_week ?? '—'}</>
+              ? <>
+                  ✅ Sent · <strong>{sendResult.delivery === 'png_upload' ? 'PNG attached' : 'webhook (no PNG)'}</strong> · Slack {sendResult.slack_status} · {sendResult.summary?.total_kws ?? 0} kws · {sendResult.summary?.brands ?? 0} brands · Week {sendResult.summary?.iso_week ?? '—'}
+                </>
               : <>❌ Not sent — {sendResult.reason ?? 'unknown'}{sendResult.hint && <p className="mt-1 italic text-red-300/80">{sendResult.hint}</p>}</>}
+
+            {/* Sprint FRIDAY.KPI.SLACK-BUTTONS — diagnostic panel: shows why PNG mode didn't fire */}
+            {sendResult.png_diagnostic && sendResult.delivery !== 'png_upload' && (
+              <div className="mt-2 pt-2 border-t border-current/20 space-y-0.5 text-[11px]">
+                <p className="font-semibold opacity-80">PNG mode diagnostic:</p>
+                <p>• Channel ID configured (slack_routing_config): <strong>{sendResult.png_diagnostic.channel_id_configured ? 'YES ✓' : 'NO ✗'}</strong></p>
+                <p>• SLACK_BOT_TOKEN env var set: <strong>{sendResult.png_diagnostic.bot_token_present ? 'YES ✓' : 'NO ✗'}</strong></p>
+                <p>• Upload attempted: <strong>{sendResult.png_diagnostic.upload_attempted ? 'YES' : 'NO (gated by above)'}</strong></p>
+                {sendResult.png_diagnostic.upload_error && (
+                  <p className="text-amber-300">• Upload error: <code>{sendResult.png_diagnostic.upload_error}</code></p>
+                )}
+                {!sendResult.png_diagnostic.channel_id_configured && (
+                  <p className="italic mt-1">→ Add Channel ID at <a href="/settings/slack-routing" className="underline">/settings/slack-routing</a> on the friday_kpi row.</p>
+                )}
+                {!sendResult.png_diagnostic.bot_token_present && (
+                  <p className="italic mt-1">→ Set <code>SLACK_BOT_TOKEN</code> env var in Vercel project settings + redeploy.</p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </section>
