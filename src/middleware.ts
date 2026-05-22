@@ -85,6 +85,10 @@ export async function middleware(request: NextRequest) {
   const headerSlug = detectedSlug ?? (request.cookies.get(SITE_COOKIE)?.value ?? 'g2g')
   const requestHeaders = new Headers(request.headers)
   requestHeaders.set('x-active-site', headerSlug)
+  // Sprint FRIDAY.KPI.PUBLIC-LINK — expose pathname so RSC layouts can
+  // whitelist specific public routes (e.g. /reports/weekly when shared
+  // externally) without moving the page out of (dashboard).
+  requestHeaders.set('x-pathname', strippedPath)
 
   let supabaseResponse = NextResponse.next({
     request: { headers: requestHeaders },
