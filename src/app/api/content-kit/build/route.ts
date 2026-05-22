@@ -44,18 +44,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'product_tier_id and primary_keyword_id required' }, { status: 400 })
   }
 
-  // Validate the (product, keyword) belongs to caller's workspace
-  const { data: kw } = await db
+  // Validate the (product, keyword) belongs to caller's workspace.
+  // Column names: `language` is canonical (en|id); `cluster_market` is the
+  // SERP-target market set by COMPETITIVE.SCORER. When cluster_market is null
+  // we derive market from language (en→us, id→id).
+  const { data: kw, error: kwErr } = await db
     .from('tier_keywords')
-    .select('id, keyword, product_tier_id, owner_user_id, cluster_market, cluster_language')
+    .select('id, keyword, product_tier_id, owner_user_id, cluster_market, language')
     .eq('id', primaryKeywordId)
     .eq('owner_user_id', ownerId)
     .maybeSingle()
+  if (kwErr) {
+    console.error('[content-kit build] kw lookup error:', kwErr)
+    return NextResponse.json({ error: `kw lookup failed: ${kwErr.message}` }, { status: 500 })
+  }
   if (!kw || kw.product_tier_id !== productTierId) {
     return NextResponse.json({ error: 'keyword/product mismatch or not found' }, { status: 404 })
   }
-  const market   = (kw.cluster_market   === 'id' ? 'id' : 'us') as 'us' | 'id'
-  const language = (kw.cluster_language === 'id' ? 'id' : 'en') as 'en' | 'id'
+  const language = (kw.language === 'id' ? 'id' : 'en') as 'en' | 'id'
+  const market   = (kw.cluster_market === 'id' || kw.cluster_market === 'us')
+    ? (kw.cluster_market as 'us' | 'id')
+    : (language === 'id' ? 'id' : 'us')
 
   // Supersede any prior non-superseded kit for this (product × primary KW)
   await db

@@ -17,10 +17,16 @@ const IS_LAMBDA = !!process.env.AWS_LAMBDA_FUNCTION_VERSION || !!process.env.VER
 // tarball from the sparticuz GitHub releases at cold-start time. Version
 // MUST match the installed @sparticuz/chromium version (see package.json).
 //
+// Upgraded 131→141 because v131.0.1 had no matching GitHub release (npm
+// published without a release tag → broken pack URL).
+//
+// v137+ removed `setHeadlessMode` and `setGraphicsMode` — caller must specify
+// `headless` and viewport directly on puppeteer.launch().
+//
 // Override via env CHROMIUM_PACK_URL if you want to self-host the tarball
-// (e.g. on S3/R2) for faster cold starts.
+// (e.g. on Vercel Blob / R2) for faster cold starts.
 const CHROMIUM_PACK_URL = process.env.CHROMIUM_PACK_URL
-  ?? 'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.x64.tar'
+  ?? 'https://github.com/Sparticuz/chromium/releases/download/v141.0.0/chromium-v141.0.0-pack.x64.tar'
 
 export async function launchBrowser(): Promise<Browser> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -31,17 +37,14 @@ export async function launchBrowser(): Promise<Browser> {
     const mod = require('@sparticuz/chromium')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chromium = (mod.default ?? mod) as any
-    // Don't load custom fonts — keeps cold-start small. The HTML uses
-    // system-ui which Chromium ships out of the box.
-    chromium.setHeadlessMode = true
-    chromium.setGraphicsMode  = false
     return puppeteer.launch({
       args: chromium.args,
       defaultViewport: { width: 1280, height: 1800, deviceScaleFactor: 2 },
       // Pass the pack URL — sparticuz downloads, extracts to /tmp, and sets
       // LD_LIBRARY_PATH so the binary can find libnss3.so + friends.
       executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
-      headless: true,
+      // v141 uses 'shell' for puppeteer (per upstream README)
+      headless: 'shell',
     })
   }
 
@@ -65,7 +68,9 @@ export async function htmlToPng(html: string): Promise<Buffer> {
   const browser = await launchBrowser()
   try {
     const page = await browser.newPage()
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30_000 })
+    // puppeteer-core v24 dropped 'networkidle0' — use 'load' which still
+    // waits for Chart.js CDN script to download before continuing.
+    await page.setContent(html, { waitUntil: 'load', timeout: 30_000 })
     // Wait for the renderer to flag itself ready (Chart.js painted)
     await page.waitForFunction(() => (window as unknown as { kpiReady?: boolean }).kpiReady === true, {
       timeout: 10_000,

@@ -18,7 +18,13 @@ import { htmlToPng } from '@/lib/reports/puppeteer-launcher'
  *   • Slack cron (no flag, raw PNG to upload via files.upload)
  */
 export const runtime     = 'nodejs'
-export const maxDuration = 60
+// Sprint FRIDAY.KPI.GRAPH.4 hotfix — bumped from 60s to 300s.
+// Cold start budget: ~30s chromium tarball download + extraction, ~15-20s
+// buildFridayKpi (SERP + Supabase joins), ~10-15s × N brands action plan
+// (Haiku calls), ~10s puppeteer launch+screenshot. 60s ceiling hit reliably
+// on cold starts. Warm subsequent calls finish in ~12-18s.
+// Requires Vercel Pro (max 300s); fall back to 60 if on Hobby tier.
+export const maxDuration = 300
 export const dynamic     = 'force-dynamic'
 
 function isoWeek(): string {
@@ -52,21 +58,26 @@ export async function GET(req: Request) {
   const download = url.searchParams.get('download') === '1'
   const week     = isoWeek()
 
+  const t0 = Date.now()
+  const tlog = (label: string) => console.log(`[friday-kpi render-png] ${label} +${Date.now() - t0}ms`)
   try {
-    // 1. Build payload (same data as the live preview)
-    const payload = await buildFridayKpi(db, ownerId, siteSlugs)
-
-    // 2. Build per-brand action plans in parallel
-    const actionPlans = await Promise.all(
-      siteSlugs.map(async slug => ({
+    // Sprint FRIDAY.KPI.GRAPH.4 hotfix — run payload + per-brand action plans
+    // IN PARALLEL (previously sequential, costing 15-30s on cold start).
+    tlog('start')
+    const [payload, ...actionPlans] = await Promise.all([
+      buildFridayKpi(db, ownerId, siteSlugs),
+      ...siteSlugs.map(async slug => ({
         brand: slug,
         plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
       })),
-    )
+    ])
+    tlog('data assembled')
 
-    // 3. Render HTML → PNG
+    // Render HTML → PNG (chromium cold start usually dominates here)
     const html = renderFridayKpiHtml({ payload, actionPlans })
+    tlog('html built')
     const png  = await htmlToPng(html)
+    tlog('png ready')
 
     const headers: Record<string, string> = {
       'Content-Type':   'image/png',
