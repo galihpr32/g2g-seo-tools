@@ -203,12 +203,31 @@ export async function buildFridayKpi(
     console.warn('[friday-kpi] Forseti slice failed, continuing without it:', e)
   }
 
+  // Sprint FRIDAY.KPI.PUBLIC-LINK — resolve the most recent published weekly
+  // report's public_token so outsiders clicking "Public Report" don't get
+  // bounced to login. Falls back to null (button hidden) when nothing has
+  // been published yet, rather than linking to the auth-gated dashboard.
+  let publicUrl: string | null = null
+  if (appUrl) {
+    const { data: pub } = await db
+      .from('weekly_reports')
+      .select('public_token')
+      .eq('owner_user_id', ownerId)
+      .eq('publish_status', 'published')
+      .not('public_token', 'is', null)
+      .order('published_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    const token = (pub?.public_token ?? null) as string | null
+    publicUrl = token ? `${appUrl}/public/weekly/${token}` : null
+  }
+
   return {
     week_label:   weekLabel(),
     iso_week:     isoWeek(),
     generated_at: new Date().toISOString(),
     brands,
-    public_url:        appUrl ? `${appUrl}/reports/weekly` : null,
+    public_url:        publicUrl,
     methodology_url:   `${appUrl}/methodology/competitive-keywords`,
     priority_url:      `${appUrl}/priority-products`,
     ai_visibility:     aiVisibility,
