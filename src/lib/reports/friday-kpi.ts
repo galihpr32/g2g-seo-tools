@@ -19,7 +19,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getRefreshedClientFull } from '@/lib/gsc/auth'
-import { getSearchAnalytics, getDateRange } from '@/lib/gsc/client'
+import { getSearchAnalytics } from '@/lib/gsc/client'
 import { buildAiVisibilityForKpi, type FridayKpiAiSlice } from '@/lib/agents/freyja'
 import { getFridayKpiCanon, type CanonSource } from '@/lib/reports/friday-kpi-canon'
 
@@ -27,7 +27,49 @@ export const MARKET_LABELS: Record<string, string> = { us: 'Global', id: 'ID' }
 const MARKETS = ['us', 'id'] as const
 type Market = typeof MARKETS[number]
 
-const WOW_DAYS = 7
+// ─── Thu→Wed window helper ────────────────────────────────────────────────
+// Sprint FRIDAY.KPI.THU-WED — every 7-day comparison in the app uses a fixed
+// Thursday-through-Wednesday calendar window (matches /reports/weekly's
+// definition). This replaces the previous "rolling last 7 days minus 3-day
+// GSC lag" so Friday KPI Slack numbers agree with the Weekly Pulse dashboard.
+//
+// Returns the most-recently-completed Thu→Wed pair plus the one before it.
+// Example, run on Fri 2026-05-22:
+//   cur:  Thu 2026-05-14 → Wed 2026-05-20
+//   prev: Thu 2026-05-07 → Wed 2026-05-13
+//
+// All dates as 'YYYY-MM-DD' strings, ready for GSC searchanalytics calls.
+function getThuWedWindows(now: Date = new Date()): {
+  curStart:  string
+  curEnd:    string
+  prevStart: string
+  prevEnd:   string
+} {
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  const day = today.getDay()                   // 0=Sun … 3=Wed … 6=Sat
+  // Days since the most recent COMPLETED Wednesday. If today is Wed we
+  // still want yesterday's data plus prior days because today isn't done.
+  // (day + 4) % 7 → Sun:4, Mon:5, Tue:6, Wed:0, Thu:1, Fri:2, Sat:3.
+  // We want strictly "completed" weeks, so if we're sitting on Wed itself
+  // the latest completed week ended last Wed (7 days ago).
+  const daysSinceCompletedWed = day === 3 ? 7 : (day + 4) % 7 || 7
+  const curEnd = new Date(today)
+  curEnd.setDate(today.getDate() - daysSinceCompletedWed)
+  const curStart = new Date(curEnd)
+  curStart.setDate(curEnd.getDate() - 6)        // Thu 6 days before Wed
+  const prevEnd = new Date(curStart)
+  prevEnd.setDate(curStart.getDate() - 1)       // Wed right before curStart
+  const prevStart = new Date(prevEnd)
+  prevStart.setDate(prevEnd.getDate() - 6)
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  return {
+    curStart:  iso(curStart),
+    curEnd:    iso(curEnd),
+    prevStart: iso(prevStart),
+    prevEnd:   iso(prevEnd),
+  }
+}
 
 export interface MarketKpi {
   market:         Market
@@ -392,12 +434,9 @@ async function buildBrandTraffic(
         .eq('user_id', ownerId)
     }
 
-    // Two windows: last 7 days (current) vs prior 7 days (prev).
-    // GSC has ~3-day data freshness lag, so we offset by 3 days.
-    const curStart  = getDateRange(WOW_DAYS + 3)
-    const curEnd    = getDateRange(3)
-    const prevStart = getDateRange(2 * WOW_DAYS + 3)
-    const prevEnd   = getDateRange(WOW_DAYS + 4)
+    // Sprint FRIDAY.KPI.THU-WED — Thu→Wed calendar windows so numbers match
+    // /reports/weekly. Was previously rolling 7d minus 3-day GSC lag.
+    const { curStart, curEnd, prevStart, prevEnd } = getThuWedWindows()
 
     const [curRows, prevRows] = await Promise.all([
       getSearchAnalytics(auth, siteUrl, curStart,  curEnd,  ['country'], 1000),
@@ -446,9 +485,10 @@ async function buildTrafficFallback(
   db:      SupabaseClient<any>,
   siteUrl: string,
 ): Promise<ClickKpi[]> {
-  const today     = Date.now()
-  const sinceCur  = new Date(today - WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
-  const sincePrev = new Date(today - 2 * WOW_DAYS * 86_400_000).toISOString().slice(0, 10)
+  // Sprint FRIDAY.KPI.THU-WED — fallback aggregator also uses Thu→Wed.
+  const { curStart, prevStart } = getThuWedWindows()
+  const sinceCur  = curStart
+  const sincePrev = prevStart
 
   const { data: snaps } = await db
     .from('gsc_ranking_snapshots')
@@ -646,7 +686,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: '_GSC-verified · last 7 days vs prior 7 days (3-day freshness lag applied) · ID = country=idn, Global = all other countries._',
+      text: '_GSC-verified · Thu→Wed calendar week vs prior Thu→Wed · ID = country=idn, Global = all other countries._',
     }],
   })
 
