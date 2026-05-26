@@ -218,7 +218,14 @@ async function refreshWeeklyReports(
         body: JSON.stringify({ owner_user_id: ownerId, site: slug }),
       })
       if (!res.ok) {
-        errors.push(`${slug}: /api/reports/weekly returned ${res.status}`)
+        // Surface the JSON `error` field (or first chunk of text) so the
+        // manual trigger panel shows WHICH 400 we hit — without this all
+        // we saw was a useless "returned 400" with no context.
+        const text = await res.text().catch(() => '')
+        let detail: string | undefined
+        try { detail = (JSON.parse(text) as { error?: string }).error } catch { /* not json */ }
+        const tail = detail ?? text.slice(0, 200)
+        errors.push(`${slug}: /api/reports/weekly returned ${res.status}${tail ? ' — ' + tail : ''}`)
       }
     } catch (e) {
       errors.push(`${slug}: ${e instanceof Error ? e.message : String(e)}`)
@@ -332,11 +339,19 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
     }
   }
 
-  // Sprint WEEKLY.SLACK.PUBLIC-PNG — refresh weekly_reports for current
-  // week BEFORE rendering the PNG. Done in parallel with action-plan +
-  // AI-history fetches so the extra ~30-60s doesn't stack. Errors here are
-  // non-fatal: PNG upload + Slack delivery still proceed even if the
-  // weekly_reports refresh fails.
+  // Sprint WEEKLY.PNG.ALWAYS-ATTACH — refactor: PNG render + attach to DB
+  // happens UNCONDITIONALLY now, regardless of whether Slack delivery uses
+  // the PNG upload path or the webhook fallback. The public PNG mirror
+  // (/public/weekly/png/latest) is the user-visible outcome — it should
+  // work even on webhook-only setups (no channel ID configured).
+  //
+  // Order of operations:
+  //   1. Kick off weekly_reports refresh in background
+  //   2. Build action plans + AI history in parallel
+  //   3. Render HTML → PNG
+  //   4. Await refresh → resolve tokens
+  //   5. Attach PNG bytes to G2G row (DB write)
+  //   6. Try Slack delivery (PNG upload if configured, else webhook)
   let refreshErrors: string[] = []
   let tokenByBrand: Record<string, string | null> = {}
   const refreshPromise = refreshWeeklyReports(db, ownerId, siteSlugs).then(r => {
@@ -346,49 +361,52 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
     refreshErrors.push(`refresh threw: ${e instanceof Error ? e.message : String(e)}`)
   })
 
-  // 3. Try PNG upload first — Sprint FRIDAY.KPI.PNG-UNSPLIT reverts to a
-  // single combined PNG (the 3-PNG split looked unbalanced because each
-  // sub-image got rendered at full viewport height regardless of content).
-  // One image, one upload, one Slack message — auto-sized via puppeteer's
-  // fullPage: true.
-  if (channelId && botTokenPresent) {
+  // ── PNG render + attach (always-run block) ────────────────────────────
+  let png:     Buffer | null = null
+  const week:  string        = currentWeekIso()
+  try {
+    const actionPlans = await Promise.all(
+      siteSlugs.map(async slug => ({
+        brand: slug,
+        plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
+      })),
+    )
+    const aiHistory = await loadAiVisibilityHistory(db, ownerId, siteSlugs, 84)
+    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory })
+    png = await htmlToPng(html)
+    pngDiag.png_size_bytes = png.length
+
+    // Wait for refresh to finish so we have the freshly-published tokens
+    await refreshPromise
+    pngDiag.token_by_brand = tokenByBrand
+
+    const g2gToken = tokenByBrand['g2g'] ?? tokenByBrand[siteSlugs[0] ?? ''] ?? null
+    pngDiag.attach_token = g2gToken
+    if (g2gToken) {
+      pngDiag.attach_attempted = true
+      const attachRes = await attachPngToReport(db, g2gToken, png)
+      pngDiag.attach_ok    = attachRes.ok
+      pngDiag.attach_error = attachRes.error
+    }
+  } catch (e) {
+    // PNG render failed — Slack delivery can still proceed via webhook
+    // fallback with text-only blocks. Log + carry on.
+    const msg = e instanceof Error ? e.message : String(e)
+    console.warn('[friday-kpi deliver] PNG render/attach threw:', msg)
+    if (!pngDiag.attach_error) pngDiag.attach_error = `render: ${msg}`
+  }
+
+  // Settle refresh in case the render block failed before awaiting it
+  await refreshPromise
+  pngDiag.weekly_refresh_errors = refreshErrors.length > 0 ? refreshErrors : undefined
+  if (refreshErrors.length > 0) {
+    console.warn('[friday-kpi deliver] weekly_reports refresh issues:', refreshErrors.join(' | '))
+  }
+
+  // ── Slack delivery: PNG upload if configured, else webhook fallback ──
+  if (channelId && botTokenPresent && png) {
     pngDiag.upload_attempted = true
     try {
-      const week = currentWeekIso()
-      const actionPlans = await Promise.all(
-        siteSlugs.map(async slug => ({
-          brand: slug,
-          plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
-        })),
-      )
-
-      // Fetch historical AI visibility data (last 84 days, bing_ai source)
-      // for the chart inside the PNG. Returns empty array if no data yet.
-      const aiHistory = await loadAiVisibilityHistory(db, ownerId, siteSlugs, 84)
-
-      const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory })
-      const png  = await htmlToPng(html)
-
-      // Wait for refresh to finish so we have the freshly-published tokens
-      // before attaching PNG bytes + posting to Slack.
-      await refreshPromise
-
-      // Attach PNG bytes to the G2G row (default brand). The /public/weekly/
-      // png/latest route resolves to whichever row has the freshest
-      // png_generated_at, so this is the row that will actually be served.
-      // Fully diagnosed in the API response so we can debug "No PNG yet"
-      // failures without poking the DB by hand.
-      pngDiag.png_size_bytes = png.length
-      pngDiag.token_by_brand = tokenByBrand
-      const g2gToken = tokenByBrand['g2g'] ?? tokenByBrand[siteSlugs[0] ?? ''] ?? null
-      pngDiag.attach_token = g2gToken
-      if (g2gToken) {
-        pngDiag.attach_attempted = true
-        const attachRes = await attachPngToReport(db, g2gToken, png)
-        pngDiag.attach_ok    = attachRes.ok
-        pngDiag.attach_error = attachRes.error
-      }
-
       const overview = buildPngOverviewComment(payload)
       const links    = buildInlineLinks(payload)
       const comment  = links ? `${overview}\n${links}` : overview
@@ -415,17 +433,8 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
       console.warn('[friday-kpi deliver] PNG upload failed, falling back to webhook:', pngDiag.upload_error)
     } catch (e) {
       pngDiag.upload_error = e instanceof Error ? e.message : String(e)
-      console.warn('[friday-kpi deliver] PNG render/upload threw, falling back to webhook:', pngDiag.upload_error)
+      console.warn('[friday-kpi deliver] PNG upload threw, falling back to webhook:', pngDiag.upload_error)
     }
-  }
-
-  // Ensure refresh has settled before the webhook fallback path; safe to
-  // await twice (already-resolved promises are a no-op).
-  await refreshPromise
-  pngDiag.weekly_refresh_errors = refreshErrors.length > 0 ? refreshErrors : undefined
-
-  if (refreshErrors.length > 0) {
-    console.warn('[friday-kpi deliver] weekly_reports refresh issues:', refreshErrors.join(' | '))
   }
 
   // 4. Webhook fallback — sends Block Kit message with overview section
