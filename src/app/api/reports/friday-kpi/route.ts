@@ -5,7 +5,10 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 import { buildFridayKpi, buildFridayKpiSlackBlocks } from '@/lib/reports/friday-kpi'
 import { deliverFridayKpi } from '@/lib/reports/friday-kpi-deliver'
 
-export const maxDuration = 60
+// Sprint WEEKLY.SLACK.PUBLIC-PNG — bumped 60 → 180 to match the cron path,
+// because the manual "Send to Slack" button now also triggers the weekly_
+// reports refresh (parallel /api/reports/weekly POST per brand).
+export const maxDuration = 180
 export const runtime     = 'nodejs'
 
 /**

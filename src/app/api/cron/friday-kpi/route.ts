@@ -2,7 +2,10 @@ import { NextResponse } from 'next/server'
 import { createClient as createSupabase } from '@supabase/supabase-js'
 import { deliverFridayKpi } from '@/lib/reports/friday-kpi-deliver'
 
-export const maxDuration = 120
+// Sprint WEEKLY.SLACK.PUBLIC-PNG — bumped 120 → 180 because deliver now also
+// refreshes weekly_reports via /api/reports/weekly POST (parallel per brand,
+// ~60s) before posting to Slack.
+export const maxDuration = 180
 export const runtime     = 'nodejs'
 
 /**

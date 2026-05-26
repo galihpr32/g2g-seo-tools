@@ -48,6 +48,7 @@ interface PreviewResponse {
     methodology_url: string
     priority_url:    string
     public_url:      string | null
+    png_url?:        string | null   // Sprint WEEKLY.SLACK.PUBLIC-PNG
     canon_source?:   'dfs' | 'gsc'   // Sprint FRIDAY.KPI.GRAPH.1
   }
   error?: string
@@ -335,7 +336,10 @@ export default function FridayKpiPage() {
               <Link href="/methodology/competitive-keywords" className="text-blue-400 hover:text-blue-300">🎯 Methodology</Link>
               <Link href="/priority-products" className="text-blue-400 hover:text-blue-300">📊 Priority Products</Link>
               {preview.payload.public_url && (
-                <a href={preview.payload.public_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">📄 Public weekly report</a>
+                <a href={preview.payload.public_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">📄 Public Detailed Report</a>
+              )}
+              {preview.payload.png_url && (
+                <a href={preview.payload.png_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300">🖼️ PNG File</a>
               )}
             </div>
           </>

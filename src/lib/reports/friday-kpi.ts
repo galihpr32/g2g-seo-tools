@@ -125,8 +125,14 @@ export interface FridayKpiPayload {
   iso_week:     number
   generated_at: string
   brands:       BrandKpi[]
-  /** Public weekly report URL (kalau ada) */
+  /** Sprint WEEKLY.SLACK.PUBLIC-PNG — always-latest public weekly URL. Points
+   *  at `/public/weekly/latest` which server-redirects to the most-recently
+   *  published row, so the Slack button never goes stale. */
   public_url:   string | null
+  /** Sprint WEEKLY.SLACK.PUBLIC-PNG — always-latest PNG URL. Points at
+   *  `/public/weekly/png/latest` which server-redirects to the freshest
+   *  rendered PNG token. NULL when NEXT_PUBLIC_APP_URL not set. */
+  png_url:      string | null
   /** Methodology page URL */
   methodology_url: string
   /** Priority products page URL */
@@ -203,24 +209,13 @@ export async function buildFridayKpi(
     console.warn('[friday-kpi] Forseti slice failed, continuing without it:', e)
   }
 
-  // Sprint FRIDAY.KPI.PUBLIC-LINK — resolve the most recent published weekly
-  // report's public_token so outsiders clicking "Public Report" don't get
-  // bounced to login. Falls back to null (button hidden) when nothing has
-  // been published yet, rather than linking to the auth-gated dashboard.
-  let publicUrl: string | null = null
-  if (appUrl) {
-    const { data: pub } = await db
-      .from('weekly_reports')
-      .select('public_token')
-      .eq('owner_user_id', ownerId)
-      .eq('publish_status', 'published')
-      .not('public_token', 'is', null)
-      .order('published_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-    const token = (pub?.public_token ?? null) as string | null
-    publicUrl = token ? `${appUrl}/public/weekly/${token}` : null
-  }
+  // Sprint WEEKLY.SLACK.PUBLIC-PNG — replace the stale "most-recent published
+  // token" lookup with a stable `/public/weekly/latest` URL that resolves to
+  // the freshest published row at click time. Same idea for PNG. Both URLs
+  // are server-redirected, so the Slack message text never goes stale even
+  // if a new row gets published seconds after the message is posted.
+  const publicUrl = appUrl ? `${appUrl}/public/weekly/latest`     : null
+  const pngUrl    = appUrl ? `${appUrl}/public/weekly/png/latest` : null
 
   return {
     week_label:   weekLabel(),
@@ -228,6 +223,7 @@ export async function buildFridayKpi(
     generated_at: new Date().toISOString(),
     brands,
     public_url:        publicUrl,
+    png_url:           pngUrl,
     methodology_url:   `${appUrl}/methodology/competitive-keywords`,
     priority_url:      `${appUrl}/priority-products`,
     ai_visibility:     aiVisibility,
