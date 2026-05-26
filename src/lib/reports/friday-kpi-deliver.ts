@@ -83,6 +83,16 @@ export interface DeliveryResult {
     bot_token_present:      boolean
     upload_attempted:       boolean
     upload_error?:          string
+    /** Sprint WEEKLY.SLACK.PUBLIC-PNG — diagnostics for the
+     *  attach-PNG-to-weekly_reports step. Helps debug when
+     *  /public/weekly/png/latest returns "No PNG yet" even after a fire. */
+    weekly_refresh_errors?: string[]
+    token_by_brand?:        Record<string, string | null>
+    attach_attempted?:      boolean
+    attach_token?:          string | null
+    attach_ok?:             boolean
+    attach_error?:          string
+    png_size_bytes?:        number
   }
   payload:      FridayKpiPayload
   summary: {
@@ -243,20 +253,26 @@ async function refreshWeeklyReports(
  * stamps publish_status='published' + published_at=now() so the
  * /public/weekly/latest redirect prefers this row.
  *
- * Returns true on success. Failures are logged but don't abort delivery.
+ * Returns { ok, error? } so the caller can surface the failure in the
+ * API response. Errors are logged but don't abort the Slack delivery —
+ * the Slack post itself still happens even if the public PNG mirror fails.
+ *
+ * BYTEA encoding: supabase-js JSON-serializes whatever you pass to
+ * .update(), which for a Buffer turns into {"type":"Buffer", data:[...]}
+ * — PostgREST silently rejects that as bytea. Correct wire format is the
+ * Postgres hex literal `\x<hex>`, which we build manually.
  */
 async function attachPngToReport(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db:    SupabaseClient<any>,
   token: string,
   png:   Buffer,
-): Promise<boolean> {
-  // Postgres bytea via supabase-js: pass the Buffer and the JS client will
-  // hex-encode it on the wire. PostgREST stores it as bytea.
+): Promise<{ ok: boolean; error?: string }> {
+  const hexLiteral = '\\x' + png.toString('hex')   // Postgres bytea hex format
   const { error } = await db
     .from('weekly_reports')
     .update({
-      png_data:         png,
+      png_data:         hexLiteral,
       png_generated_at: new Date().toISOString(),
       publish_status:   'published',
       published_at:     new Date().toISOString(),
@@ -264,9 +280,9 @@ async function attachPngToReport(
     .eq('public_token', token)
   if (error) {
     console.warn('[friday-kpi deliver] attachPngToReport failed:', error.message)
-    return false
+    return { ok: false, error: error.message }
   }
-  return true
+  return { ok: true }
 }
 
 // ─── Main entry ────────────────────────────────────────────────────────────
@@ -290,10 +306,17 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
 
   // Build diagnostic snapshot for response (so user can see config state)
   const pngDiag = {
-    channel_id_configured: !!channelId,
-    bot_token_present:     botTokenPresent,
-    upload_attempted:      false,
-    upload_error:          undefined as string | undefined,
+    channel_id_configured:  !!channelId,
+    bot_token_present:      botTokenPresent,
+    upload_attempted:       false,
+    upload_error:           undefined as string | undefined,
+    weekly_refresh_errors:  undefined as string[] | undefined,
+    token_by_brand:         undefined as Record<string, string | null> | undefined,
+    attach_attempted:       false,
+    attach_token:           null as string | null,
+    attach_ok:              false,
+    attach_error:           undefined as string | undefined,
+    png_size_bytes:         undefined as number | undefined,
   }
 
   if (!channelId && !webhookUrl) {
@@ -353,8 +376,18 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
       // Attach PNG bytes to the G2G row (default brand). The /public/weekly/
       // png/latest route resolves to whichever row has the freshest
       // png_generated_at, so this is the row that will actually be served.
+      // Fully diagnosed in the API response so we can debug "No PNG yet"
+      // failures without poking the DB by hand.
+      pngDiag.png_size_bytes = png.length
+      pngDiag.token_by_brand = tokenByBrand
       const g2gToken = tokenByBrand['g2g'] ?? tokenByBrand[siteSlugs[0] ?? ''] ?? null
-      if (g2gToken) await attachPngToReport(db, g2gToken, png)
+      pngDiag.attach_token = g2gToken
+      if (g2gToken) {
+        pngDiag.attach_attempted = true
+        const attachRes = await attachPngToReport(db, g2gToken, png)
+        pngDiag.attach_ok    = attachRes.ok
+        pngDiag.attach_error = attachRes.error
+      }
 
       const overview = buildPngOverviewComment(payload)
       const links    = buildInlineLinks(payload)
@@ -389,6 +422,7 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
   // Ensure refresh has settled before the webhook fallback path; safe to
   // await twice (already-resolved promises are a no-op).
   await refreshPromise
+  pngDiag.weekly_refresh_errors = refreshErrors.length > 0 ? refreshErrors : undefined
 
   if (refreshErrors.length > 0) {
     console.warn('[friday-kpi deliver] weekly_reports refresh issues:', refreshErrors.join(' | '))
