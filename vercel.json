@@ -7,10 +7,6 @@
     {
       "path": "/api/cron/game-trends-refresh",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/automation/daily-briefing",
-      "schedule": "0 0 * * 1-5"
     }
   ]
 }

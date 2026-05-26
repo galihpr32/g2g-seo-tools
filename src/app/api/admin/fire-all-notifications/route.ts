@@ -104,7 +104,12 @@ async function fireCron(origin: string, cron: CronDef): Promise<FireResult> {
   const aborter = new AbortController()
   const tid = setTimeout(() => aborter.abort(), PER_CRON_TIMEOUT_MS)
   try {
-    const res = await fetch(`${origin}${cron.path}`, {
+    // Sprint SLACK.DEDUPE.1 — the "force fire" intent is to actually post,
+    // so we tag every self-call with ?force=1. Downstream handlers (e.g.
+    // /api/cron/gsc-daily's all-clear gate) read this to know the request
+    // came from an explicit force-fire, not an internal side-effect.
+    const sep = cron.path.includes('?') ? '&' : '?'
+    const res = await fetch(`${origin}${cron.path}${sep}force=1`, {
       method:  'GET',
       headers: { Authorization: `Bearer ${process.env.CRON_SECRET}` },
       // Disable Next caching for cron self-calls

@@ -59,12 +59,27 @@ export async function GET(req: Request) {
   const siteSlug = resolveSiteSlugFromRequest(req)
   const db       = createServiceClient()
 
-  // Window timestamps used for various 7d / MTD filters
+  // Sprint PP.GSC.LAG — GSC has ~4 day publishing lag, so a raw `now-7d`
+  // window only gives us ~3 days of usable data while the previous-7d window
+  // has 7 full days, breaking the WoW comparison and producing fake -100%
+  // drops. We offset both windows by GSC_LAG_DAYS so each window ends at the
+  // most-recent GSC-available date. Mirror Sprint HEIMDALL.LAG.FIX +
+  // PP.GSC.REFRESH which already use the same 4-day lag.
+  //
+  //   anchor       = today - 4d   (last day GSC has data for)
+  //   current 7d   = [anchor-6d, anchor]   (7 days, e.g. May 16–22)
+  //   previous 7d  = [anchor-13d, anchor-7d] (prior 7 days, e.g. May 9–15)
+  //
+  // MTD windows stay raw because they're cumulative-from-1st, not a moving
+  // window where lag-misalignment matters.
+  const GSC_LAG_DAYS = 4
   const now    = Date.now()
-  const last7  = new Date(now - 7  * 86_400_000).toISOString()
-  const prev7  = new Date(now - 14 * 86_400_000).toISOString()
-  const last7Date = last7.slice(0, 10)
-  const prev7Date = prev7.slice(0, 10)
+  const anchor = new Date(now - GSC_LAG_DAYS * 86_400_000)
+  const last7  = new Date(anchor.getTime() - 6  * 86_400_000)              // start of current 7d, inclusive
+  const prev7  = new Date(anchor.getTime() - 13 * 86_400_000)              // start of previous 7d, inclusive
+  const last7Date  = last7.toISOString().slice(0, 10)
+  const prev7Date  = prev7.toISOString().slice(0, 10)
+  const anchorDate = anchor.toISOString().slice(0, 10)                     // upper bound for current 7d, inclusive
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
   const monthStartDate = monthStart.slice(0, 10)
 
@@ -102,15 +117,20 @@ export async function GET(req: Request) {
     prospects,
     backlinks,
   ] = await Promise.all([
-    // GSC ranking drops — last 7d snapshots
+    // GSC ranking drops — last 7d snapshots, lag-aligned ending at anchor.
+    // Sprint PP.GSC.LAG — adds upper bound `lte anchorDate` so any stray
+    // future-dated snapshot doesn't bleed into the current window.
     siteUrl
       ? db.from('gsc_ranking_drops')
           .select('page, clicks_now, position_now, snapshot_date')
           .eq('site_url', siteUrl)
           .gte('snapshot_date', last7Date)
+          .lte('snapshot_date', anchorDate)
       : Promise.resolve({ data: [] as Array<{ page: string; clicks_now: number | null; position_now: number | null; snapshot_date: string }> }),
 
-    // GSC ranking drops — previous 7d (for WoW delta)
+    // GSC ranking drops — previous 7d (for WoW delta), lag-aligned.
+    // Upper bound is exclusive `lt last7Date` so the two windows don't
+    // overlap on the boundary day.
     siteUrl
       ? db.from('gsc_ranking_drops')
           .select('page, clicks_now, snapshot_date')

@@ -424,7 +424,25 @@ export async function GET(request: Request) {
 
   // Sprint ALLCLEAR — if nothing fired today, post a single "all-clear"
   // message so stakeholders see proof the cron ran. Routes via daily_alerts.
-  if (totalSlackPosted === 0) {
+  //
+  // Sprint SLACK.DEDUPE.1 — gate the all-clear post so it only fires from
+  // the actual scheduled run (Vercel cron) or an explicit force-fire. Without
+  // this gate, every internal self-call into /api/cron/gsc-daily (Heimdall
+  // agent runs every 30 min via .github/workflows/agents-scheduler.yml, plus
+  // the manual UI sync button at /api/cron/trigger) would post a fresh
+  // "All Clear" message — up to ~48 duplicates per day.
+  //
+  // Allow-list:
+  //   - `x-vercel-cron` header → set by Vercel for scheduled cron invocations
+  //   - `?force=1` query param → manual "Force fire all notifications" button
+  // Anything else (Heimdall self-call, trigger UI, ad-hoc curl) is silently
+  // skipped: the GSC sync work still happens, but no Slack post.
+  const url           = new URL(request.url)
+  const isVercelCron  = request.headers.get('x-vercel-cron') != null
+  const isForcedFire  = url.searchParams.get('force') === '1'
+  const allowAllClear = isVercelCron || isForcedFire
+
+  if (totalSlackPosted === 0 && allowAllClear) {
     try {
       const { resolveSlackWebhook } = await import('@/lib/slack/routing')
       const { data: firstRouteOwner } = await supabase
@@ -454,7 +472,19 @@ export async function GET(request: Request) {
     } catch (e) {
       console.error('[gsc-daily] all-clear post failed:', e)
     }
+  } else if (totalSlackPosted === 0 && !allowAllClear) {
+    // Diagnostic so we can see in logs that the gate fired vs. failed silently
+    console.log('[gsc-daily] all-clear post suppressed (not from Vercel cron / not forced):', {
+      x_vercel_cron: isVercelCron,
+      forced:        isForcedFire,
+      ua:            request.headers.get('user-agent'),
+    })
   }
 
-  return NextResponse.json({ success: true, results, slack_posted_count: totalSlackPosted })
+  return NextResponse.json({
+    success:            true,
+    results,
+    slack_posted_count: totalSlackPosted,
+    all_clear_gated:    !allowAllClear && totalSlackPosted === 0,
+  })
 }

@@ -385,7 +385,10 @@ function ProductCard({ row }: { row: ProductRow }) {
             )}
           </div>
 
-          <p className="text-xs text-gray-400 mt-1">
+          <p
+            className="text-xs text-gray-400 mt-1"
+            title="GSC freshness lag: last 7d ends 4 days ago (= last GSC-available date), prior 7d is the 7 days before that. WoW comparison is apples-to-apples."
+          >
             <span className="text-gray-300 font-medium">{fmt(row.clicks7d)}</span> clicks (7d)
             {wowPct != null && (
               <span className={`ml-1.5 ${wowPct >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
