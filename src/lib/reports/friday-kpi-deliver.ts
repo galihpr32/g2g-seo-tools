@@ -26,7 +26,7 @@ import { resolveSlackChannelId, postPngToSlack } from '@/lib/slack/files'
  * no rows exist (Galih hasn't imported yet), returns empty arrays per brand
  * and the renderer just omits the chart section gracefully.
  */
-async function loadAiVisibilityHistory(
+export async function loadAiVisibilityHistory(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db:        SupabaseClient<any>,
   ownerId:   string,

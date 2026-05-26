@@ -6,6 +6,10 @@ import { buildFridayKpi } from '@/lib/reports/friday-kpi'
 import { buildActionPlan } from '@/lib/reports/action-plan-synthesizer'
 import { renderFridayKpiHtml } from '@/lib/reports/friday-kpi-html'
 import { htmlToPng } from '@/lib/reports/puppeteer-launcher'
+// Sprint FRIDAY.KPI.PREVIEW-AI-FIX — Preview PNG was missing the AI
+// Visibility historical chart because this route never fetched aiHistory.
+// Slack delivery path always did. Now we share the same loader.
+import { loadAiVisibilityHistory } from '@/lib/reports/friday-kpi-deliver'
 
 /**
  * Sprint FRIDAY.KPI.GRAPH.4 — renders the Friday KPI dashboard as a PNG.
@@ -63,9 +67,14 @@ export async function GET(req: Request) {
   try {
     // Sprint FRIDAY.KPI.GRAPH.4 hotfix — run payload + per-brand action plans
     // IN PARALLEL (previously sequential, costing 15-30s on cold start).
+    //
+    // Sprint FRIDAY.KPI.PREVIEW-AI-FIX — also fetch the 84-day AI Visibility
+    // history alongside, so the Preview PNG matches what the Slack delivery
+    // path renders. Returns empty buckets gracefully if no snapshots exist.
     tlog('start')
-    const [payload, ...actionPlans] = await Promise.all([
+    const [payload, aiHistory, ...actionPlans] = await Promise.all([
       buildFridayKpi(db, ownerId, siteSlugs),
+      loadAiVisibilityHistory(db, ownerId, siteSlugs, 84),
       ...siteSlugs.map(async slug => ({
         brand: slug,
         plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
@@ -74,7 +83,7 @@ export async function GET(req: Request) {
     tlog('data assembled')
 
     // Render HTML → PNG (chromium cold start usually dominates here)
-    const html = renderFridayKpiHtml({ payload, actionPlans })
+    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory })
     tlog('html built')
     const png  = await htmlToPng(html)
     tlog('png ready')
