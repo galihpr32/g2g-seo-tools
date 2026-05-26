@@ -18,6 +18,7 @@ interface TierBody {
   product_name:      string
   category?:         string | null
   brand_canonical?:  string | null   // Sprint CLUSTER.RENAME.5
+  brand_aliases?:    string[] | null // Sprint CKB.BRAND-ALIAS.1
   relation_id?:      string | null
   url?:              string | null
   notes?:            string | null
@@ -30,7 +31,7 @@ const VALID_MARKETS = ['us', 'id'] as const
 
 function normalizeBody(body: TierBody): {
   ok:    true
-  data:  { tier: 1 | 2; product_name: string; category: string | null; brand_canonical: string | null; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null; market: 'us' | 'id' }
+  data:  { tier: 1 | 2; product_name: string; category: string | null; brand_canonical: string | null; brand_aliases: string[]; relation_id: string | null; url: string | null; notes: string | null; restriction_type: string | null; market: 'us' | 'id' }
 } | { ok: false; error: string } {
   if (body.tier !== 1 && body.tier !== 2) return { ok: false, error: 'tier must be 1 or 2' }
   if (!body.product_name?.trim())         return { ok: false, error: 'product_name is required' }
@@ -45,6 +46,20 @@ function normalizeBody(body: TierBody): {
   if (!(VALID_MARKETS as readonly string[]).includes(market)) {
     return { ok: false, error: `market must be one of: ${VALID_MARKETS.join(', ')}` }
   }
+  // Sprint CKB.BRAND-ALIAS.1 — normalize brand_aliases. Accept array of
+  // strings, lowercase + trim each, drop empties + dedupe. Cap at 20 to
+  // avoid abuse. Stored as Postgres text[].
+  const rawAliases = Array.isArray(body.brand_aliases) ? body.brand_aliases : []
+  const seen = new Set<string>()
+  const brand_aliases: string[] = []
+  for (const a of rawAliases) {
+    const t = String(a ?? '').trim().toLowerCase()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    brand_aliases.push(t)
+    if (brand_aliases.length >= 20) break
+  }
+
   return {
     ok: true,
     data: {
@@ -52,6 +67,7 @@ function normalizeBody(body: TierBody): {
       product_name:     body.product_name.trim(),
       category:         body.category?.trim() || null,
       brand_canonical:  body.brand_canonical?.trim() || null,
+      brand_aliases,
       relation_id:      body.relation_id?.trim() || null,
       url:              body.url?.trim() || null,
       notes:            body.notes?.trim() || null,

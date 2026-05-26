@@ -23,6 +23,7 @@ interface TierRow {
   product_name:     string
   category:         string | null
   brand_canonical:  string | null   // Sprint CLUSTER.RENAME.5 — optional canonical brand override
+  brand_aliases:    string[]        // Sprint CKB.BRAND-ALIAS.1 — abbreviations + nicknames
   relation_id:      string | null
   url:              string | null
   notes:            string | null
@@ -196,6 +197,7 @@ export default function ProductTiersPage() {
           product_name:     editing.product_name?.trim(),
           category:         editing.category ?? null,
           brand_canonical:  editing.brand_canonical?.trim() || null,
+          brand_aliases:    editing.brand_aliases ?? [],
           relation_id:      editing.relation_id ?? null,
           url:              editing.url ?? null,
           notes:            editing.notes ?? null,
@@ -258,7 +260,7 @@ export default function ProductTiersPage() {
           </p>
         </div>
         <button
-          onClick={() => setEditing({ tier: 1, market: 'us', product_name: '', category: null, brand_canonical: null, relation_id: null, url: null, notes: null })}
+          onClick={() => setEditing({ tier: 1, market: 'us', product_name: '', category: null, brand_canonical: null, brand_aliases: [], relation_id: null, url: null, notes: null })}
           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition"
         >
           + Add Product
@@ -483,6 +485,22 @@ export default function ProductTiersPage() {
                   Used as the cluster name (Saga + /clusters page + Friday KPI). Auto-resolution falls back to: G2G catalog service_name → full product_name.
                 </p>
               </div>
+              {/* Sprint CKB.BRAND-ALIAS.1 — abbreviations / nicknames for brand-token filter.
+                  Used by Content Kit Builder so "bns gold farming" matches Blade & Soul NEO,
+                  but "standoff 2 top up gold" doesn't (only shares the generic "gold" token). */}
+              <BrandAliasChips
+                value={editing.brand_aliases ?? []}
+                onChange={next => setEditing({ ...editing, brand_aliases: next })}
+                placeholder='e.g. bns, b&s neo, blade soul'
+              />
+              {/* Sprint CKB.BRAND-ALIAS.3 — Hugin-mined alias suggestions */}
+              {editing.id && (
+                <AliasSuggestionsPanel
+                  tierId={editing.id}
+                  currentAliases={editing.brand_aliases ?? []}
+                  onApprove={next => setEditing({ ...editing, brand_aliases: next })}
+                />
+              )}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Category</label>
                 <input
@@ -791,6 +809,202 @@ function Field({ label, value, onChange, placeholder, mono }: {
         placeholder={placeholder}
         className={`w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-600 ${mono ? 'font-mono text-xs' : ''}`}
       />
+    </div>
+  )
+}
+
+/**
+ * Sprint CKB.BRAND-ALIAS.1 — chip-input for brand_aliases.
+ *
+ * Enter to commit current draft as a chip. Backspace on empty draft removes
+ * last chip. Comma also commits (so paste-friendly: "bns, b&s neo, blade").
+ * All aliases stored lowercase + trimmed, deduped, capped at 20.
+ */
+function BrandAliasChips({ value, onChange, placeholder }: {
+  value:        string[]
+  onChange:     (next: string[]) => void
+  placeholder?: string
+}) {
+  const [draft, setDraft] = useState('')
+
+  function commit(raw: string) {
+    const parts = raw
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(Boolean)
+    if (parts.length === 0) return
+    const seen = new Set(value)
+    const next = [...value]
+    for (const p of parts) {
+      if (seen.has(p)) continue
+      seen.add(p)
+      next.push(p)
+      if (next.length >= 20) break
+    }
+    onChange(next)
+    setDraft('')
+  }
+
+  function removeAt(i: number) {
+    const next = value.slice()
+    next.splice(i, 1)
+    onChange(next)
+  }
+
+  return (
+    <div>
+      <label className="block text-xs text-gray-400 mb-1">
+        Brand aliases <span className="text-gray-600 normal-case">(optional, comma or Enter to add)</span>
+      </label>
+      <div className="w-full min-h-[42px] bg-gray-800 border border-gray-700 rounded-lg px-2 py-1.5 flex flex-wrap items-center gap-1.5 focus-within:border-gray-600">
+        {value.map((a, i) => (
+          <span
+            key={`${a}-${i}`}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/15 text-violet-200 text-xs border border-violet-500/30"
+          >
+            {a}
+            <button
+              type="button"
+              onClick={() => removeAt(i)}
+              className="text-violet-300/70 hover:text-white text-[10px] leading-none"
+              aria-label={`Remove ${a}`}
+            >
+              ✕
+            </button>
+          </span>
+        ))}
+        <input
+          type="text"
+          value={draft}
+          onChange={e => {
+            const v = e.target.value
+            if (v.includes(',')) commit(v)
+            else                 setDraft(v)
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commit(draft)
+            } else if (e.key === 'Backspace' && draft === '' && value.length > 0) {
+              removeAt(value.length - 1)
+            }
+          }}
+          onBlur={() => { if (draft.trim()) commit(draft) }}
+          placeholder={value.length === 0 ? placeholder : ''}
+          className="flex-1 min-w-[120px] bg-transparent text-sm text-white placeholder-gray-500 focus:outline-none px-1"
+        />
+      </div>
+      <p className="text-[10px] text-gray-500 mt-1">
+        Used by Content Kit Builder to widen brand-token matching beyond <code>brand_canonical</code> so search shorthand (e.g. <code>bns</code>) still resolves to the right product. Lowercase only.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * Sprint CKB.BRAND-ALIAS.3 — Hugin-mined alias suggestions panel.
+ *
+ * Scans the local hugin_queries table for short tokens that frequently
+ * co-occur with this product's brand tokens. Shows each as a clickable
+ * suggestion chip. One click appends it to brand_aliases (which the
+ * outer modal then saves on its normal Save button).
+ *
+ * Pure local DB scan — no external API cost. Surfaced lazily on demand,
+ * not on modal-open, to avoid mining when the user just wants to fix a
+ * typo elsewhere.
+ */
+function AliasSuggestionsPanel({ tierId, currentAliases, onApprove }: {
+  tierId:         string
+  currentAliases: string[]
+  onApprove:      (next: string[]) => void
+}) {
+  interface Suggestion {
+    alias:          string
+    cooccurrence:   number
+    total_seen:     number
+    brand_purity:   number
+    sample_queries: string[]
+  }
+  const [loading, setLoading]     = useState(false)
+  const [error, setError]         = useState<string | null>(null)
+  const [opened, setOpened]       = useState(false)
+  const [items, setItems]         = useState<Suggestion[] | null>(null)
+  const [scanned, setScanned]     = useState<number | null>(null)
+  const [brandTokens, setBrandTokens] = useState<string[]>([])
+
+  async function fetchSuggestions() {
+    setLoading(true)
+    setError(null)
+    setOpened(true)
+    try {
+      const res = await fetch(`/api/product-tiers/${tierId}/suggest-aliases`, { cache: 'no-store' })
+      const json = await res.json()
+      if (!res.ok)       throw new Error(json?.error ?? `HTTP ${res.status}`)
+      if (!json.ok)      throw new Error(json?.error ?? 'Mining failed')
+      setItems(json.suggestions ?? [])
+      setScanned(json.scanned_rows ?? null)
+      setBrandTokens(json.brand_tokens ?? [])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setItems(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function approve(alias: string) {
+    if (currentAliases.includes(alias)) return
+    onApprove([...currentAliases, alias])
+    // Remove from the local suggestion list so the chip disappears after click
+    setItems(prev => prev?.filter(s => s.alias !== alias) ?? null)
+  }
+
+  return (
+    <div className="mt-2 border border-dashed border-gray-700/60 rounded-lg p-3 bg-gray-900/30">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-medium text-gray-300">✨ Suggest aliases from Hugin</div>
+          <div className="text-[10px] text-gray-500">Mines past 30d GSC queries for short tokens that co-occur with this brand (zero external cost).</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { void fetchSuggestions() }}
+          disabled={loading}
+          className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-medium rounded-md transition"
+        >
+          {loading ? 'Mining…' : opened ? 'Re-scan' : 'Scan now'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mt-2 text-xs text-red-400">⚠ {error}</div>
+      )}
+
+      {opened && items !== null && !error && (
+        <div className="mt-3 space-y-2">
+          <div className="text-[10px] text-gray-500">
+            Scanned <strong className="text-gray-300">{scanned ?? 0}</strong> queries · matched brand tokens: <code className="text-gray-400">{brandTokens.join(', ') || '(none)'}</code>
+          </div>
+          {items.length === 0 ? (
+            <div className="text-xs text-gray-500 italic">No high-confidence aliases found. Either no abbreviation usage yet, or threshold (≥3 co-occurrences, ≥60% purity) is too strict for this brand.</div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {items.map(s => (
+                <button
+                  key={s.alias}
+                  type="button"
+                  onClick={() => approve(s.alias)}
+                  className="group inline-flex items-center gap-1.5 px-2.5 py-1 bg-violet-500/10 hover:bg-violet-500/25 border border-violet-500/40 hover:border-violet-400 text-violet-200 text-xs rounded-md transition"
+                  title={`Approve "${s.alias}" · ${s.cooccurrence}/${s.total_seen} queries (${Math.round(s.brand_purity * 100)}% brand-pure)\nExamples:\n${s.sample_queries.slice(0, 3).join('\n')}`}
+                >
+                  <span className="font-medium">+ {s.alias}</span>
+                  <span className="text-[10px] text-violet-300/70">{s.cooccurrence}× · {Math.round(s.brand_purity * 100)}%</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

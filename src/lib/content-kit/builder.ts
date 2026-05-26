@@ -74,10 +74,65 @@ function extractBrandTokens(kw: string): Set<string> {
   return new Set(tokens)
 }
 
+// Sprint CKB.BRAND-ALIAS.2 — generic gaming terms that aren't brand-specific.
+// "gold" is used by Blade & Soul Neo, Standoff 2, WoW, RuneScape, etc., so a
+// candidate sharing ONLY "gold" with the primary keyword isn't enough proof
+// it's the same game. Filter rule downstream: a candidate must share ≥1
+// SPECIFIC (non-generic) token with the primary brand context to pass.
+const GENERIC_GAMING_TOKENS = new Set([
+  // Virtual currency
+  'gold', 'silver', 'coins', 'coin', 'gems', 'gem', 'currency', 'money',
+  'cash', 'credits', 'tokens', 'token', 'points',
+  // Account / membership
+  'account', 'accounts', 'login', 'membership', 'sub', 'subscription',
+  // Top-up / recharge mechanics
+  'top', 'up', 'topup', 'recharge', 'reload',
+  // Items / drops
+  'item', 'items', 'drop', 'drops', 'loot', 'chest', 'box', 'crate',
+  // Services
+  'farm', 'farming', 'boost', 'boosting', 'leveling', 'level', 'levelup',
+  'powerleveling', 'powerlevel', 'service', 'services',
+  // Digital goods
+  'key', 'keys', 'cdkey', 'cdkeys', 'code', 'codes',
+  'gift', 'card', 'cards',
+])
+
+function isSpecificToken(t: string): boolean {
+  return !GENERIC_GAMING_TOKENS.has(t)
+}
+
+interface BrandTokenContext {
+  specific: Set<string>
+  generic:  Set<string>
+}
+
+/**
+ * Sprint CKB.BRAND-ALIAS.2 — build the brand-token context once, merging
+ * tokens from the primary keyword + product brand_canonical + manual
+ * brand_aliases + Hugin-mined aliases (Phase 2). Splits into specific
+ * vs generic so the filter can require at least one specific match.
+ */
+function buildBrandContext(primary: string, product: ProductContext): BrandTokenContext {
+  const all = new Set<string>()
+  for (const t of extractBrandTokens(primary))                       all.add(t)
+  for (const t of extractBrandTokens(product.brand_canonical ?? '')) all.add(t)
+  for (const alias of product.brand_aliases ?? []) {
+    for (const t of extractBrandTokens(alias)) all.add(t)
+  }
+  const specific = new Set<string>()
+  const generic  = new Set<string>()
+  for (const t of all) {
+    if (isSpecificToken(t)) specific.add(t)
+    else                    generic.add(t)
+  }
+  return { specific, generic }
+}
+
 interface ProductContext {
   product_name:    string
   category:        string | null
   brand_canonical: string | null
+  brand_aliases:   string[]      // Sprint CKB.BRAND-ALIAS.1
   url:             string | null
   site_slug:       string
 }
@@ -88,20 +143,34 @@ async function loadProductContext(
 ): Promise<ProductContext | null> {
   const { data } = await db
     .from('product_tiers')
-    .select('product_name, category, brand_canonical, url, site_slug')
+    .select('product_name, category, brand_canonical, brand_aliases, url, site_slug')
     .eq('id', productTierId)
     .eq('owner_user_id', ownerId)
     .maybeSingle()
-  return data ? (data as ProductContext) : null
+  if (!data) return null
+  // Sprint CKB.BRAND-ALIAS.2 — defensive default: column was just added; existing
+  // rows may return undefined until they're re-saved.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row = data as any
+  return {
+    product_name:    row.product_name,
+    category:        row.category,
+    brand_canonical: row.brand_canonical,
+    brand_aliases:   Array.isArray(row.brand_aliases) ? row.brand_aliases : [],
+    url:             row.url,
+    site_slug:       row.site_slug,
+  }
 }
 
 interface HuginRow { query: string; growth_pct: number | null; intent_class: string | null }
 
 async function loadHuginCandidates(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db: SupabaseClient<any>, ownerId: string, siteSlug: string, primaryBrandTokens: Set<string>,
+  db: SupabaseClient<any>, ownerId: string, siteSlug: string, brandCtx: BrandTokenContext,
 ): Promise<string[]> {
-  if (primaryBrandTokens.size === 0) return []
+  // Sprint CKB.BRAND-ALIAS.2 — require ≥1 SPECIFIC token match (not just any).
+  // If specific is empty, we have no brand identity to filter on, so skip.
+  if (brandCtx.specific.size === 0) return []
   const { data } = await db
     .from('hugin_queries')
     .select('query, growth_pct, intent_class')
@@ -116,9 +185,11 @@ async function loadHuginCandidates(
     .filter(r => r.intent_class !== 'informational-pure' && r.intent_class !== 'diy-competing')
     .filter(r => {
       if (!r.query) return false
-      // Brand-token intersection: query must share ≥1 non-stopword token with primary
+      // Require shared SPECIFIC brand token. Sharing only generic ("gold")
+      // is no longer enough — that's what let "standoff 2 top up gold"
+      // leak into a Blade & Soul Neo kit before this sprint.
       const tokens = extractBrandTokens(r.query)
-      for (const t of tokens) if (primaryBrandTokens.has(t)) return true
+      for (const t of tokens) if (brandCtx.specific.has(t)) return true
       return false
     })
     .map(r => String(r.query))
@@ -165,31 +236,40 @@ interface CandidateInput {
 }
 
 /**
- * Sprint CKB.REL.1 — Apply brand-token filter + score-based ranking.
+ * Sprint CKB.REL.1 + CKB.BRAND-ALIAS.2 — Apply brand-token filter + ranking.
  *
- * Filter rule: candidate must share ≥1 non-stopword token with primary.
- * For primary "cheap bns gold" (brand tokens: bns, gold), a candidate must
- * contain "bns" or "gold" to pass. "minecraft key cheap" fails (no shared
- * brand tokens), "bns gold farming" passes.
+ * Filter rule (post-#334): candidate must share ≥1 SPECIFIC token with the
+ * brand context. Specific = non-generic-gaming (gold, key, account, etc.
+ * are generic and don't count alone). The brand context blends tokens from
+ * primary KW + product.brand_canonical + product.brand_aliases — so "bns"
+ * counts as specific even when primary is "cheap gold for blade soul neo".
+ *
+ * Before this sprint, sharing only "gold" was enough → "standoff 2 top up
+ * gold" leaked into Blade & Soul Neo kits.
  *
  * Score formula:
- *   10 × (count of shared brand tokens)
+ *   12 × (shared specific tokens)        — high signal
+ *   + 3 × (shared generic tokens)        — weak signal, still useful for tie-break
  *   + source priority bonus:
  *       related_searches = +5  (most contextual to primary SERP)
  *       paa              = +5  (also tied to primary SERP)
  *       sibling_tier     = +3  (curated by user)
  *       hugin            = +2  (real GSC long-tail data)
  *
- * Returns ranked + deduped candidates, primary excluded.
+ * Fallback: if brandCtx.specific is empty (no brand identity at all), we
+ * still pass on shared generic tokens so the kit doesn't blow up — but the
+ * caller should warn (loadProductContext will have empty brand_canonical +
+ * brand_aliases AND the primary KW has no specific token).
  */
 function filterAndRankCandidates(
   items: CandidateInput[],
-  primary: string,
+  primary:  string,
+  brandCtx: BrandTokenContext,
 ): { passed: CandidateKw[]; offBrand: number } {
-  const primaryBrandTokens = extractBrandTokens(primary)
   const seen = new Set([String(primary ?? '').toLowerCase()])
   const out: CandidateKw[] = []
   let offBrand = 0
+  const noSpecificFallback = brandCtx.specific.size === 0
 
   for (const c of items) {
     const raw = (c?.keyword ?? '').toString().trim()
@@ -198,12 +278,20 @@ function filterAndRankCandidates(
     if (seen.has(k)) continue
     seen.add(k)
 
-    // Brand-token intersection
-    const candidateTokens = extractBrandTokens(raw)
-    let sharedCount = 0
-    for (const t of candidateTokens) if (primaryBrandTokens.has(t)) sharedCount++
+    // Specific vs generic intersection
+    const candTokens = extractBrandTokens(raw)
+    let sharedSpecific = 0
+    let sharedGeneric  = 0
+    for (const t of candTokens) {
+      if      (brandCtx.specific.has(t)) sharedSpecific++
+      else if (brandCtx.generic.has(t))  sharedGeneric++
+    }
 
-    if (sharedCount === 0 && primaryBrandTokens.size > 0) {
+    // Gate: must share ≥1 specific token (unless brandCtx has no specific
+    // tokens at all — then fall back to ≥1 generic match)
+    if (noSpecificFallback) {
+      if (sharedGeneric === 0) { offBrand++; continue }
+    } else if (sharedSpecific === 0) {
       offBrand++
       continue
     }
@@ -214,7 +302,7 @@ function filterAndRankCandidates(
       c.source === 'paa'              ? 5 :
       c.source === 'sibling_tier'     ? 3 :
       c.source === 'hugin'            ? 2 : 0
-    const relevance = sharedCount * 10 + sourceBonus
+    const relevance = sharedSpecific * 12 + sharedGeneric * 3 + sourceBonus
 
     out.push({ keyword: raw, source: c.source, relevance })
   }
@@ -322,12 +410,14 @@ export async function buildContentKit(
 
   const { code: locationCode, lang: languageCode } = LOCATION_BY_MARKET[input.market]
   const targetSections = Math.min(input.targetSections ?? 6, 10)
-  const primaryBrandTokens = extractBrandTokens(input.primaryKeyword)
+  // Sprint CKB.BRAND-ALIAS.2 — brand context now blends primary KW +
+  // brand_canonical + brand_aliases, split into specific vs generic tokens.
+  const brandCtx = buildBrandContext(input.primaryKeyword, productCtx)
 
   // ─── Phase 1: Parallel data fetches (SERP + Hugin + siblings + cross-links) ─
   const [primarySerp, huginCandidates, siblingKws, crossLinks] = await Promise.all([
     getSerpData(input.primaryKeyword, locationCode, languageCode, 10).catch(() => null),
-    loadHuginCandidates(db, input.ownerId, siteSlug, primaryBrandTokens),
+    loadHuginCandidates(db, input.ownerId, siteSlug, brandCtx),
     loadSiblingTierKeywords(db, input.ownerId, input.productTierId, input.primaryKeywordId),
     suggestCrossLinks({
       db, ownerId: input.ownerId, productTierId: input.productTierId, siteSlug, limit: 5,
@@ -345,7 +435,7 @@ export async function buildContentKit(
 
   // ─── Phase 3: Brand-token filter + relevance rank (deterministic) ─────────
   const { passed: rankedCandidates, offBrand: candidates_off_brand } =
-    filterAndRankCandidates(candidatePool, input.primaryKeyword)
+    filterAndRankCandidates(candidatePool, input.primaryKeyword, brandCtx)
   // Cap at 15 for intent classification (saves SERP scrape cost)
   const candidates = rankedCandidates.slice(0, 15)
 
