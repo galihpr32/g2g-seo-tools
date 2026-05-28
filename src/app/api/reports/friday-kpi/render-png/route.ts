@@ -9,7 +9,9 @@ import { htmlToPng } from '@/lib/reports/puppeteer-launcher'
 // Sprint FRIDAY.KPI.PREVIEW-AI-FIX — Preview PNG was missing the AI
 // Visibility historical chart because this route never fetched aiHistory.
 // Slack delivery path always did. Now we share the same loader.
-import { loadAiVisibilityHistory } from '@/lib/reports/friday-kpi-deliver'
+// Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — same story for the 12-week
+// hero chart: preview must include it so it matches the Slack delivery PNG.
+import { loadAiVisibilityHistory, loadGscHistorical } from '@/lib/reports/friday-kpi-deliver'
 
 /**
  * Sprint FRIDAY.KPI.GRAPH.4 — renders the Friday KPI dashboard as a PNG.
@@ -71,10 +73,15 @@ export async function GET(req: Request) {
     // Sprint FRIDAY.KPI.PREVIEW-AI-FIX — also fetch the 84-day AI Visibility
     // history alongside, so the Preview PNG matches what the Slack delivery
     // path renders. Returns empty buckets gracefully if no snapshots exist.
+    //
+    // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — also fetch the 12-week
+    // GSC clicks/impressions hero data. Falls back to empty (chart hidden)
+    // if GSC OAuth missing.
     tlog('start')
-    const [payload, aiHistory, ...actionPlans] = await Promise.all([
+    const [payload, aiHistory, gscHistorical, ...actionPlans] = await Promise.all([
       buildFridayKpi(db, ownerId, siteSlugs),
       loadAiVisibilityHistory(db, ownerId, siteSlugs, 84),
+      loadGscHistorical(db, ownerId, siteSlugs, 12),
       ...siteSlugs.map(async slug => ({
         brand: slug,
         plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
@@ -83,7 +90,7 @@ export async function GET(req: Request) {
     tlog('data assembled')
 
     // Render HTML → PNG (chromium cold start usually dominates here)
-    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory })
+    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory, gscHistorical })
     tlog('html built')
     const png  = await htmlToPng(html)
     tlog('png ready')

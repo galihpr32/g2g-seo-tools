@@ -13,12 +13,15 @@
 //      latest can serve them without auth
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { OAuth2Client } from 'google-auth-library'
 import { buildFridayKpi, buildPngOverviewComment, type FridayKpiPayload } from './friday-kpi'
 import { buildActionPlan } from './action-plan-synthesizer'
-import { renderFridayKpiHtml, type AiVisibilityHistory } from './friday-kpi-html'
+import { renderFridayKpiHtml, type AiVisibilityHistory, type GscHistorical } from './friday-kpi-html'
 import { htmlToPng } from './puppeteer-launcher'
 import { resolveSlackWebhook } from '@/lib/slack/routing'
 import { resolveSlackChannelId, postPngToSlack } from '@/lib/slack/files'
+import { getRefreshedClientFull } from '@/lib/gsc/auth'
+import { getSearchAnalytics } from '@/lib/gsc/client'
 
 /**
  * Sprint FRIDAY.KPI.PNG-UNSPLIT — load the last N days of Bing AI snapshots
@@ -56,6 +59,152 @@ export async function loadAiVisibilityHistory(
     bucket.cited_pages.push(Number(r.cited_pages ?? 0))
   }
   return perBrand
+}
+
+/**
+ * Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — load 12 weeks of GSC clicks +
+ * impressions per brand × per market (US / ID) for the new hero chart that
+ * replaces the old Top 3/Top 10 bar visualization.
+ *
+ * Strategy: ONE GSC API call per brand covering an 84-day window with
+ * dimensions=['date','country']. Bucket rows into Thu→Wed weeks in JS
+ * (idn → 'id', everything else → 'us'). The last bucket is the same window
+ * Friday KPI's current-week table uses, so the chart's right-most data
+ * point lines up with the WoW delta in the table below.
+ *
+ * Falls back gracefully: if GSC OAuth missing or call throws, returns an
+ * empty bucket for that brand and the renderer hides the chart.
+ *
+ * Cost: 1 GSC request per brand (vs 2 already running for the WoW window).
+ * Within the 1200 QPM / 30k-per-day per-user quota by a huge margin.
+ */
+export async function loadGscHistorical(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:        SupabaseClient<any>,
+  ownerId:   string,
+  siteSlugs: string[],
+  weeks:     number = 12,
+): Promise<GscHistorical> {
+  const out: GscHistorical = {}
+  for (const slug of siteSlugs) {
+    out[slug] = { weekLabels: [], us: { clicks: [], impressions: [] }, id: { clicks: [], impressions: [] } }
+  }
+
+  // Build the 12 Thu→Wed windows ending at the most-recent completed Wed.
+  // Use the same anchor logic as friday-kpi.ts::getThuWedWindows so the
+  // last bucket here matches the "current" cell in the traffic table.
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const day  = today.getDay()
+  const daysSinceCompletedWed = day === 3 ? 7 : (day + 4) % 7 || 7
+  const lastWed = new Date(today)
+  lastWed.setDate(today.getDate() - daysSinceCompletedWed)
+  // Windows (oldest → newest)
+  const windows: Array<{ start: string; end: string; label: string }> = []
+  for (let i = weeks - 1; i >= 0; i--) {
+    const end = new Date(lastWed)
+    end.setDate(lastWed.getDate() - i * 7)
+    const start = new Date(end)
+    start.setDate(end.getDate() - 6)
+    const iso  = (d: Date) => d.toISOString().slice(0, 10)
+    const label = `${start.toLocaleString('en-US', { month: 'short' })} ${start.getDate()}`
+    windows.push({ start: iso(start), end: iso(end), label })
+  }
+  const earliestStart = windows[0]?.start
+  const latestEnd     = windows[windows.length - 1]?.end
+  if (!earliestStart || !latestEnd) return out
+
+  for (const slug of siteSlugs) {
+    out[slug].weekLabels = windows.map(w => w.label)
+  }
+
+  // Pull GSC OAuth (shared `gsc_connections`, scope covers webmasters).
+  const { data: conn } = await db
+    .from('gsc_connections')
+    .select('user_id, access_token, refresh_token, expires_at')
+    .eq('user_id', ownerId)
+    .maybeSingle()
+  if (!conn?.access_token || !conn?.refresh_token) {
+    console.warn('[friday-kpi historical] no GSC OAuth for owner', ownerId)
+    return out
+  }
+
+  // Refresh once, reuse for both brands.
+  let auth: OAuth2Client | null = null
+  try {
+    const refreshed = await getRefreshedClientFull(
+      conn.access_token as string,
+      conn.refresh_token as string,
+      (conn.expires_at as string | null) ?? new Date(0).toISOString(),
+    )
+    auth = refreshed.client
+    if (refreshed.newCredentials) {
+      void db
+        .from('gsc_connections')
+        .update({
+          access_token: refreshed.newCredentials.accessToken,
+          expires_at:   refreshed.newCredentials.expiresAt,
+          updated_at:   new Date().toISOString(),
+        })
+        .eq('user_id', ownerId)
+    }
+  } catch (e) {
+    console.warn('[friday-kpi historical] GSC token refresh failed:', e)
+    return out
+  }
+  if (!auth) return out
+  const oauth = auth
+
+  // Resolve GSC property URL per brand from site_configs.
+  const { data: cfgs } = await db
+    .from('site_configs')
+    .select('slug, gsc_property')
+    .in('slug', siteSlugs)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const propBySlug: Record<string, string> = {}
+  for (const r of (cfgs ?? []) as Array<{ slug: string; gsc_property: string | null }>) {
+    if (r.gsc_property) propBySlug[r.slug] = r.gsc_property
+  }
+
+  await Promise.all(siteSlugs.map(async slug => {
+    const siteUrl = propBySlug[slug]
+    if (!siteUrl) {
+      console.warn('[friday-kpi historical] no gsc_property for site', slug)
+      return
+    }
+    try {
+      // Single big call: 84 days × dim=['date','country'], up to 25k rows
+      // (84 × ~80 countries = well under cap, GSC also auto-truncates).
+      const rows = await getSearchAnalytics(oauth, siteUrl, earliestStart, latestEnd, ['date', 'country'], 25000)
+
+      // Bucket into 12 Thu→Wed weeks × 2 markets.
+      const bucketUs: Array<{ c: number; i: number }> = windows.map(() => ({ c: 0, i: 0 }))
+      const bucketId: Array<{ c: number; i: number }> = windows.map(() => ({ c: 0, i: 0 }))
+      for (const r of rows) {
+        const date    = String(r.keys?.[0] ?? '')
+        const country = String(r.keys?.[1] ?? '').toLowerCase()
+        if (!date) continue
+        // Find which week bucket this date falls into.
+        const wIdx = windows.findIndex(w => date >= w.start && date <= w.end)
+        if (wIdx < 0) continue
+        const target = country === 'idn' ? bucketId[wIdx] : bucketUs[wIdx]
+        target.c += Number(r.clicks      ?? 0)
+        target.i += Number(r.impressions ?? 0)
+      }
+      out[slug].us = {
+        clicks:      bucketUs.map(b => b.c),
+        impressions: bucketUs.map(b => b.i),
+      }
+      out[slug].id = {
+        clicks:      bucketId.map(b => b.c),
+        impressions: bucketId.map(b => b.i),
+      }
+    } catch (e) {
+      console.warn(`[friday-kpi historical] GSC fetch failed for ${slug}:`, e)
+    }
+  }))
+
+  return out
 }
 
 function currentWeekIso(): string {
@@ -365,14 +514,18 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
   let png:     Buffer | null = null
   const week:  string        = currentWeekIso()
   try {
-    const actionPlans = await Promise.all(
-      siteSlugs.map(async slug => ({
+    // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — load 12 weeks of GSC
+    // clicks/impressions alongside the existing AI Visibility history.
+    // Both pulls happen in parallel; either failing falls back gracefully.
+    const [actionPlans, aiHistory, gscHistorical] = await Promise.all([
+      Promise.all(siteSlugs.map(async slug => ({
         brand: slug,
         plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
-      })),
-    )
-    const aiHistory = await loadAiVisibilityHistory(db, ownerId, siteSlugs, 84)
-    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory })
+      }))),
+      loadAiVisibilityHistory(db, ownerId, siteSlugs, 84),
+      loadGscHistorical(db, ownerId, siteSlugs, 12),
+    ])
+    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory, gscHistorical })
     png = await htmlToPng(html)
     pngDiag.png_size_bytes = png.length
 

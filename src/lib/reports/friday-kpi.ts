@@ -15,7 +15,11 @@
 // the competitive set). When SV data is available, we surface it; when
 // not, we still report the structural KPIs.
 //
-// Market mapping per the wider app: 'us' → "Global", 'id' → "ID".
+// Market mapping per the wider app: 'us' → "US", 'id' → "ID".
+// Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — relabeled 'Global' to 'US' across
+// the Friday KPI digest (PNG + Slack blocks). Sibos's spec: weekly report
+// focus is US, so "Global" was ambiguous. The underlying bucket is still
+// "all non-idn countries" — only the human-readable label changed.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getRefreshedClientFull } from '@/lib/gsc/auth'
@@ -23,7 +27,7 @@ import { getSearchAnalytics } from '@/lib/gsc/client'
 import { buildAiVisibilityForKpi, type FridayKpiAiSlice } from '@/lib/agents/freyja'
 import { getFridayKpiCanon, type CanonSource } from '@/lib/reports/friday-kpi-canon'
 
-export const MARKET_LABELS: Record<string, string> = { us: 'Global', id: 'ID' }
+export const MARKET_LABELS: Record<string, string> = { us: 'US', id: 'ID' }
 const MARKETS = ['us', 'id'] as const
 type Market = typeof MARKETS[number]
 
@@ -550,7 +554,7 @@ async function buildBrandTraffic(
 
 /**
  * Fallback: when GSC OAuth fails or isn't set up, sum gsc_ranking_snapshots
- * under "Global" and leave ID empty. Better than zero-everything.
+ * under "US" and leave ID empty. Better than zero-everything.
  */
 async function buildTrafficFallback(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -693,7 +697,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
       type: 'section',
       text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}* · ${(global?.kw_count ?? 0) + (id?.kw_count ?? 0)} winning kws` },
       fields: [
-        { type: 'mrkdwn', text: `*🌐 Global*\n${formatSerpCell(global)}` },
+        { type: 'mrkdwn', text: `*🇺🇸 US*\n${formatSerpCell(global)}` },
         { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatSerpCell(id)}` },
       ],
     })
@@ -731,7 +735,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
       type: 'section',
       text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}*` },
       fields: [
-        { type: 'mrkdwn', text: `*🌐 Global*\n${formatClickCell(global)}` },
+        { type: 'mrkdwn', text: `*🇺🇸 US*\n${formatClickCell(global)}` },
         { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatClickCell(id)}` },
       ],
     })
@@ -748,7 +752,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
       type: 'section',
       text: { type: 'mrkdwn', text: `*${brand.site_slug.toUpperCase()}*` },
       fields: [
-        { type: 'mrkdwn', text: `*🌐 Global*\n${formatImpCell(global)}` },
+        { type: 'mrkdwn', text: `*🇺🇸 US*\n${formatImpCell(global)}` },
         { type: 'mrkdwn', text: `*🇮🇩 ID*\n${formatImpCell(id)}` },
       ],
     })
@@ -758,7 +762,7 @@ export function buildFridayKpiSlackBlocks(p: FridayKpiPayload): {
     type: 'context',
     elements: [{
       type: 'mrkdwn',
-      text: '_GSC-verified · Thu→Wed calendar week vs prior Thu→Wed · ID = country=idn, Global = all other countries._',
+      text: '_GSC-verified · Thu→Wed calendar week vs prior Thu→Wed · ID = country=idn, US = all other countries._',
     }],
   })
 
@@ -911,12 +915,12 @@ function formatSerpCell(m: MarketKpi | null): string {
  * nothing tracked at all).
  *
  * Example outputs:
- *   "🌐 Global 18/22 clusters with winner · 🇮🇩 ID 0/4 — discovery pending"
- *   "🌐 Global 22/22 · 🇮🇩 ID 4/4 — full coverage"
+ *   "🇺🇸 US 18/22 clusters with winner · 🇮🇩 ID 0/4 — discovery pending"
+ *   "🇺🇸 US 22/22 · 🇮🇩 ID 4/4 — full coverage"
  */
 function formatCoverageLine(global: MarketKpi | null, id: MarketKpi | null): string | null {
   const parts: string[] = []
-  for (const [icon, m] of [['🌐 Global', global], ['🇮🇩 ID', id]] as const) {
+  for (const [icon, m] of [['🇺🇸 US', global], ['🇮🇩 ID', id]] as const) {
     if (!m || m.coverage_total === 0) continue
     const gap  = m.coverage_total - m.coverage_with_winner
     const flag = gap === 0 ? '✓' : gap >= 3 ? '⚠' : '·'

@@ -22,6 +22,21 @@ export interface AiVisibilityHistory {
   }
 }
 
+/**
+ * Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — historical GSC clicks +
+ * impressions per brand × market for the new hero chart that replaces the
+ * Top 3/Top 10 bar visualization. 12 weekly buckets (oldest → newest),
+ * Thu→Wed windows matching the rest of Friday KPI. Loaded by
+ * friday-kpi-deliver from a single 84-day GSC API call per brand.
+ */
+export interface GscHistorical {
+  [siteSlug: string]: {
+    weekLabels: string[]               // e.g. ['Mar 6','Mar 13',...,'May 22']
+    us: { clicks: number[]; impressions: number[] }
+    id: { clicks: number[]; impressions: number[] }
+  }
+}
+
 interface BuildOptions {
   payload:     FridayKpiPayload
   actionPlans: Array<{ brand: string; plan: ActionPlanItem[] }>
@@ -31,6 +46,14 @@ interface BuildOptions {
    * to the existing summary table (or nothing if no data at all).
    */
   aiHistory?: AiVisibilityHistory
+  /**
+   * Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — historical GSC clicks +
+   * impressions for the new hero chart. When omitted/empty, renderer hides
+   * the hero chart section entirely (no fallback bar chart now — bar chart
+   * was replaced per Galih's spec; if no historical data is loadable the
+   * report skips straight to the tables).
+   */
+  gscHistorical?: GscHistorical
 }
 
 // Color tokens (kept in sync with app brand palette where it matters)
@@ -143,42 +166,64 @@ function trafficSection(brands: BrandKpi[]): string {
         </thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="caption">Last 7 days vs prior 7 days (3-day GSC freshness lag) · ID = country=idn; Global = all other countries.</p>
+      <p class="caption">Thu→Wed week vs prior Thu→Wed · ID = country=idn; US = all other countries.</p>
     </section>
   `
 }
 
-function chartSection(brands: BrandKpi[]): string {
-  // Sprint FRIDAY.KPI.PNG-CHART-SWAP (314) ─────────────────────────────────
-  // Replaces the prior Clicks/Impressions bars with Top 3 + Top 10 keyword
-  // count bars per brand × market, each annotated with WoW delta (+/-).
-  // Rationale: ranking position counts are the truer "did we win this week"
-  // signal for a competitive-keywords-first weekly report. Clicks/imp data
-  // is still in the traffic table further down the report.
-  const labels = brands.flatMap(b =>
-    b.serp.map(m => `${b.site_slug.toUpperCase()} · ${m.market_label}`),
-  )
-  const top3        = brands.flatMap(b => b.serp.map(m => m.top3))
-  const top3Delta   = brands.flatMap(b => b.serp.map(m => m.top3_delta))
-  const top10       = brands.flatMap(b => b.serp.map(m => m.top10))
-  const top10Delta  = brands.flatMap(b => b.serp.map(m => m.top10_delta))
-  const colors      = brands.flatMap(b => b.serp.map(() => brandColor(b.site_slug)))
+/**
+ * Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — hero historical chart section.
+ *
+ * Side-by-side line charts:
+ *   • Left  → Clicks per week, 4 series (G2G-US, G2G-ID, OG-US, OG-ID)
+ *   • Right → Impressions per week, same 4 series
+ *
+ * Replaces the prior current-week-only Top 3/Top 10 bars. Sibos's spec:
+ * trend matters more than this-week snapshot — the W-o-W delta is already
+ * visible in the table below. With 12 weeks of points the eye picks up
+ * the slope (recovering vs decaying vs seasonal) at a glance.
+ *
+ * Each brand × market gets a distinct color/line style so the four lines
+ * stay readable even when they cross.
+ */
+function heroHistoricalSection(history: GscHistorical): string {
+  const brandSlugs = Object.keys(history).filter(slug => (history[slug]?.weekLabels?.length ?? 0) > 0)
+  if (brandSlugs.length === 0) return ''
+
+  // Use the longest weekLabel array as the x-axis (all brands should match
+  // since loader uses the same windows — but defensive in case one brand
+  // had a partial fetch).
+  const labels = brandSlugs
+    .map(s => history[s].weekLabels)
+    .reduce((a, b) => (b.length > a.length ? b : a), [])
+
+  // Build 4 series per metric: G2G-US (solid violet), G2G-ID (dashed violet),
+  // OG-US (solid green), OG-ID (dashed green). Falls back to blue if a new
+  // brand shows up unexpectedly.
+  const series = brandSlugs.flatMap(slug => {
+    const h     = history[slug]
+    const color = brandColor(slug)
+    const upper = slug.toUpperCase()
+    return [
+      { slug, market: 'us', label: `${upper} · US`, color, dash: [],     clicks: h.us.clicks, impressions: h.us.impressions },
+      { slug, market: 'id', label: `${upper} · ID`, color, dash: [6, 4], clicks: h.id.clicks, impressions: h.id.impressions },
+    ]
+  })
+
+  const weekCount = labels.length
+
   return `
     <section class="card">
-      <h2>📊 This Week — Top 3 &amp; Top 10 Rank Count (WoW Δ)</h2>
+      <h2>📈 Weekly Trend — Clicks &amp; Impressions (last ${weekCount} weeks)</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-        <div><canvas id="chart-top3" width="540" height="240"></canvas></div>
-        <div><canvas id="chart-top10" width="540" height="240"></canvas></div>
+        <div><canvas id="chart-clicks-history" width="540" height="260"></canvas></div>
+        <div><canvas id="chart-imps-history"   width="540" height="260"></canvas></div>
       </div>
-      <p class="caption">Bars = current week count of keywords ranking in Top 3 / Top 10. Labels above bars show change vs prior week.</p>
+      <p class="caption">GSC Thu→Wed weeks · solid line = US (country ≠ idn) · dashed line = ID (country = idn) · most recent week is the rightmost point and matches the WoW delta in the table below.</p>
       <script>
-        window.__chartData = {
-          labels:     ${JSON.stringify(labels)},
-          top3:       ${JSON.stringify(top3)},
-          top3Delta:  ${JSON.stringify(top3Delta)},
-          top10:      ${JSON.stringify(top10)},
-          top10Delta: ${JSON.stringify(top10Delta)},
-          colors:     ${JSON.stringify(colors)},
+        window.__historicalData = {
+          labels: ${JSON.stringify(labels)},
+          series: ${JSON.stringify(series)},
         };
       </script>
     </section>
@@ -295,7 +340,7 @@ function actionPlanSection(plans: BuildOptions['actionPlans']): string {
 }
 
 export function renderFridayKpiHtml(opts: BuildOptions): string {
-  const { payload, actionPlans, aiHistory } = opts
+  const { payload, actionPlans, aiHistory, gscHistorical } = opts
   const canonBadge = payload.canon_source === 'gsc'
     ? `<span class="canon-pill canon-gsc">GSC</span>`
     : `<span class="canon-pill canon-dfs">DFS</span>`
@@ -307,6 +352,12 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
   const aiHistoryBrands = Object.keys(aiHistory ?? {})
     .filter(slug => (aiHistory?.[slug]?.dates?.length ?? 0) > 0)
   const showAiHistoryChart = aiHistoryBrands.length > 0
+
+  // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — does the hero historical
+  // chart have data? Empty = renderer skips hero section entirely.
+  const heroHistoryBrands = Object.keys(gscHistorical ?? {})
+    .filter(slug => (gscHistorical?.[slug]?.weekLabels?.length ?? 0) > 0)
+  const showHeroHistorical = heroHistoryBrands.length > 0
 
   return `<!doctype html>
 <html lang="en">
@@ -418,7 +469,7 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     </div>
   </header>
 
-  ${chartSection(payload.brands)}
+  ${showHeroHistorical ? heroHistoricalSection(gscHistorical!) : ''}
 
   <div class="grid">
     ${competitiveSection(payload.brands)}
@@ -437,20 +488,80 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
   </footer>
 
   <script>
-    // Sprint FRIDAY.KPI.PNG-CHART-SWAP (314) — render Top 3 / Top 10 bars
-    // with WoW delta tags drawn ABOVE each bar. Custom plugin handles the
-    // delta annotations so we don't have to pull in chartjs-plugin-datalabels.
+    // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — render two historical line
+    // charts (Clicks + Impressions, 4 series each: G2G-US, G2G-ID, OG-US,
+    // OG-ID) as the new hero. Replaces the prior Top 3 / Top 10 WoW-delta
+    // bar visualization. The W-o-W delta is still visible in the
+    // competitive + traffic tables further down the report.
     //
-    // Sprint FRIDAY.KPI.PNG-SPLIT (319) — when the chart canvases aren't on
-    // the page (ai / actions modes), short-circuit and signal kpiReady so
-    // puppeteer can screenshot without waiting on Chart.js.
+    // AI Visibility historical (Bing AI citations + cited pages) is
+    // independent of the hero chart and still drawn when its canvas exists.
     (function () {
-      const top3El      = document.getElementById('chart-top3');
-      const top10El     = document.getElementById('chart-top10');
+      const clicksEl    = document.getElementById('chart-clicks-history');
+      const impsEl      = document.getElementById('chart-imps-history');
       const aiCitEl     = document.getElementById('chart-ai-citations');
       const aiPagesEl   = document.getElementById('chart-ai-cited-pages');
 
-      // ── AI Visibility historical line charts (independent of top3/top10) ──
+      // Compact number formatter for axis ticks and legend.
+      function fmtCompact(n) {
+        if (n == null) return '';
+        const abs = Math.abs(n);
+        if (abs >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+        if (abs >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+        return String(n);
+      }
+
+      // ── Hero historical line charts ───────────────────────────────────
+      function renderHero() {
+        const d = window.__historicalData;
+        if (!d || !clicksEl || !impsEl) return;
+        const buildLineConfig = (yKey, title) => ({
+          type: 'line',
+          data: {
+            labels: d.labels,
+            datasets: d.series.map(s => ({
+              label:           s.label,
+              data:            s[yKey],
+              borderColor:     s.color,
+              backgroundColor: s.color,
+              borderDash:      Array.isArray(s.dash) && s.dash.length > 0 ? s.dash : undefined,
+              pointRadius:     2,
+              pointHoverRadius:4,
+              borderWidth:     2,
+              tension:         0.25,
+              spanGaps:        true,
+            })),
+          },
+          options: {
+            responsive: false,
+            animation:  false,
+            plugins: {
+              legend: {
+                display: true,
+                position: 'bottom',
+                labels: { color: '${COLORS.text}', font: { size: 10 }, boxWidth: 14, padding: 8 },
+              },
+              title:  { display: true, text: title, color: '${COLORS.text}', font: { size: 12, weight: '600' } },
+            },
+            scales: {
+              x: {
+                ticks: { color: '${COLORS.muted}', font: { size: 9 }, maxTicksLimit: 8, autoSkip: true },
+                grid:  { color: '${COLORS.borderSoft}' },
+              },
+              y: {
+                ticks: { color: '${COLORS.muted}', font: { size: 10 }, callback: v => fmtCompact(v) },
+                grid:  { color: '${COLORS.borderSoft}' },
+                beginAtZero: true,
+              },
+            },
+          },
+        });
+        new Chart(clicksEl.getContext('2d'), buildLineConfig('clicks',      'Clicks / week'));
+        new Chart(impsEl.getContext('2d'),   buildLineConfig('impressions', 'Impressions / week'));
+      }
+      renderHero();
+
+      // ── AI Visibility historical line charts (unchanged) ──
       function renderAiHistory() {
         const d = window.__aiHistoryData;
         if (!d || !aiCitEl || !aiPagesEl) return;
@@ -498,80 +609,7 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
       }
       renderAiHistory();
 
-      if (!top3El || !top10El) {
-        requestAnimationFrame(() => requestAnimationFrame(() => { window.kpiReady = true; }));
-        return;
-      }
-      const d = window.__chartData || { labels: [], top3: [], top3Delta: [], top10: [], top10Delta: [], colors: [] };
-
-      function fmtDelta(v) {
-        if (v == null || v === 0) return '·';
-        return v > 0 ? '+' + v : String(v);
-      }
-      function deltaColor(v) {
-        if (v == null || v === 0) return '${COLORS.muted}';
-        return v > 0 ? '${COLORS.emerald}' : '${COLORS.red}';
-      }
-
-      // Custom plugin: draw delta text above each bar in the dataset.
-      const deltaLabelPlugin = (deltas) => ({
-        id: 'deltaLabel-' + Math.random().toString(36).slice(2),
-        afterDatasetsDraw(chart) {
-          const { ctx } = chart;
-          const meta = chart.getDatasetMeta(0);
-          ctx.save();
-          ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'bottom';
-          meta.data.forEach((bar, i) => {
-            const v = deltas[i];
-            ctx.fillStyle = deltaColor(v);
-            ctx.fillText(fmtDelta(v), bar.x, bar.y - 4);
-          });
-          ctx.restore();
-        },
-      });
-
-      const common = {
-        type: 'bar',
-        options: {
-          responsive: false,
-          animation: false,
-          layout: { padding: { top: 20 } },
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: '${COLORS.muted}', font: { size: 10 } }, grid: { color: '${COLORS.borderSoft}' } },
-            y: { ticks: { color: '${COLORS.muted}', font: { size: 10 } }, grid: { color: '${COLORS.borderSoft}' }, beginAtZero: true, precision: 0 },
-          },
-        },
-      };
-
-      new Chart(top3El.getContext('2d'), {
-        ...common,
-        data: { labels: d.labels, datasets: [{ label: 'Top 3', data: d.top3, backgroundColor: d.colors, borderRadius: 4 }] },
-        options: {
-          ...common.options,
-          plugins: {
-            ...common.options.plugins,
-            title: { display: true, text: 'Top 3 keyword count (Δ vs last week)', color: '${COLORS.text}', font: { size: 12 } },
-          },
-        },
-        plugins: [deltaLabelPlugin(d.top3Delta)],
-      });
-      new Chart(top10El.getContext('2d'), {
-        ...common,
-        data: { labels: d.labels, datasets: [{ label: 'Top 10', data: d.top10, backgroundColor: d.colors, borderRadius: 4 }] },
-        options: {
-          ...common.options,
-          plugins: {
-            ...common.options.plugins,
-            title: { display: true, text: 'Top 10 keyword count (Δ vs last week)', color: '${COLORS.text}', font: { size: 12 } },
-          },
-        },
-        plugins: [deltaLabelPlugin(d.top10Delta)],
-      });
-
-      // give Chart.js one frame to paint, then signal ready
+      // give Chart.js one frame to paint, then signal ready for puppeteer
       requestAnimationFrame(() => requestAnimationFrame(() => { window.kpiReady = true; }));
     })();
   </script>
