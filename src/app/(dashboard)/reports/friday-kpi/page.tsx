@@ -207,6 +207,15 @@ export default function FridayKpiPage() {
             <p className="text-xs text-purple-200/80">Posts to <code>notification_type=friday_kpi</code> Slack route. Live preview below.</p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Sprint FRIDAY.KPI.KW-BREAKDOWN.2 (338) — link to the new
+                Keyword Breakdown sub-page (GA4 revenue × GSC top queries
+                per landing page). Internal-only, no PNG embed. */}
+            <Link
+              href="/reports/friday-kpi/keywords"
+              className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-white text-sm font-semibold rounded-lg transition inline-flex items-center gap-1 border border-gray-700"
+            >
+              📋 Keyword Breakdown
+            </Link>
             <a
               href="/api/reports/friday-kpi/render-png?download=1"
               target="_blank"
