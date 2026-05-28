@@ -1,0 +1,31 @@
+name: Hourly Forseti Reddit Scraper
+
+on:
+  schedule:
+    # Every hour at :05 — staggered off the keyword-rankings cron (:00)
+    # so we're not all hammering Vercel at the same minute.
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: forseti-scraper
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/forseti-scraper
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "Missing APP_URL or CRON_SECRET secret"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 200 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/forseti-scraper"

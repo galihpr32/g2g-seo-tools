@@ -6,8 +6,14 @@ name: Friday KPI Digest
 # on /reports/friday-kpi.
 
 on:
-  schedule:
-    - cron: '0 8 * * 5'   # Friday 08:00 UTC = 15:00 WIB
+  # Sprint FRIDAY.KPI.CRON-DISABLE — auto-schedule disabled per Galih's
+  # request after a surprise fire on 2026-05-22. Workflow stays available
+  # via the "Run workflow" button in the GitHub Actions tab and via the
+  # /reports/friday-kpi manual trigger button. Uncomment the schedule
+  # block below to re-enable weekly auto-fires.
+  #
+  # schedule:
+  #   - cron: '0 8 * * 5'   # Friday 08:00 UTC = 15:00 WIB
   workflow_dispatch:
 
 concurrency:
