@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
+import { classifyAuditFinding, SEVERITY_STYLES, type AuditSeverity } from '@/lib/site-audit-severity'
 
 // ── DFS check key map (matches server-side) ───────────────────────────────────
 const ISSUE_CHECK_KEYS: Record<string, string> = {
@@ -68,22 +69,24 @@ interface Issue {
   count: number
   severity: Severity
   description: string
+  /** DataForSEO check_key — used by the severity classifier */
+  check_key: string
 }
 
 function buildIssues(s: OnPageSummary): Issue[] {
   const all: Issue[] = [
-    { label: 'Broken links',              count: s.brokenLinks,          severity: 'error',   description: 'Internal or external links returning 4xx/5xx responses.' },
-    { label: 'Broken resources',          count: s.brokenResources,      severity: 'error',   description: 'Images, scripts, or stylesheets that fail to load.' },
-    { label: '4xx pages',                 count: s.is4xx,                severity: 'error',   description: 'Pages returning client error responses (e.g. 404 Not Found).' },
-    { label: '5xx pages',                 count: s.is5xx,                severity: 'error',   description: 'Pages returning server error responses.' },
-    { label: 'Missing title tag',         count: s.noTitle,              severity: 'error',   description: 'Pages with no <title> element — critical for SEO.' },
-    { label: 'Missing H1',                count: s.noH1,                 severity: 'warning', description: 'Pages with no H1 heading.' },
-    { label: 'Missing meta description',  count: s.noDescription,        severity: 'warning', description: 'Pages with no meta description tag.' },
-    { label: 'Duplicate title tags',      count: s.duplicateTitle,       severity: 'warning', description: 'Multiple pages sharing the same title.' },
-    { label: 'Duplicate meta desc.',      count: s.duplicateDescription, severity: 'warning', description: 'Multiple pages sharing the same meta description.' },
-    { label: 'Missing image alt text',    count: s.noImageAlt,           severity: 'warning', description: 'Images without alt attributes (hurts accessibility + SEO).' },
-    { label: 'Redirect chains',           count: s.redirectChain,        severity: 'warning', description: 'Pages with 2+ consecutive redirects, wasting crawl budget.' },
-    { label: 'Large page size',           count: s.largePageSize,        severity: 'notice',  description: 'Pages exceeding recommended size limit (affects speed).' },
+    { label: 'Broken links',              count: s.brokenLinks,          severity: 'error',   description: 'Internal or external links returning 4xx/5xx responses.', check_key: 'broken_links' },
+    { label: 'Broken resources',          count: s.brokenResources,      severity: 'error',   description: 'Images, scripts, or stylesheets that fail to load.',     check_key: 'broken_resources' },
+    { label: '4xx pages',                 count: s.is4xx,                severity: 'error',   description: 'Pages returning client error responses (e.g. 404 Not Found).', check_key: 'is_4xx_code' },
+    { label: '5xx pages',                 count: s.is5xx,                severity: 'error',   description: 'Pages returning server error responses.',                check_key: 'is_5xx_code' },
+    { label: 'Missing title tag',         count: s.noTitle,              severity: 'error',   description: 'Pages with no <title> element — critical for SEO.',      check_key: 'no_title' },
+    { label: 'Missing H1',                count: s.noH1,                 severity: 'warning', description: 'Pages with no H1 heading.',                              check_key: 'no_h1_tag' },
+    { label: 'Missing meta description',  count: s.noDescription,        severity: 'warning', description: 'Pages with no meta description tag.',                    check_key: 'no_description' },
+    { label: 'Duplicate title tags',      count: s.duplicateTitle,       severity: 'warning', description: 'Multiple pages sharing the same title.',                 check_key: 'duplicate_title' },
+    { label: 'Duplicate meta desc.',      count: s.duplicateDescription, severity: 'warning', description: 'Multiple pages sharing the same meta description.',     check_key: 'duplicate_description' },
+    { label: 'Missing image alt text',    count: s.noImageAlt,           severity: 'warning', description: 'Images without alt attributes (hurts accessibility + SEO).', check_key: 'no_image_alt' },
+    { label: 'Redirect chains',           count: s.redirectChain,        severity: 'warning', description: 'Pages with 2+ consecutive redirects, wasting crawl budget.', check_key: 'redirect_chain' },
+    { label: 'Large page size',           count: s.largePageSize,        severity: 'notice',  description: 'Pages exceeding recommended size limit (affects speed).', check_key: 'large_page_size' },
   ]
   return all.filter(i => i.count > 0)
 }
@@ -127,6 +130,9 @@ export default function SiteAuditPage() {
   const [expandedIssue, setExpandedIssue]     = useState<string | null>(null)
   const [issuePages, setIssuePages]           = useState<IssuePage[]>([])
   const [loadingIssue, setLoadingIssue]       = useState(false)
+
+  // Severity filter — null = show all
+  const [severityFilter, setSeverityFilter]   = useState<AuditSeverity | null>(null)
 
   async function toggleIssue(label: string) {
     if (expandedIssue === label) {
@@ -197,6 +203,19 @@ export default function SiteAuditPage() {
   const warnings = issues.filter(i => i.severity === 'warning')
   const notices  = issues.filter(i => i.severity === 'notice')
   const isLoading = task === undefined || running
+
+  // Apply the severity classifier to each issue and group counts.
+  const issueSeverity: Record<string, AuditSeverity> = Object.fromEntries(
+    issues.map(i => [
+      i.label,
+      classifyAuditFinding({ check_key: i.check_key, pages_count: i.count }).severity,
+    ]),
+  )
+  const counts = {
+    critical:  issues.filter(i => issueSeverity[i.label] === 'critical').length,
+    important: issues.filter(i => issueSeverity[i.label] === 'important').length,
+    minor:     issues.filter(i => issueSeverity[i.label] === 'minor').length,
+  }
 
   return (
     <div className="p-8 max-w-5xl">
@@ -336,10 +355,37 @@ export default function SiteAuditPage() {
             {/* Issues list */}
             {issues.length > 0 ? (
               <div>
-                <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-3">Issues found</p>
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Issues found</p>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setSeverityFilter(null)}
+                      className={`text-[11px] px-2 py-1 rounded border transition ${severityFilter === null ? 'bg-gray-700 text-white border-gray-600' : 'bg-gray-900 text-gray-400 border-gray-800 hover:border-gray-700'}`}
+                    >
+                      All ({issues.length})
+                    </button>
+                    {(['critical', 'important', 'minor'] as const).map(sev => {
+                      const cfg = SEVERITY_STYLES[sev]
+                      const active = severityFilter === sev
+                      return (
+                        <button
+                          key={sev}
+                          onClick={() => setSeverityFilter(active ? null : sev)}
+                          className={`text-[11px] px-2 py-1 rounded border transition ${active ? cfg.class : 'bg-gray-900 text-gray-400 border-gray-800 hover:border-gray-700'}`}
+                          title={`Filter to ${cfg.label} only`}
+                        >
+                          {cfg.emoji} {cfg.label} ({counts[sev]})
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
                 <div className="space-y-2">
                   {['error', 'warning', 'notice'].flatMap(sev =>
-                    issues.filter(i => i.severity === sev).map(issue => {
+                    issues
+                      .filter(i => i.severity === sev)
+                      .filter(i => severityFilter === null || issueSeverity[i.label] === severityFilter)
+                      .map(issue => {
                       const c = SEV_COLORS[issue.severity]
                       const canDrill = !!ISSUE_CHECK_KEYS[issue.label]
                       const isOpen   = expandedIssue === issue.label
@@ -352,11 +398,19 @@ export default function SiteAuditPage() {
                           >
                             <div className={`w-2 h-2 rounded-full mt-1 flex-shrink-0 ${c.dot}`} />
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className="text-sm font-medium text-white">{issue.label}</span>
                                 <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${c.badge}`}>
                                   {issue.count}
                                 </span>
+                                {(() => {
+                                  const sevCfg = SEVERITY_STYLES[issueSeverity[issue.label] ?? 'minor']
+                                  return (
+                                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${sevCfg.class}`}>
+                                      {sevCfg.emoji} {sevCfg.label}
+                                    </span>
+                                  )
+                                })()}
                               </div>
                               <p className="text-xs text-gray-500 mt-0.5">{issue.description}</p>
                             </div>

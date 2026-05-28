@@ -1,0 +1,33 @@
+name: Weekly Mimir Importance Tuner
+
+on:
+  schedule:
+    # Monday 02:00 UTC (09:00 WIB) — Sprint MIMIR.POLISH.3.
+    # Decays importance on stale memories + boosts on frequently-applied ones.
+    # Runs before agent-performance digest (02:30) so any importance shifts
+    # show up in the Slack digest's Mimir block on the same morning.
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: mimir-tune
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/mimir-tune
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "Missing APP_URL or CRON_SECRET secret"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/mimir-tune"

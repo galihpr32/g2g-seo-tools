@@ -3,7 +3,8 @@ import { createClient as createSupabase } from '@supabase/supabase-js'
 import Anthropic from '@anthropic-ai/sdk'
 
 /**
- * POST /api/automation/daily-briefing
+ * GET  /api/automation/daily-briefing  — triggered by Vercel Cron (schedule: "0 0 * * 1-5")
+ * POST /api/automation/daily-briefing  — triggered by external cron services (e.g. cron-job.org)
  *
  * Composes a mixed-audience daily pipeline briefing for #writer-rangers.
  * Sections:
@@ -11,9 +12,11 @@ import Anthropic from '@anthropic-ai/sdk'
  *   2. 🚦 SEO Pipeline       — opp queue, agent activity, stuck items
  *   3. 📊 Team Activity      — yesterday's contributions per user
  *
- * Auth: Bearer CRON_SECRET (called by Cowork-scheduled task at 00:00 UTC weekday).
+ * Auth: Bearer CRON_SECRET
+ *   - Vercel Cron injects this automatically via CRON_SECRET env var (GET requests).
+ *   - External cron services must send: Authorization: Bearer <CRON_SECRET>
  *
- * Body (optional):
+ * POST body (optional):
  *   {
  *     ownerUserId?: string   (default: G2G_OWNER_USER_ID env)
  *     siteSlug?:    string   (default: 'g2g')
@@ -21,8 +24,6 @@ import Anthropic from '@anthropic-ai/sdk'
  *   }
  *
  * Returns: { ok, markdown, slackTs, dataSnapshot, generatedAt }
- *
- * The Cowork task saves the returned markdown to /reports/YYYY-MM-DD-briefing.md.
  */
 
 export const maxDuration = 60
@@ -35,6 +36,15 @@ function isCronAuth(request: Request): boolean {
   return authHeader === `Bearer ${process.env.CRON_SECRET}`
 }
 
+/** GET — called by Vercel Cron. Uses default params (no body). */
+export async function GET(request: Request) {
+  if (!isCronAuth(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  return runBriefing({ ownerUserId: undefined, siteSlug: undefined, preview: false })
+}
+
+/** POST — called by external cron services (cron-job.org, EasyCron, etc.). Accepts optional body. */
 export async function POST(request: Request) {
   if (!isCronAuth(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -46,6 +56,10 @@ export async function POST(request: Request) {
     preview?:     boolean
   }
 
+  return runBriefing(body)
+}
+
+async function runBriefing(body: { ownerUserId?: string; siteSlug?: string; preview?: boolean }) {
   const ownerId  = body.ownerUserId ?? process.env.G2G_OWNER_USER_ID
   const siteSlug = body.siteSlug    ?? 'g2g'
   const preview  = body.preview     ?? false

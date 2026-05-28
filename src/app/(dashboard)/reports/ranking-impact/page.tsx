@@ -104,6 +104,74 @@ function SnapshotProgress({ outcome }: { outcome: Outcome }) {
   )
 }
 
+// ── Outcome auto-classifier ─────────────────────────────────────────────────
+// Eyeballing the trajectory curve is slow. Classify each outcome into a
+// bucket so users can filter "show me only stalled / failed" instantly.
+//
+//   landed   → ANY snapshot showed pos ≤ 8 (target hit)
+//   landing  → trajectory improving by 5+ positions (close to target, not yet)
+//   stalled  → ≥30d post-publish, position hasn't changed >2 from baseline
+//   failed   → ≥60d post-publish, position still > 25
+//   tooEarly → < 30d since publish, no meaningful signal yet
+//   noData   → never had a snapshot taken
+
+type OutcomeClass = 'landed' | 'landing' | 'stalled' | 'failed' | 'tooEarly' | 'noData'
+
+const OUTCOME_CLASS_STYLES: Record<OutcomeClass, { label: string; class: string; emoji: string }> = {
+  landed:   { label: 'LANDED',    class: 'bg-green-500/15 text-green-300 border-green-500/30',  emoji: '🎯' },
+  landing:  { label: 'LANDING',   class: 'bg-blue-500/15 text-blue-300 border-blue-500/30',     emoji: '🛬' },
+  stalled:  { label: 'STALLED',   class: 'bg-amber-500/15 text-amber-300 border-amber-500/30',  emoji: '⏸' },
+  failed:   { label: 'FAILED',    class: 'bg-red-500/15 text-red-300 border-red-500/30',        emoji: '❌' },
+  tooEarly: { label: 'TOO EARLY', class: 'bg-gray-700/40 text-gray-400 border-gray-700',         emoji: '⏳' },
+  noData:   { label: 'NO DATA',   class: 'bg-gray-700/30 text-gray-500 border-gray-800',         emoji: '—'  },
+}
+
+function classifyOutcome(o: Outcome): OutcomeClass {
+  const positions = [o.pos_0, o.pos_30, o.pos_60, o.pos_90].filter((p): p is number => p != null)
+  if (positions.length === 0) return 'noData'
+
+  // ANY top-8 snapshot = landed (target hit at any point — even if drifted later)
+  if (positions.some(p => p <= 8)) return 'landed'
+
+  const ageDays = o.published_at
+    ? (Date.now() - new Date(o.published_at).getTime()) / 86400_000
+    : 0
+
+  if (ageDays < 30) return 'tooEarly'
+
+  // Use most recent vs baseline
+  const latest = o.pos_90 ?? o.pos_60 ?? o.pos_30 ?? o.pos_0
+  const baseline = o.pos_0 ?? latest
+  if (latest == null || baseline == null) return 'noData'
+
+  const movement = baseline - latest
+
+  // Failed: >60d old, still >25
+  if (ageDays >= 60 && latest > 25) return 'failed'
+
+  // Landing: improving toward target
+  if (movement >= 5) return 'landing'
+
+  // Stalled: no meaningful movement in 30+ days
+  if (Math.abs(movement) < 3) return 'stalled'
+
+  // Default — small movement, still in progress
+  return 'landing'
+}
+
+function OutcomeClassBadge({ outcome }: { outcome: Outcome }) {
+  const cls = classifyOutcome(outcome)
+  const style = OUTCOME_CLASS_STYLES[cls]
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${style.class}`}
+      title={`Auto-classified based on trajectory + age. ${cls === 'landed' ? 'Hit top 8 at some point.' : cls === 'landing' ? 'Improving but not yet top 8.' : cls === 'stalled' ? '30d+ no movement.' : cls === 'failed' ? '60d+ still >25.' : cls === 'tooEarly' ? 'Less than 30d since publish.' : 'No snapshot data.'}`}
+    >
+      <span>{style.emoji}</span>{style.label}
+    </span>
+  )
+}
+
 // ── Position trend sparkline ──────────────────────────────────────────────────
 
 function PositionSparkline({ outcome }: { outcome: Outcome }) {
@@ -185,6 +253,9 @@ function OutcomeRow({
             <p className="text-[10px] text-gray-500 font-mono truncate">{path}</p>
           </div>
         </td>
+        <td className="py-3 px-3">
+          <OutcomeClassBadge outcome={outcome} />
+        </td>
         <td className="py-3 px-3 text-xs text-gray-400">
           {outcome.published_at
             ? <>{outcome.published_at}<br /><span className="text-gray-600">{age}d ago</span></>
@@ -234,7 +305,7 @@ function OutcomeRow({
 
       {expanded && (
         <tr className="border-b border-gray-800 bg-gray-900/40">
-          <td colSpan={9} className="px-6 py-4">
+          <td colSpan={10} className="px-6 py-4">
             <div className="grid grid-cols-4 gap-4">
               {[
                 { label: 'At publish', pos: outcome.pos_0, clicks: outcome.clicks_0, impr: outcome.impressions_0, at: outcome.snapshot_0_at },
@@ -274,6 +345,7 @@ export default function RankingImpactPage() {
   const [error,        setError]        = useState<string | null>(null)
   const [snapshotting, setSnapshotting] = useState<string | null>(null)
   const [filter,       setFilter]       = useState<'all' | 'improved' | 'declined' | 'pending'>('all')
+  const [classFilter,  setClassFilter]  = useState<OutcomeClass | 'all'>('all')
   const [search,       setSearch]       = useState('')
 
   useEffect(() => {
@@ -315,6 +387,10 @@ export default function RankingImpactPage() {
       const hay = [o.primary_keyword, o.page_url].filter(Boolean).join(' ').toLowerCase()
       if (!hay.includes(search.toLowerCase())) return false
     }
+    // Trajectory class filter (auto-classifier)
+    if (classFilter !== 'all') {
+      if (classifyOutcome(o) !== classFilter) return false
+    }
     if (filter === 'improved') {
       const first = o.pos_0, last = o.pos_90 ?? o.pos_60 ?? o.pos_30
       return first !== null && last !== null && last < first
@@ -328,6 +404,10 @@ export default function RankingImpactPage() {
     }
     return true
   })
+
+  // Class counts for filter strip badges
+  const classCounts: Record<OutcomeClass, number> = { landed: 0, landing: 0, stalled: 0, failed: 0, tooEarly: 0, noData: 0 }
+  for (const o of outcomes) classCounts[classifyOutcome(o)]++
 
   // Summary stats
   const improvedCount = outcomes.filter(o => {
@@ -398,6 +478,39 @@ export default function RankingImpactPage() {
         />
       </div>
 
+      {/* Trajectory class filter (auto-classified) */}
+      <div className="flex items-center gap-2 flex-wrap mt-3">
+        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Class:</span>
+        <button
+          onClick={() => setClassFilter('all')}
+          className={`text-[11px] px-2.5 py-1 rounded-lg border transition ${
+            classFilter === 'all'
+              ? 'bg-red-700 border-red-600 text-white'
+              : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
+          }`}
+        >
+          All
+        </button>
+        {(['landed', 'landing', 'stalled', 'failed', 'tooEarly', 'noData'] as const).map(cls => {
+          const count = classCounts[cls]
+          if (count === 0) return null
+          const style = OUTCOME_CLASS_STYLES[cls]
+          return (
+            <button
+              key={cls}
+              onClick={() => setClassFilter(cls)}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border transition ${
+                classFilter === cls
+                  ? style.class
+                  : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-white'
+              }`}
+            >
+              {style.emoji} {style.label} ({count})
+            </button>
+          )
+        })}
+      </div>
+
       {/* Error / loading */}
       {error && <div className="bg-red-900/30 border border-red-700 rounded-xl p-4 text-red-300 text-sm">{error}</div>}
       {loading && <div className="bg-gray-800 rounded-xl h-32 animate-pulse" />}
@@ -424,6 +537,7 @@ export default function RankingImpactPage() {
             <thead className="border-b border-gray-800">
               <tr>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-400">Brief / Page</th>
+                <th className="py-3 px-3 text-left text-xs font-semibold text-gray-400">Class</th>
                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-400">Published</th>
                 <th className="py-3 px-3 text-left text-xs font-semibold text-gray-400">Trend</th>
                 <th className="py-3 px-3 text-center text-xs font-semibold text-gray-400">At pub</th>

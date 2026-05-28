@@ -1,0 +1,41 @@
+name: Weekly Tier SERP Snapshot
+
+# ── PAUSED 2026-05-14 ─────────────────────────────────────────────────
+# Auto-schedule disabled due to DataForSEO budget conservation.
+# Manual trigger via GitHub Actions "Run workflow" button is still active,
+# AND the UI button at /priority-products → "Run SERP baseline" still works
+# (uses /api/priority-products/run-baseline — chunked, owner-controlled).
+#
+# To re-enable: uncomment the `- cron` line below and push.
+on:
+  # schedule:
+  #   - cron: '0 2 * * 1'         # Monday 02:00 UTC (09:00 WIB) — PAUSED
+  workflow_dispatch:
+
+concurrency:
+  group: tier-serp-weekly
+  # Long-running (up to 5 min for full population). Don't pile up.
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Trigger /api/cron/tier-serp-weekly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 360 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/tier-serp-weekly")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

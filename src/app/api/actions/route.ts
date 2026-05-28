@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 // POST /api/actions
 //   Bulk (from ranking drop):  { pages: [...], action_type, notes, snapshot_date }
@@ -13,13 +14,29 @@ export async function POST(request: Request) {
 
   const effectiveOwnerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
+
+  // Resolve active site (cookie/query/body) — single helper, used everywhere
+  const cookieSite = resolveSiteSlugFromRequest(request)
+
+  // Sprint 12: site_url ONLY comes from site_configs based on active slug.
+  // No fallback to gsc_connections.site_url — that path always returned
+  // G2G's URL regardless of which brand the user is on.
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', cookieSite)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  // Verify user has GSC OAuth connected; without it, we can't act on rankings.
   const { data: conn } = await db
     .from('gsc_connections')
-    .select('site_url')
+    .select('user_id')
     .eq('user_id', effectiveOwnerId)
-    .single()
+    .maybeSingle()
 
-  if (!conn?.site_url) return NextResponse.json({ error: 'No GSC connection' }, { status: 400 })
+  const resolvedSiteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
+  if (!resolvedSiteUrl) return NextResponse.json({ error: `No data for site=${cookieSite}` }, { status: 400 })
 
   const body = await request.json()
 
@@ -38,7 +55,7 @@ export async function POST(request: Request) {
     let normalised = page.trim()
     if (!normalised.startsWith('http')) {
       // Accept path like /categories/xyz and prepend site_url
-      const base = conn.site_url.replace(/\/$/, '')
+      const base = resolvedSiteUrl.replace(/\/$/, '')
       normalised = `${base}${normalised.startsWith('/') ? '' : '/'}${normalised}`
     }
 
@@ -46,14 +63,15 @@ export async function POST(request: Request) {
     const { data, error } = await db
       .from('seo_action_items')
       .insert({
-        site_url: conn.site_url,
-        page: normalised,
+        site_url:      resolvedSiteUrl,
+        site_slug:     cookieSite,
+        page:          normalised,
         action_type,
-        notes: notes ?? null,
+        notes:         notes ?? null,
         snapshot_date: today,
-        clicks_drop: null,
+        clicks_drop:   null,
         position_change: null,
-        status: 'pending',
+        status:        'pending',
       })
       .select()
       .single()
@@ -75,14 +93,15 @@ export async function POST(request: Request) {
   }
 
   const inserts = pages.map(p => ({
-    site_url: conn.site_url,
-    page: p.page,
+    site_url:        resolvedSiteUrl,
+    site_slug:       cookieSite,
+    page:            p.page,
     action_type,
-    notes: notes ?? null,
+    notes:           notes ?? null,
     snapshot_date,
-    clicks_drop: p.clicks_drop,
+    clicks_drop:     p.clicks_drop,
     position_change: p.position_change,
-    status: 'pending',
+    status:          'pending',
   }))
 
   const { data, error } = await db

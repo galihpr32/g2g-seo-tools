@@ -1,0 +1,41 @@
+name: Daily Backlinks Verification
+
+# Daily cron — for each pending or active paid backlink, cURL the destination
+# and verify anchor text + target URL still present. Flips status pending →
+# active or active → broken automatically. Eliminates Specialist 2's manual
+# click-each-link daily ritual.
+
+on:
+  schedule:
+    # 03:00 UTC daily (10:00 WIB) — after gsc-daily / bing-daily / keyword-rankings
+    # so it runs while the team is starting their morning. Failures surface
+    # first thing.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: backlinks-verify
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/backlinks-verify
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 360 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/backlinks-verify")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

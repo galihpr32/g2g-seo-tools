@@ -2,21 +2,25 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 10
 
-// GET /api/products — list all tracked products
-export async function GET() {
+// GET /api/products — list tracked products for the active site
+// Site is resolved via resolveSiteSlugFromRequest (query param > cookie > default 'g2g')
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const db = createServiceClient()
   const { data, error } = await db
     .from('tracked_products')
     .select('*')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .order('created_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -32,6 +36,7 @@ export async function POST(req: Request) {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
+  const siteSlug = resolveSiteSlugFromRequest(req, body)
 
   const { name, page_url, keywords, market, notes } = body
   if (!name?.trim() || !page_url?.trim()) {
@@ -42,6 +47,7 @@ export async function POST(req: Request) {
     .from('tracked_products')
     .insert({
       owner_user_id: ownerId,
+      site_slug:     siteSlug,
       name:          name.trim(),
       page_url:      page_url.trim(),
       keywords:      Array.isArray(keywords) ? keywords.filter(Boolean) : [],

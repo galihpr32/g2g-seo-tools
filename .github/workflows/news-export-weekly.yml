@@ -1,0 +1,34 @@
+name: Weekly News & Trends Export
+
+on:
+  schedule:
+    # Monday 01:00 UTC (= 08:00 WIB) — pushes fresh date-stamped tabs to every
+    # brand's configured Google Sheet so other divisions have weekly digest
+    # waiting first thing Monday morning.
+    - cron: '0 1 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: news-export-weekly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/news-export-weekly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "Missing APP_URL or CRON_SECRET secret"
+            exit 1
+          fi
+          echo "Triggering news export at $(date -u)"
+          response=$(curl --fail-with-body --silent --show-error --max-time 540 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/news-export-weekly")
+          echo "Response: ${response}"

@@ -11,6 +11,7 @@ import { runTyr,   TYR_DEFAULTS,   type TyrConfig }   from '@/lib/agents/tyr'
 import { runVor,   VOR_DEFAULTS,   type VorConfig }   from '@/lib/agents/vor'
 import { runSaga,  SAGA_DEFAULTS,  type SagaConfig }  from '@/lib/agents/saga'
 import { notifyAgentRun, buildAgentNotification, type PendingAction } from '@/lib/slack/notify'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export async function POST(
   request: Request,
@@ -25,7 +26,7 @@ export async function POST(
   const db = createServiceClient()
 
   const body = await request.json()
-  const siteSlug = body.site ?? 'g2g'
+  const siteSlug = resolveSiteSlugFromRequest(request, body)
 
   // Track runId in outer scope so the outer catch can mark the run as failed
   // even if the agent throws *before* entering its own try-block (e.g. import

@@ -90,6 +90,10 @@ const DEFAULT_INSIGHTS: AgentInsights = {
 /**
  * Compute agent insights for a date window. Both bounds inclusive.
  * `windowStart` and `windowEnd` are ISO date strings (YYYY-MM-DD).
+ *
+ * `siteSlug` (optional, defaults to 'g2g') scopes the queries to a single
+ * brand. Pass through from monthly/weekly report generation so OG reports
+ * don't pull G2G's agent activity (and vice versa).
  */
 export async function getAgentInsights(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -97,6 +101,7 @@ export async function getAgentInsights(
   ownerId:      string,
   windowStart:  string,
   windowEnd:    string,
+  siteSlug:     string = 'g2g',
 ): Promise<AgentInsights> {
   const insights: AgentInsights = {
     ...structuredClone(DEFAULT_INSIGHTS),
@@ -107,28 +112,34 @@ export async function getAgentInsights(
   const startIso = `${windowStart}T00:00:00`
   const endIso   = `${windowEnd}T23:59:59`
 
-  // Pull everything in parallel
+  // Pull everything in parallel — every site-scoped query also filters by
+  // site_slug so insights stay isolated per brand.
   const [runsRes, actionsRes, briefsRes, exclusionsRes] = await Promise.all([
     db
       .from('agent_runs')
       .select('id, agent_key, status, started_at, finished_at, actions_queued, findings_count')
       .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
       .gte('started_at', startIso)
       .lte('started_at', endIso),
     db
       .from('agent_actions')
       .select('id, agent_key, action_type, status, priority, data, created_at')
       .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
       .gte('created_at', startIso)
       .lte('created_at', endIso),
     db
       .from('seo_content_briefs')
       .select('id, status, tyr_score, tyr_status, tyr_reviewed_at, created_at')
       .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
       .gte('tyr_reviewed_at', startIso)
       .lte('tyr_reviewed_at', endIso)
       .not('tyr_score', 'is', null),
-    // Keyword exclusions — used to filter Loki gap highlights
+    // Keyword exclusions — kept workspace-wide (brand terms apply across both
+    // brands; if a separate per-brand exclusion list is ever needed, add a
+    // site_slug column here too).
     db
       .from('keyword_exclusions')
       .select('pattern, match_type')

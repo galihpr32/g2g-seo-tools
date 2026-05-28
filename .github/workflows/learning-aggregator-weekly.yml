@@ -1,0 +1,32 @@
+name: Weekly Learning Loop Aggregator
+
+on:
+  schedule:
+    # Monday 04:00 UTC (11:00 WIB) — fires AFTER agent performance digest
+    # (02:00 UTC) so the morning Slack post lands first, then the heavier
+    # aggregator (Haiku-bound) runs over coffee break.
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: learning-aggregator-weekly
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger /api/cron/learning-aggregator-weekly
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "Missing APP_URL or CRON_SECRET secret"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 540 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/learning-aggregator-weekly"

@@ -4,6 +4,8 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
 import { getAgentInsights, formatInsightsForPrompt } from '@/lib/reports/agent-insights'
+import { fetchChannelBreakdown } from '@/lib/reports/channel-breakdown'
+import { analyzeTrackedRankings } from '@/lib/reports/ranking-analysis'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
@@ -48,7 +50,8 @@ export async function GET(req: Request) {
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
   const db = createServiceClient()
   const { searchParams } = new URL(req.url)
-  const id = searchParams.get('id')
+  const id   = searchParams.get('id')
+  const site = searchParams.get('site') ?? 'g2g'
 
   if (id) {
     const { data, error } = await db
@@ -63,8 +66,9 @@ export async function GET(req: Request) {
 
   const { data, error } = await db
     .from('monthly_reports')
-    .select('id, month_start, month_end, created_at, ai_narrative')
+    .select('id, month_start, month_end, created_at, ai_narrative, site_slug')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', site)
     .order('month_start', { ascending: false })
     .limit(24)
 
@@ -101,11 +105,12 @@ export async function POST(req: Request) {
   const siteSlug   = (body.site as string | undefined) ?? 'g2g'
   const { data: siteConfig } = await db
     .from('site_configs')
-    .select('slug, display_name, semrush_domain, gsc_property, ga4_property_id')
+    .select('slug, display_name, semrush_domain, gsc_property, ga4_property_id, favicon_domain')
     .eq('slug', siteSlug)
     .maybeSingle()
-  const semrushDomain = siteConfig?.semrush_domain ?? 'g2g.com'
-  const siteDisplay   = siteConfig?.display_name   ?? 'G2G'
+  const semrushDomain = siteConfig?.semrush_domain  ?? 'g2g.com'
+  const siteDisplay   = siteConfig?.display_name    ?? 'G2G'
+  const faviconDomain = siteConfig?.favicon_domain  ?? 'g2g.com'
 
   // Default to last complete month
   const now = new Date()
@@ -119,25 +124,32 @@ export async function POST(req: Request) {
   const { year: prevYear, month: prevMonth } = getPreviousMonth(targetYear, targetMonth)
   const { start: prevStart, end: prevEnd }   = getMonthRange(prevYear, prevMonth)
 
-  // Delete and regenerate if already exists
+  // Delete and regenerate if already exists (scoped to this site)
   const { data: existing } = await db
     .from('monthly_reports')
     .select('id')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .eq('month_start', monthStart)
     .maybeSingle()
   if (existing) {
     await db.from('monthly_reports').delete().eq('id', existing.id)
   }
 
-  // GSC connection
+  // GSC connection — tokens are shared across sites (same Google account).
+  // Use siteConfig.gsc_property as the GSC property URL (not conn.site_url which
+  // reflects whichever property was last selected during OAuth). This matches
+  // the weekly report pattern and ensures OG queries OG's GSC property.
   const { data: conn } = await db
     .from('gsc_connections')
     .select('site_url, access_token, refresh_token, expires_at')
     .eq('user_id', ownerId)
     .maybeSingle()
 
-  const siteUrl = conn?.site_url ?? null
+  // Sprint 12 fix: NO fallback to gsc_connections.site_url — that legacy
+  // path always returned G2G's URL (single OAuth row per user), causing
+  // OffGamers monthly reports to render G2G data.
+  const siteUrl = siteConfig?.gsc_property ?? null
 
   // ── Fetch action items + competitors + backlinks (in parallel; GSC fetched
   // separately below from the live API because the snapshot table is a
@@ -161,14 +173,17 @@ export async function POST(req: Request) {
       .from('competitors')
       .select('domain, name, active')
       .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug)
       .eq('active', true)
       .limit(5),
 
-    // Paid backlinks — all active, plus those acquired this month
+    // Paid backlinks — all active, plus those acquired this month, scoped
+    // to the active brand so OG reports don't pull G2G's backlink portfolio.
     db
       .from('paid_backlinks')
       .select('id, site_name, external_url, anchor_text, target_page, target_keyword, link_status, live_date, cost_amount, cost_currency, position_current, position_at_creation')
-      .eq('owner_user_id', ownerId),
+      .eq('owner_user_id', ownerId)
+      .eq('site_slug', siteSlug),
   ])
 
   // ── Fetch GSC monthly aggregates DIRECTLY from live API ──────────────────
@@ -403,20 +418,26 @@ export async function POST(req: Request) {
 
   try {
     if (conn?.access_token) {
-      const ga4PropertyId = process.env.GA4_PROPERTY_ID
+      // Prefer site_configs.ga4_property_id (per-site), fall back to env var (G2G legacy)
+      const ga4PropertyId = siteConfig?.ga4_property_id ?? process.env.GA4_PROPERTY_ID
       if (ga4PropertyId) {
         const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
-        const [thisMonthRaw, prevMonthRaw, topPagesRaw] = await Promise.all([
+        const [thisMonthRaw, prevMonthRaw, topPagesRaw, topPagesPrevRaw] = await Promise.all([
           getGA4Report(ga4Auth, ga4PropertyId, monthStart, monthEnd,
             ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'conversions', 'purchaseRevenue'], 31),
           getGA4Report(ga4Auth, ga4PropertyId, prevStart, prevEnd,
             ['date'], ['sessions', 'engagedSessions', 'bounceRate', 'conversions', 'purchaseRevenue'], 31),
           getGA4Report(ga4Auth, ga4PropertyId, monthStart, monthEnd,
             ['pagePath', 'sessionDefaultChannelGroup'], ['sessions', 'conversions', 'purchaseRevenue'], 50),
+          // Prev-month version of the SAME query — drives the "vs Last Month"
+          // delta column on slide 6 + the report viewer's top-pages table.
+          getGA4Report(ga4Auth, ga4PropertyId, prevStart, prevEnd,
+            ['pagePath', 'sessionDefaultChannelGroup'], ['sessions', 'conversions', 'purchaseRevenue'], 50),
         ])
-        const thisRows = parseGA4Rows(thisMonthRaw)
-        const prevRows = parseGA4Rows(prevMonthRaw)
-        const topRows  = parseGA4Rows(topPagesRaw)
+        const thisRows    = parseGA4Rows(thisMonthRaw)
+        const prevRows    = parseGA4Rows(prevMonthRaw)
+        const topRows     = parseGA4Rows(topPagesRaw)
+        const topPrevRows = parseGA4Rows(topPagesPrevRaw)
 
         const monthSessions     = sumMetric(thisRows, 'sessions')
         const prevSessions      = sumMetric(prevRows, 'sessions')
@@ -428,18 +449,36 @@ export async function POST(req: Request) {
         const bounceArr         = thisRows.map(r => parseFloat(r.bounceRate ?? '0')).filter(n => !isNaN(n))
         const avgBounce         = bounceArr.length ? bounceArr.reduce((a, b) => a + b, 0) / bounceArr.length : 0
 
+        // Build prev-month sessions index for "vs Last Month" delta column.
+        // Same channel-filter as current month so we compare like-for-like
+        // (organic /categories/ traffic both sides).
+        const prevByPage = new Map<string, number>()
+        for (const r of topPrevRows) {
+          if (!r.sessionDefaultChannelGroup?.toLowerCase().includes('organic')) continue
+          const path = r.pagePath ?? ''
+          if (!path.includes('/categories/') || path.includes('/offer/')) continue
+          prevByPage.set(path, (prevByPage.get(path) ?? 0) + parseInt(r.sessions ?? '0'))
+        }
+
         const organicPages = topRows
           .filter(r =>
             r.sessionDefaultChannelGroup?.toLowerCase().includes('organic') &&
             (r.pagePath ?? '').includes('/categories/') &&
             !(r.pagePath ?? '').includes('/offer/')
           )
-          .map(r => ({
-            pagePath:    r.pagePath ?? '',
-            sessions:    parseInt(r.sessions ?? '0'),
-            conversions: parseInt(r.conversions ?? '0'),
-            revenue:     parseFloat(r.purchaseRevenue ?? '0'),
-          }))
+          .map(r => {
+            const path     = r.pagePath ?? ''
+            const sessions = parseInt(r.sessions ?? '0')
+            const prev     = prevByPage.get(path) ?? 0
+            return {
+              pagePath:        path,
+              sessions,
+              conversions:     parseInt(r.conversions ?? '0'),
+              revenue:         parseFloat(r.purchaseRevenue ?? '0'),
+              prevSessions:    prev,
+              sessionsPct:     pctChange(sessions, prev),    // null when prev=0 → "NEW" badge
+            }
+          })
           .sort((a, b) => b.sessions - a.sessions)
           .slice(0, 15)
 
@@ -528,14 +567,15 @@ export async function POST(req: Request) {
 
       const totalRaw = Array.from(rawSov.values()).reduce((a, b) => a + b, 0)
       if (totalRaw > 0) {
-        const allDomains = new Set(['g2g.com', ...competitorList.map(c => normalizeDomain(c.domain))])
+        const primaryDomain = normalizeDomain(faviconDomain)  // 'g2g.com' or 'offgamers.com'
+        const allDomains = new Set([primaryDomain, ...competitorList.map(c => normalizeDomain(c.domain))])
         sovTable = Array.from(allDomains)
           .map(dom => ({
             domain:   dom,
             sov:      Math.round(((rawSov.get(dom) ?? 0) / totalRaw) * 1000) / 10,
             keywords: kwCount.get(dom) ?? 0,
           }))
-          .filter(r => r.sov > 0 || r.domain === 'g2g.com')
+          .filter(r => r.sov > 0 || r.domain === primaryDomain)
           .sort((a, b) => b.sov - a.sov)
       }
     }
@@ -544,11 +584,77 @@ export async function POST(req: Request) {
   }
 
   // ── Agent insights ───────────────────────────────────────────────────────
-  const agentInsights = await getAgentInsights(db, ownerId, monthStart, monthEnd)
+  const agentInsights = await getAgentInsights(db, ownerId, monthStart, monthEnd, siteSlug)
     .catch(e => {
       console.warn('[monthly-report] agent insights failed:', e)
       return null
     })
+
+  // ── Channel breakdown (GA4 sessionDefaultChannelGroup) ──────────────────
+  // Pulls organic / direct / referral / social / paid / email separately so
+  // execs can see WHICH channel grew or shrank. Skipped silently if GA4 is
+  // unreachable.
+  let channelBreakdown: Awaited<ReturnType<typeof fetchChannelBreakdown>> = null
+  try {
+    if (conn?.access_token) {
+      const ga4PropertyId = siteConfig?.ga4_property_id ?? process.env.GA4_PROPERTY_ID
+      if (ga4PropertyId) {
+        const ga4Auth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
+        channelBreakdown = await fetchChannelBreakdown({
+          auth:       ga4Auth,
+          propertyId: ga4PropertyId,
+          curStart:   monthStart,
+          curEnd:     monthEnd,
+          prevStart:  prevStart,
+          prevEnd:    prevEnd,
+        })
+      }
+    }
+  } catch (e) {
+    console.warn('[monthly-report] channel breakdown failed:', e)
+  }
+
+  // ── Tracked-product ranking analysis (DataForSEO history) ──────────────
+  // Site-isolated via site_slug — G2G & OG never cross-pollinate. AI action
+  // plan only fires monthly (cost-control); weekly route also calls this with
+  // withActionPlan=false.
+  let trackedRankings: Awaited<ReturnType<typeof analyzeTrackedRankings>> | null = null
+  try {
+    trackedRankings = await analyzeTrackedRankings({
+      db,
+      ownerId,
+      siteSlug,
+      siteName:    siteDisplay,
+      domain:      faviconDomain,
+      periodStart: monthStart,
+      periodEnd:   monthEnd,
+      periodDays:  30,
+      withActionPlan: true,
+    })
+  } catch (e) {
+    console.warn('[monthly-report] tracked rankings analysis failed:', e)
+  }
+
+  // ── Experiments active during this period ──────────────────────────────
+  // Pull start/continue/stop rows for the period_started == this month + any
+  // 'continue' rolling forward. The viewer + PPTX render this as a Kanban
+  // snapshot so execs see the current bet portfolio.
+  const periodKey = `${targetYear}-${String(targetMonth).padStart(2, '0')}`
+  const { data: experimentsRows } = await db
+    .from('experiments')
+    .select('id, title, hypothesis, category, status, period_started, period_ended, success_metric, baseline_value, target_value, current_value, linked_keywords, linked_pages, decision_notes, outcome, source')
+    .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
+    .or(`period_started.eq.${periodKey},period_ended.eq.${periodKey},status.eq.continue`)
+    .order('updated_at', { ascending: false })
+    .limit(40)
+
+  const experimentsData = {
+    period:    periodKey,
+    start:     (experimentsRows ?? []).filter(e => e.status === 'start'    && e.period_started === periodKey),
+    continue:  (experimentsRows ?? []).filter(e => e.status === 'continue'),
+    stop:      (experimentsRows ?? []).filter(e => e.status === 'stop'     && e.period_ended  === periodKey),
+  }
 
   // ── Assemble report_data ─────────────────────────────────────────────────────
   const reportData = {
@@ -564,6 +670,9 @@ export async function POST(req: Request) {
     actionItems: actionItemsData,
     competitive: { trackedCompetitors: competitorList, sovTable, sovEstimated },
     backlinks: backlinksData,
+    channelBreakdown,
+    trackedRankings,
+    experiments: experimentsData,
     agentInsights,
     generatedAt: new Date().toISOString(),
   }
@@ -594,6 +703,7 @@ export async function POST(req: Request) {
     .from('monthly_reports')
     .insert({
       owner_user_id:  ownerId,
+      site_slug:      siteSlug,
       month_start:    monthStart,
       month_end:      monthEnd,
       report_data:    reportData,

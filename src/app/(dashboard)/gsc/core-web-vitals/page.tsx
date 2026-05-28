@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { getActiveSiteSlug } from '@/lib/sites-server'
 
 export const revalidate = 3600
 
@@ -41,11 +42,19 @@ export default async function CoreWebVitalsPage() {
   // Use service client so workspace members can read owner's snapshots (bypasses RLS)
   const db = createServiceClient()
 
+  // Multi-brand-safe site resolution (Sprint 12).
+  const activeSlug = await getActiveSiteSlug()
+  const { data: siteConfig } = await db
+    .from('site_configs')
+    .select('gsc_property')
+    .eq('slug', activeSlug)
+    .eq('is_active', true)
+    .maybeSingle()
+  // We still verify the user has a GSC connection — if not, no data to show.
   const { data: conn } = effectiveOwnerId
-    ? await db.from('gsc_connections').select('site_url').eq('user_id', effectiveOwnerId).single()
+    ? await db.from('gsc_connections').select('user_id').eq('user_id', effectiveOwnerId).maybeSingle()
     : { data: null }
-
-  const siteUrl = conn?.site_url
+  const siteUrl = (conn && siteConfig?.gsc_property) ? siteConfig.gsc_property : null
 
   const { data: snapshots } = siteUrl
     ? await db

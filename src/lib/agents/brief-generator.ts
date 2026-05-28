@@ -38,6 +38,10 @@ interface PreviousTyrReview {
 interface BriefInput {
   briefId:       string
   ownerId:       string
+  /** Active brand for this generation. Drives KB filtering + brand voice in
+   *  prompts. Defaults to 'g2g' for backwards compatibility — pass
+   *  'offgamers' (etc.) when the brief belongs to another site. */
+  siteSlug?:     string
   keyword:       string
   pageUrl:       string
   briefType:     string
@@ -131,16 +135,72 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   // Mark as generating
   await db
     .from('seo_content_briefs')
-    .update({ status: 'generating' })
+    .update({
+      status:        'generating',
+      last_error:    null,        // clear stale error from previous failed run
+      last_error_at: null,
+    })
     .eq('id', input.briefId)
+
+  // Outer guard — wraps the entire generation flow including KB load,
+  // brand name resolve, validation, DB writes. Without this, anything that
+  // throws OUTSIDE the per-attempt retry loop leaves the brief stuck at
+  // status='generating' with no diagnostic. The catch records the reason
+  // to seo_content_briefs.last_error and reverts status to 'draft' so the
+  // user can see what went wrong + the stale-brief cron can re-pick-up.
+  try {
+
+  // Resolve brand name once (display_name from site_configs). Drives the H1
+  // fallback + brand mentions in the prompt so OG content doesn't get
+  // labelled "G2G" by accident.
+  const brandName = await loadBrandName(db, input.siteSlug ?? 'g2g')
 
   let lastErr: unknown = null
   let parsed: ParsedBrief | null = null
 
+  // Sprint MIMIR.NOTES.APPLY — resolve product context once per generation so
+  // we can fetch Mimir context (Layer 1+2+3 notes). Lookup is best-effort —
+  // brief may not match any tier product (e.g., one-off content), in which
+  // case we still get site/global memories from Layer 3.
+  let mimirProductTierId:   string | null = null
+  let mimirRelationId:      string | null = null
+  let mimirProductCategory: string | null = null
+  try {
+    const { data: tierMatch } = await db
+      .from('product_tiers')
+      .select('id, relation_id, category, product_name, url')
+      .eq('owner_user_id', input.ownerId)
+      .eq('site_slug', input.siteSlug ?? 'g2g')
+      .or(
+        `product_name.ilike.${String(input.keyword ?? '').replace(/[,()]/g, ' ')}`
+        + (input.pageUrl ? `,url.eq.${input.pageUrl}` : ''),
+      )
+      .limit(1)
+      .maybeSingle()
+    if (tierMatch) {
+      mimirProductTierId   = tierMatch.id as string
+      mimirRelationId      = (tierMatch.relation_id as string | null) ?? null
+      mimirProductCategory = (tierMatch.category as string | null) ?? null
+    }
+  } catch (e) {
+    console.warn('[brief-generator] mimir product lookup failed (non-fatal):', e)
+  }
+
+  const { getMimirContextForBrief } = await import('@/lib/agents/mimir-memory')
+  const mimir = await getMimirContextForBrief(db, {
+    ownerId:         input.ownerId,
+    siteSlug:        input.siteSlug ?? 'g2g',
+    productTierId:   mimirProductTierId,
+    relationId:      mimirRelationId,
+    productCategory: mimirProductCategory,
+  })
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword)
-      const prompt  = buildPrompt(input, kbBlock)
+      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
+      // Sprint MIMIR.NOTES.APPLY — append Mimir context block AFTER kbBlock so
+      // user notes have higher prompt salience than generic KB rules.
+      const prompt  = buildPrompt(input, kbBlock + (mimir.block ? `\n\n${mimir.block}` : ''), brandName)
 
       const response = await anthropic.messages.create({
         model:       MODEL,
@@ -164,12 +224,21 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
         throw new Error(`Claude did not call submit_seo_brief tool (stop_reason=${response.stop_reason})`)
       }
 
-      parsed = validateAndCoerce(toolUse.input as Record<string, unknown>, input.keyword)
+      parsed = validateAndCoerce(toolUse.input as Record<string, unknown>, input.keyword, brandName)
       break  // success
     } catch (err) {
       lastErr = err
       const isLast = attempt === MAX_ATTEMPTS
-      console.warn(`[brief-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err instanceof Error ? err.message : err)
+      const retryable = isRetryableAnthropicError(err)
+      console.warn(`[brief-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed${retryable ? ' (retryable)' : ''}:`, err instanceof Error ? err.message : err)
+
+      // Bail early on non-retryable errors (e.g. 4xx auth/validation) — no
+      // point burning the remaining retries on something that won't change.
+      if (!retryable && !isLast) {
+        console.warn('[brief-generator] non-retryable — skipping remaining attempts')
+        break
+      }
+
       if (!isLast) {
         await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
       }
@@ -177,13 +246,21 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
   }
 
   if (!parsed) {
-    // All retries failed — revert to 'draft' and log the reason
+    // All retries failed — revert to 'draft', log the reason, persist
+    // diagnostic on last_error so the UI can surface it.
     const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
     console.error('[brief-generator] all retries failed:', reason)
+    await recordBriefError(
+      db,
+      input.briefId,
+      `Bragi auto-generation failed after ${MAX_ATTEMPTS} attempts: ${reason}`,
+    )
+    // Also leave breadcrumb in notes (user-facing, persisted on the brief
+    // detail page), in case the user is reading notes rather than the
+    // dedicated error UI.
     await db
       .from('seo_content_briefs')
       .update({
-        status: 'draft',
         notes: appendNote(input.notes ?? '', `[brief-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
       })
       .eq('id', input.briefId)
@@ -215,8 +292,20 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
       content_draft:    draftLines.join('\n'),
       faq_suggestions:  parsed.faqSuggestions,
       new_keywords:     parsed.targetKeywords.slice(1).map(k => ({ keyword: k, volume: null })),
+      // Sprint MIMIR.NOTES.APPLY — track which Mimir notes informed this generation
+      // so the brief editor can show a trust-signal "applied N notes" panel.
+      mimir_notes_applied: mimir.applied,
     })
     .eq('id', input.briefId)
+
+  // Sprint MIMIR.POLISH.3 — bump applied_count + last_applied_at on each memory
+  // that made it into the prompt. Fire-and-forget; failures are logged but do
+  // not surface to the brief flow. Feeds the weekly auto-tuner so memories
+  // never used naturally decay and frequently-used ones get boosted.
+  if (mimir.applied.length > 0) {
+    const { bumpMemoriesApplied } = await import('@/lib/agents/mimir-memory')
+    bumpMemoriesApplied(db, mimir.applied.map(a => a.id)).catch(() => {})
+  }
 
   // ── Auto-run Tyr quality review immediately after Bragi generates ──────────
   // No need for manual trigger — Tyr scores the brief and writes tyr_score +
@@ -298,6 +387,17 @@ export async function generateAgentBrief(input: BriefInput): Promise<void> {
       console.error('[brief-generator] auto-regen retry failed:', retryErr)
     }
   }
+  } catch (outerErr) {
+    // Anything that escaped the retry loop (KB query died, brand resolve
+    // crashed, validateAndCoerce barfed, DB write rejected, Tyr scheduling
+    // crashed) ends up here. Record the reason + revert status so the row
+    // doesn't stay stuck at 'generating' indefinitely.
+    const reason = outerErr instanceof Error
+      ? `${outerErr.name}: ${outerErr.message}`
+      : String(outerErr)
+    console.error('[brief-generator] outer guard caught:', reason)
+    await recordBriefError(createServiceClient(), input.briefId, reason)
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -308,7 +408,55 @@ function appendNote(existing: string, line: string): string {
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }
 
-function validateAndCoerce(raw: Record<string, unknown>, keyword: string): ParsedBrief {
+/**
+ * Persist a generation failure on the brief row. Writes both:
+ *   - status = 'draft'  (so cron/process-briefs re-picks-up if it's still
+ *                        within the 5-min stale window)
+ *   - last_error / last_error_at  (diagnostics — surface in UI so user can
+ *                                  see WHY the brief stuck instead of just
+ *                                  "still generating…" forever)
+ *
+ * Best-effort — DB error here is logged but not re-thrown (caller is
+ * already in an error path).
+ */
+async function recordBriefError(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:      any,
+  briefId: string,
+  reason:  string,
+  /** When true, also revert status from 'generating' back to 'draft' so the
+   *  brief is re-pickup-able. Default true. Set false when the caller has
+   *  already moved status to a final state (e.g. 'agent_generated'). */
+  revertStatus: boolean = true,
+): Promise<void> {
+  // Cap reason length — we've seen Anthropic 5xx error bodies blow past 8KB
+  // when the retry chain stringifies the underlying request payload too.
+  const trimmed = reason.length > 1000 ? reason.slice(0, 1000) + '… [truncated]' : reason
+  try {
+    const update: Record<string, unknown> = {
+      last_error:    trimmed,
+      last_error_at: new Date().toISOString(),
+    }
+    if (revertStatus) update.status = 'draft'
+    await db.from('seo_content_briefs').update(update).eq('id', briefId)
+  } catch (dbErr) {
+    console.error('[brief-generator] failed to persist last_error:', dbErr)
+  }
+}
+
+/** Detect Anthropic SDK errors that are worth retrying (rate limits + 5xx). */
+function isRetryableAnthropicError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { status?: number; statusCode?: number; name?: string }
+  const status = e.status ?? e.statusCode
+  if (status === 429) return true                   // rate limit
+  if (status && status >= 500 && status < 600) return true   // server-side
+  if (e.name === 'APIConnectionError') return true  // network blip
+  if (e.name === 'APITimeoutError')    return true
+  return false
+}
+
+function validateAndCoerce(raw: Record<string, unknown>, keyword: string, brandName: string = 'G2G'): ParsedBrief {
   const arr = (v: unknown) => Array.isArray(v) ? v : []
   const str = (v: unknown) => typeof v === 'string' ? v : ''
 
@@ -346,12 +494,35 @@ function validateAndCoerce(raw: Record<string, unknown>, keyword: string): Parse
   }
 
   return {
-    suggestedH1:     str(raw.suggestedH1) || `${keyword} — Buy & Sell on G2G`,
+    suggestedH1:     str(raw.suggestedH1) || `${keyword} — Buy & Sell on ${brandName}`,
     metaDescription: str(raw.metaDescription),
     userIntent:      str(raw.userIntent),
     contentOutline:  outline,
     targetKeywords:  targetKws.slice(0, 8),
     faqSuggestions:  faqs,
+  }
+}
+
+// ── Brand resolver ────────────────────────────────────────────────────────────
+// Pulls the active brand's display_name from site_configs so prompts can
+// substitute "G2G" / "OffGamers" / etc. instead of hardcoding. Falls back to
+// 'G2G' for backwards compat when site_slug isn't passed or the row is
+// missing — the agents have always defaulted to G2G framing.
+async function loadBrandName(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  siteSlug: string,
+): Promise<string> {
+  try {
+    const { data } = await db
+      .from('site_configs')
+      .select('display_name')
+      .eq('slug', siteSlug)
+      .maybeSingle()
+    const name = data?.display_name as string | undefined
+    return (name && name.trim()) || 'G2G'
+  } catch {
+    return 'G2G'
   }
 }
 
@@ -369,12 +540,17 @@ async function loadKBBlock(
   ownerId: string,
   pageUrl: string,
   keyword: string,
+  siteSlug: string = 'g2g',
 ): Promise<string> {
   try {
+    // Pull rows for the active brand PLUS workspace-wide rows (slug='*').
+    // 'brand' KB rows tagged '*' apply across both G2G and OG; per-site
+    // 'category' / 'platform' rows stay isolated.
     const { data: kbItemsRaw } = await db
       .from('knowledge_base_items')
       .select('category, name, data')
       .eq('owner_user_id', ownerId)
+      .in('site_slug', [siteSlug, '*'])
 
     const kbItems: KBItem[] = (kbItemsRaw ?? []) as KBItem[]
     if (!kbItems.length) return ''
@@ -460,9 +636,10 @@ function slugifyPath(pageUrl: string): string {
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
-function buildPrompt(input: BriefInput, kbBlock: string): string {
+function buildPrompt(input: BriefInput, kbBlock: string, brandName: string = 'G2G'): string {
   const volStr     = input.searchVolume ? `${input.searchVolume.toLocaleString()} monthly searches` : 'unknown volume'
   const isCategory = input.briefType === 'category_page' || input.pageUrl.includes('/categories/')
+  const brandHost  = input.pageUrl.match(/https?:\/\/(?:www\.)?([^/]+)/)?.[1] ?? `${brandName.toLowerCase()}.com`
 
   // ── Tyr regenerate-feedback block ──
   // When this is a regen of a brief that failed Tyr's review, inline Tyr's
@@ -474,7 +651,7 @@ function buildPrompt(input: BriefInput, kbBlock: string): string {
 
   const baseRequirements = `Quality requirements:
 
-- suggestedH1: keyword-rich, specific to the page, NOT generic ("Buy X" is fine; "Welcome to G2G" is not).
+- suggestedH1: keyword-rich, specific to the page, NOT generic ("Buy X" is fine; "Welcome to ${brandName}" is not).
 - metaDescription: 150-160 chars, includes primary keyword and a clear CTA.
 - userIntent: 1-2 sentences describing what the user actually wants (not what we want to sell).
 - targetKeywords: primary keyword + 4-7 related long-tail variants and LSI terms (NOT just price/cheap/buy permutations — include intent-specific variants).
@@ -482,7 +659,21 @@ function buildPrompt(input: BriefInput, kbBlock: string): string {
 - faqSuggestions: 3-5 questions real users actually search (use "people also ask" style — pricing, safety, delivery time, refund policy).
 - Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.`
 
-  return `You are an expert SEO content strategist for G2G.com, a peer-to-peer gaming marketplace.
+  // Sprint BRAGI.10 — Hoist upstream agent signals into a prominent
+  // DETECTED OPPORTUNITY block. BDT (May 2026) flagged that Odin/Loki
+  // trend info ("Firaxis Anniversary Sale", "Garama and Madundung trending")
+  // was being detected but never landed in the final draft. The old prompt
+  // tucked it into "Context from upstream agent: …" as a passing hint —
+  // not surfaced enough to force the LLM to mention it.
+  const signalBlock = input.notes ? `
+
+⚡ DETECTED SIGNAL FROM AGENT (must reference in draft):
+${input.notes}
+
+REQUIREMENT: At least one section in the final content must directly reference the detected trend, keyword gap, or ranking drop above — by name. If Odin/Loki flagged a specific event/keyword/competitor, the draft must call it out (not just generic "current trends"). If Heimdall flagged a position drop, the content must address why and what we changed.
+` : ''
+
+  return `You are an expert SEO content strategist for ${brandHost}, a gaming marketplace.
 
 Create a structured SEO content brief for the following:
 
@@ -490,7 +681,7 @@ Target page: ${input.pageUrl}
 Primary keyword: "${input.keyword}" (${volStr})
 Brief type: ${input.briefType}
 ${input.competitorUrl ? `Reference competitor URL: ${input.competitorUrl}` : ''}
-${input.notes ? `Context from upstream agent: ${input.notes}` : ''}
+${signalBlock}
 ${kbBlock}
 
 ${isCategory ? 'This is a game category page that sells in-game currency, items, accounts, or boosting services. The content must serve buyers (help them find what they want and trust the marketplace) AND search intent.' : ''}
@@ -611,6 +802,11 @@ export async function assembleFullArticle(
     return { ok: false, reason: `brief lookup failed: ${loadErr?.message ?? 'no row'}` }
   }
 
+  // Pull brand from the brief row — assembly is async, the original
+  // request that triggered it has long since returned, so we re-derive
+  // siteSlug from the persisted brief instead of receiving it as a param.
+  const siteSlug    = String(brief.site_slug ?? 'g2g')
+  const brandName   = await loadBrandName(db, siteSlug)
   const keyword     = String(brief.primary_keyword ?? '')
   const pageUrl     = String(brief.page ?? '')
   const briefType   = String(brief.brief_type ?? 'on_page')
@@ -628,8 +824,8 @@ export async function assembleFullArticle(
     return { ok: false, reason: 'brief has no primary_keyword' }
   }
 
-  // KB block (brand voice, category guidelines, platform rules)
-  const kbBlock = await loadKBBlock(db, ownerId, pageUrl, keyword)
+  // KB block (brand voice, category guidelines, platform rules) — site-aware
+  const kbBlock = await loadKBBlock(db, ownerId, pageUrl, keyword, siteSlug)
 
   // ── Build assembly prompt ──
   const outlineBlock = outline.map((s, i) => {
@@ -643,7 +839,7 @@ export async function assembleFullArticle(
 
   const isCategoryPage = briefType === 'category_page' || pageUrl.includes('/categories/')
 
-  const prompt = `You are the lead SEO writer for G2G (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown.
+  const prompt = `You are the lead SEO writer for ${brandName} (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown.
 
 PAGE CONTEXT
 - Primary keyword: "${keyword}"
@@ -672,7 +868,7 @@ WRITING RULES
 - Plain prose paragraphs. No HTML. No <br> tags. Use blank lines to separate paragraphs.
 - DO NOT use the forbidden filler vocabulary: "immerse yourself", "step into", "dive into", "delve into", "embark", "captivating", "buckle up", "unravel", "thrill", "forge".
 - Bold ONLY brand/feature names (e.g. **GamerProtect**) — never bold the primary keyword itself.
-- Mention G2G's trust signals naturally: GamerProtect escrow, ISO/IEC 27001:2013 certified, 200+ payment methods, 24/7 support, transparent ratings. Do NOT mention competing marketplaces or the game's own publisher/developer.
+- Mention ${brandName}'s trust signals naturally — pull them from the BRAND CONTEXT block above (or the workspace's KB). Do NOT mention competing marketplaces or the game's own publisher/developer. (For G2G specifically: GamerProtect escrow, ISO/IEC 27001:2013 certified, 200+ payment methods, 24/7 support, transparent ratings — these are G2G-only facts; OG and other brands have their own list in the KB.)
 - Hit the word count: minimum 800 words, target 1200-1500 for category pages, max 1800.
 - Final paragraph should end with a soft CTA back to the page (no hard sell).
 - Do NOT output meta description, target keyword list, or any "writing rules" headers — those live in the structured brief, not the article body.
@@ -753,12 +949,24 @@ ${draftHeader ? `\nFor reference, the meta description and user intent already a
       return { ok: true, wordCount, model: ASSEMBLY_MODEL }
     } catch (err) {
       lastErr = err
-      console.warn(`[assembleFullArticle] attempt ${attempt}/2 failed:`, err instanceof Error ? err.message : err)
+      const retryable = isRetryableAnthropicError(err)
+      console.warn(`[assembleFullArticle] attempt ${attempt}/2 failed${retryable ? ' (retryable)' : ''}:`, err instanceof Error ? err.message : err)
+      // Bail early on non-retryable errors instead of burning the second
+      // attempt on something that can't recover.
+      if (!retryable && attempt < 2) {
+        console.warn('[assembleFullArticle] non-retryable — skipping remaining attempt')
+        break
+      }
       if (attempt < 2) await sleep(ASSEMBLY_BACKOFF_MS)
     }
   }
 
   const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
+  // Persist diagnostic — assembly is fire-and-forget from /assemble route,
+  // so without this the user has no way to know WHY the body never appeared.
+  // Don't revert status here — assembly only runs after Tyr-passed, so the
+  // brief is at status='reviewed' and we shouldn't drop it back to 'draft'.
+  await recordBriefError(db, briefId, `Article assembly failed: ${reason}`, false)
   return { ok: false, reason }
 }
 
@@ -796,17 +1004,17 @@ const outreachTool: Anthropic.Tool = {
     properties: {
       valueProposition: {
         type: 'string',
-        description: '1 paragraph (50-80 words). Why a gaming blogger / Discord mod / YouTuber should care about linking to G2G for this topic. Lead with value to THEIR audience, not what G2G wants.',
+        description: '1 paragraph (50-80 words). Why a gaming blogger / Discord mod / YouTuber should care about linking to OUR brand (named in the prompt above) for this topic. Lead with value to THEIR audience, not what we want.',
       },
       talkingPoints: {
         type: 'array',
         items: { type: 'string' },
-        description: '5-7 concrete G2G facts that make the pitch credible. Examples: "ISO/IEC 27001:2013 certified", "GamerProtect escrow on every transaction", "200+ payment methods including local options", "24/7 support team". One fact per item, no fluff.',
+        description: '5-7 concrete brand facts that make the pitch credible. Pull from the BRAND CONTEXT block in the prompt (KB-sourced trust signals). Examples for G2G: "ISO/IEC 27001:2013 certified", "GamerProtect escrow on every transaction", "200+ payment methods", "24/7 support". For other brands, use their own KB facts. One fact per item, no fluff.',
       },
       anchorTextOptions: {
         type: 'array',
         items: { type: 'string' },
-        description: '5-8 natural anchor text variations. Mix: 2-3 branded ("G2G", "G2G marketplace"), 2-3 generic ("verified marketplace", "trusted seller platform"), 2-3 topical (mention the keyword naturally). AVOID exact-match keyword stuffing — Google penalises that.',
+        description: '5-8 natural anchor text variations. Mix: 2-3 branded (the brand name from the prompt + "[brand] marketplace" style), 2-3 generic ("verified marketplace", "trusted seller platform"), 2-3 topical (mention the keyword naturally). AVOID exact-match keyword stuffing — Google penalises that.',
       },
       emailSubjects: {
         type: 'array',
@@ -838,11 +1046,11 @@ const outreachTool: Anthropic.Tool = {
   },
 }
 
-function buildOutreachPrompt(input: BriefInput, kbBlock: string): string {
+function buildOutreachPrompt(input: BriefInput, kbBlock: string, brandName: string = 'G2G'): string {
   const review = input.previousReview
   const regenBlock = review ? buildRegenFeedbackBlock(review) : ''
 
-  return `You are creating a LINK-BUILDING OUTREACH brief for G2G — a leading gaming marketplace selling in-game accounts, currencies, gift cards, top-ups (Robux, V-Bucks, etc.).
+  return `You are creating a LINK-BUILDING OUTREACH brief for ${brandName} — a leading gaming marketplace selling in-game accounts, currencies, gift cards, top-ups (Robux, V-Bucks, etc.).
 
 PAGE THAT NEEDS BACKLINKS
 - Page URL: ${input.pageUrl}
@@ -953,62 +1161,78 @@ function renderOutreachEmailSkeleton(o: OutreachBrief): string {
 export async function generateOutreachBrief(input: BriefInput): Promise<void> {
   const db = createServiceClient()
 
-  // Mark as generating
+  // Mark as generating + clear stale error from any previous failed attempt
   await db
     .from('seo_content_briefs')
-    .update({ status: 'generating' })
+    .update({ status: 'generating', last_error: null, last_error_at: null })
     .eq('id', input.briefId)
 
-  let lastErr: unknown = null
-  let parsed: OutreachBrief | null = null
+  // Outer guard — same pattern as generateAgentBrief. Anything thrown
+  // outside the retry loop ends up here and gets recorded to last_error.
+  try {
+    // Resolve brand name once for the outreach prompt (outreach pitches lean
+    // hard on brand identity — must match the actual site, not a hardcoded G2G).
+    const brandName = await loadBrandName(db, input.siteSlug ?? 'g2g')
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword)
-      const prompt  = buildOutreachPrompt(input, kbBlock)
+    let lastErr: unknown = null
+    let parsed: OutreachBrief | null = null
 
-      const response = await anthropic.messages.create({
-        model:       MODEL,
-        max_tokens:  MAX_TOKENS,
-        tools:       [outreachTool],
-        tool_choice: { type: 'tool', name: 'submit_outreach_brief' },
-        messages:    [{ role: 'user', content: prompt }],
-      })
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const kbBlock = await loadKBBlock(db, input.ownerId, input.pageUrl, input.keyword, input.siteSlug ?? 'g2g')
+        const prompt  = buildOutreachPrompt(input, kbBlock, brandName)
 
-      logClaudeUsage(db, input.ownerId, {
-        model:       MODEL,
-        endpoint:    'outreach_brief',
-        triggeredBy: 'agent_bragi',
-        usage:       response.usage,
-        extra:       { brief_id: input.briefId, attempt },
-      })
+        const response = await anthropic.messages.create({
+          model:       MODEL,
+          max_tokens:  MAX_TOKENS,
+          tools:       [outreachTool],
+          tool_choice: { type: 'tool', name: 'submit_outreach_brief' },
+          messages:    [{ role: 'user', content: prompt }],
+        })
 
-      const toolUse = response.content.find(b => b.type === 'tool_use')
-      if (!toolUse || toolUse.type !== 'tool_use') {
-        throw new Error(`Claude did not call submit_outreach_brief (stop_reason=${response.stop_reason})`)
+        logClaudeUsage(db, input.ownerId, {
+          model:       MODEL,
+          endpoint:    'outreach_brief',
+          triggeredBy: 'agent_bragi',
+          usage:       response.usage,
+          extra:       { brief_id: input.briefId, attempt },
+        })
+
+        const toolUse = response.content.find(b => b.type === 'tool_use')
+        if (!toolUse || toolUse.type !== 'tool_use') {
+          throw new Error(`Claude did not call submit_outreach_brief (stop_reason=${response.stop_reason})`)
+        }
+
+        parsed = validateOutreachBrief(toolUse.input as Record<string, unknown>)
+        break
+      } catch (err) {
+        lastErr = err
+        const retryable = isRetryableAnthropicError(err)
+        console.warn(`[outreach-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed${retryable ? ' (retryable)' : ''}:`, err instanceof Error ? err.message : err)
+        if (!retryable && attempt < MAX_ATTEMPTS) {
+          console.warn('[outreach-generator] non-retryable — skipping remaining attempts')
+          break
+        }
+        if (attempt < MAX_ATTEMPTS) await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
       }
-
-      parsed = validateOutreachBrief(toolUse.input as Record<string, unknown>)
-      break
-    } catch (err) {
-      lastErr = err
-      console.warn(`[outreach-generator] attempt ${attempt}/${MAX_ATTEMPTS} failed:`, err instanceof Error ? err.message : err)
-      if (attempt < MAX_ATTEMPTS) await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
     }
-  }
 
-  if (!parsed) {
-    const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
-    console.error('[outreach-generator] all retries failed:', reason)
-    await db
-      .from('seo_content_briefs')
-      .update({
-        status: 'draft',
-        notes:  appendNote(input.notes ?? '', `[outreach-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
-      })
-      .eq('id', input.briefId)
-    return
-  }
+    if (!parsed) {
+      const reason = lastErr instanceof Error ? lastErr.message : String(lastErr)
+      console.error('[outreach-generator] all retries failed:', reason)
+      await recordBriefError(
+        db,
+        input.briefId,
+        `Outreach brief generation failed after ${MAX_ATTEMPTS} attempts: ${reason}`,
+      )
+      await db
+        .from('seo_content_briefs')
+        .update({
+          notes:  appendNote(input.notes ?? '', `[outreach-generator] auto-generation failed (${MAX_ATTEMPTS} attempts): ${reason}`),
+        })
+        .eq('id', input.briefId)
+      return
+    }
 
   // ── Persist using shared seo_content_briefs columns (semantic re-use) ─────
   const outlineJson = [{
@@ -1033,21 +1257,28 @@ export async function generateOutreachBrief(input: BriefInput): Promise<void> {
     })
     .eq('id', input.briefId)
 
-  // ── Run Tyr review (same scoring engine — outreach gets relaxed thresholds
-  // because the rubric is keyword-density-heavy and outreach pitch is short
-  // form. Skipped for now: outreach Tyr scoring would need a separate rubric.
-  // For Tema 2 ship, we stamp 'reviewed' immediately so the brief is usable. ──
-  await db
-    .from('seo_content_briefs')
-    .update({
-      status:          'reviewed',
-      tyr_status:      'reviewed',
-      tyr_score:       null,                               // intentionally null — different rubric
-      tyr_reviewed_at: new Date().toISOString(),
-      notes: appendNote(
-        input.notes ?? '',
-        '[outreach] Tyr scoring skipped — outreach uses a different rubric than SEO briefs. Brief auto-promoted to reviewed.',
-      ),
-    })
-    .eq('id', input.briefId)
+    // ── Run Tyr review (same scoring engine — outreach gets relaxed thresholds
+    // because the rubric is keyword-density-heavy and outreach pitch is short
+    // form. Skipped for now: outreach Tyr scoring would need a separate rubric.
+    // For Tema 2 ship, we stamp 'reviewed' immediately so the brief is usable. ──
+    await db
+      .from('seo_content_briefs')
+      .update({
+        status:          'reviewed',
+        tyr_status:      'reviewed',
+        tyr_score:       null,                               // intentionally null — different rubric
+        tyr_reviewed_at: new Date().toISOString(),
+        notes: appendNote(
+          input.notes ?? '',
+          '[outreach] Tyr scoring skipped — outreach uses a different rubric than SEO briefs. Brief auto-promoted to reviewed.',
+        ),
+      })
+      .eq('id', input.briefId)
+  } catch (outerErr) {
+    const reason = outerErr instanceof Error
+      ? `${outerErr.name}: ${outerErr.message}`
+      : String(outerErr)
+    console.error('[outreach-generator] outer guard caught:', reason)
+    await recordBriefError(createServiceClient(), input.briefId, reason)
+  }
 }

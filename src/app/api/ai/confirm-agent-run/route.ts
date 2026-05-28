@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export const maxDuration = 10
 
@@ -48,14 +49,25 @@ export async function POST(req: Request) {
   }
 
   if (!trigger) {
-    return NextResponse.json({ error: 'Token not found or already used' }, { status: 404 })
+    // BDT feedback (May 2026): this error was confusing — "Token not found"
+    // sounded like an auth bug. Most common real cause is that the user
+    // clicked confirm twice (one-time-use token), or hit refresh and the
+    // token from the previous Mimir reply has been consumed.
+    return NextResponse.json({
+      error:  'This action was already triggered or the confirmation has expired (5-min window). Ask Mimir to run the agent again to get a fresh confirmation button.',
+      hint:   'Most common cause: confirm clicked twice, or the Mimir reply is older than 5 minutes.',
+      action: 'reopen_mimir',
+    }, { status: 404 })
   }
 
   // Check expiry
   if (new Date(trigger.expires_at) < new Date()) {
     // Clean up expired token
     await supabase.from('mimir_pending_triggers').delete().eq('token', token)
-    return NextResponse.json({ error: 'Token expired — ask Mimir again to get a fresh confirmation' }, { status: 410 })
+    return NextResponse.json({
+      error:  'Confirmation token expired (5-min window). Ask Mimir again to retry — the next confirmation button will work.',
+      action: 'reopen_mimir',
+    }, { status: 410 })
   }
 
   // Check ownership
@@ -74,6 +86,9 @@ export async function POST(req: Request) {
   const baseUrl = appUrl ?? (vercelUrl ? `https://${vercelUrl}` : 'http://localhost:3000')
 
   const cookie = req.headers.get('cookie') ?? ''
+  // Forward whichever site the user is currently on (cookie/query/body) so
+  // an OG user firing an agent via Mimir doesn't accidentally trigger G2G.
+  const siteSlug = resolveSiteSlugFromRequest(req)
 
   after(async () => {
     try {
@@ -83,7 +98,7 @@ export async function POST(req: Request) {
           'Content-Type': 'application/json',
           Cookie: cookie,
         },
-        body: JSON.stringify({ site: 'g2g' }),
+        body: JSON.stringify({ site: siteSlug }),
       })
       if (!res.ok) {
         const text = await res.text()
