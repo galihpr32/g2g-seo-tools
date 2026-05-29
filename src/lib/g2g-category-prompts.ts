@@ -270,6 +270,48 @@ export const CATEGORY_TEMPLATES: CategoryTemplate[] = [
     metaTitleTemplate: 'Buy {mainKeyword} - G2G.com (≤60 chars)',
     metaDescriptionGuide: '≤110 chars. Productivity benefit + 3 trust terms.',
   },
+
+  // ── 🎁 In-Game Items ─────────────────────────────────────────────────────
+  // Items, skins, weapons, cosmetics, runes, pets — anything tradeable that
+  // is NOT currency. BDT feedback (May 2026): "Items" pages were missing
+  // their own template — Bragi mistakenly used Currency/Gift Card prompts.
+  {
+    category: 'In-Game Items',
+    icon: '🎁',
+    urlPatterns: ['item', 'items', 'in-game-item', 'game-item', 'skins', 'cosmetic'],
+    h1Template: 'Buy {mainKeyword} - Cheap & Safe | G2G.com',
+    sections: [
+      {
+        subheading: 'About {gameName}',
+        instructions: '~200 words. What the game is, why players value its in-game items, current player base / community size if known. Set up the player\'s reason to want these items.',
+      },
+      {
+        subheading: '{mainKeyword} — What It Is and How to Use It',
+        instructions: '~200 words. Specifically about THIS item (or item type). What it does in-game, how players acquire it (drop / craft / buy), why it matters. Avoid generic "Items in {game}" — be specific.',
+      },
+      {
+        subheading: 'Why Buy {mainKeyword} on G2G',
+        instructions: 'GamerProtect, ISO security, 200+ payment methods, verified sellers, 24/7 support. {usps}',
+      },
+      {
+        subheading: 'How to Buy {mainKeyword} on G2G',
+        instructions: 'Ordered purchase steps. Mention trade-in-game vs in-app delivery if relevant.',
+      },
+      {
+        subheading: 'Trending Items',
+        instructions: '{{trending_games}}',
+      },
+      {
+        subheading: 'FAQ',
+        instructions: '3–5 FAQs focused on item delivery (in-game trade, mailing, drop), trade restrictions, account safety, refund policy. Do NOT promise specific resolution times.',
+      },
+    ],
+    keywordRules: 'Main keyword: 1%–4%. Secondary keywords: ≤2%, at least once. Demote currency-flavoured variants (e.g. ban "currency", "coins", "gems" if the page is for non-currency items).',
+    writingRules: 'Player-first tone (not seller-first). Mention game context BEFORE marketplace context. <br><br>. No <p> tags. No promises about CS resolution time. No competitors.',
+    faqFocus: 'Delivery method (trade vs mail vs in-app), trade restrictions, account safety, refund policy',
+    metaTitleTemplate: 'Buy {mainKeyword} Cheap & Safe - G2G.com (≤60 chars)',
+    metaDescriptionGuide: '≤110 chars. Item type + trust terms + delivery method.',
+  },
 ]
 
 // ─── URL → Category detector ──────────────────────────────────────────────────
@@ -281,6 +323,48 @@ export function detectCategory(url: string): CategoryTemplate | null {
     }
   }
   return null
+}
+
+/**
+ * Map the canonical service_name from g2g_products catalog to the most
+ * appropriate CategoryTemplate. Used as a SECOND-pass fallback after the URL
+ * pattern match fails — and as an OVERRIDE when URL detection picked the
+ * wrong template (e.g. URL contained "top-up" so it matched Gift Cards
+ * patterns, but the actual catalog category is "Top Up").
+ *
+ * service_name values (9 today): Gift Cards, Accounts, Top Up, Items,
+ * Game coins, Platform Engagement, Game Coaching, GamePal, Activation Links.
+ */
+export function detectCategoryByServiceName(serviceName: string | null | undefined): CategoryTemplate | null {
+  if (!serviceName) return null
+  const n = serviceName.trim().toLowerCase()
+
+  const aliasMap: Record<string, string[]> = {
+    'Game Accounts':               ['accounts', 'account'],
+    'Game Coins / Currency':       ['game coins', 'coins', 'currency', 'gold'],
+    'Boosting / Power Leveling':   ['boost', 'boosting', 'power leveling'],
+    'GamePal / LFG':               ['gamepal', 'lfg', 'game coaching'],   // Coaching also lives here
+    'Game Keys / CD Keys':         ['cd key', 'game key', 'activation link', 'activation links', 'keys'],
+    'Gift Cards / Payment Cards':  ['gift cards', 'gift card', 'top up', 'topup', 'payment cards'],
+    'Software / Apps':             ['software', 'app', 'platform engagement'],
+    'In-Game Items':               ['items', 'item'],
+  }
+
+  for (const template of CATEGORY_TEMPLATES) {
+    const aliases = aliasMap[template.category] ?? []
+    if (aliases.some(a => n.includes(a))) return template
+  }
+  return null
+}
+
+/**
+ * Combined detector — prefer canonical service_name when present, fall back
+ * to URL pattern matching. Solves the "URL says /top-up/ → matches gift_card
+ * template, but service_name='Top Up' should use a top-up-flavoured prompt"
+ * mis-classification BDT flagged.
+ */
+export function resolveCategory(url: string, canonicalServiceName?: string | null): CategoryTemplate | null {
+  return detectCategoryByServiceName(canonicalServiceName) ?? detectCategory(url)
 }
 
 // ─── Build category-specific on-page prompt instructions ─────────────────────

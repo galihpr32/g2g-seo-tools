@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import OdinScoringPanel from '@/components/agents/OdinScoringPanel'
+import ExportToSheetButton from '@/components/news-export/ExportToSheetButton'
 
 function addToMapUrl(keyword: string, volume?: number) {
   const params = new URLSearchParams({ add: keyword })
@@ -97,18 +98,25 @@ function steamImg(game: GameTrend) {
 }
 
 // ── Game Card ─────────────────────────────────────────────────────────────────
-function GameCard({ game, selected, onToggle, onSelect, onCreateContent }: {
+function GameCard({ game, selected, onToggle, onSelect, onCreateContent, tierLevel }: {
   game:            GameTrend
   selected:        boolean
   onToggle:        (g: GameTrend) => void
   onSelect:        (g: GameTrend) => void
   onCreateContent: (g: GameTrend) => void
+  /** Sprint NEWS_UI.4: T1/T2 if this game matches a tier product. */
+  tierLevel?:      number
 }) {
   const sparkData  = game.search_trend?.map(p => p.value) ?? []
   const nextAction = nextActionLabel(game)
 
   return (
-    <div className={`bg-gray-900 border rounded-xl overflow-hidden hover:border-gray-600 transition cursor-pointer group relative ${selected ? 'border-blue-500 ring-1 ring-blue-500/40' : 'border-gray-800'}`}>
+    <div className={`bg-gray-900 border rounded-xl overflow-hidden hover:border-gray-600 transition cursor-pointer group relative ${
+      selected            ? 'border-blue-500 ring-1 ring-blue-500/40' :
+      tierLevel === 1     ? 'border-amber-500/50 ring-1 ring-amber-500/20' :
+      tierLevel === 2     ? 'border-blue-500/40 ring-1 ring-blue-500/15' :
+                            'border-gray-800'
+    }`}>
       {/* Checkbox overlay */}
       <div
         className="absolute top-2 left-2 z-10"
@@ -135,6 +143,13 @@ function GameCard({ game, selected, onToggle, onSelect, onCreateContent }: {
           <div className="absolute inset-0 bg-gradient-to-t from-gray-900/80 to-transparent" />
           {/* Badges */}
           <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+            {tierLevel && (
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                tierLevel === 1 ? 'bg-amber-500/95 text-white' : 'bg-blue-500/90 text-white'
+              }`}>
+                🎯 T{tierLevel}
+              </span>
+            )}
             {game.g2g_recommended && (
               <span className="text-[10px] bg-green-500/90 text-white font-bold px-2 py-0.5 rounded-full">
                 ⭐ G2G Sells
@@ -523,6 +538,24 @@ export default function GameTrendsPage() {
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
   const [sending,    setSending]    = useState(false)
 
+  // Sprint NEWS_UI.4: tier map for badge overlay on game cards
+  const [tierMap, setTierMap] = useState<Map<string, number>>(new Map())
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res  = await fetch('/api/priority-products?include=tier')
+        const data = await res.json() as { items?: Array<{ product_name: string; tier: number }> }
+        if (cancelled) return
+        const m = new Map<string, number>()
+        for (const t of data.items ?? []) m.set(String(t.product_name).toLowerCase(), Number(t.tier))
+        setTierMap(m)
+      } catch { /* silent */ }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
   useEffect(() => { fetchGames() }, [])
 
   async function fetchGames(refresh = false) {
@@ -643,6 +676,7 @@ export default function GameTrendsPage() {
           >
             🔄 Refresh
           </button>
+          <ExportToSheetButton kind="trends" />
           <button
             onClick={() => router.push('/content/news-signals')}
             title="Bifrost — gaming news listener (RSS + FireCrawl deep dive)"
@@ -782,6 +816,7 @@ export default function GameTrendsPage() {
               onToggle={toggleCheck}
               onSelect={setSelected}
               onCreateContent={handleCreateContent}
+              tierLevel={tierMap.get(game.name.toLowerCase())}
             />
           ))}
         </div>

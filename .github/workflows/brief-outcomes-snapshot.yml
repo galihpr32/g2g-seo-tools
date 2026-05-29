@@ -1,0 +1,37 @@
+name: Brief Outcomes Snapshot
+
+# Daily — captures GSC ranking position for each published brief at +30d /
+# +60d / +90d checkpoints. Without this, the Ranking Impact Tracker shows
+# "Not enough data" forever even after a brief has been live for months.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'    # 02:00 UTC daily (after gsc-daily at 01:00)
+  workflow_dispatch:
+
+concurrency:
+  group: brief-outcomes-snapshot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/brief-outcomes-snapshot
+        env:
+          APP_URL:     ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL or CRON_SECRET not set"
+            exit 1
+          fi
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 240 \
+            --request GET \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL%/}/api/cron/brief-outcomes-snapshot")
+          echo "Response:"
+          echo "${response}" | jq . 2>/dev/null || echo "${response}"

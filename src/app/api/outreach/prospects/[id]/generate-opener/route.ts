@@ -11,11 +11,16 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 /**
  * POST /api/outreach/prospects/[id]/generate-opener
  *
- * Bragi writes a personalised guestpost outreach email opener for a
- * prospect. Returns { subject, opener } — both ~2–4 sentences, ready
- * to paste into an email client.
+ * Bragi writes a personalised guestpost outreach email for a prospect.
+ * Two modes:
+ *   - mode='opener' (default): subject + 2-4 sentence opener (legacy behavior)
+ *   - mode='full':             subject + full email body with greeting,
+ *                              opener, value prop, ask, and signoff
  *
- * Body (optional): { tone?: 'professional' | 'casual' | 'direct' }
+ * Returns { subject, opener } for opener-mode, { subject, body } for full.
+ *
+ * Body (optional): { tone?: 'professional' | 'casual' | 'direct',
+ *                    mode?: 'opener' | 'full' }
  */
 export async function POST(
   req: Request,
@@ -41,9 +46,11 @@ export async function POST(
 
   // ── Optional body ────────────────────────────────────────────────────────
   let tone = 'professional'
+  let mode: 'opener' | 'full' = 'opener'
   try {
-    const body = await req.json() as { tone?: string }
+    const body = await req.json() as { tone?: string; mode?: string }
     if (['professional', 'casual', 'direct'].includes(body.tone ?? '')) tone = body.tone!
+    if (body.mode === 'full') mode = 'full'
   } catch { /* no body */ }
 
   // ── Build context ────────────────────────────────────────────────────────
@@ -61,20 +68,48 @@ export async function POST(
   ].filter(Boolean).join('\n')
 
   // ── Prompt ───────────────────────────────────────────────────────────────
-  const systemPrompt = `You are Bragi, G2G's content and outreach copywriter. You write personalised, ${tone} guestpost outreach emails on behalf of G2G (g2g.com) — a leading peer-to-peer gaming marketplace for in-game currency, items, game accounts, and top-ups.
-
-G2G's key trust signals: GamerProtect buyer protection, escrow system, 200+ payment methods, verified sellers, ISO/IEC 27001:2013 certified, 5M+ transactions.
-
-Rules:
+  const sharedRules = `Rules:
 - Never mention competitor names
 - Avoid: "immerse yourself", "dive into", "game-changing", "revolutionize", "leverage", "delve"
 - Be specific to the prospect's domain — reference what they actually cover
-- Keep it short: subject ≤ 10 words, opener ≤ 4 sentences
-- Opener should NOT include a salutation line (like "Hi [Name]") — just the body paragraph
-- End with a clear, low-pressure ask (e.g. "Would you be open to a quick chat about a collaboration?")
 - Tone: ${tone}`
 
-  const userPrompt = `Write a guestpost outreach email opener for this prospect:
+  const systemPrompt = mode === 'full'
+    ? `You are Bragi, G2G's content and outreach copywriter. You write personalised, ${tone} full guestpost outreach EMAILS on behalf of G2G (g2g.com) — a leading peer-to-peer gaming marketplace for in-game currency, items, game accounts, and top-ups.
+
+G2G's key trust signals: GamerProtect buyer protection, escrow system, 200+ payment methods, verified sellers, ISO/IEC 27001:2013 certified, 5M+ transactions.
+
+${sharedRules}
+
+For FULL EMAIL mode, the body should follow this structure:
+  1. Greeting line (e.g. "Hi [Name]," or "Hi there,")
+  2. Personalized opener referencing the prospect's site (1-2 sentences)
+  3. Value proposition: what content we'd contribute + why it fits THEIR audience (2-3 sentences)
+  4. Light credibility plug — 1 trust signal (NOT a brag dump)
+  5. Clear, low-pressure ask
+  6. Signoff (e.g. "Best, G2G outreach team")
+
+Total length: 120-180 words. Subject: ≤ 10 words.`
+    : `You are Bragi, G2G's content and outreach copywriter. You write personalised, ${tone} guestpost outreach emails on behalf of G2G (g2g.com) — a leading peer-to-peer gaming marketplace for in-game currency, items, game accounts, and top-ups.
+
+G2G's key trust signals: GamerProtect buyer protection, escrow system, 200+ payment methods, verified sellers, ISO/IEC 27001:2013 certified, 5M+ transactions.
+
+${sharedRules}
+- Keep it short: subject ≤ 10 words, opener ≤ 4 sentences
+- Opener should NOT include a salutation line (like "Hi [Name]") — just the body paragraph
+- End with a clear, low-pressure ask (e.g. "Would you be open to a quick chat about a collaboration?")`
+
+  const userPrompt = mode === 'full'
+    ? `Write a complete guestpost outreach email for this prospect:
+
+${prospectContext}
+
+Return ONLY a JSON object with exactly two fields:
+{
+  "subject": "the email subject line",
+  "body":    "the full email body (greeting + opener + value prop + ask + signoff)"
+}`
+    : `Write a guestpost outreach email opener for this prospect:
 
 ${prospectContext}
 
@@ -88,7 +123,7 @@ Return ONLY a JSON object with exactly two fields:
   try {
     const response = await anthropic.messages.create({
       model:      'claude-haiku-4-5-20251001',
-      max_tokens: 512,
+      max_tokens: mode === 'full' ? 900 : 512,
       system:     systemPrompt,
       messages:   [{ role: 'user', content: userPrompt }],
     })
@@ -99,13 +134,17 @@ Return ONLY a JSON object with exactly two fields:
     const jsonMatch = raw.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('No JSON in response')
 
-    const parsed = JSON.parse(jsonMatch[0]) as { subject?: string; opener?: string }
-    if (!parsed.subject || !parsed.opener) throw new Error('Invalid response shape')
+    const parsed = JSON.parse(jsonMatch[0]) as { subject?: string; opener?: string; body?: string }
+    if (!parsed.subject) throw new Error('Invalid response shape — missing subject')
+    if (mode === 'full' && !parsed.body)   throw new Error('Invalid response shape — missing body')
+    if (mode === 'opener' && !parsed.opener) throw new Error('Invalid response shape — missing opener')
 
     return NextResponse.json({
       ok:      true,
+      mode,
       subject: parsed.subject.trim(),
-      opener:  parsed.opener.trim(),
+      opener:  mode === 'opener' ? parsed.opener?.trim() : undefined,
+      body:    mode === 'full'   ? parsed.body?.trim()   : undefined,
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Generation failed'

@@ -27,6 +27,13 @@ const PRIORITY_STYLES: Record<'high' | 'medium' | 'low', string> = {
   low:    'bg-blue-900/30 text-blue-300 border-blue-700/40',
 }
 
+const INTENT_STYLES: Record<string, string> = {
+  informational: 'bg-sky-900/30 text-sky-300 border-sky-700/40',
+  commercial:    'bg-amber-900/30 text-amber-300 border-amber-700/40',
+  transactional: 'bg-green-900/30 text-green-300 border-green-700/40',
+  mixed:         'bg-purple-900/30 text-purple-300 border-purple-700/40',
+}
+
 function timeAgo(iso: string): string {
   const ms = Date.now() - new Date(iso).getTime()
   const m = Math.floor(ms / 60000)
@@ -126,6 +133,7 @@ export default function OdinScoringPanel({ limit = 60 }: { limit?: number }) {
                   <th className="text-left py-2 font-normal">Game</th>
                   <th className="text-left py-2 font-normal">Priority</th>
                   <th className="text-left py-2 font-normal">Reasoning</th>
+                  <th className="text-left py-2 font-normal">Content Angle</th>
                   <th className="text-right py-2 font-normal">Players (2w)</th>
                   <th className="text-right py-2 font-normal">Search vol</th>
                   <th className="text-right py-2 font-normal">When</th>
@@ -140,6 +148,12 @@ export default function OdinScoringPanel({ limit = 60 }: { limit?: number }) {
                     signals?:         { players_2weeks?: number; search_volume?: number; g2g_recommended?: boolean }
                     queued_as_brief?: boolean
                     suggested_action?: 'create_page' | 'update_page'
+                    content_strategy?: {
+                      intent:            string
+                      content_type:      string
+                      content_angle:     string
+                      pillar_or_cluster: string
+                    }
                   }
                   const score = Number(d.score ?? 0)
                   const prio  = d.priority ?? 'low'
@@ -169,6 +183,27 @@ export default function OdinScoringPanel({ limit = 60 }: { limit?: number }) {
                       </td>
                       <td className="py-2 pr-2 text-gray-400 text-[11px] max-w-md truncate" title={d.reasoning}>
                         {d.reasoning ?? '—'}
+                      </td>
+                      <td className="py-2 pr-2 max-w-xs">
+                        {d.content_strategy ? (
+                          <div className="flex flex-col gap-0.5">
+                            <span
+                              className={`inline-block self-start text-[9px] px-1.5 py-0.5 rounded border uppercase font-semibold tracking-wide ${INTENT_STYLES[d.content_strategy.intent] ?? INTENT_STYLES.commercial}`}
+                            >
+                              {d.content_strategy.intent.slice(0, 4)}
+                            </span>
+                            <span
+                              className="text-gray-400 text-[11px] leading-tight truncate"
+                              title={d.content_strategy.content_angle}
+                            >
+                              {d.content_strategy.content_angle.length > 52
+                                ? d.content_strategy.content_angle.slice(0, 52) + '…'
+                                : d.content_strategy.content_angle}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-700 text-xs">—</span>
+                        )}
                       </td>
                       <td className="py-2 pr-2 text-right text-gray-300 font-mono text-xs">
                         {sig.players_2weeks ? `${(sig.players_2weeks / 1000).toFixed(0)}K` : '—'}

@@ -2,12 +2,13 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
-import { getSiteConfig } from '@/lib/sites'
+import { getSiteConfig, resolveSiteSlugFromRequest } from '@/lib/sites'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
 import { getAgentInsights, formatInsightsForPrompt } from '@/lib/reports/agent-insights'
+import { analyzeTrackedRankings } from '@/lib/reports/ranking-analysis'
 import Anthropic from '@anthropic-ai/sdk'
 
 // CTR curve for SoV calculation (positions 1–10)
@@ -52,7 +53,7 @@ export async function GET(req: Request) {
   const db = createServiceClient()
   const { searchParams } = new URL(req.url)
   const id   = searchParams.get('id')
-  const site = searchParams.get('site') ?? 'g2g'
+  const site = resolveSiteSlugFromRequest(req)
 
   if (id) {
     const { data, error } = await db
@@ -106,7 +107,8 @@ export async function POST(req: Request) {
     }
 
     // ── Resolve site config ──────────────────────────────────────────────────
-    const siteSlug = (body.site as string) ?? 'g2g'
+    // Cookie/query/body all checked. Cron path passes body.site explicitly.
+    const siteSlug = resolveSiteSlugFromRequest(req, body)
     const siteConfig = await getSiteConfig(supabase, siteSlug)
     if (!siteConfig) {
       return NextResponse.json({ error: `Unknown site: ${siteSlug}` }, { status: 400 })
@@ -179,12 +181,20 @@ export async function POST(req: Request) {
     let curSnaps:  Array<{ page: string; clicks: number; impressions: number; ctr: number; position: number; snapshot_date: string }> = []
     let prevSnaps: Array<{ page: string; clicks: number; impressions: number; ctr: number; position: number; snapshot_date: string }> = []
 
+    // Sprint FRIDAY.KPI.GSC-TOTAL — authoritative brand totals come from a
+    // no-dim GSC call. Page-dim call stays for the page-breakdown table but
+    // its sum no longer drives the headline KPI cards. Same approach now
+    // mirrors Friday KPI so both reports show identical brand totals.
+    let curTotal  = { clicks: 0, impressions: 0, position: 0 }
+    let prevTotal = { clicks: 0, impressions: 0, position: 0 }
     if (conn?.access_token) {
       try {
         const gscAuth = await getRefreshedClient(conn.access_token, conn.refresh_token, conn.expires_at)
-        const [curRows, prevRows] = await Promise.all([
+        const [curRows, prevRows, curTotalRows, prevTotalRows] = await Promise.all([
           getSearchAnalytics(gscAuth, siteUrl, weekStart,     weekEnd,     ['page'], 5000),
           getSearchAnalytics(gscAuth, siteUrl, prevWeekStart, prevWeekEnd, ['page'], 5000),
+          getSearchAnalytics(gscAuth, siteUrl, weekStart,     weekEnd,     [],       1),
+          getSearchAnalytics(gscAuth, siteUrl, prevWeekStart, prevWeekEnd, [],       1),
         ])
         curSnaps = curRows.map(r => ({
           page:          r.keys?.[0] ?? '',
@@ -202,6 +212,16 @@ export async function POST(req: Request) {
           position:      r.position ?? 0,
           snapshot_date: prevWeekEnd,
         }))
+        curTotal = {
+          clicks:      Number(curTotalRows[0]?.clicks      ?? 0),
+          impressions: Number(curTotalRows[0]?.impressions ?? 0),
+          position:    Number(curTotalRows[0]?.position    ?? 0),
+        }
+        prevTotal = {
+          clicks:      Number(prevTotalRows[0]?.clicks      ?? 0),
+          impressions: Number(prevTotalRows[0]?.impressions ?? 0),
+          position:    Number(prevTotalRows[0]?.position    ?? 0),
+        }
       } catch (e) {
         console.warn('[weekly-report] GSC live API failed:', e)
       }
@@ -258,17 +278,24 @@ export async function POST(req: Request) {
     const topGainers = pageMovers.slice(0, 5).filter(p => p.delta > 0)
     const topDroppers = pageMovers.slice(-5).reverse().filter(p => p.delta < 0)
 
+    // Sprint FRIDAY.KPI.GSC-TOTAL — headline totals come from the no-dim
+    // GSC call (curTotal/prevTotal) so they match Friday KPI exactly. Fall
+    // back to the page-dim sum when no GSC connection (curTotal is zero).
+    const headlineCur  = curTotal.clicks  > 0 || curTotal.impressions  > 0 ? curTotal  : { clicks: cur.clicks,  impressions: cur.impressions,  position: cur.avgPosition }
+    const headlinePrev = prevTotal.clicks > 0 || prevTotal.impressions > 0 ? prevTotal : { clicks: prev.clicks, impressions: prev.impressions, position: prev.avgPosition }
+    const headlineCurCtr  = headlineCur.impressions  > 0 ? +(headlineCur.clicks  / headlineCur.impressions  * 100).toFixed(2) : 0
+    const headlinePrevCtr = headlinePrev.impressions > 0 ? +(headlinePrev.clicks / headlinePrev.impressions * 100).toFixed(2) : 0
     const gscData = {
-      weekClicks:          cur.clicks,
-      prevWeekClicks:      prev.clicks,
-      clicksPct:           pctChange(cur.clicks, prev.clicks),
-      weekImpressions:     cur.impressions,
-      prevWeekImpressions: prev.impressions,
-      impressionsPct:      pctChange(cur.impressions, prev.impressions),
-      weekCtr:             cur.ctr,
-      prevWeekCtr:         prev.ctr,
-      ctrPct:              pctChange(Math.round(cur.ctr * 100), Math.round(prev.ctr * 100)),
-      avgPosition:         cur.avgPosition,
+      weekClicks:          headlineCur.clicks,
+      prevWeekClicks:      headlinePrev.clicks,
+      clicksPct:           pctChange(headlineCur.clicks, headlinePrev.clicks),
+      weekImpressions:     headlineCur.impressions,
+      prevWeekImpressions: headlinePrev.impressions,
+      impressionsPct:      pctChange(headlineCur.impressions, headlinePrev.impressions),
+      weekCtr:             headlineCurCtr,
+      prevWeekCtr:         headlinePrevCtr,
+      ctrPct:              pctChange(Math.round(headlineCurCtr * 100), Math.round(headlinePrevCtr * 100)),
+      avgPosition:         curTotal.position > 0 ? +curTotal.position.toFixed(1) : cur.avgPosition,
       totalUniquePages:    cur.pageMap.size,
       topGainers:          topGainers.map(p => ({ page: p.page, delta: p.delta, clicks: p.curClicks })),
       topDroppers:         topDroppers.map(p => ({ page: p.page, delta: p.delta, clicks: p.curClicks })),
@@ -512,11 +539,32 @@ export async function POST(req: Request) {
     // ── Agent insights ───────────────────────────────────────────────────────
     // Aggregates agent_runs + agent_actions + briefs activity within the
     // report window. Failures non-fatal — captured in `agentInsights.warnings`.
-    const agentInsights = await getAgentInsights(db, ownerId, weekStart, weekEnd)
+    const agentInsights = await getAgentInsights(db, ownerId, weekStart, weekEnd, siteSlug)
       .catch(e => {
         console.warn('[weekly-report] agent insights failed:', e)
         return null
       })
+
+    // ── Tracked-product ranking analysis (DataForSEO history, week scope) ──
+    // No AI action plan on weekly — keeps cost down; the monthly report runs
+    // it. Surfacing the bucket counts + top movers is enough for a weekly
+    // pulse signal.
+    let trackedRankings: Awaited<ReturnType<typeof analyzeTrackedRankings>> | null = null
+    try {
+      trackedRankings = await analyzeTrackedRankings({
+        db,
+        ownerId,
+        siteSlug,
+        siteName:    siteConfig.display_name,
+        domain:      semrushDomain,
+        periodStart: weekStart,
+        periodEnd:   weekEnd,
+        periodDays:  7,
+        withActionPlan: false,
+      })
+    } catch (e) {
+      console.warn('[weekly-report] tracked rankings analysis failed:', e)
+    }
 
     // ── Base report data ─────────────────────────────────────────────────────
     const baseReportData = {
@@ -529,6 +577,7 @@ export async function POST(req: Request) {
       actionItems: actionItemsData,
       competitive: competitiveData,
       domainAuthority,
+      trackedRankings,
       agentInsights,
       generatedAt: new Date().toISOString(),
     }

@@ -3,6 +3,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
+import MimirPanel from '@/components/agents/MimirPanel'
+
+// Sprint WEEKLY.REPORT.SEMRUSH-HIDE — SEMrush API tracking is paused pending
+// plan decision. Flip this flag back to `true` once subscription is restored.
+const SHOW_SEMRUSH_WIDGETS = false
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -90,6 +95,15 @@ interface ReportData {
   aiTeamPlan?: string
   // Agent activity (v3+) — null when agents haven't run in window
   agentInsights?: AgentInsightsLite | null
+  // Tracked-product ranking analysis (v4 — 2026-05). No AI action plan on
+  // weekly to keep cost down; the bucket counts + top movers are enough
+  // signal for a weekly pulse.
+  trackedRankings?: {
+    bucketsCur:   { top3: number; top5: number; top10: number; top20: number; top100: number; total: number; ranked: number }
+    bucketsPrev:  { top3: number; top5: number; top10: number; top20: number; top100: number; total: number; ranked: number }
+    topImprovers: { keyword: string; productName: string; curPosition: number | null; movement: number | null }[]
+    topDroppers:  { keyword: string; productName: string; curPosition: number | null; movement: number | null }[]
+  } | null
 }
 
 interface WeeklyReport {
@@ -553,6 +567,12 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {report && (
+            <MimirPanel
+              pageContext={{ kind: 'weekly_report', id: report.id }}
+              trigger="🪶 Ask Mimir"
+            />
+          )}
+          {report && (
             <button
               onClick={() => window.print()}
               className="text-xs text-gray-400 hover:text-white border border-gray-700 hover:border-gray-500 px-3 py-2 rounded-lg transition flex items-center gap-1.5"
@@ -703,8 +723,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 )}
               </div>
 
-              {/* ── Domain Authority (SEMrush) ── */}
-              {d.domainAuthority && (
+              {/* ── Domain Authority (SEMrush) ── Sprint WEEKLY.REPORT.SEMRUSH-HIDE */}
+              {SHOW_SEMRUSH_WIDGETS && d.domainAuthority && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-white mb-4">🔰 Domain Strength (SEMrush)</h3>
                   <div className="grid grid-cols-3 gap-4">
@@ -732,8 +752,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                 initialChecks={report.task_checks ?? {}}
               />
 
-              {/* ── Traffic + Keywords ── */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* ── Traffic + Keywords ── grid collapses to 1 col when SEMrush hidden */}
+              <div className={`grid grid-cols-1 ${SHOW_SEMRUSH_WIDGETS ? 'md:grid-cols-2' : ''} gap-4`}>
 
                 {/* GSC movers */}
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -775,7 +795,8 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                   )}
                 </div>
 
-                {/* Keyword movers */}
+                {/* Keyword movers (SEMrush) — Sprint WEEKLY.REPORT.SEMRUSH-HIDE */}
+                {SHOW_SEMRUSH_WIDGETS && (
                 <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="text-sm font-semibold text-white">🎯 Keyword Movement</h3>
@@ -820,6 +841,7 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
                     <p className="text-xs text-gray-500">No SEMrush data available.</p>
                   )}
                 </div>
+                )}
               </div>
 
               {/* ── GA4 top pages ── */}
@@ -1034,6 +1056,73 @@ export default function WeeklyReportPage({ site = 'g2g' }: { site?: string }) {
 
               {/* ── Agent Activity (auto-hidden if no activity) ── */}
               <AgentActivitySummary insights={d.agentInsights ?? null} />
+
+              {/* ── Tracked product ranking analysis (v4) — week scope, no AI plan ── */}
+              {d.trackedRankings && d.trackedRankings.bucketsCur.total > 0 && (
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-semibold text-white">🎯 Tracked Product Rankings — this week</h3>
+                    <p className="text-[10px] text-gray-500">{d.trackedRankings.bucketsCur.ranked}/{d.trackedRankings.bucketsCur.total} ranked · DataForSEO</p>
+                  </div>
+                  <div className="grid grid-cols-4 gap-3 mb-5">
+                    {[
+                      { label: 'Top 3',  cur: d.trackedRankings.bucketsCur.top3,  prev: d.trackedRankings.bucketsPrev.top3 },
+                      { label: 'Top 5',  cur: d.trackedRankings.bucketsCur.top5,  prev: d.trackedRankings.bucketsPrev.top5 },
+                      { label: 'Top 10', cur: d.trackedRankings.bucketsCur.top10, prev: d.trackedRankings.bucketsPrev.top10 },
+                      { label: 'Top 20', cur: d.trackedRankings.bucketsCur.top20, prev: d.trackedRankings.bucketsPrev.top20 },
+                    ].map(b => {
+                      const delta = b.cur - b.prev
+                      return (
+                        <div key={b.label} className="bg-gray-800 rounded-lg p-3 text-center">
+                          <p className="text-[10px] text-gray-500 uppercase tracking-wider">{b.label}</p>
+                          <p className="text-2xl font-bold text-white mt-0.5">{b.cur}</p>
+                          <p className={`text-[11px] font-medium mt-0.5 ${delta > 0 ? 'text-green-400' : delta < 0 ? 'text-red-400' : 'text-gray-500'}`}>
+                            {delta > 0 ? `+${delta}` : delta < 0 ? delta : '—'} <span className="text-gray-600">vs week start</span>
+                          </p>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-[10px] text-green-400 uppercase tracking-wider font-semibold mb-2">▲ Top Improvers</p>
+                      {d.trackedRankings.topImprovers.length === 0 ? (
+                        <p className="text-xs text-gray-600 italic">Not enough daily history yet.</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {d.trackedRankings.topImprovers.slice(0, 5).map(m => (
+                            <li key={m.keyword + m.productName} className="flex items-start gap-2 text-xs">
+                              <span className="text-green-400 font-bold w-12 flex-shrink-0">▲{m.movement}</span>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-white truncate" title={m.keyword}>{m.keyword}</p>
+                                <p className="text-gray-500 truncate text-[10px]">{m.productName} · pos {m.curPosition}</p>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-red-400 uppercase tracking-wider font-semibold mb-2">▼ Top Droppers</p>
+                      {d.trackedRankings.topDroppers.length === 0 ? (
+                        <p className="text-xs text-gray-600 italic">No drops detected — nice.</p>
+                      ) : (
+                        <ul className="space-y-1.5">
+                          {d.trackedRankings.topDroppers.slice(0, 5).map(m => (
+                            <li key={m.keyword + m.productName} className="flex items-start gap-2 text-xs">
+                              <span className="text-red-400 font-bold w-12 flex-shrink-0">▼{Math.abs(m.movement ?? 0)}</span>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-white truncate" title={m.keyword}>{m.keyword}</p>
+                                <p className="text-gray-500 truncate text-[10px]">{m.productName} · pos {m.curPosition ?? '—'}</p>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* ── Management Brief + Team Plan ── */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

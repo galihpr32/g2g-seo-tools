@@ -5,18 +5,28 @@ import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { useState, useEffect } from 'react'
 import SiteSwitcher from './SiteSwitcher'
+import { useBrandTheme } from '@/lib/hooks/useBrandTheme'
 
 const navItems = [
   {
     group: 'PIPELINE',
     defaultOpen: true,
     items: [
-      { label: 'Dashboard',       href: '/dashboard',                      icon: '▦'  },
-      { label: 'Opportunities',    href: '/command-center/opportunities',   icon: '🎯' },
-      { label: 'Pipeline Journey', href: '/command-center/pipeline',       icon: '🗺️' },
+      { label: 'Dashboard',         href: '/dashboard',                    icon: '▦'  },
+      { label: 'Priority Products', href: '/priority-products',            icon: '🎯' },
+      { label: 'Keyword Master',    href: '/priority-products/keywords',   icon: '🔑' },
+      { label: 'Opportunities',     href: '/command-center/opportunities', icon: '🔍' },
+      { label: 'Pipeline Journey',  href: '/command-center/pipeline',      icon: '🗺️' },
       { label: 'Command Center',  href: '/command-center',                 icon: '🤖' },
       { label: 'Action Items',    href: '/gsc/action-items',               icon: '✅' },
+      { label: 'Experiments',     href: '/experiments',                    icon: '🧪' },
+      { label: 'Mimir Memory',    href: '/mimir/memories',                 icon: '🧠' },
+      { label: 'Mimir Onpage Learn', href: '/mimir/onpage-learn',          icon: '📐' },
+      // Sprint HUGIN.SIDEBAR — long-tail discovery
+      { label: 'Hugin · Long-tail',  href: '/hugin',                       icon: '🪶' },
+      { label: 'Off-Page Pipeline', href: '/command-center/off-page',      icon: '🔗' },
       { label: 'Notifications',   href: '/notifications',                  icon: '🔔' },
+      { label: 'Feedback',        href: '/feedback',                       icon: '🐛' },
     ],
   },
   {
@@ -29,9 +39,11 @@ const navItems = [
       { label: 'Content Studio',     href: '/content/studio',          icon: '📝' },
       { label: 'Product Content',    href: '/content/products',        icon: '📦' },
       { label: 'Knowledge Base',     href: '/knowledge-base',          icon: '🧠' },
+      { label: 'KB Proposals',       href: '/knowledge-base/proposals', icon: '💡' },
       { label: 'Game Trends',        href: '/content/trends',          icon: '🎮' },
       { label: 'News Signals',       href: '/content/news-signals',    icon: '📰' },
       { label: 'Keyword Map',        href: '/content/keyword-map',          icon: '🗺️' },
+      { label: 'Clusters',           href: '/clusters',                     icon: '📚' },
       { label: 'Keyword Exclusions', href: '/content/keyword-exclusions',   icon: '🚫' },
       { label: 'Internal Links',     href: '/content/internal-links',       icon: '🔗' },
       { label: 'Cannibalization',    href: '/content/cannibalization',      icon: '🍖' },
@@ -47,6 +59,7 @@ const navItems = [
       { label: 'SERP & Share of Voice', href: '/competitive/serp-tracker',  icon: '📊' },
       { label: 'Competitors',           href: '/competitive/competitors',   icon: '👁️' },
       { label: 'Page Analyzer',         href: '/competitive/page-analyzer', icon: '🔎' },
+      { label: 'Backlink Gap',          href: '/competitive/backlink-gap',  icon: '🕵️' },
     ],
   },
   {
@@ -54,6 +67,10 @@ const navItems = [
     defaultOpen: false,
     items: [
       { label: 'Clicks Drop Alert',   href: '/gsc/ranking-drop',        icon: '📉' },
+      { label: 'Site Health Overview', href: '/site-health',            icon: '🛡️' },
+      { label: 'Schema Health',       href: '/site-health/schema',      icon: '🧬' },
+      { label: 'Broken Internal',    href: '/site-health/broken-internal', icon: '🔴' },
+      { label: 'PageSpeed (PSI)',     href: '/site-health/psi',         icon: '⚡' },
       { label: 'Top Product Tracker', href: '/gsc/product-rankings',    icon: '🎯' },
       { label: 'Index Coverage',      href: '/gsc/index-coverage',      icon: '🔍' },
       { label: 'Core Web Vitals',     href: '/gsc/core-web-vitals',     icon: '⚡' },
@@ -68,14 +85,23 @@ const navItems = [
     items: [
       { label: 'Guestpost Outreach', href: '/outreach',    icon: '🤝' },
       { label: 'Backlink Tracker',   href: '/backlinks',   icon: '🔗' },
+      // Sprint FORSETI.SIDEBAR — community response tracker
+      { label: 'Forseti · Reddit',   href: '/forseti',     icon: '⚖' },
     ],
   },
   {
     group: 'REPORTS',
     defaultOpen: true,
     items: [
-      { label: 'Weekly Pulse',   href: '/reports/weekly',         icon: '📊' },
-      { label: 'Monthly SEO',    href: '/reports/monthly',        icon: '📅' },
+      { label: 'Weekly Pulse',     href: '/reports/weekly',             icon: '📊' },
+      { label: 'Friday KPI',       href: '/reports/friday-kpi',         icon: '🗓' },
+      { label: 'AI Visibility',    href: '/reports/ai-visibility',      icon: '🔮' },
+      { label: 'Monthly SEO',      href: '/reports/monthly',            icon: '📅' },
+      { label: 'Agent Performance', href: '/reports/agent-performance', icon: '🤖' },
+      { label: 'Rollout Impact',    href: '/reports/rollout-impact',    icon: '📈' },
+      { label: 'Content Economics', href: '/reports/content-economics', icon: '⏱' },
+      { label: 'Learning Loop',     href: '/reports/learning-loop',     icon: '🎓' },
+      { label: 'Mimir Learning',    href: '/reports/mimir-learning',    icon: '🧠' },
       { label: 'Multi-Market',   href: '/reports/multi-market',   icon: '🌍' },
       { label: 'Backlink Audit', href: '/reports/backlinks',      icon: '🔗' },
       { label: 'SERP Features',  href: '/reports/serp-features',  icon: '⭐' },
@@ -87,11 +113,13 @@ const navItems = [
     group: 'SETTINGS',
     defaultOpen: false,
     items: [
-      { label: 'Settings',         href: '/settings',         icon: '⚙️' },
-      { label: 'Team Performance', href: '/team-performance', icon: '👥' },
-      { label: 'Campaigns',        href: '/campaigns',        icon: '🗂️' },
-      { label: 'API Cost Tracker', href: '/tools/api-costs',  icon: '💰' },
-      { label: 'URL Analysis',     href: '/tools/url-analysis', icon: '🔬' },
+      { label: 'Settings',          href: '/settings',                          icon: '⚙️' },
+      { label: 'Team Performance',  href: '/team-performance',                  icon: '👥' },
+      { label: 'Campaigns',         href: '/campaigns',                         icon: '🗂️' },
+      { label: 'API Cost Tracker',  href: '/tools/api-costs',                   icon: '💰' },
+      { label: 'URL Analysis',      href: '/tools/url-analysis',                icon: '🔬' },
+      { label: 'Schema Generator',  href: '/tools/schema-generator',            icon: '🧬' },
+      { label: 'KW Methodology',    href: '/methodology/competitive-keywords',  icon: '📐' },
     ],
   },
 ]
@@ -176,6 +204,7 @@ export default function Sidebar() {
   const pathname = usePathname()
   const router   = useRouter()
   const supabase = createClient()
+  const theme    = useBrandTheme()   // Sprint THEME.BRAND
   const [notifCount, setNotifCount]   = useState(0)
   const [isMember,   setIsMember]     = useState(false)
   // collapsed: Set of group names that are currently closed
@@ -264,20 +293,22 @@ export default function Sidebar() {
     router.refresh()
   }
 
-  const siteAwarePaths = ['/reports/weekly']
+  // Keep this aligned with DYNAMIC_SITE_PATHS in src/middleware.ts.
+  // These are the routes with an App Router `[site]/...` dynamic segment;
+  // every other page reads the site via cookie / useSiteSlug() so the
+  // un-prefixed path works fine.
+  const siteAwarePaths = ['/reports/weekly', '/reports/monthly']
 
   return (
     <aside className="w-60 h-screen sticky top-0 bg-gray-900 border-r border-gray-800 flex flex-col overflow-hidden">
-      {/* Brand */}
+      {/* Brand — Sprint THEME.BRAND: workspace block adapts to active site */}
       <div className="px-5 pt-5 pb-3 border-b border-gray-800">
         <div className="flex items-center gap-2.5 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-red-700 flex items-center justify-center flex-shrink-0">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
+          <div className={`w-8 h-8 rounded-lg ${theme.bgPrimary} flex items-center justify-center flex-shrink-0 text-base`}>
+            <span aria-hidden>{theme.emoji}</span>
           </div>
           <div>
-            <p className="text-white font-semibold text-sm leading-tight">G2G SEO Tools</p>
+            <p className="text-white font-semibold text-sm leading-tight">{theme.name} SEO Tools</p>
             <p className="text-gray-500 text-xs">Marketing · SEO</p>
           </div>
         </div>
@@ -335,14 +366,14 @@ export default function Sidebar() {
                           href={resolvedHref}
                           className={`flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-sm transition ${
                             active
-                              ? 'bg-red-700 text-white font-medium'
+                              ? `${theme.bgPrimary} text-white font-medium`
                               : 'text-gray-400 hover:text-white hover:bg-gray-800'
                           }`}
                         >
                           <span className="text-base leading-none">{item.icon}</span>
                           <span className="flex-1">{item.label}</span>
                           {item.href === '/notifications' && notifCount > 0 && (
-                            <span className="ml-auto text-[10px] font-bold bg-red-600 text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                            <span className={`ml-auto text-[10px] font-bold ${theme.badgeBg} text-white rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1`}>
                               {notifCount > 99 ? '99+' : notifCount}
                             </span>
                           )}

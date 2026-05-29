@@ -142,6 +142,14 @@ export interface HeimdallDropAnalysisData {
   reasoning:            string
   top_dropped_queries:  { query: string; clicks_drop: number }[]
   recommendation:       string
+  // Structured fix checklist injected by technical-SEO + SEO-audit methodology.
+  // Steps are ordered by urgency — first item is the highest-priority action.
+  fix_checklist?:       { step: string; priority: 'immediate' | 'high' | 'medium' }[]
+  // Rough recovery potential based on root-cause category:
+  //   high   = technical issue (usually fast to fix — indexation, schema, snippet)
+  //   medium = content refresh needed (weeks)
+  //   low    = algorithmic / backlink-driven (months)
+  recovery_potential?:  'high' | 'medium' | 'low'
 }
 
 export interface SagaProposalData {
@@ -174,4 +182,13 @@ export interface OdinTrendScoreData {
     g2g_recommended?:  boolean
   }
   queued_as_brief?: boolean
+  // Content strategy derived per game using the content-strategy skill methodology.
+  // Classifies intent, recommends content type, and suggests a specific content angle
+  // for Bragi's brief prompt — so Bragi gets direction, not just a keyword.
+  content_strategy?: {
+    intent:            'informational' | 'commercial' | 'transactional' | 'mixed'
+    content_type:      'category_page' | 'buying_guide' | 'game_guide' | 'comparison'
+    content_angle:     string   // specific headline direction for the brief
+    pillar_or_cluster: 'pillar' | 'cluster' | 'standalone'
+  }
 }

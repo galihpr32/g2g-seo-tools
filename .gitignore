@@ -30,3 +30,9 @@ reports/*.md
 # SQL diagnostic & recovery scripts — workspace tools, not deploy artifacts
 diagnostic-*.sql
 recovery-*.sql
+
+branding-seo-tools/
+tsconfig.tsbuildinfo
+.DS_Store
+**/.DS_Store
+.~lock.*

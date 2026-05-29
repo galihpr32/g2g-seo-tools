@@ -1,0 +1,52 @@
+# Sprint COOLIFY.DOCKERFILE (344) — keep Docker build context small.
+#
+# `docker build` sends everything in the build directory to the daemon.
+# Excluding these saves 100s of MB and dramatically speeds up rebuilds
+# (especially over a slow connection from local → Coolify build runner).
+
+# Node modules — re-installed in the deps stage
+node_modules
+**/node_modules
+
+# Next.js build output — generated fresh in the builder stage
+.next
+out
+
+# Local env files — secrets live in Coolify env panel, never in the image
+.env
+.env.local
+.env*.local
+
+# Git metadata — not needed at build time
+.git
+.gitignore
+.github
+
+# IDE / editor scratch
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Test + coverage artifacts (none yet, future-proof)
+coverage
+.nyc_output
+*.log
+npm-debug.log*
+
+# Docs — outputs/, scratchpads, dump files
+docs/MIGRATION_INVENTORY.md
+*.dump
+*.sql.gz
+
+# Local Cowork outputs folder (Claude desktop scratchpad)
+.claude-hostloop-plugins
+local-agent-mode-sessions
+
+# Generated PNGs / screenshots
+*.png.dump
+preview-*.png
+
+# Vercel-specific (we're leaving these behind)
+.vercel
+vercel.json.archive

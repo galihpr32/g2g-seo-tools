@@ -5,31 +5,40 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
 
 export const maxDuration = 10
 
-// GET /api/competitors — list all competitors
-export async function GET() {
+function getSiteSlug(req: Request): string {
+  const url      = new URL(req.url)
+  const cookieSite = req.headers.get('cookie')?.match(/active-site=([^;]+)/)?.[1] ?? 'g2g'
+  return url.searchParams.get('site') ?? cookieSite
+}
+
+// GET /api/competitors?site=g2g — list competitors for the active site
+export async function GET(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = getSiteSlug(req)
   const db = createServiceClient()
   const { data, error } = await db
     .from('competitors')
     .select('*')
     .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
     .order('created_at', { ascending: true })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ competitors: data ?? [] })
 }
 
-// POST /api/competitors — create competitor
+// POST /api/competitors — create competitor for the active site
 export async function POST(req: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const ownerId = await getEffectiveOwnerId(supabase, user.id)
+  const ownerId  = await getEffectiveOwnerId(supabase, user.id)
+  const siteSlug = getSiteSlug(req)
   const db = createServiceClient()
   const body = await req.json().catch(() => ({}))
   const { domain, name, notes } = body
@@ -46,7 +55,7 @@ export async function POST(req: Request) {
 
   const { data, error } = await db
     .from('competitors')
-    .insert({ owner_user_id: ownerId, domain: cleanDomain, name: name.trim(), notes: notes?.trim() ?? null })
+    .insert({ owner_user_id: ownerId, site_slug: siteSlug, domain: cleanDomain, name: name.trim(), notes: notes?.trim() ?? null })
     .select()
     .single()
 

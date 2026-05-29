@@ -1,0 +1,34 @@
+name: Weekly Report Publish (Monday 15:00 WIB)
+
+# Sprint WEEKLY.PUBLIC — auto-publish sweep at 15:00 WIB Monday.
+# Generator runs Monday 01:00 UTC (08:00 WIB), creates drafts.
+# This workflow runs Monday 08:00 UTC (15:00 WIB), publishes drafts to Slack.
+# Galih has 7 hours in between to edit at /reports/weekly?id=X.
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"      # Monday 08:00 UTC = 15:00 WIB
+  workflow_dispatch:
+
+concurrency:
+  group: weekly-report-publish
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/weekly-report-publish
+        env:
+          APP_URL:      ${{ secrets.APP_URL }}
+          CRON_SECRET:  ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "Missing APP_URL or CRON_SECRET secret"
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --max-time 180 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_URL}/api/cron/weekly-report-publish"

@@ -12,19 +12,34 @@ interface ProductItem {
   category:              string
   url:                   string
   sheet_row:             number
+  request_date:          string | null
   main_keyword:          string | null
   secondary_keywords:    string | null
+  /** Legacy — was Google Doc URL. Always null in the new sheet-as-database flow. */
   google_doc_url:        string | null
   meta_title:            string | null
   meta_description:      string | null
   meta_keywords:         string | null
   marketing_title:       string | null
+  /** Lead paragraph between H1 and the first H2 section (new flow). */
+  marketing_intro:       string | null
+  /** Legacy single-blob HTML — replaced by marketing_sections in the new flow. */
   marketing_description: string | null
+  /** Structured marketing body — 8 HTML strings, one per H2 section (new flow). */
+  marketing_sections:    string[] | null
+  /** Q/A pairs, 5-7 entries (new flow). */
+  faqs:                  Array<{ q: string; a: string }> | null
   status:                Status
   cms_seo_status:        string | null
   cms_mkt_status:        string | null
   cms_seo_error:         string | null
   cms_mkt_error:         string | null
+  generation_error:      string | null
+  id_generation_error:   string | null
+  id_status:             Status | null
+  id_google_doc_url:     string | null
+  id_marketing_sections: string[] | null
+  id_faqs:               Array<{ q: string; a: string }> | null
   generated_at:          string | null
   uploaded_at:           string | null
   updated_at:            string
@@ -81,6 +96,33 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
         </div>
 
         <div className="p-5 space-y-5">
+          {/* Failure details — surfaces the exact reason content gen / Drive
+               doc creation failed. Most common causes: Drive API not enabled,
+               GOOGLE_DRIVE_FOLDER_ID missing or service-account-without-access.
+               Show whenever an error column is populated, regardless of status —
+               that way stale "generated" rows that have a leftover error from a
+               prior attempt still surface it instead of silently looking fine. */}
+          {(item.generation_error || item.id_generation_error) && (
+            <section className="bg-red-900/20 border border-red-800/40 rounded-lg p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-2">⚠ Why this row failed</h3>
+              {item.generation_error && (
+                <div className="mb-2">
+                  <p className="text-[10px] uppercase text-red-300/70 mb-1">EN generation</p>
+                  <p className="text-xs text-red-100 bg-red-950/40 rounded px-2 py-1.5 font-mono break-all">{item.generation_error}</p>
+                </div>
+              )}
+              {item.id_generation_error && (
+                <div>
+                  <p className="text-[10px] uppercase text-red-300/70 mb-1">ID translation</p>
+                  <p className="text-xs text-red-100 bg-red-950/40 rounded px-2 py-1.5 font-mono break-all">{item.id_generation_error}</p>
+                </div>
+              )}
+              <p className="text-[10px] text-red-300/60 mt-2 italic">
+                Common fixes: enable Drive API in GCP, set <code className="bg-red-950/40 px-1 rounded">GOOGLE_DRIVE_FOLDER_ID</code> in Vercel env, share that folder with the service account as Editor.
+              </p>
+            </section>
+          )}
+
           {/* Keywords */}
           {(item.main_keyword || item.secondary_keywords) && (
             <section>
@@ -99,21 +141,6 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
                   </div>
                 )}
               </div>
-            </section>
-          )}
-
-          {/* Google Doc link */}
-          {item.google_doc_url && (
-            <section>
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Backup Doc</h3>
-              <a
-                href={item.google_doc_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 bg-gray-800 rounded-lg px-3 py-2 transition"
-              >
-                📄 Open Google Doc ↗
-              </a>
             </section>
           )}
 
@@ -136,23 +163,61 @@ function PreviewModal({ item, onClose }: { item: ProductItem; onClose: () => voi
             </div>
           </section>
 
-          {/* Marketing fields */}
+          {/* Marketing fields — H1 + 8 structured H2 sections (new flow) */}
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Marketing Fields</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Marketing Content</h3>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Marketing Title (H1)</label>
+                <label className="block text-xs text-gray-500 mb-1">H1 (Marketing Title)</label>
                 <p className="text-sm text-white bg-gray-800 rounded-lg px-3 py-2">{item.marketing_title || <span className="text-gray-500 italic">—</span>}</p>
               </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Marketing Description (HTML)</label>
-                <div
-                  className="text-sm text-gray-300 bg-gray-800 rounded-lg px-3 py-2 max-h-80 overflow-y-auto prose prose-invert prose-sm max-w-none"
-                  dangerouslySetInnerHTML={{ __html: item.marketing_description ?? '<span class="text-gray-500 italic">—</span>' }}
-                />
-              </div>
+              {item.marketing_intro && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Lead paragraph (after H1)</label>
+                  <p className="text-sm text-gray-200 bg-gray-800 rounded-lg px-3 py-2 leading-relaxed">{item.marketing_intro}</p>
+                </div>
+              )}
+              {item.marketing_sections && item.marketing_sections.length > 0 ? (
+                item.marketing_sections.map((s, i) => (
+                  s ? (
+                    <div key={i}>
+                      <label className="block text-xs text-gray-500 mb-1">Section {i + 1}</label>
+                      <div
+                        className="text-sm text-gray-200 bg-gray-800 rounded-lg px-3 py-2 max-h-48 overflow-y-auto prose prose-invert prose-sm max-w-none"
+                        dangerouslySetInnerHTML={{ __html: s }}
+                      />
+                    </div>
+                  ) : null
+                ))
+              ) : item.marketing_description ? (
+                // Backward compat: render legacy single-blob HTML if no sections yet
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Marketing Description (legacy)</label>
+                  <div
+                    className="text-sm text-gray-300 bg-gray-800 rounded-lg px-3 py-2 max-h-80 overflow-y-auto prose prose-invert prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{ __html: item.marketing_description }}
+                  />
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 italic px-2">No marketing content generated yet.</p>
+              )}
             </div>
           </section>
+
+          {/* FAQs — 5-7 Q/A pairs (new flow) */}
+          {item.faqs && item.faqs.length > 0 && (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">FAQs ({item.faqs.length})</h3>
+              <div className="space-y-2">
+                {item.faqs.map((f, i) => (
+                  <div key={i} className="bg-gray-800 rounded-lg px-3 py-2">
+                    <p className="text-sm text-white font-medium mb-1">Q{i + 1}: {f.q}</p>
+                    <p className="text-sm text-gray-300">{f.a}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* CMS status */}
           {(item.cms_seo_status || item.cms_mkt_status) && (
@@ -279,6 +344,19 @@ export default function ProductContentPage() {
   const [loading, setLoading]         = useState(true)
   const [syncing, setSyncing]         = useState(false)
   const [uploading, setUploading]     = useState(false)
+  // Sprint UPLOAD.FEEDBACK — surface upload result so failures aren't silent
+  const [uploadResult, setUploadResult] = useState<{
+    uploaded:    number
+    failed:      number
+    total:       number
+    jwt_expired?: boolean
+    note?:        string
+    errors:      Array<{ relation_id: string; status?: string; error?: string }>
+  } | null>(null)
+  // Sprint UPLOAD.JWT.INLINE — inline JWT refresh from upload result banner
+  const [inlineJwt,    setInlineJwt]    = useState('')
+  const [savingJwt,    setSavingJwt]    = useState(false)
+  const [jwtSaveErr,   setJwtSaveErr]   = useState<string | null>(null)
   const [selected, setSelected]       = useState<Set<string>>(new Set())
   const [filterStatus, setFilterStatus] = useState<Status | 'all'>('all')
   const [search, setSearch]           = useState('')
@@ -339,13 +417,17 @@ export default function ProductContentPage() {
   useEffect(() => { fetchItems() }, [fetchItems])
 
   async function handleSync() {
+    // "Run All Pending" — scans the Google Sheet for rows where col E
+    // ("Create now?") = "yes" and processes each one. Writes structured
+    // content back to the sheet (EN + ID tabs) and updates col E to
+    // "Generated" or "Error: <stage-tagged>" per row.
     setSyncing(true)
     setSyncResult(null)
     try {
       const res = await fetch('/api/products/auto-content/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      const data = await res.json() as { synced?: number; failed?: number; message?: string; error?: string }
+      const data = await res.json() as { processed?: number; succeeded?: number; failed?: number; skipped?: number; message?: string; error?: string }
       setSyncResult({
-        synced:  data.synced ?? 0,
+        synced:  data.succeeded ?? 0,
         failed:  data.failed ?? 0,
         message: data.message ?? data.error ?? null,
       })
@@ -455,6 +537,7 @@ export default function ProductContentPage() {
 
   async function handleUpload(uploadAll = false) {
     setUploading(true)
+    setUploadResult(null)
     try {
       const body = uploadAll
         ? { upload_all: true }
@@ -465,12 +548,75 @@ export default function ProductContentPage() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(body),
       })
-      if (res.ok) {
+      // Sprint UPLOAD.FEEDBACK — always surface result, even on failure
+      const data = await res.json().catch(() => null) as {
+        uploaded?:    number
+        failed?:      number
+        total?:       number
+        jwt_expired?: boolean
+        note?:        string
+        message?:     string
+        error?:       string
+        results?:     Array<{ relation_id: string; ok: boolean; status?: string; error?: string }>
+      } | null
+      if (data) {
+        const errors = (data.results ?? [])
+          .filter(r => !r.ok)
+          .map(r => ({ relation_id: r.relation_id, status: r.status, error: r.error }))
+        setUploadResult({
+          uploaded:    data.uploaded ?? 0,
+          failed:      data.failed   ?? 0,
+          total:       data.total    ?? 0,
+          jwt_expired: data.jwt_expired,
+          note:        data.note ?? data.message ?? data.error,
+          errors,
+        })
+      }
+      if (res.ok && (data?.uploaded ?? 0) > 0) {
         setSelected(new Set())
         await fetchItems()
       }
-    } catch { /* silent */ }
+    } catch (e) {
+      setUploadResult({
+        uploaded: 0, failed: 0, total: 0,
+        note: e instanceof Error ? e.message : String(e),
+        errors: [],
+      })
+    }
     setUploading(false)
+  }
+
+  // Sprint UPLOAD.JWT.INLINE — save fresh JWT from inline input + auto-retry
+  async function saveInlineJwt() {
+    const token = inlineJwt.trim().replace(/^Bearer\s+/i, '')
+    if (!token) { setJwtSaveErr('Paste a JWT first'); return }
+    if (token.split('.').length !== 3) {
+      setJwtSaveErr('JWT must have 3 dot-separated parts. Make sure full token was copied (length usually 600–1200 chars).')
+      return
+    }
+    setSavingJwt(true)
+    setJwtSaveErr(null)
+    try {
+      const res = await fetch('/api/settings/cms-token', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ site_slug: 'g2g', token }),
+      })
+      const data = await res.json().catch(() => ({})) as { error?: string; expires_at?: string; token_subject?: string }
+      if (!res.ok) {
+        setJwtSaveErr(data.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setInlineJwt('')
+      setUploadResult(null)
+      setJwtSaveErr(null)
+      // Auto-retry upload after fresh JWT saved
+      await handleUpload(true)
+    } catch (e) {
+      setJwtSaveErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingJwt(false)
+    }
   }
 
   function toggleSelect(id: string) {
@@ -485,6 +631,12 @@ export default function ProductContentPage() {
   function selectAllGenerated() {
     const ids = items.filter(i => i.status === 'generated').map(i => i.relation_id)
     setSelected(new Set(ids))
+  }
+
+  function selectAllVisible() {
+    // Pick every row currently in the list, regardless of status — useful for
+    // bulk Clear All Including Uploaded, bulk re-upload after JWT refresh, etc.
+    setSelected(new Set(items.map(i => i.relation_id)))
   }
 
   const filteredItems = items  // already filtered server-side via API
@@ -512,12 +664,13 @@ export default function ProductContentPage() {
           <button
             onClick={handleSync}
             disabled={syncing}
+            title='Scan the Google Sheet for rows with col E "Create now?" = "yes" and generate content for each. Writes structured output back to the sheet (EN + ID tabs).'
             className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition flex items-center gap-2"
           >
             {syncing ? (
-              <><span className="animate-spin">⟳</span> Syncing…</>
+              <><span className="animate-spin">⟳</span> Running…</>
             ) : (
-              <>🔄 Sync from Sheet</>
+              <>▶ Run All Pending</>
             )}
           </button>
 
@@ -555,8 +708,56 @@ export default function ProductContentPage() {
           >
             📜 History
           </button>
+          <button
+            onClick={async () => {
+              // Two-step confirm so the user explicitly opts into nuking
+              // uploaded rows (they're "published content" — losing the row
+              // doesn't unpublish the CMS, but does break the tool's link
+              // back to the upload audit trail).
+              if (!confirm('Clear queue rows? This deletes pending/generating/generated/failed entries.\n\nAlready-UPLOADED rows are preserved by default (you can opt to include them next).')) return
+              const includeUploaded = confirm(
+                'Also delete already-UPLOADED rows?\n\n' +
+                '• Click OK to wipe EVERYTHING (including uploaded — useful for a true clean slate, e.g. after re-syncing the canonical catalog).\n' +
+                '• Click Cancel to keep uploaded rows safe.'
+              )
+              const res = await fetch('/api/products/auto-content/clear', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body:    JSON.stringify({ keep_uploaded: !includeUploaded }),
+              })
+              const data = await res.json().catch(() => ({}))
+              if (!res.ok) { alert(`Clear failed: ${data.error ?? res.status}`); return }
+              alert(
+                `Cleared ${data.deleted ?? 0} rows.` +
+                (data.kept ? ` ${data.kept} uploaded rows preserved.` : (includeUploaded ? ' Uploaded rows included.' : '')) +
+                ' Re-import or re-sync to start fresh.'
+              )
+              await fetchItems()
+            }}
+            title="Wipe queue rows. Optionally include already-uploaded ones for a true clean slate."
+            className="px-3 py-2 bg-red-900/40 hover:bg-red-900/60 text-red-200 text-sm rounded-lg transition border border-red-800/40"
+          >
+            🗑 Clear All
+          </button>
         </div>
       </div>
+
+      {/* ── Workflow info banner (sheet-as-database flow) ─────────────── */}
+      <div className="mb-4 bg-blue-900/15 border border-blue-800/40 rounded-lg px-4 py-2.5 flex items-start gap-3 text-xs">
+        <span className="text-blue-400 text-base leading-tight">⚡</span>
+        <div className="flex-1 text-blue-100 space-y-1">
+          <p>
+            <span className="font-semibold">Auto-processing is on.</span> BDT types <code className="bg-blue-950/50 px-1 rounded">yes</code> in col E (&quot;Create now?&quot;), and the AI picks it up within ~5 minutes automatically.
+          </p>
+          <p className="text-blue-200/80">
+            For urgent pushes, click <strong>▶ Run All Pending</strong> manually. AI generates Meta + Marketing (8 H2 sections) + 5-7 FAQs across cols F-AG. Indonesian translations land in a separate <code className="bg-blue-950/50 px-1 rounded">ID</code> sheet tab (auto-created).
+            Col E updates to <code className="bg-blue-950/50 px-1 rounded">Generated</code> on success or <code className="bg-blue-950/50 px-1 rounded">Error: &lt;reason&gt;</code> on failure (not retriggerable).
+          </p>
+        </div>
+      </div>
+
+      {/* ── Sprint COWORK.PREVIEW — Read-only queue of Cowork-routed rows ─── */}
+      <CoworkPreviewPanel />
 
       {/* ── Import History panel ──────────────────────────────────────── */}
       {showHistory && (
@@ -778,6 +979,32 @@ export default function ProductContentPage() {
         {selected.size > 0 && (
           <div className="flex items-center gap-2 ml-auto">
             <span className="text-sm text-gray-400">{selected.size} selected</span>
+            {/* Process selected — runs the auto-content generator on all picked
+                 rows immediately (instead of waiting for the 5-min cron tick).
+                 Visible whenever the selection contains any pending/failed rows. */}
+            {filteredItems.some(i => selected.has(i.relation_id) && (i.status === 'pending' || i.status === 'failed')) && (
+              <button
+                onClick={async () => {
+                  const targetIds = filteredItems
+                    .filter(i => selected.has(i.relation_id) && (i.status === 'pending' || i.status === 'failed'))
+                    .map(i => i.id)
+                  if (targetIds.length === 0) return
+                  if (targetIds.length > 7 && !confirm(`Process ${targetIds.length} rows now? This may take ~${Math.ceil(targetIds.length * 0.25)} min and could hit the 60s function ceiling. Recommended max per click: 5-7.`)) return
+                  const res = await fetch('/api/products/auto-content/process-row', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ids: targetIds }),
+                  })
+                  const d = await res.json().catch(() => ({}))
+                  if (!res.ok) alert(`Process failed: ${d.error ?? res.status}`)
+                  else alert(`Processed: ${d.succeeded ?? 0} succeeded · ${d.failed ?? 0} failed`)
+                  setSelected(new Set())
+                  await fetchItems()
+                }}
+                className="px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white text-sm rounded-lg transition"
+              >
+                ⚡ Process Selected
+              </button>
+            )}
             <button
               onClick={() => handleUpload(false)}
               disabled={uploading}
@@ -789,24 +1016,107 @@ export default function ProductContentPage() {
           </div>
         )}
 
-        {selected.size === 0 && (stats?.generated ?? 0) > 0 && (
+        {selected.size === 0 && (
           <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={selectAllGenerated}
-              className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition"
-            >
-              Select All Generated ({stats?.generated})
-            </button>
-            <button
-              onClick={() => handleUpload(true)}
-              disabled={uploading}
-              className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm rounded-lg transition"
-            >
-              {uploading ? 'Uploading…' : '📤 Upload All Generated'}
-            </button>
+            {(stats?.generated ?? 0) > 0 && (
+              <button
+                onClick={selectAllGenerated}
+                className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition"
+              >
+                Select All Generated ({stats?.generated})
+              </button>
+            )}
+            {items.length > 0 && (
+              <button
+                onClick={selectAllVisible}
+                title="Pick every row in the current list (any status). Handy when you want to bulk-clear or re-upload."
+                className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm rounded-lg transition border border-gray-700"
+              >
+                Select All ({items.length})
+              </button>
+            )}
+            {(stats?.generated ?? 0) > 0 && (
+              <button
+                onClick={() => handleUpload(true)}
+                disabled={uploading}
+                className="px-3 py-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm rounded-lg transition"
+              >
+                {uploading ? 'Uploading…' : '📤 Upload All Generated'}
+              </button>
+            )}
           </div>
         )}
       </div>
+
+      {/* Sprint UPLOAD.FEEDBACK — visible upload outcome */}
+      {uploadResult && (
+        <div className={`mb-4 rounded-lg border p-4 ${
+          uploadResult.jwt_expired                  ? 'border-amber-700/40 bg-amber-500/5' :
+          uploadResult.failed > 0 && uploadResult.uploaded === 0
+                                                    ? 'border-red-700/40 bg-red-500/5' :
+          uploadResult.failed > 0                   ? 'border-yellow-700/40 bg-yellow-500/5' :
+                                                      'border-emerald-700/40 bg-emerald-500/5'
+        }`}>
+          <div className="flex items-start justify-between mb-2">
+            <div className="text-sm font-semibold text-white">
+              {uploadResult.jwt_expired   ? '🔐 JWT Expired — re-refresh CMS token'
+              : uploadResult.failed === 0 && uploadResult.uploaded > 0 ? `✅ Uploaded ${uploadResult.uploaded}/${uploadResult.total}`
+              : uploadResult.uploaded === 0 ? `❌ All ${uploadResult.total} failed`
+              :                              `⚠ Partial: ${uploadResult.uploaded} ok / ${uploadResult.failed} failed`}
+            </div>
+            <button onClick={() => setUploadResult(null)} className="text-xs text-gray-500 hover:text-gray-300">✕</button>
+          </div>
+          {uploadResult.note && (
+            <p className="text-xs text-gray-300 mb-2">{uploadResult.note}</p>
+          )}
+          {uploadResult.jwt_expired && (
+            <div className="mb-3 space-y-2">
+              <p className="text-xs text-amber-200">
+                CMS rejected token. Paste a fresh JWT below — we&apos;ll save it and retry the upload automatically. (Or refresh at <a href="/settings/cms-token" className="text-amber-300 underline">/settings/cms-token</a>.)
+              </p>
+              <div className="flex items-stretch gap-2">
+                <input
+                  type="password"
+                  placeholder="Paste fresh JWT (eyJhbGc…)"
+                  value={inlineJwt}
+                  onChange={e => setInlineJwt(e.target.value)}
+                  className="flex-1 bg-gray-950 border border-amber-700/40 rounded-md px-3 py-2 text-xs text-amber-200 placeholder-amber-700/50 font-mono"
+                />
+                <button
+                  onClick={saveInlineJwt}
+                  disabled={savingJwt || !inlineJwt.trim()}
+                  className="px-3 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs font-semibold rounded-md whitespace-nowrap"
+                >
+                  {savingJwt ? 'Saving + retrying…' : 'Save JWT + Retry'}
+                </button>
+              </div>
+              {jwtSaveErr && (
+                <p className="text-xs text-red-300">⚠ {jwtSaveErr}</p>
+              )}
+              {inlineJwt && <JwtMeta token={inlineJwt} />}
+            </div>
+          )}
+          {uploadResult.errors.length > 0 && (
+            <details className="mt-2">
+              <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">
+                Show {uploadResult.errors.length} error{uploadResult.errors.length === 1 ? '' : 's'}
+              </summary>
+              <ul className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+                {uploadResult.errors.slice(0, 20).map((e, i) => (
+                  <li key={i} className="text-[11px] text-gray-300 font-mono">
+                    <span className="text-gray-500">{e.relation_id.slice(0, 8)}…</span>
+                    {' · '}
+                    <span className={e.status === 'awaiting_token' ? 'text-amber-300' : 'text-red-300'}>
+                      {e.status ?? 'failed'}
+                    </span>
+                    {e.error && <span className="text-gray-400"> — {e.error.slice(0, 200)}</span>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
@@ -837,9 +1147,10 @@ export default function ProductContentPage() {
                   key={item.id}
                   className={`border-b border-gray-800/50 hover:bg-gray-800/30 transition ${i % 2 === 0 ? '' : 'bg-gray-900/50'}`}
                 >
-                  {/* Checkbox */}
+                  {/* Checkbox — selectable for any non-uploading status so the
+                       multi-select bulk action works for pending rows too. */}
                   <td className="px-3 py-2.5">
-                    {(item.status === 'generated' || item.status === 'failed') && (
+                    {item.status !== 'uploading' && item.status !== 'generating' && (
                       <input
                         type="checkbox"
                         checked={selected.has(item.relation_id)}
@@ -944,6 +1255,26 @@ export default function ProductContentPage() {
                           Details
                         </button>
                       )}
+                      {/* Per-row "Generate now" — manual trigger for pending/failed rows.
+                           Cron picks them up automatically every 5 min, but this lets
+                           users push individual rows to the front of the queue. */}
+                      {(item.status === 'pending' || item.status === 'failed') && (
+                        <button
+                          onClick={async () => {
+                            const res = await fetch('/api/products/auto-content/process-row', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ ids: [item.id] }),
+                            })
+                            const d = await res.json().catch(() => ({}))
+                            if (!res.ok) alert(`Failed: ${d.error ?? res.status}`)
+                            await fetchItems()
+                          }}
+                          className="px-2 py-1 text-xs text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded transition"
+                          title="Generate this row now (skip the cron wait)"
+                        >
+                          ⚡ Generate
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -981,6 +1312,202 @@ export default function ProductContentPage() {
           onClose={() => setShowSheetConfig(false)}
           onSaved={() => fetchItems()}
         />
+      )}
+    </div>
+  )
+}
+
+// ─── JWT metadata + countdown — Sprint JWT.COUNTDOWN ────────────────────
+// Decodes the JWT payload to surface expiry countdown. Updates every second.
+function JwtMeta({ token }: { token: string }) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  const segs = token.trim().split('.')
+  let expMs: number | null = null
+  if (segs.length === 3) {
+    try {
+      // base64url → JSON
+      const b64 = segs[1].replace(/-/g, '+').replace(/_/g, '/')
+      const payload = JSON.parse(atob(b64 + '==='.slice(0, (4 - b64.length % 4) % 4))) as { exp?: number }
+      if (payload.exp) expMs = payload.exp * 1000
+    } catch { /* not a parseable JWT */ }
+  }
+
+  const remainingMs = expMs != null ? expMs - now : null
+  let countdown = '—'
+  let color = 'text-amber-300/70'
+  if (remainingMs != null) {
+    if (remainingMs <= 0) {
+      countdown = 'EXPIRED'
+      color = 'text-red-400 font-bold'
+    } else {
+      const mins = Math.floor(remainingMs / 60000)
+      const secs = Math.floor((remainingMs % 60000) / 1000)
+      countdown = `${mins}:${secs.toString().padStart(2, '0')}`
+      if (remainingMs < 120_000)      color = 'text-red-400 font-bold'        // < 2 min
+      else if (remainingMs < 300_000) color = 'text-orange-400 font-semibold' // < 5 min
+      else                            color = 'text-emerald-400'
+    }
+  }
+
+  return (
+    <p className="text-[10px] font-mono">
+      <span className="text-amber-300/70">
+        Length: {token.length} chars · {segs.length} dot-segments
+      </span>
+      {expMs != null && (
+        <>
+          {'  ·  '}
+          <span className={color}>Expires in: {countdown}</span>
+        </>
+      )}
+    </p>
+  )
+}
+
+// ─── Sprint COWORK.PREVIEW ──────────────────────────────────────────────────
+// Sheet-scan-only preview of rows marked `Cowork` in col E. The Anthropic
+// 5-min cron deliberately skips these (isPendingTrigger only matches 'yes'),
+// so without this panel they'd be invisible until the Cowork-session schedule
+// in HANDOFF_COWORK_INTEGRATION.md ships. Zero Anthropic calls, zero DB writes.
+interface CoworkRow {
+  relation_id:  string
+  product_name: string
+  category:     string
+  request_date: string
+  sheet_row:    number
+  trigger_raw:  string
+}
+interface CoworkPreviewResponse {
+  ok:             boolean
+  spreadsheet_id?: string
+  sheet_name?:    string
+  count:          number
+  rows:           CoworkRow[]
+  other_counts?: {
+    yes_pending: number
+    generated:   number
+    errors:      number
+    total_rows:  number
+  }
+  reason?: string
+  error?:  string
+}
+
+function CoworkPreviewPanel() {
+  const [data, setData]       = useState<CoworkPreviewResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState<string | null>(null)
+  const [open, setOpen]       = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const res = await fetch('/api/products/cowork-preview')
+      const body = await res.json() as CoworkPreviewResponse
+      if (!res.ok || body.ok === false) {
+        setError(body.error ?? `HTTP ${res.status}`)
+        return
+      }
+      setData(body)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  // Don't render anything when there are zero Cowork rows AND nothing is happening — keeps the page clean.
+  if (!loading && !error && data && data.count === 0) return null
+
+  return (
+    <div className="mb-4 bg-purple-900/15 border border-purple-700/40 rounded-xl">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-purple-900/10 transition rounded-xl"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-purple-300 text-sm font-semibold">🧑‍💻 Cowork Queue (preview)</span>
+          {loading && <span className="text-[10px] text-purple-200/60">loading…</span>}
+          {data && data.count > 0 && (
+            <span className="bg-purple-500/20 border border-purple-500/40 text-purple-200 text-[11px] font-bold px-2 py-0.5 rounded-full">
+              {data.count} pending
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-[11px] text-purple-200/70">
+          <button
+            onClick={(e) => { e.stopPropagation(); void load() }}
+            className="hover:text-white"
+            title="Refresh from sheet"
+          >
+            ↻ Refresh
+          </button>
+          <span>{open ? '▾' : '▸'}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4">
+          {error && (
+            <p className="text-xs text-red-300 mt-2">Failed to load: {error}</p>
+          )}
+
+          {data && data.count > 0 && (
+            <>
+              <p className="text-[11px] text-purple-200/70 mb-2">
+                Rows in col E = <code className="bg-purple-950/40 px-1 rounded">Cowork</code> — the Anthropic 5-min cron <strong>skips</strong> these on purpose.
+                They&apos;ll be picked up by the Cowork-session schedule once <code className="bg-purple-950/40 px-1 rounded">/api/products/auto-content/cowork-submit</code> ships
+                (see <code className="bg-purple-950/40 px-1 rounded">HANDOFF_COWORK_INTEGRATION.md</code>). Read-only here.
+              </p>
+              <div className="bg-gray-950/50 border border-purple-900/30 rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-purple-900/20 text-purple-200/70 text-[10px] uppercase tracking-wider">
+                    <tr>
+                      <th className="text-left  px-3 py-1.5">Product</th>
+                      <th className="text-left  px-3 py-1.5">Category</th>
+                      <th className="text-left  px-3 py-1.5 font-mono">Relation ID</th>
+                      <th className="text-left  px-3 py-1.5">Request Date</th>
+                      <th className="text-right px-3 py-1.5 w-16">Row</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.rows.map((r) => (
+                      <tr key={`${r.sheet_row}-${r.relation_id}`} className="border-t border-purple-900/20">
+                        <td className="px-3 py-1.5 text-white">{r.product_name || '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-300">{r.category || '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-400 font-mono break-all">{r.relation_id || '—'}</td>
+                        <td className="px-3 py-1.5 text-gray-400">{r.request_date || '—'}</td>
+                        <td className="px-3 py-1.5 text-right text-gray-500">#{r.sheet_row}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {data.other_counts && (
+                <p className="text-[10px] text-purple-200/50 mt-2">
+                  Sheet context: {data.other_counts.total_rows} total rows ·
+                  {' '}<span className="text-yellow-300/70">{data.other_counts.yes_pending} <code>yes</code> (Anthropic queue)</span> ·
+                  {' '}<span className="text-emerald-300/70">{data.other_counts.generated} generated</span>
+                  {data.other_counts.errors > 0 && <> · <span className="text-red-300/70">{data.other_counts.errors} errors</span></>}
+                </p>
+              )}
+            </>
+          )}
+
+          {data && data.count === 0 && (
+            <p className="text-xs text-purple-200/60 mt-2">
+              No <code className="bg-purple-950/40 px-1 rounded">Cowork</code> rows in the sheet. Type <code className="bg-purple-950/40 px-1 rounded">Cowork</code> in col E of any row to queue it for the Cowork session.
+            </p>
+          )}
+        </div>
       )}
     </div>
   )

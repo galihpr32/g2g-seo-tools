@@ -2,6 +2,7 @@ import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 /**
  * GET /api/pipeline-journey
@@ -11,9 +12,10 @@ import { getEffectiveOwnerId } from '@/lib/workspace'
  * Execute (writer) → Outreach (Hermod) → Measure (Vor).
  *
  * Query params:
- *   site     = site slug (default: g2g)
- *   status   = pipeline filter: all | needs_action | in_progress | completed (default: all)
- *   limit    = max rows (default 60)
+ *   site             = site slug (default: g2g)
+ *   status           = pipeline filter: all | needs_action | in_progress | completed (default: all)
+ *   limit            = max rows (default 60, max 1000, or 'all' for full set)
+ *   includeDismissed = '1' to include dismissed rows (default: hide them)
  */
 export async function GET(req: Request) {
   const supabase = await createClient()
@@ -23,12 +25,20 @@ export async function GET(req: Request) {
   const ownerId  = await getEffectiveOwnerId(supabase, user.id)
   const db       = createServiceClient()
   const { searchParams } = new URL(req.url)
-  const siteSlug = searchParams.get('site')   ?? 'g2g'
+  const siteSlug = resolveSiteSlugFromRequest(req)
   const filter   = searchParams.get('status') ?? 'all'
-  const limit    = Math.min(parseInt(searchParams.get('limit') ?? '60'), 200)
 
-  // ── 1. Fetch opportunities (never show dismissed) ─────────────────────────
-  const oppQuery = db
+  // Limit can be a number or 'all' (caps at 1000 to keep payload reasonable
+  // — beyond that we'd need true pagination).
+  const limitParam = searchParams.get('limit')
+  const limit = limitParam === 'all'
+    ? 1000
+    : Math.min(parseInt(limitParam ?? '60') || 60, 1000)
+
+  const includeDismissed = searchParams.get('includeDismissed') === '1'
+
+  // ── 1. Fetch opportunities (dismissed hidden by default) ──────────────────
+  let oppQuery = db
     .from('seo_opportunities')
     .select(`
       id, topic, topic_slug, target_url, status, output_type,
@@ -39,9 +49,12 @@ export async function GET(req: Request) {
     `)
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
-    .neq('status', 'dismissed')
     .order('updated_at', { ascending: false })
     .limit(limit)
+
+  if (!includeDismissed) {
+    oppQuery = oppQuery.neq('status', 'dismissed')
+  }
 
   const { data: opps, error: oppErr } = await oppQuery
   if (oppErr) return NextResponse.json({ error: oppErr.message }, { status: 500 })

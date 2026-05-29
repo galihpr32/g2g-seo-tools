@@ -28,6 +28,8 @@ export const maxDuration = 30
  */
 
 // Strict schema — any column outside this set rejects the import.
+// Includes both legacy "Status" and the new "EN Status" name so older CSV
+// templates downloaded before the ID-translation feature still import OK.
 const ALLOWED_HEADERS = new Set([
   'Brand Name',
   'Category',
@@ -35,7 +37,10 @@ const ALLOWED_HEADERS = new Set([
   'Main Keyword',
   'Secondary Keywords',
   'EN File URL',
-  'Status',
+  'EN Status',
+  'Status',                  // legacy alias for EN Status
+  'ID File URL',
+  'ID Status',
   'Generated At',
   'Uploaded At',
   'Created At',
@@ -49,7 +54,9 @@ interface CsvRow {
   main_keyword:       string
   secondary_keywords: string
   en_file_url:        string
-  status:             string
+  status:             string   // EN status (col G)
+  id_file_url:        string
+  id_status:          string   // ID status (col I)
 }
 
 function csvObjToRow(obj: Record<string, string>): CsvRow {
@@ -60,7 +67,10 @@ function csvObjToRow(obj: Record<string, string>): CsvRow {
     main_keyword:       (obj['Main Keyword'] ?? '').trim(),
     secondary_keywords: (obj['Secondary Keywords'] ?? '').trim(),
     en_file_url:        (obj['EN File URL'] ?? '').trim(),
-    status:             (obj['Status'] ?? '').trim(),
+    // Prefer "EN Status"; fall back to legacy "Status" for old templates
+    status:             (obj['EN Status'] ?? obj['Status'] ?? '').trim(),
+    id_file_url:        (obj['ID File URL'] ?? '').trim(),
+    id_status:          (obj['ID Status'] ?? '').trim(),
   }
 }
 
@@ -72,6 +82,8 @@ interface DbRow {
   secondary_keywords: string | null
   google_doc_url:     string | null
   status:             string
+  id_google_doc_url:  string | null
+  id_status:          string | null
   generated_at:       string | null
   uploaded_at:        string | null
   created_at:         string
@@ -86,6 +98,8 @@ function dbToCsvShape(db: DbRow): CsvRow {
     secondary_keywords: db.secondary_keywords ?? '',
     en_file_url:        db.google_doc_url ?? '',
     status:             db.status,
+    id_file_url:        db.id_google_doc_url ?? '',
+    id_status:          db.id_status ?? '',
   }
 }
 

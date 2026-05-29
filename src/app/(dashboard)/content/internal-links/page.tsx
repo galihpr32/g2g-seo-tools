@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -316,6 +316,77 @@ export default function InternalLinksPage() {
   const [anchorOpen,   setAnchorOpen]   = useState<Set<string>>(new Set())
   const [triggerAudit, setTriggerAudit] = useState(false)
   const [auditProgress, setAuditProgress] = useState<string | null>(null)
+
+  // ── SKILL.INTLINK.1 — Strategic Recommendations state ─────────────────────
+  const [intlinkRecs,          setIntlinkRecs]          = useState<null | {
+    id:               string
+    generated_at:     string
+    orphan_count:     number
+    opportunity_count: number
+    total_pages:      number
+    avg_inlinks:      number
+    recommendations:  { title: string; action: string; target: string; priority: 'high'|'medium'|'low'; category: string }[]
+  }>(null)
+  const [intlinkRecsLoading,    setIntlinkRecsLoading]    = useState(true)
+  const [intlinkRecsError,      setIntlinkRecsError]      = useState<string | null>(null)
+  const [intlinkRecsGenerating, setIntlinkRecsGenerating] = useState(false)
+  const [intlinkRecsDisabled,   setIntlinkRecsDisabled]   = useState(false)
+  const [intlinkRecsCollapsed,  setIntlinkRecsCollapsed]  = useState(false)
+  const [intlinkRecsRateMsg,    setIntlinkRecsRateMsg]    = useState<string | null>(null)
+
+  const loadIntlinkRecs = useCallback(async () => {
+    setIntlinkRecsLoading(true)
+    try {
+      const res  = await fetch('/api/content/internal-links/recommend')
+      const json = await res.json() as { ok: boolean; record?: typeof intlinkRecs; disabled?: boolean; error?: string }
+      if (json.disabled) { setIntlinkRecsDisabled(true); return }
+      if (json.ok) setIntlinkRecs(json.record ?? null)
+    } catch { /* silent */ } finally {
+      setIntlinkRecsLoading(false)
+    }
+  }, []) // eslint-disable-line
+
+  const generateIntlinkRecs = useCallback(async (force = false) => {
+    if (!data) return
+    setIntlinkRecsGenerating(true)
+    setIntlinkRecsError(null)
+    setIntlinkRecsRateMsg(null)
+    try {
+      const res  = await fetch('/api/content/internal-links/recommend', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          force,
+          summary:     data.summary,
+          top_orphans: data.orphans.slice(0, 5).map(o => ({
+            keyword:  o.keyword,
+            url_slug: o.url_slug,
+            inlinks:  o.inlinks_count ?? 0,
+          })),
+          top_opps:    data.opportunities.slice(0, 5).map(op => ({
+            from_keyword: op.from_keyword,
+            to_keyword:   op.to_keyword,
+            reason:       op.reason,
+          })),
+        }),
+      })
+      const json = await res.json() as {
+        ok: boolean; cached?: boolean; rate_limited?: boolean;
+        record?: typeof intlinkRecs; message?: string;
+        disabled?: boolean; error?: string
+      }
+      if (json.disabled) { setIntlinkRecsDisabled(true); return }
+      if (!json.ok) { setIntlinkRecsError(json.error ?? 'Generation failed'); return }
+      if (json.rate_limited && json.message) setIntlinkRecsRateMsg(json.message)
+      if (json.record) setIntlinkRecs(json.record)
+    } catch (e) {
+      setIntlinkRecsError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      setIntlinkRecsGenerating(false)
+    }
+  }, [data]) // eslint-disable-line
+
+  useEffect(() => { loadIntlinkRecs() }, [loadIntlinkRecs])
 
   useEffect(() => { load() }, []) // eslint-disable-line
 
@@ -690,6 +761,161 @@ export default function InternalLinksPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* ── SKILL.INTLINK.1 — Strategic Recommendations ──────────────────────── */}
+      {!intlinkRecsDisabled && data && (
+        <div className="mt-8 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+
+          {/* Section header */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+            <button
+              onClick={() => setIntlinkRecsCollapsed(v => !v)}
+              className="flex items-center gap-2 text-left flex-1 min-w-0"
+            >
+              <span className="text-base">💡</span>
+              <span className="font-semibold text-white text-sm">Strategic Recommendations</span>
+              {intlinkRecs && (
+                <span className="text-xs text-gray-500 ml-1">
+                  · {new Date(intlinkRecs.generated_at).toLocaleDateString()}
+                </span>
+              )}
+              <svg
+                className={`w-4 h-4 text-gray-600 flex-shrink-0 transition-transform ${intlinkRecsCollapsed ? '-rotate-90' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+              {intlinkRecs && (
+                <button
+                  onClick={() => generateIntlinkRecs(true)}
+                  disabled={intlinkRecsGenerating || !data}
+                  className="text-xs px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 border border-gray-700 text-gray-300 hover:text-white rounded-lg transition"
+                  title="Force regenerate (ignores 7-day rate limit)"
+                >
+                  {intlinkRecsGenerating ? '…' : '🔄 Regenerate'}
+                </button>
+              )}
+              {!intlinkRecs && !intlinkRecsLoading && (
+                <button
+                  onClick={() => generateIntlinkRecs(false)}
+                  disabled={intlinkRecsGenerating || !data}
+                  className="text-xs px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-semibold rounded-lg transition"
+                >
+                  {intlinkRecsGenerating ? 'Generating…' : '✨ Generate'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {!intlinkRecsCollapsed && (
+            <div className="p-5">
+
+              {/* Rate-limit notice */}
+              {intlinkRecsRateMsg && (
+                <div className="mb-4 bg-amber-900/20 border border-amber-800/40 rounded-lg px-4 py-2.5 text-xs text-amber-300">
+                  {intlinkRecsRateMsg}
+                </div>
+              )}
+
+              {/* Error */}
+              {intlinkRecsError && (
+                <div className="mb-4 bg-red-900/20 border border-red-800/40 rounded-lg px-4 py-2.5 text-xs text-red-300">
+                  {intlinkRecsError}
+                </div>
+              )}
+
+              {/* Loading / Generating */}
+              {(intlinkRecsLoading || intlinkRecsGenerating) && (
+                <div className="flex items-center gap-3 py-6 justify-center">
+                  <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="text-gray-400 text-sm">
+                    {intlinkRecsGenerating ? 'Generating strategic recommendations via Claude Haiku…' : 'Loading…'}
+                  </span>
+                </div>
+              )}
+
+              {/* Empty state — prompt user to generate */}
+              {!intlinkRecsLoading && !intlinkRecsGenerating && !intlinkRecs && !intlinkRecsError && (
+                <div className="flex flex-col items-center gap-3 py-8 text-center">
+                  <span className="text-3xl">🔗</span>
+                  <p className="text-gray-300 font-medium text-sm">No recommendations yet</p>
+                  <p className="text-gray-500 text-xs max-w-sm">
+                    Click <strong>Generate</strong> to get strategic internal-linking recommendations
+                    tailored to your current orphan and opportunity data.
+                    Rate-limited to once per 7 days.
+                  </p>
+                  <button
+                    onClick={() => generateIntlinkRecs(false)}
+                    disabled={intlinkRecsGenerating}
+                    className="text-sm px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-semibold rounded-lg transition"
+                  >
+                    ✨ Generate Recommendations
+                  </button>
+                </div>
+              )}
+
+              {/* Recommendation cards */}
+              {!intlinkRecsLoading && !intlinkRecsGenerating && intlinkRecs && (
+                <div className="space-y-3">
+                  {intlinkRecs.recommendations.map((rec, i) => {
+                    const priorityStyle =
+                      rec.priority === 'high'   ? 'border-l-red-500'    :
+                      rec.priority === 'medium' ? 'border-l-amber-500'  :
+                                                   'border-l-blue-600'
+
+                    const priorityBadge =
+                      rec.priority === 'high'   ? 'bg-red-900/40 text-red-300 border-red-800/50'        :
+                      rec.priority === 'medium' ? 'bg-amber-900/40 text-amber-300 border-amber-800/50'  :
+                                                   'bg-blue-900/40 text-blue-300 border-blue-800/50'
+
+                    const catBadge =
+                      rec.category === 'orphan_fix'   ? 'bg-red-900/30 text-red-400'        :
+                      rec.category === 'hub_spoke'    ? 'bg-violet-900/30 text-violet-400'  :
+                      rec.category === 'cluster_link' ? 'bg-sky-900/30 text-sky-400'        :
+                      rec.category === 'anchor_text'  ? 'bg-emerald-900/30 text-emerald-400' :
+                                                         'bg-indigo-900/30 text-indigo-400'
+
+                    return (
+                      <div key={i} className={`border-l-2 ${priorityStyle} bg-gray-950/60 rounded-r-lg p-4 space-y-2`}>
+                        <div className="flex items-start gap-2 flex-wrap">
+                          <span className="font-semibold text-white text-sm flex-1 min-w-0">{rec.title}</span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded border ${priorityBadge}`}>
+                              {rec.priority}
+                            </span>
+                            <span className={`text-[10px] font-medium px-2 py-0.5 rounded ${catBadge}`}>
+                              {rec.category.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="text-sm text-gray-300 leading-relaxed">{rec.action}</p>
+                        {rec.target && (
+                          <p className="text-xs text-indigo-400/80">
+                            <span className="text-gray-600">Target: </span>{rec.target}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  {/* Context + attribution */}
+                  <div className="pt-2 border-t border-gray-800/50 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-600">
+                    <span>
+                      Based on {intlinkRecs.total_pages.toLocaleString()} pages ·{' '}
+                      {intlinkRecs.orphan_count} orphans ·{' '}
+                      {intlinkRecs.opportunity_count} opportunities
+                    </span>
+                    <span>Generated via Anthropic skill: searchfit-seo:internal-linking · Model: claude-haiku-4-5</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

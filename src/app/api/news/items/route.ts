@@ -32,7 +32,7 @@ export async function GET(request: Request) {
   // ── Items ──────────────────────────────────────────────────────────────────
   let itemsQ = db
     .from('news_items')
-    .select('id, source_name, url, title, excerpt, published_at, fetched_at, scraped_at, scraped_word_count, extraction_status')
+    .select('id, source_name, url, title, excerpt, published_at, fetched_at, scraped_at, scraped_word_count, extraction_status, extracted_keywords')
     .eq('owner_user_id', ownerId)
     .gte('fetched_at', sinceIso)
     .order('published_at', { ascending: false, nullsFirst: false })

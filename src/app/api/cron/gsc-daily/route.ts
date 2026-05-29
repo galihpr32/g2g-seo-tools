@@ -12,8 +12,17 @@ import {
   sendRankingDropAlert,
   sendIndexCoverageAlert,
   sendCWVAlert,
+  sendTieredRankingDropAlert,
 } from '@/lib/slack/alerts'
 import { getGA4OrganicTraffic, getGA4ContentPerformance, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
+// Sprint GSC.T1.DOD — Tier-aware drop detection (T1 day-over-day ≥10%,
+// others WoW ≥15% with 4-day lag for GSC freshness)
+import {
+  loadTierPagesForOwner,
+  buildTierMap,
+  detectTieredDrops,
+  getLagDays,
+} from '@/lib/gsc/tier-detect'
 
 export const maxDuration = 60
 
@@ -35,7 +44,20 @@ export async function GET(request: Request) {
   const { data: connections } = await supabase.from('gsc_connections').select('*')
   if (!connections?.length) return NextResponse.json({ message: 'No connections found' })
 
+  // Sprint 12: iterate each (connection × active site) so OffGamers gets its
+  // own GSC sync, not just whichever site happens to be in conn.site_url.
+  // Tokens cover all GSC properties under the same Google account.
+  const { data: sites } = await supabase
+    .from('site_configs')
+    .select('slug, gsc_property')
+    .eq('is_active', true)
+  const activeSites = (sites ?? []) as Array<{ slug: string; gsc_property: string }>
+  if (activeSites.length === 0) {
+    return NextResponse.json({ error: 'No active site_configs' }, { status: 500 })
+  }
+
   const results: Record<string, unknown> = {}
+  let totalSlackPosted = 0   // Sprint FORCE-FIRE.FIX — true count of Slack messages actually posted
 
   for (const conn of connections) {
     try {
@@ -52,14 +74,27 @@ export async function GET(request: Request) {
         }).eq('user_id', conn.user_id)
       }
 
-      const siteUrl = conn.site_url
+      // Sprint 12: iterate each active site for this connection. The
+      // existing per-site logic below uses `siteUrl` which is now bound
+      // by this outer loop instead of the legacy single-value
+      // conn.site_url. Tokens are shared across properties under the
+      // same Google account, so one OAuth set covers all sites.
+      for (const site of activeSites) {
+      const siteUrl = site.gsc_property
       const today = getDateRange(0)
 
-      // ── Task 1: Ranking Drop Alert ──────────────────────────────────────
+      // ── Task 1: Ranking Drop Snapshot (data ingestion only) ──────────────
+      // Sprint HEIMDALL.LAG.FIX — apply GSC freshness lag so the snapshot
+      // reflects settled Google data, not the in-flight h-1 reading which
+      // produces phantom "drops" that disappear once Google backfills.
+      // Slack alerts now flow exclusively through Task 1b (tier-aware,
+      // proper threshold per tier). This block just writes the snapshot rows.
+      const { getLagDays: lagDaysFn } = await import('@/lib/gsc/tier-detect')
+      const lagDays = lagDaysFn()
       const [currentRows, previousRows, queryRows] = await Promise.all([
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page'], 1000),
-        getSearchAnalytics(auth, siteUrl, getDateRange(14), getDateRange(8), ['page'], 1000),
-        getSearchAnalytics(auth, siteUrl, getDateRange(7), getDateRange(1), ['page', 'query'], 2000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(lagDays + 6),  getDateRange(lagDays),     ['page'],          1000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(lagDays + 13), getDateRange(lagDays + 7), ['page'],          1000),
+        getSearchAnalytics(auth, siteUrl, getDateRange(lagDays + 6),  getDateRange(lagDays),     ['page', 'query'], 2000),
       ])
 
       const toRankingRow = (rows: typeof currentRows): RankingRow[] =>
@@ -106,6 +141,35 @@ export async function GET(request: Request) {
           })),
           { onConflict: 'site_url,snapshot_date,page', ignoreDuplicates: true }
         )
+      }
+
+      // Sprint HUGIN.CRON — comprehensive query snapshot (ALL queries, not just dropped).
+      // Hugin needs historical query-level data to compute WoW deltas + new
+      // emergence. Existing gsc_ranking_drop_queries only saves queries for
+      // dropped pages, so we add this separate comprehensive write here.
+      if (queryRows.length) {
+        const queryInserts = queryRows
+          .filter(q => (q.keys?.[1] ?? '').trim().length > 0)   // must have query
+          .map(q => ({
+            site_url:      siteUrl,
+            snapshot_date: today,
+            page:          q.keys?.[0] ?? '',
+            query:         (q.keys?.[1] ?? '').toLowerCase().trim().slice(0, 500),
+            clicks:        q.clicks      ?? 0,
+            impressions:   q.impressions ?? 0,
+            ctr:           q.ctr         ?? 0,
+            position:      q.position    ?? 0,
+          }))
+        // Chunked to avoid Supabase row-batch limits (default 1000)
+        for (let i = 0; i < queryInserts.length; i += 500) {
+          // eslint-disable-next-line no-await-in-loop
+          await supabase
+            .from('gsc_query_snapshots')
+            .upsert(queryInserts.slice(i, i + 500), {
+              onConflict:       'site_url,snapshot_date,page,query',
+              ignoreDuplicates: true,
+            })
+        }
       }
 
       // Save detected drops to dedicated table (so page reads from DB, not live API)
@@ -165,20 +229,60 @@ export async function GET(request: Request) {
           })
         }
 
-        // Send Slack alert only for alertable pages (respects URL pre-filter)
-        const alertableDrops = drops.filter(d => isAlertablePage(d.page))
-        if (alertableDrops.length && (notifSettings?.slack_clicks_alerts ?? false)) {
-          await sendRankingDropAlert(alertableDrops)
+        // Sprint HEIMDALL.LAG.FIX — Slack alerting moved exclusively to
+        // Task 1b (tier-aware). This block previously fired a generic
+        // 15% WoW alert with h-1 data, producing duplicate + premature
+        // alerts. Drops are still saved to gsc_ranking_drops above so the
+        // dashboard + Friday KPI can read them.
+        void notifSettings   // kept in scope below for other alert types
+      }
+
+      // ── Task 1b: Sprint GSC.T1.DOD — Tier-aware drop detection ─────────────
+      // Runs alongside the legacy WoW check. T1 pages get day-over-day
+      // sensitivity at a tighter 10% threshold; others get WoW with a 4-day
+      // lag so the GSC freshness window has time to stabilize.
+      try {
+        const lag = getLagDays()
+        const [dodCurRows, dodPrevRows, wowCurRows, wowPrevRows] = await Promise.all([
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag),     getDateRange(lag),     ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag + 1), getDateRange(lag + 1), ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag + 6), getDateRange(lag),     ['page'], 1000),
+          getSearchAnalytics(auth, siteUrl, getDateRange(lag + 13), getDateRange(lag + 7), ['page'], 1000),
+        ])
+
+        const tierPages = await loadTierPagesForOwner(supabase, conn.user_id, site.slug)
+        const tierMap   = buildTierMap(tierPages)
+
+        const tieredDrops = detectTieredDrops(
+          { current: toRankingRow(dodCurRows), previous: toRankingRow(dodPrevRows) },
+          { current: toRankingRow(wowCurRows), previous: toRankingRow(wowPrevRows) },
+          tierMap,
+        )
+
+        // Filter to alertable URL set (same /categories/ allowlist as legacy)
+        const tieredAlertable = tieredDrops.filter(d => isAlertablePage(d.page))
+
+        if (tieredAlertable.length && (notifSettings?.slack_clicks_alerts ?? false)) {
+          const { getThresholds } = await import('@/lib/gsc/tier-detect')
+          await sendTieredRankingDropAlert(tieredAlertable, getThresholds(), {
+            db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
+          })
+          totalSlackPosted++
+
+          const t1Count = tieredAlertable.filter(d => d.tier === 1).length
           await supabase.from('alert_log').insert({
-            alert_type: 'ranking_drop',
-            site_url: siteUrl,
-            title: `${alertableDrops.length} pages dropped >15% WoW`,
-            message: alertableDrops.map(d => d.page).join(', '),
-            severity: alertableDrops.length > 5 ? 'critical' : 'warning',
-            slack_sent: !!process.env.SLACK_WEBHOOK_URL,
-            metadata: { drops: alertableDrops },
+            alert_type: 'ranking_drop_tiered',
+            site_url:   siteUrl,
+            title:      `${t1Count} T1 DoD drops + ${tieredAlertable.length - t1Count} others`,
+            message:    tieredAlertable.slice(0, 20).map(d => `${d.tier ?? 'na'}:${d.page}`).join(', '),
+            severity:   t1Count > 0 ? 'critical' : 'warning',
+            slack_sent: true,
+            metadata:   { drops: tieredAlertable, thresholds: getThresholds() },
           })
         }
+      } catch (e) {
+        // Don't let the tier-aware path break the rest of the cron.
+        console.error('[gsc-daily] tier-aware detection error:', e)
       }
 
       // ── Task 2: Index Coverage ──────────────────────────────────────────
@@ -203,12 +307,13 @@ export async function GET(request: Request) {
       }, { onConflict: 'site_url,snapshot_date' })
 
       if (notifSettings?.slack_index_alerts ?? true) {
-        await sendIndexCoverageAlert({
+        const ok = await sendIndexCoverageAlert({
           indexedPages: totalIndexed,
           previousIndexed: prevIndexed,
           errors: 0,
           previousErrors: prevErrors,
-        })
+        }, { db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug })
+        if (ok) totalSlackPosted++   // Sprint FORCE-FIRE.FIX
       }
 
       // ── Task 3: Core Web Vitals ─────────────────────────────────────────
@@ -244,7 +349,10 @@ export async function GET(request: Request) {
             degradations.push({ origin, metric: 'INP', current: cwv.inp.poor, previous: prevCWV.inp_poor })
 
           if (degradations.length && (notifSettings?.slack_cwv_alerts ?? false)) {
-            await sendCWVAlert(degradations)
+            await sendCWVAlert(degradations, {
+              db: supabase, ownerId: conn.user_id, type: 'daily_alerts', siteSlug: site.slug,
+            })
+            totalSlackPosted++   // Sprint FORCE-FIRE.FIX
             await supabase.from('alert_log').insert({
               alert_type: 'cwv',
               site_url: siteUrl,
@@ -307,11 +415,76 @@ export async function GET(request: Request) {
         }
       }
 
-      results[siteUrl] = { status: 'ok', drops: drops.length }
+      results[`${conn.user_id}::${siteUrl}`] = { status: 'ok', drops: drops.length }
+      }   // end for site of activeSites
     } catch (err) {
-      results[conn.site_url] = { status: 'error', error: String(err) }
+      results[`${conn.user_id}::error`] = { status: 'error', error: String(err) }
     }
   }
 
-  return NextResponse.json({ success: true, results })
+  // Sprint ALLCLEAR — if nothing fired today, post a single "all-clear"
+  // message so stakeholders see proof the cron ran. Routes via daily_alerts.
+  //
+  // Sprint SLACK.DEDUPE.1 — gate the all-clear post so it only fires from
+  // the actual scheduled run (Vercel cron) or an explicit force-fire. Without
+  // this gate, every internal self-call into /api/cron/gsc-daily (Heimdall
+  // agent runs every 30 min via .github/workflows/agents-scheduler.yml, plus
+  // the manual UI sync button at /api/cron/trigger) would post a fresh
+  // "All Clear" message — up to ~48 duplicates per day.
+  //
+  // Allow-list:
+  //   - `x-vercel-cron` header → set by Vercel for scheduled cron invocations
+  //   - `?force=1` query param → manual "Force fire all notifications" button
+  // Anything else (Heimdall self-call, trigger UI, ad-hoc curl) is silently
+  // skipped: the GSC sync work still happens, but no Slack post.
+  const url           = new URL(request.url)
+  const isVercelCron  = request.headers.get('x-vercel-cron') != null
+  const isForcedFire  = url.searchParams.get('force') === '1'
+  const allowAllClear = isVercelCron || isForcedFire
+
+  if (totalSlackPosted === 0 && allowAllClear) {
+    try {
+      const { resolveSlackWebhook } = await import('@/lib/slack/routing')
+      const { data: firstRouteOwner } = await supabase
+        .from('slack_routing_config')
+        .select('owner_user_id')
+        .eq('notification_type', 'daily_alerts')
+        .eq('enabled', true)
+        .limit(1)
+        .maybeSingle()
+      const ownerForRoute = firstRouteOwner?.owner_user_id
+        ?? (await supabase.from('gsc_connections').select('user_id').limit(1).maybeSingle()).data?.user_id
+        ?? null
+      const webhookUrl = ownerForRoute
+        ? await resolveSlackWebhook(supabase, ownerForRoute, 'daily_alerts')
+        : process.env.SLACK_WEBHOOK_URL ?? null
+      if (webhookUrl) {
+        const allClearBlocks = [
+          { type: 'header', text: { type: 'plain_text', text: '✅ GSC Daily — All Clear', emoji: true } },
+          { type: 'section', text: { type: 'mrkdwn', text: `No alertable ranking drops on \`/categories/\` pages today.\nNo index coverage / CWV degradation flagged.\n_Last check: ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC_` } },
+        ]
+        const slackRes = await fetch(webhookUrl, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ blocks: allClearBlocks }),
+        })
+        if (slackRes.ok) totalSlackPosted++
+      }
+    } catch (e) {
+      console.error('[gsc-daily] all-clear post failed:', e)
+    }
+  } else if (totalSlackPosted === 0 && !allowAllClear) {
+    // Diagnostic so we can see in logs that the gate fired vs. failed silently
+    console.log('[gsc-daily] all-clear post suppressed (not from Vercel cron / not forced):', {
+      x_vercel_cron: isVercelCron,
+      forced:        isForcedFire,
+      ua:            request.headers.get('user-agent'),
+    })
+  }
+
+  return NextResponse.json({
+    success:            true,
+    results,
+    slack_posted_count: totalSlackPosted,
+    all_clear_gated:    !allowAllClear && totalSlackPosted === 0,
+  })
 }

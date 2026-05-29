@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { IntentBadge, IntentFilter, type Intent } from '@/components/ui/IntentBadge'
+import { SERP_COUNTRIES } from '@/lib/country-config'
+import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
 interface Keyword {
   keyword: string
@@ -108,6 +110,7 @@ function TagCell({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function KeywordRankingsPage() {
+  const siteSlug = useSiteSlug()
   const [keywords, setKeywords]   = useState<Keyword[]>([])
   const [overview, setOverview]   = useState<Overview | null>(null)
   const [tags, setTags]           = useState<Record<string, string>>({})
@@ -118,12 +121,22 @@ export default function KeywordRankingsPage() {
   const [search, setSearch]       = useState('')
   const [intents, setIntents]     = useState<Record<string, Intent>>({})
   const [intentsLoading, setIntentsLoading] = useState(false)
+  // Country toggle — different markets rank differently for the same domain.
+  // Persist last choice in localStorage so the dropdown remembers user prefs
+  // across page loads. Defaults to US (G2G's primary market).
+  const [country, setCountry] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'us'
+    return localStorage.getItem('rankings-country') ?? 'us'
+  })
+  const [domain, setDomain] = useState<string>('g2g.com')
 
   const loadAll = useCallback(async () => {
     setLoading(true)
     try {
       const [kwRes, tagRes, catRes] = await Promise.all([
-        fetch('/api/semrush/keywords'),
+        // siteSlug carried as query param so server picks the right domain
+        // (g2g.com vs offgamers.com) AND the right ranked-keywords scope.
+        fetch(`/api/semrush/keywords?country=${country}&site=${siteSlug}`),
         fetch('/api/keyword-tags'),
         fetch('/api/knowledge-base'),
       ])
@@ -132,6 +145,7 @@ export default function KeywordRankingsPage() {
         const kws: Keyword[] = d.keywords ?? []
         setKeywords(kws)
         setOverview(d.overview ?? null)
+        if (d.domain) setDomain(d.domain)
         if (d.error) setError(d.error)
 
         // Fetch intents non-blocking after keywords load
@@ -163,9 +177,19 @@ export default function KeywordRankingsPage() {
       setError(String(e))
     }
     setLoading(false)
-  }, [])
+  }, [country, siteSlug])
 
+  // Re-fetch when country or active site changes. loadAll's identity is
+  // stable enough; the rule triggers because deps changed mid-render but
+  // the cascade is intended (UI refetch on country switch).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { loadAll() }, [loadAll])
+
+  // Persist country choice so a refresh doesn't snap back to US
+  function handleCountryChange(newCountry: string) {
+    setCountry(newCountry)
+    try { localStorage.setItem('rankings-country', newCountry) } catch { /* ignore */ }
+  }
 
   async function handleTag(keyword: string, category: string | null) {
     if (category) {
@@ -213,15 +237,32 @@ export default function KeywordRankingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-white">🎯 Keyword Rankings</h1>
           <p className="text-gray-400 text-sm mt-1">
-            Organic positions for <span className="text-white font-medium">g2g.com</span>
+            Organic positions for <span className="text-white font-medium">{domain}</span>
+            <span className="ml-2 text-gray-500">
+              · {SERP_COUNTRIES.find(c => c.code === country)?.flag ?? '🌍'} {SERP_COUNTRIES.find(c => c.code === country)?.label ?? country.toUpperCase()}
+            </span>
             {taggedCount > 0 && (
               <span className="ml-2 text-gray-500">· {taggedCount} tagged · {untaggedCount} untagged</span>
             )}
           </p>
         </div>
-        <button onClick={loadAll} className="text-xs text-gray-500 hover:text-white border border-gray-700 px-3 py-1.5 rounded-lg transition">
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Country toggle — switches Google location_code so the user can
+              see how rankings differ between markets (e.g. US vs ID vs SG). */}
+          <select
+            value={country}
+            onChange={e => handleCountryChange(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-red-500"
+            aria-label="SERP country"
+          >
+            {SERP_COUNTRIES.map(c => (
+              <option key={c.code} value={c.code}>{c.flag} {c.label}</option>
+            ))}
+          </select>
+          <button onClick={loadAll} className="text-xs text-gray-500 hover:text-white border border-gray-700 px-3 py-1.5 rounded-lg transition">
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {error && (

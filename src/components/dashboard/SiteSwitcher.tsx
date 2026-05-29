@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
-import { getSiteSlugFromPath } from '@/lib/sites'
+import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
 interface Site {
   slug: string
@@ -18,29 +18,44 @@ const SITES: Site[] = [
 
 // Pages that support site switching (URL gets prefixed with /[site]/)
 // Add more slugs here as pages are built out for each site
-const SITE_AWARE_PATHS = ['/reports/weekly']
+const SITE_AWARE_PATHS = ['/reports/weekly', '/reports/monthly']
 
 export default function SiteSwitcher() {
   const pathname = usePathname()
   const router   = useRouter()
   const [open, setOpen] = useState(false)
 
-  // Detect current site from URL (e.g. /offgamers/reports/weekly → offgamers)
-  const currentSlug = getSiteSlugFromPath(pathname, SITES.map(s => s.slug))
+  // Source of truth = the same hook that every other client component uses
+  // when calling APIs. Previously this read pathname only, which lied when
+  // the user was on a non-prefixed page (e.g. /experiments) but cookie said
+  // 'offgamers' — causing UI to display G2G while data layer pulled OffGamers.
+  // Bug fix 2026-05-08 (Mimir cross-site contamination).
+  const currentSlug = useSiteSlug()
   const currentSite = SITES.find(s => s.slug === currentSlug) ?? SITES[0]
 
   function switchSite(slug: string) {
     setOpen(false)
     if (slug === currentSlug) return
 
-    // Persist active site so server-side (OAuth callback, API routes) knows which site
-    // the user is working on. Both cookie (server-readable) and localStorage (client-readable).
+    // Sprint 11 / URL Prefix 3 — URL is now the source of truth.
+    // We push to /<newSite>/<currentPath> and let the middleware:
+    //   1. Strip the prefix and rewrite to the un-prefixed page
+    //   2. Set the active-site cookie to the new value
+    //   3. Pass through Supabase auth + page render
+    //
+    // We still write the cookie + localStorage + dispatch the same-tab
+    // event eagerly, because the URL push is async and `useSiteSlug()`
+    // consumers shouldn't show stale data even for the few ms between
+    // click and route resolution.
     try {
+      // eslint-disable-next-line react-hooks/immutability -- intentional browser global write
       document.cookie = `active-site=${slug}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Lax`
       localStorage.setItem('active-site', slug)
+      window.dispatchEvent(new CustomEvent('site-changed', { detail: { slug } }))
     } catch { /* ignore */ }
 
-    // Strip the current site prefix if present, then prepend new site
+    // Strip the current site prefix if present so we can compute the
+    // brand-agnostic path.
     let base = pathname
     const slugs = SITES.map(s => s.slug)
     const parts = pathname.split('/').filter(Boolean)
@@ -48,11 +63,21 @@ export default function SiteSwitcher() {
       base = '/' + parts.slice(1).join('/')
     }
 
-    // Determine where to land for the new site
+    // SITE_AWARE_PATHS retain the legacy `/[site]/...` App Router pattern,
+    // so we need a hard prefix push. Every other path goes through the
+    // middleware rewrite which still gets us the cookie + cookie-driven
+    // hydration without needing a page-level [site] segment.
     const isSiteAware = SITE_AWARE_PATHS.some(p => base.startsWith(p) || base === p)
-    const target = isSiteAware ? `/${slug}${base}` : `/${slug}/reports/weekly`
-
-    router.push(target)
+    if (isSiteAware) {
+      router.push(`/${slug}${base}`)
+    } else {
+      // Push to the prefixed URL — middleware rewrites it back to `base`
+      // internally and pins the cookie. This makes the URL itself the
+      // source of truth, so a copy-paste of the URL respects the site
+      // context for the recipient.
+      router.push(`/${slug}${base}`)
+      router.refresh()
+    }
   }
 
   // On mount: stamp the cookie so server-side always knows the active site

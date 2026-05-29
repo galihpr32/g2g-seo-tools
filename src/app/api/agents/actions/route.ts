@@ -4,6 +4,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { executeAction } from '@/lib/agents/executor'
 import type { AgentAction } from '@/lib/agents/executor'
+import { resolveSiteSlugFromRequest } from '@/lib/sites'
 
 export async function GET(request: Request) {
   const supabase = await createClient()
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const status = searchParams.get('status') ?? 'pending'
   const agent = searchParams.get('agent')
-  const site = searchParams.get('site') ?? 'g2g'
+  const site = resolveSiteSlugFromRequest(request)
 
   let query = db
     .from('agent_actions')

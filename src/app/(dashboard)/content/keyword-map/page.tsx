@@ -1223,6 +1223,23 @@ export default function KeywordMapPage() {
               <>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-white font-semibold text-base">{activeMap.topic}</h1>
+                  {/* Sprint CLUSTER.RENAME.3 — quick rename via prompt(); patches /api/clusters/[id]. */}
+                  <button
+                    onClick={async () => {
+                      const next = window.prompt(`Rename "${activeMap.topic}" to:`, activeMap.topic)
+                      if (!next || next.trim() === '' || next.trim() === activeMap.topic) return
+                      const r = await fetch(`/api/clusters/${activeMap.id}`, {
+                        method:  'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body:    JSON.stringify({ topic: next.trim() }),
+                      })
+                      const d = await r.json().catch(() => ({}))
+                      if (!r.ok) { alert(d.error ?? `HTTP ${r.status}`); return }
+                      window.location.reload()
+                    }}
+                    title="Rename this map"
+                    className="text-gray-500 hover:text-purple-300 text-xs"
+                  >✎</button>
                   <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${MAP_STATUS_STYLES[activeMap.status] ?? 'bg-gray-800 text-gray-400'}`}>
                     {activeMap.status.replace('_', ' ')}
                   </span>

@@ -1,16 +1,19 @@
 /**
  * BriefQualityReview — comprehensive Tyr review render (SWA-style).
  *
- * Renders 4 sections:
- *   1. Overall score gauge + verdict reasoning
- *   2. Per-dimension bars (8 dimensions × 10) with comments
- *   3. Strengths (green) / Weaknesses (red) two-column
- *   4. Prioritised suggestions (sortable by priority)
+ * Renders 5 sections:
+ *   1. Mimir's auto-suggestion panel (override/regen/section-regen/rerun)
+ *   2. Overall score gauge + verdict reasoning
+ *   3. Per-dimension bars (8 dimensions × 10) with comments
+ *   4. Strengths (green) / Weaknesses (red) two-column
+ *   5. Prioritised suggestions (sortable by priority)
  *
  * Backwards-compat: if breakdown is in old shape (only flat coverage /
  * intent_match / keyword_grounding / faq_realism), render limited 4-dim
  * view with a notice.
  */
+import TyrSuggestionPanel from '@/components/agents/TyrSuggestionPanel'
+import { suggestTyrAction } from '@/lib/agents/tyr-suggestion'
 
 interface DimensionScore {
   score:    number          // 0-10
@@ -74,6 +77,11 @@ interface Props {
   reviewedAt?: string | null
   threshold?: number             // default 80
   breakdown:  TyrBreakdown | null
+  /** Brief id — needed for the suggestion panel's action wiring. When omitted
+   *  the panel is hidden (e.g. preview surfaces). */
+  briefId?:   string
+  /** Hide the suggestion panel (e.g. brief is published — actions don't apply) */
+  hideSuggestion?: boolean
 }
 
 function scoreColor(score: number, threshold: number): string {
@@ -103,8 +111,17 @@ export default function BriefQualityReview({
   reviewedAt,
   threshold = 80,
   breakdown,
+  briefId,
+  hideSuggestion,
 }: Props) {
   if (!breakdown) return null
+
+  // Compute auto-suggestion ONCE — pure function, no side effects.
+  // Hidden when no briefId (preview), explicitly hidden, or when status
+  // is already 'reviewed' (Override action would be redundant).
+  const suggestion = (briefId && !hideSuggestion)
+    ? suggestTyrAction({ score: score ?? null, status: status ?? null, breakdown })
+    : null
 
   const isRichShape = !!breakdown.dimensions
   const hasAnyContent =
@@ -117,6 +134,12 @@ export default function BriefQualityReview({
 
   return (
     <section className="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-5">
+      {/* Mimir's auto-suggestion — surfaces FIRST so Specialist 1 sees the
+          recommended action before scrolling through dimension scores. */}
+      {suggestion && briefId && (
+        <TyrSuggestionPanel briefId={briefId} suggestion={suggestion} />
+      )}
+
       <header className="flex items-start justify-between mb-5 flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white flex items-center gap-2">

@@ -605,6 +605,78 @@ export default function SettingsPage() {
       {/* ── Connections tab ──────────────────────────────────────────────────── */}
       {activeTab === 'connections' && (
         <>
+          {/* Product Tiers shortcut — Sprint A foundation */}
+          <a
+            href="/settings/product-tiers"
+            className="bg-gray-900 border border-gray-800 hover:border-amber-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">🎯 Product Tiers</p>
+              <p className="text-gray-400 text-sm mt-0.5">Manage Tier 1 (top 10) + Tier 2 (next 25) products per brand — drives priority alerts, deeper Bragi prompts, hybrid review gates.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-amber-400 transition">→</span>
+          </a>
+
+          {/* G2G CMS Token shortcut — manual weekly JWT refresh */}
+          <a
+            href="/settings/cms-token"
+            className="bg-gray-900 border border-gray-800 hover:border-blue-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">🔐 CMS Token</p>
+              <p className="text-gray-400 text-sm mt-0.5">Paste a fresh admin JWT weekly — powers auto-upload of generated content into the CMS (marketing + SEO + FAQ).</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-blue-400 transition">→</span>
+          </a>
+
+          {/* G2G Product Catalog — canonical mirror of CMS catalog */}
+          <a
+            href="/settings/g2g-products"
+            className="bg-gray-900 border border-gray-800 hover:border-purple-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">📚 Product Catalog</p>
+              <p className="text-gray-400 text-sm mt-0.5">Upload the latest CSV export from your CMS admin. Powers CMS upload caching, tier admin autocomplete, sheet validation, and opportunity-to-product mapping. Scoped to active brand.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-purple-400 transition">→</span>
+          </a>
+
+          {/* News & Trends Export — shareable Google Sheet for other divisions */}
+          <a
+            href="/settings/news-export"
+            className="bg-gray-900 border border-gray-800 hover:border-emerald-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">📤 News & Trends Export</p>
+              <p className="text-gray-400 text-sm mt-0.5">Configure a Google Sheet to receive News Signals + Game Trends snapshots. Auto-pushed every Monday morning, plus manual trigger. Hand off to other divisions cleanly.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-emerald-400 transition">→</span>
+          </a>
+
+          {/* Tyr Auto-Publish — quality thresholds per tier */}
+          <a
+            href="/settings/tyr-autopublish"
+            className="bg-gray-900 border border-gray-800 hover:border-cyan-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">⚖ Tyr Auto-Publish Rules</p>
+              <p className="text-gray-400 text-sm mt-0.5">Per-tier thresholds that decide if a brief skips human review and goes straight to <code className="text-cyan-300">auto_approved</code>. Removes the manual review bottleneck for non-top products.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-cyan-400 transition">→</span>
+          </a>
+
+          {/* Slack routing — multi-channel webhooks per notification type */}
+          <a
+            href="/settings/slack-routing"
+            className="bg-gray-900 border border-gray-800 hover:border-pink-700/50 rounded-xl p-5 flex items-center justify-between mb-4 transition group"
+          >
+            <div>
+              <p className="text-white font-medium">🔀 Slack Channel Routing</p>
+              <p className="text-gray-400 text-sm mt-0.5">Send each notification type (daily alerts, weekly reports, agent digests, CMS alerts, bug reports) to a different Slack channel. Falls back to <code className="text-pink-300">SLACK_WEBHOOK_URL</code> env when unmapped.</p>
+            </div>
+            <span className="text-gray-500 group-hover:text-pink-400 transition">→</span>
+          </a>
+
           {/* Manual Sync */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex items-center justify-between mb-6">
             <div>

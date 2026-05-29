@@ -31,7 +31,9 @@ interface CsvRow {
   main_keyword:       string
   secondary_keywords: string
   en_file_url:        string
-  status:             string
+  status:             string   // EN status (col G)
+  id_file_url:        string
+  id_status:          string   // ID status (col I)
 }
 
 interface ApplyBody {
@@ -47,12 +49,14 @@ function normBrand(s: string): string {
 
 function csvFieldsToDbCols(f: Partial<CsvRow>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  if (f.brand_name         !== undefined) out.product_name       = f.brand_name
-  if (f.category           !== undefined) out.category           = f.category
-  if (f.main_keyword       !== undefined) out.main_keyword       = f.main_keyword
-  if (f.secondary_keywords !== undefined) out.secondary_keywords = f.secondary_keywords
-  if (f.en_file_url        !== undefined) out.google_doc_url     = f.en_file_url
-  if (f.status             !== undefined) out.status             = f.status
+  if (f.brand_name         !== undefined) out.product_name        = f.brand_name
+  if (f.category           !== undefined) out.category            = f.category
+  if (f.main_keyword       !== undefined) out.main_keyword        = f.main_keyword
+  if (f.secondary_keywords !== undefined) out.secondary_keywords  = f.secondary_keywords
+  if (f.en_file_url        !== undefined) out.google_doc_url      = f.en_file_url
+  if (f.status             !== undefined) out.status              = f.status
+  if (f.id_file_url        !== undefined) out.id_google_doc_url   = f.id_file_url
+  if (f.id_status          !== undefined) out.id_status           = f.id_status
   return out
 }
 
@@ -85,6 +89,8 @@ export async function POST(request: Request) {
       secondary_keywords: r.secondary_keywords || null,
       google_doc_url:     r.en_file_url || null,
       status:             r.status || 'pending',
+      id_google_doc_url:  r.id_file_url || null,
+      id_status:          r.id_status || 'pending',
     }))
 
     const { data: ins, error: insErr } = await db

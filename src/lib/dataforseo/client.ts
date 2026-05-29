@@ -156,25 +156,113 @@ export async function getKeywordSuggestions(
 }
 
 // ─── Keyword Difficulty (bulk check) ─────────────────────────────────────────
+// Returns search volume per keyword. Handles > 100 kws by chunking to keep
+// under the DataForSEO API limit. Logs per-chunk hit rate to surface when
+// the upstream returns no data (common for long-tail or niche game kws).
 export async function getKeywordDifficulty(
   keywords: string[],
   locationCode = 2360,
   languageCode = 'id'
 ): Promise<Record<string, number>> {
   if (!keywords.length) return {}
-  const data = await dfsPost<any>('/keywords_data/google_ads/search_volume/live', [
-    {
-      keywords: keywords.slice(0, 100), // API limit
-      location_code: locationCode,
-      language_code: languageCode,
-    },
-  ])
-
+  const CHUNK = 100  // DataForSEO Google Ads endpoint limit
   const result: Record<string, number> = {}
-  for (const item of data?.tasks?.[0]?.result ?? []) {
-    if (item.keyword && item.search_volume != null) {
-      result[item.keyword] = item.search_volume
+
+  let totalRequested = 0
+  let totalReceived  = 0
+  let totalWithSv    = 0
+
+  for (let i = 0; i < keywords.length; i += CHUNK) {
+    const batch = keywords.slice(i, i + CHUNK)
+    totalRequested += batch.length
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await dfsPost<any>('/keywords_data/google_ads/search_volume/live', [
+      {
+        keywords:      batch,
+        location_code: locationCode,
+        language_code: languageCode,
+      },
+    ])
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items: any[] = data?.tasks?.[0]?.result ?? []
+    totalReceived += items.length
+    for (const item of items) {
+      if (item.keyword) {
+        if (item.search_volume != null) {
+          result[String(item.keyword).toLowerCase()] = item.search_volume
+          totalWithSv++
+        }
+      }
     }
+  }
+
+  if (totalRequested > 0) {
+    console.warn(
+      `[dataforseo:getKeywordDifficulty] ${totalRequested} requested, ${totalReceived} returned, ${totalWithSv} with non-null SV `
+      + `(location_code=${locationCode}, language_code=${languageCode})`,
+    )
+  }
+
+  return result
+}
+
+// ─── DataForSEO Labs: keyword overview (better long-tail coverage) ──────────
+// Google Ads endpoint above relies on Google Keyword Planner data which is
+// sparse for gaming/niche terms. Labs uses a multi-source SV database
+// (clickstream + Bing + estimation models) that covers long-tail far better.
+//
+// Cost: ~$0.0005 per kw (10x Google Ads but still negligible at our scale).
+// Latency: similar to google_ads endpoint.
+//
+// Used as a fallback when google_ads returns null for a kw.
+export async function getKeywordVolumesLabs(
+  keywords:    string[],
+  locationCode = 2360,
+  languageCode = 'id',
+): Promise<Record<string, number>> {
+  if (!keywords.length) return {}
+  const CHUNK = 1000   // Labs endpoint accepts up to 1000 kws per call
+  const result: Record<string, number> = {}
+
+  let totalRequested = 0
+  let totalReceived  = 0
+  let totalWithSv    = 0
+
+  for (let i = 0; i < keywords.length; i += CHUNK) {
+    const batch = keywords.slice(i, i + CHUNK)
+    totalRequested += batch.length
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await dfsPost<any>('/dataforseo_labs/google/keyword_overview/live', [
+      {
+        keywords:      batch,
+        location_code: locationCode,
+        language_code: languageCode,
+      },
+    ])
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items: any[] = data?.tasks?.[0]?.result ?? []
+    totalReceived += items.length
+    for (const item of items) {
+      const kw = item?.keyword
+      const sv = item?.keyword_info?.search_volume
+      if (kw) {
+        if (sv != null) {
+          result[String(kw).toLowerCase()] = sv
+          totalWithSv++
+        }
+      }
+    }
+  }
+
+  if (totalRequested > 0) {
+    console.warn(
+      `[dataforseo:getKeywordVolumesLabs] ${totalRequested} requested, ${totalReceived} returned, ${totalWithSv} with non-null SV `
+      + `(location_code=${locationCode}, language_code=${languageCode})`,
+    )
   }
   return result
 }
