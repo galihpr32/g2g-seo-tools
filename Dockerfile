@@ -63,7 +63,7 @@ ENV NEXT_PUBLIC_TEST_SLACK_CHANNEL_LBL=${NEXT_PUBLIC_TEST_SLACK_CHANNEL_LBL}
 
 # Suppress Next.js telemetry phone-home
 ENV NEXT_TELEMETRY_DISABLED=1
-
+ENV NODE_OPTIONS=--max-old-space-size=6144
 RUN npm run build
 
 # ─── Stage 3: runner (final image) ──────────────────────────────────────────
