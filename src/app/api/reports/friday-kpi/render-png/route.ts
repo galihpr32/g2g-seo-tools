@@ -11,7 +11,7 @@ import { htmlToPng } from '@/lib/reports/puppeteer-launcher'
 // Slack delivery path always did. Now we share the same loader.
 // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — same story for the 12-week
 // hero chart: preview must include it so it matches the Slack delivery PNG.
-import { loadAiVisibilityHistory, loadGscHistorical } from '@/lib/reports/friday-kpi-deliver'
+import { loadAiVisibilityHistory, loadGscHistorical, loadCompetitiveTrend } from '@/lib/reports/friday-kpi-deliver'
 
 /**
  * Sprint FRIDAY.KPI.GRAPH.4 — renders the Friday KPI dashboard as a PNG.
@@ -78,10 +78,11 @@ export async function GET(req: Request) {
     // GSC clicks/impressions hero data. Falls back to empty (chart hidden)
     // if GSC OAuth missing.
     tlog('start')
-    const [payload, aiHistory, gscHistorical, ...actionPlans] = await Promise.all([
+    const [payload, aiHistory, gscHistorical, competitiveTrend, ...actionPlans] = await Promise.all([
       buildFridayKpi(db, ownerId, siteSlugs),
       loadAiVisibilityHistory(db, ownerId, siteSlugs, 84),
       loadGscHistorical(db, ownerId, siteSlugs, 12),
+      loadCompetitiveTrend(db, ownerId, siteSlugs, 12),
       ...siteSlugs.map(async slug => ({
         brand: slug,
         plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
@@ -90,7 +91,7 @@ export async function GET(req: Request) {
     tlog('data assembled')
 
     // Render HTML → PNG (chromium cold start usually dominates here)
-    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory, gscHistorical })
+    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory, gscHistorical, competitiveTrend })
     tlog('html built')
     const png  = await htmlToPng(html)
     tlog('png ready')

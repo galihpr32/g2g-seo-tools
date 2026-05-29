@@ -4,14 +4,21 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 
 /**
- * Sprint FRIDAY.KPI.KW-BREAKDOWN.2 (338) —
+ * Sprint FRIDAY.KPI.KW-BREAKDOWN.2 (338) + FRIDAY.KPI.KW.FILTERS (340) —
  * /reports/friday-kpi/keywords sub-page.
  *
  * Surfaces the GA4 (revenue per landing page) × GSC (top queries per page)
- * join for the most-recently-completed Thu→Wed week, per brand. Internal-
- * only (auth required), manual Refresh button to re-fetch from Google.
+ * join for one Thu→Wed week, per brand. Internal-only (auth required),
+ * manual Refresh button to re-fetch from Google.
  *
- * Sort default: Sessions desc (Galih's preference). Toggle to Revenue.
+ * Filters (sprint 340):
+ *   • Search box — match by page path substring
+ *   • URL include — startsWith filter (e.g. "/categories" to focus product hubs)
+ *   • Market — All / US / ID (server-side split per landing page)
+ *   • Category — joined from product_tiers
+ *   • Week picker — last 12 Thu→Wed weeks; load cached or refresh
+ *
+ * Sort: Sessions desc default, toggle Revenue.
  */
 
 interface BreakdownQuery {
@@ -20,15 +27,22 @@ interface BreakdownQuery {
   clicks:      number
   impressions: number
 }
-
-interface BreakdownRow {
-  page:         string
+interface BreakdownMarketSlice {
   sessions:     number
   transactions: number
   revenue:      number
   top_queries:  BreakdownQuery[]
 }
-
+interface BreakdownRow {
+  page:         string
+  category:     string | null
+  sessions:     number
+  transactions: number
+  revenue:      number
+  top_queries:  BreakdownQuery[]
+  us:           BreakdownMarketSlice
+  id:           BreakdownMarketSlice
+}
 interface BreakdownPayload {
   site_slug:    string
   week_start:   string
@@ -45,7 +59,6 @@ interface BreakdownPayload {
     gsc_error?:       string
   }
 }
-
 interface ApiResponse {
   ok:           boolean
   cached?:      boolean
@@ -59,7 +72,8 @@ interface ApiResponse {
 }
 
 const SITES = ['g2g', 'offgamers'] as const
-type Site = typeof SITES[number]
+type Site    = typeof SITES[number]
+type Market  = 'all' | 'us' | 'id'
 type SortKey = 'sessions' | 'revenue'
 
 function fmtNum(n: number): string {
@@ -81,61 +95,126 @@ function fmtRel(iso: string): string {
   return `${d}d ago`
 }
 
+/**
+ * Last 12 Thu→Wed weeks ending at the most-recently-completed Wed.
+ * UI dropdown options. Newest first.
+ */
+function listLast12WeekStarts(now: Date = new Date()): string[] {
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  const day = today.getDay()
+  const daysSinceCompletedWed = day === 3 ? 7 : (day + 4) % 7 || 7
+  const lastWed = new Date(today)
+  lastWed.setDate(today.getDate() - daysSinceCompletedWed)
+  const out: string[] = []
+  for (let i = 0; i < 12; i++) {
+    const end = new Date(lastWed)
+    end.setDate(lastWed.getDate() - i * 7)
+    const start = new Date(end)
+    start.setDate(end.getDate() - 6)
+    out.push(start.toISOString().slice(0, 10))
+  }
+  return out  // newest → oldest
+}
+
+function fmtWeekLabel(weekStart: string): string {
+  const d   = new Date(weekStart + 'T00:00:00Z')
+  const end = new Date(d.getTime() + 6 * 86_400_000)
+  const fmt = (x: Date) => `${x.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' })} ${x.getUTCDate()}`
+  return `${fmt(d)} – ${fmt(end)}`
+}
+
 export default function KeywordBreakdownPage() {
+  // Brand tab + sort
   const [site,    setSite]    = useState<Site>('g2g')
   const [sort,    setSort]    = useState<SortKey>('sessions')
-  const [data,    setData]    = useState<Record<Site, ApiResponse | null>>({ g2g: null, offgamers: null })
-  const [loading, setLoading] = useState<Record<Site, boolean>>({ g2g: false, offgamers: false })
-  const [refreshing, setRefreshing] = useState<Record<Site, boolean>>({ g2g: false, offgamers: false })
+  // Filters
+  const [search,        setSearch]        = useState('')
+  const [urlInclude,    setUrlInclude]    = useState('')
+  const [market,        setMarket]        = useState<Market>('all')
+  const [category,      setCategory]      = useState<string>('all')   // 'all' | category name | '__uncategorized__'
+  const [weekStart,     setWeekStart]     = useState<string>(() => listLast12WeekStarts()[0])
+
+  const weekOptions = useMemo(() => listLast12WeekStarts(), [])
+
+  // Data per (site × weekStart) — keyed for cheap tab/week switching
+  const [data, setData] = useState<Record<string, ApiResponse | null>>({})
+  const [loading,    setLoading]    = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [expanded,   setExpanded]   = useState<Set<string>>(new Set())
 
-  const active = data[site]
-  const payload = active?.payload ?? null
+  const cacheKey = `${site}::${weekStart}`
+  const active   = data[cacheKey] ?? null
+  const payload  = active?.payload ?? null
 
-  const rows = useMemo(() => {
-    if (!payload) return []
-    return payload.rows.slice().sort((a, b) =>
-      sort === 'sessions'
-        ? b.sessions - a.sessions || b.revenue - a.revenue
-        : b.revenue - a.revenue || b.sessions - a.sessions,
-    )
-  }, [payload, sort])
-
-  // Initial fetch (cached) for both brands so the tabs swap instantly.
+  // Auto-load when (site, weekStart) changes if we don't have it cached yet
   useEffect(() => {
+    if (data[cacheKey] !== undefined) return
     void (async () => {
-      setLoading({ g2g: true, offgamers: true })
-      const out: Record<Site, ApiResponse | null> = { g2g: null, offgamers: null }
-      await Promise.all(SITES.map(async s => {
-        try {
-          const res = await fetch(`/api/reports/friday-kpi/keyword-breakdown?site=${s}`, { cache: 'no-store' })
-          const j   = await res.json() as ApiResponse
-          out[s] = j
-        } catch (e) {
-          out[s] = { ok: false, error: e instanceof Error ? e.message : String(e) }
-        }
-      }))
-      setData(out)
-      setLoading({ g2g: false, offgamers: false })
+      setLoading(true)
+      try {
+        const res = await fetch(`/api/reports/friday-kpi/keyword-breakdown?site=${site}&week=${weekStart}`, { cache: 'no-store' })
+        const j   = await res.json() as ApiResponse
+        setData(d => ({ ...d, [cacheKey]: j }))
+      } catch (e) {
+        setData(d => ({ ...d, [cacheKey]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
+      } finally {
+        setLoading(false)
+      }
     })()
-  }, [])
+  }, [cacheKey, site, weekStart, data])
 
-  async function refresh(target: Site) {
-    setRefreshing(r => ({ ...r, [target]: true }))
+  async function refresh() {
+    setRefreshing(true)
     try {
       const res = await fetch(`/api/reports/friday-kpi/keyword-breakdown`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ site_slug: target }),
+        body:    JSON.stringify({ site_slug: site, week_start: weekStart }),
       })
       const j = await res.json() as ApiResponse
-      setData(d => ({ ...d, [target]: j }))
+      setData(d => ({ ...d, [cacheKey]: j }))
     } catch (e) {
-      setData(d => ({ ...d, [target]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
+      setData(d => ({ ...d, [cacheKey]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
     } finally {
-      setRefreshing(r => ({ ...r, [target]: false }))
+      setRefreshing(false)
     }
   }
+
+  // ── Apply filters + sort ─────────────────────────────────────────────
+  const allCategories = useMemo(() => {
+    if (!payload) return [] as string[]
+    const s = new Set<string>()
+    for (const r of payload.rows) if (r.category) s.add(r.category)
+    return Array.from(s).sort((a, b) => a.localeCompare(b))
+  }, [payload])
+
+  const rows = useMemo(() => {
+    if (!payload) return [] as BreakdownRow[]
+    const q   = search.trim().toLowerCase()
+    const inc = urlInclude.trim().toLowerCase()
+    const filtered = payload.rows.filter(r => {
+      if (q   && !r.page.toLowerCase().includes(q))     return false
+      if (inc && !r.page.toLowerCase().startsWith(inc)) return false
+      if (category === '__uncategorized__' && r.category) return false
+      if (category !== 'all' && category !== '__uncategorized__' && r.category !== category) return false
+      // Market: rows hide when slice has 0 sessions AND 0 queries (truly no signal in that market)
+      if (market === 'us' && r.us.sessions === 0 && r.us.top_queries.length === 0) return false
+      if (market === 'id' && r.id.sessions === 0 && r.id.top_queries.length === 0) return false
+      return true
+    })
+    return filtered.sort((a, b) => {
+      const aSlice = market === 'us' ? a.us : market === 'id' ? a.id : null
+      const bSlice = market === 'us' ? b.us : market === 'id' ? b.id : null
+      const aSess  = aSlice ? aSlice.sessions : a.sessions
+      const bSess  = bSlice ? bSlice.sessions : b.sessions
+      const aRev   = aSlice ? aSlice.revenue  : a.revenue
+      const bRev   = bSlice ? bSlice.revenue  : b.revenue
+      return sort === 'sessions'
+        ? bSess - aSess || bRev - aRev
+        : bRev  - aRev  || bSess - aSess
+    })
+  }, [payload, search, urlInclude, category, market, sort])
 
   function toggleExpand(page: string) {
     setExpanded(prev => {
@@ -145,6 +224,15 @@ export default function KeywordBreakdownPage() {
     })
   }
 
+  function clearFilters() {
+    setSearch('')
+    setUrlInclude('')
+    setMarket('all')
+    setCategory('all')
+  }
+
+  const filtersActive = !!(search || urlInclude || market !== 'all' || category !== 'all')
+
   return (
     <main className="max-w-7xl mx-auto p-6">
       <Link href="/reports/friday-kpi" className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1 mb-2">← Weekly Report</Link>
@@ -152,7 +240,7 @@ export default function KeywordBreakdownPage() {
         <div>
           <h1 className="text-2xl font-bold text-white mb-1">📋 Keyword Breakdown</h1>
           <p className="text-sm text-gray-400">
-            Landing pages with GA4 revenue and the top 5 organic queries that drove rank to that page (last completed Thu→Wed week).
+            Landing pages with GA4 revenue and the top 5 organic queries that drove rank to that page (Thu→Wed weekly windows).
           </p>
         </div>
       </div>
@@ -174,26 +262,38 @@ export default function KeywordBreakdownPage() {
         ))}
       </div>
 
-      {/* Header bar: week + sort + refresh */}
-      <section className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4 flex items-center justify-between flex-wrap gap-3">
-        <div className="text-xs text-gray-400">
-          {payload ? (
-            <>
-              Window <strong className="text-white">{payload.week_start} → {payload.week_end}</strong>
-              {' · '}
-              Generated <strong className="text-white">{fmtRel(payload.generated_at)}</strong>
-              {' · '}
-              <span className="text-gray-500">
-                GA4 rows: {payload.diagnostics.ga4_rows_fetched} · GSC rows: {payload.diagnostics.gsc_rows_fetched} · matched: {payload.diagnostics.matched_pages}
-              </span>
-            </>
-          ) : active?.hint ? (
-            <span className="text-amber-300/80">No snapshot for this week yet. Click <strong>Refresh</strong> to build one.</span>
-          ) : active?.error ? (
-            <span className="text-red-400">Error: {active.error}</span>
-          ) : (
-            <span className="text-gray-500">Loading…</span>
-          )}
+      {/* Header bar: week picker + meta + refresh */}
+      <section className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-3 flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="text-xs text-gray-500">Week:</label>
+          <select
+            value={weekStart}
+            onChange={e => setWeekStart(e.target.value)}
+            className="bg-gray-950 border border-gray-800 text-gray-200 text-xs rounded-md px-2 py-1.5 focus:outline-none focus:border-violet-500"
+          >
+            {weekOptions.map((w, i) => (
+              <option key={w} value={w}>
+                {fmtWeekLabel(w)} {i === 0 ? '(latest)' : ''}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-gray-500 ml-2">
+            {payload ? (
+              <>
+                Generated <strong className="text-white">{fmtRel(payload.generated_at)}</strong>
+                {' · '}
+                <span className="text-gray-600">
+                  GA4: {payload.diagnostics.ga4_rows_fetched} · GSC: {payload.diagnostics.gsc_rows_fetched} · matched: {payload.diagnostics.matched_pages}
+                </span>
+              </>
+            ) : active?.hint ? (
+              <span className="text-amber-300/80">No snapshot for this week — click Refresh.</span>
+            ) : active?.error ? (
+              <span className="text-red-400">Error: {active.error}</span>
+            ) : loading ? (
+              <span className="text-gray-500">Loading…</span>
+            ) : null}
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
@@ -213,12 +313,70 @@ export default function KeywordBreakdownPage() {
           </div>
 
           <button
-            onClick={() => refresh(site)}
-            disabled={refreshing[site]}
+            onClick={refresh}
+            disabled={refreshing}
             className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1"
           >
-            {refreshing[site] ? '⏳ Refreshing…' : '↻ Refresh'}
+            {refreshing ? '⏳ Refreshing…' : '↻ Refresh'}
           </button>
+        </div>
+      </section>
+
+      {/* Filter bar */}
+      <section className="bg-gray-900 border border-gray-800 rounded-xl p-3 mb-4 grid grid-cols-1 md:grid-cols-12 gap-2">
+        <div className="md:col-span-4 flex items-center gap-2">
+          <span className="text-[10px] uppercase text-gray-500 shrink-0">Search</span>
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="page path contains…"
+            className="flex-1 bg-gray-950 border border-gray-800 text-gray-200 text-xs rounded-md px-2 py-1.5 focus:outline-none focus:border-violet-500"
+          />
+        </div>
+        <div className="md:col-span-3 flex items-center gap-2">
+          <span className="text-[10px] uppercase text-gray-500 shrink-0">URL starts</span>
+          <input
+            type="text"
+            value={urlInclude}
+            onChange={e => setUrlInclude(e.target.value)}
+            placeholder="/categories"
+            className="flex-1 bg-gray-950 border border-gray-800 text-gray-200 text-xs rounded-md px-2 py-1.5 focus:outline-none focus:border-violet-500"
+          />
+        </div>
+        <div className="md:col-span-3 flex items-center gap-2">
+          <span className="text-[10px] uppercase text-gray-500 shrink-0">Category</span>
+          <select
+            value={category}
+            onChange={e => setCategory(e.target.value)}
+            className="flex-1 bg-gray-950 border border-gray-800 text-gray-200 text-xs rounded-md px-2 py-1.5 focus:outline-none focus:border-violet-500"
+          >
+            <option value="all">All categories</option>
+            <option value="__uncategorized__">— Uncategorized</option>
+            {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="md:col-span-2 flex items-center justify-end gap-2">
+          <div className="inline-flex gap-1 bg-gray-950 border border-gray-800 rounded-lg p-0.5 text-[11px]">
+            {(['all', 'us', 'id'] as Market[]).map(m => (
+              <button
+                key={m}
+                onClick={() => setMarket(m)}
+                className={`px-2 py-1 rounded-md ${market === m ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40' : 'text-gray-400 hover:text-gray-200'}`}
+              >
+                {m === 'all' ? 'All' : m === 'us' ? '🇺🇸 US' : '🇮🇩 ID'}
+              </button>
+            ))}
+          </div>
+          {filtersActive && (
+            <button
+              onClick={clearFilters}
+              className="text-[11px] text-gray-500 hover:text-gray-300"
+              title="Clear all filters"
+            >
+              clear
+            </button>
+          )}
         </div>
       </section>
 
@@ -241,17 +399,18 @@ export default function KeywordBreakdownPage() {
 
       {/* Table */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        {loading[site] ? (
-          <div className="p-10 text-center text-gray-500 text-sm">Loading cached snapshot…</div>
+        {loading ? (
+          <div className="p-10 text-center text-gray-500 text-sm">Loading…</div>
         ) : rows.length === 0 ? (
           <div className="p-10 text-center text-gray-500 text-sm">
-            {payload ? 'No rows for this week.' : 'No snapshot yet — click Refresh.'}
+            {payload ? (filtersActive ? 'No rows match the filters.' : 'No rows for this week.') : 'No snapshot yet — click Refresh.'}
           </div>
         ) : (
           <table className="w-full text-sm">
             <thead className="bg-gray-950/80 text-[10px] uppercase text-gray-500">
               <tr>
-                <th className="text-left  px-4 py-2 w-[44%]">Landing Page</th>
+                <th className="text-left  px-4 py-2 w-[36%]">Landing Page</th>
+                <th className="text-left  px-2 py-2 w-[10%]">Category</th>
                 <th className="text-right px-4 py-2">Sessions</th>
                 <th className="text-right px-4 py-2">Tx</th>
                 <th className="text-right px-4 py-2">Revenue</th>
@@ -265,6 +424,7 @@ export default function KeywordBreakdownPage() {
                   <RowGroup
                     key={r.page}
                     row={r}
+                    market={market}
                     isOpen={isOpen}
                     onToggle={() => toggleExpand(r.page)}
                   />
@@ -276,13 +436,19 @@ export default function KeywordBreakdownPage() {
       </section>
 
       <p className="text-[11px] text-gray-600 italic mt-3">
-        Sessions/Tx/Revenue from GA4 (Organic Search only, sessionDefaultChannelGroup filter). Top queries from GSC, ranked by clicks within the same window. Each landing page&apos;s revenue is its total — queries shown are the top organic drivers but the table does <em>not</em> pro-rate revenue across queries (1 page can rank for many keywords).
+        Sessions/Tx/Revenue from GA4 (Organic Search only). When market = US or ID, slice shows traffic where GA4&apos;s <code>country</code> dim matches that market. Top queries come from GSC filtered to the same country (idn = ID, else = US). Each landing page&apos;s revenue is total for that market — queries are the top organic drivers but the table does <em>not</em> pro-rate revenue across queries.
       </p>
     </main>
   )
 }
 
-function RowGroup({ row, isOpen, onToggle }: { row: BreakdownRow; isOpen: boolean; onToggle: () => void }) {
+function RowGroup({ row, market, isOpen, onToggle }: { row: BreakdownRow; market: Market; isOpen: boolean; onToggle: () => void }) {
+  // Pick slice based on market filter
+  const slice = market === 'us' ? row.us : market === 'id' ? row.id : null
+  const sessions     = slice ? slice.sessions     : row.sessions
+  const transactions = slice ? slice.transactions : row.transactions
+  const revenue      = slice ? slice.revenue      : row.revenue
+  const queries      = slice ? slice.top_queries  : row.top_queries
   return (
     <>
       <tr className="border-t border-gray-800 hover:bg-gray-900/60 transition cursor-pointer" onClick={onToggle}>
@@ -290,18 +456,23 @@ function RowGroup({ row, isOpen, onToggle }: { row: BreakdownRow; isOpen: boolea
           <span className="text-gray-500 mr-1.5">{isOpen ? '▾' : '▸'}</span>
           {row.page}
         </td>
-        <td className="px-4 py-2.5 text-right tabular-nums text-gray-300">{fmtNum(row.sessions)}</td>
-        <td className="px-4 py-2.5 text-right tabular-nums text-gray-400">{row.transactions || '—'}</td>
-        <td className="px-4 py-2.5 text-right tabular-nums text-emerald-300 font-medium">{fmtMoney(row.revenue)}</td>
+        <td className="px-2 py-2.5 text-[11px] text-gray-400 truncate max-w-0">
+          {row.category ?? <span className="text-gray-600 italic">—</span>}
+        </td>
+        <td className="px-4 py-2.5 text-right tabular-nums text-gray-300">{fmtNum(sessions)}</td>
+        <td className="px-4 py-2.5 text-right tabular-nums text-gray-400">{transactions || '—'}</td>
+        <td className="px-4 py-2.5 text-right tabular-nums text-emerald-300 font-medium">{fmtMoney(revenue)}</td>
         <td className="px-4 py-2.5 text-right tabular-nums text-gray-500 text-xs">
-          {row.top_queries.length} {row.top_queries.length === 1 ? 'query' : 'queries'}
+          {queries.length} {queries.length === 1 ? 'query' : 'queries'}
         </td>
       </tr>
       {isOpen && (
         <tr className="border-t border-gray-800 bg-gray-950/40">
-          <td colSpan={5} className="px-4 py-3">
-            {row.top_queries.length === 0 ? (
-              <p className="text-xs text-gray-500 italic">No GSC queries matched this page in this window.</p>
+          <td colSpan={6} className="px-4 py-3">
+            {queries.length === 0 ? (
+              <p className="text-xs text-gray-500 italic">
+                No GSC queries matched this page in {market === 'all' ? 'this window' : `the ${market.toUpperCase()} market`}.
+              </p>
             ) : (
               <table className="w-full text-xs">
                 <thead className="text-[10px] uppercase text-gray-600">
@@ -313,7 +484,7 @@ function RowGroup({ row, isOpen, onToggle }: { row: BreakdownRow; isOpen: boolea
                   </tr>
                 </thead>
                 <tbody>
-                  {row.top_queries.map((q, i) => (
+                  {queries.map((q, i) => (
                     <tr key={i} className="border-t border-gray-800/60">
                       <td className="px-2 py-1 text-gray-200 truncate max-w-0">{q.query}</td>
                       <td className="px-2 py-1 text-right text-gray-400 tabular-nums">{q.rank == null ? '—' : `#${q.rank}`}</td>

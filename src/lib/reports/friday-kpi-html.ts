@@ -37,6 +37,25 @@ export interface GscHistorical {
   }
 }
 
+/**
+ * Sprint FRIDAY.KPI.COMPETITIVE-TREND (341) — 12-week historical of Top 3
+ * count, Top 10 count, and Avg Position per brand × market, filtered to
+ * is_cluster_winner=true (same curated set as `kw_count` in the existing
+ * tables — keeps the report internally consistent).
+ *
+ * Each metric gets its own line chart in the PNG so the slope of Top 3,
+ * Top 10, and Avg Pos can be read at a glance. Avg Position uses inverted
+ * Y-axis semantically (lower number = better rank) but Chart.js renders
+ * raw values; chart title clarifies "lower is better".
+ */
+export interface CompetitiveTrend {
+  [siteSlug: string]: {
+    weekLabels: string[]                   // newest-rightmost
+    us: { top3: number[]; top10: number[]; avg_position: (number | null)[] }
+    id: { top3: number[]; top10: number[]; avg_position: (number | null)[] }
+  }
+}
+
 interface BuildOptions {
   payload:     FridayKpiPayload
   actionPlans: Array<{ brand: string; plan: ActionPlanItem[] }>
@@ -54,6 +73,11 @@ interface BuildOptions {
    * report skips straight to the tables).
    */
   gscHistorical?: GscHistorical
+  /**
+   * Sprint FRIDAY.KPI.COMPETITIVE-TREND (341) — 12-week trend for Top 3 /
+   * Top 10 / Avg Position. When omitted/empty, renderer hides the section.
+   */
+  competitiveTrend?: CompetitiveTrend
 }
 
 // Color tokens (kept in sync with app brand palette where it matters)
@@ -230,6 +254,56 @@ function heroHistoricalSection(history: GscHistorical): string {
   `
 }
 
+/**
+ * Sprint FRIDAY.KPI.COMPETITIVE-TREND (341) — 3 side-by-side line charts
+ * showing the 12-week trend of cluster-winner ranking metrics:
+ *   • Top 3 count   (higher = more keywords winning Top 3)
+ *   • Top 10 count  (higher = more keywords on page 1)
+ *   • Avg Position  (LOWER is better — title clarifies)
+ *
+ * 4 lines per chart: G2G-US (solid violet), G2G-ID (dashed violet),
+ * OG-US (solid emerald), OG-ID (dashed emerald). Matches the hero
+ * historical line styling so reader visual gymnastics are minimal.
+ */
+function competitiveTrendSection(trend: CompetitiveTrend): string {
+  const brandSlugs = Object.keys(trend).filter(slug => (trend[slug]?.weekLabels?.length ?? 0) > 0)
+  if (brandSlugs.length === 0) return ''
+
+  const labels = brandSlugs
+    .map(s => trend[s].weekLabels)
+    .reduce((a, b) => (b.length > a.length ? b : a), [])
+
+  const series = brandSlugs.flatMap(slug => {
+    const t     = trend[slug]
+    const color = brandColor(slug)
+    const upper = slug.toUpperCase()
+    return [
+      { slug, market: 'us', label: `${upper} · US`, color, dash: [] as number[],     top3: t.us.top3, top10: t.us.top10, avg_position: t.us.avg_position },
+      { slug, market: 'id', label: `${upper} · ID`, color, dash: [6, 4] as number[], top3: t.id.top3, top10: t.id.top10, avg_position: t.id.avg_position },
+    ]
+  })
+
+  const weekCount = labels.length
+
+  return `
+    <section class="card">
+      <h2>🥇 Most Competitive Keywords — Trend (last ${weekCount} weeks)</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;">
+        <div><canvas id="chart-top3-trend"   width="360" height="220"></canvas></div>
+        <div><canvas id="chart-top10-trend"  width="360" height="220"></canvas></div>
+        <div><canvas id="chart-avgpos-trend" width="360" height="220"></canvas></div>
+      </div>
+      <p class="caption">Cluster winners only (top 3 keywords per cluster by competitive_score) — consistent with the Most Competitive table above. solid = US, dashed = ID. Avg Position chart: <strong>lower line = better rank</strong>.</p>
+      <script>
+        window.__competitiveTrendData = {
+          labels: ${JSON.stringify(labels)},
+          series: ${JSON.stringify(series)},
+        };
+      </script>
+    </section>
+  `
+}
+
 function aiVisibilitySection(payload: FridayKpiPayload): string {
   if (!payload.ai_visibility?.length) return ''
   const rows = payload.ai_visibility.map(a => {
@@ -340,7 +414,7 @@ function actionPlanSection(plans: BuildOptions['actionPlans']): string {
 }
 
 export function renderFridayKpiHtml(opts: BuildOptions): string {
-  const { payload, actionPlans, aiHistory, gscHistorical } = opts
+  const { payload, actionPlans, aiHistory, gscHistorical, competitiveTrend } = opts
   const canonBadge = payload.canon_source === 'gsc'
     ? `<span class="canon-pill canon-gsc">GSC</span>`
     : `<span class="canon-pill canon-dfs">DFS</span>`
@@ -358,6 +432,12 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
   const heroHistoryBrands = Object.keys(gscHistorical ?? {})
     .filter(slug => (gscHistorical?.[slug]?.weekLabels?.length ?? 0) > 0)
   const showHeroHistorical = heroHistoryBrands.length > 0
+
+  // Sprint FRIDAY.KPI.COMPETITIVE-TREND (341) — does the competitive
+  // trend chart have data?
+  const competitiveTrendBrands = Object.keys(competitiveTrend ?? {})
+    .filter(slug => (competitiveTrend?.[slug]?.weekLabels?.length ?? 0) > 0)
+  const showCompetitiveTrend = competitiveTrendBrands.length > 0
 
   return `<!doctype html>
 <html lang="en">
@@ -476,6 +556,8 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
     ${trafficSection(payload.brands)}
   </div>
 
+  ${showCompetitiveTrend ? competitiveTrendSection(competitiveTrend!) : ''}
+
   ${aiVisibilitySection(payload)}
 
   ${showAiHistoryChart ? aiHistoryChartSection(aiHistory!, aiHistoryBrands) : ''}
@@ -501,6 +583,9 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
       const impsEl      = document.getElementById('chart-imps-history');
       const aiCitEl     = document.getElementById('chart-ai-citations');
       const aiPagesEl   = document.getElementById('chart-ai-cited-pages');
+      const top3TrendEl   = document.getElementById('chart-top3-trend');
+      const top10TrendEl  = document.getElementById('chart-top10-trend');
+      const avgPosTrendEl = document.getElementById('chart-avgpos-trend');
 
       // Compact number formatter for axis ticks and legend.
       function fmtCompact(n) {
@@ -560,6 +645,54 @@ export function renderFridayKpiHtml(opts: BuildOptions): string {
         new Chart(impsEl.getContext('2d'),   buildLineConfig('impressions', 'Impressions / week'));
       }
       renderHero();
+
+      // ── Competitive trend (Top 3 / Top 10 / Avg Position) ───────────────
+      function renderCompetitiveTrend() {
+        const d = window.__competitiveTrendData;
+        if (!d || !top3TrendEl || !top10TrendEl || !avgPosTrendEl) return;
+        const buildLineConfig = (yKey, title, opts) => ({
+          type: 'line',
+          data: {
+            labels: d.labels,
+            datasets: d.series.map(s => ({
+              label:           s.label,
+              data:            s[yKey],
+              borderColor:     s.color,
+              backgroundColor: s.color,
+              borderDash:      Array.isArray(s.dash) && s.dash.length > 0 ? s.dash : undefined,
+              pointRadius:     2,
+              pointHoverRadius:4,
+              borderWidth:     2,
+              tension:         0.25,
+              spanGaps:        true,
+            })),
+          },
+          options: {
+            responsive: false,
+            animation:  false,
+            plugins: {
+              legend: { display: true, position: 'bottom', labels: { color: '${COLORS.text}', font: { size: 9 }, boxWidth: 10, padding: 6 } },
+              title:  { display: true, text: title, color: '${COLORS.text}', font: { size: 11, weight: '600' } },
+            },
+            scales: {
+              x: {
+                ticks: { color: '${COLORS.muted}', font: { size: 8 }, maxTicksLimit: 6, autoSkip: true },
+                grid:  { color: '${COLORS.borderSoft}' },
+              },
+              y: {
+                ticks: { color: '${COLORS.muted}', font: { size: 9 }, callback: v => fmtCompact(v) },
+                grid:  { color: '${COLORS.borderSoft}' },
+                beginAtZero: opts && opts.beginAtZero === false ? false : true,
+                reverse:     opts && opts.reverse === true,
+              },
+            },
+          },
+        });
+        new Chart(top3TrendEl.getContext('2d'),   buildLineConfig('top3',         'Top 3 count'));
+        new Chart(top10TrendEl.getContext('2d'),  buildLineConfig('top10',        'Top 10 count'));
+        new Chart(avgPosTrendEl.getContext('2d'), buildLineConfig('avg_position', 'Avg Position (lower = better)', { beginAtZero: false, reverse: true }));
+      }
+      renderCompetitiveTrend();
 
       // ── AI Visibility historical line charts (unchanged) ──
       function renderAiHistory() {

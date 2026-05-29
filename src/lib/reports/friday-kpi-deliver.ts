@@ -16,7 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { OAuth2Client } from 'google-auth-library'
 import { buildFridayKpi, buildPngOverviewComment, type FridayKpiPayload } from './friday-kpi'
 import { buildActionPlan } from './action-plan-synthesizer'
-import { renderFridayKpiHtml, type AiVisibilityHistory, type GscHistorical } from './friday-kpi-html'
+import { renderFridayKpiHtml, type AiVisibilityHistory, type GscHistorical, type CompetitiveTrend } from './friday-kpi-html'
 import { htmlToPng } from './puppeteer-launcher'
 import { resolveSlackWebhook } from '@/lib/slack/routing'
 import { resolveSlackChannelId, postPngToSlack } from '@/lib/slack/files'
@@ -202,6 +202,143 @@ export async function loadGscHistorical(
     } catch (e) {
       console.warn(`[friday-kpi historical] GSC fetch failed for ${slug}:`, e)
     }
+  }))
+
+  return out
+}
+
+/**
+ * Sprint FRIDAY.KPI.COMPETITIVE-TREND (341) — 12-week historical aggregator
+ * for Top 3 / Top 10 / Avg Position per brand × market, filtered to
+ * is_cluster_winner=true (same curated subset as the existing kw_count in
+ * the Most Competitive table — keeps the report consistent).
+ *
+ * Strategy:
+ *   1. Pull cluster_winners per (brand × market) once → tier_keyword_ids
+ *   2. Pull tier_serp_snapshots within the 12-week window, filter by
+ *      tier_keyword_id ∈ winners
+ *   3. For each Thu→Wed week, group snapshots by the dominant snapshot
+ *      date within the window (most snapshot crons run weekly), compute
+ *      top3 count, top10 count, avg_position
+ *
+ * Pure SQL + JS — no external API. Should run in <1s per brand even with
+ * 1000s of snapshots.
+ */
+export async function loadCompetitiveTrend(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db:        SupabaseClient<any>,
+  ownerId:   string,
+  siteSlugs: string[],
+  weeks:     number = 12,
+): Promise<CompetitiveTrend> {
+  const out: CompetitiveTrend = {}
+  for (const slug of siteSlugs) {
+    out[slug] = {
+      weekLabels: [],
+      us: { top3: [], top10: [], avg_position: [] },
+      id: { top3: [], top10: [], avg_position: [] },
+    }
+  }
+
+  // Build the same 12 Thu→Wed windows as the hero historical loader.
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const day = today.getDay()
+  const daysSinceCompletedWed = day === 3 ? 7 : (day + 4) % 7 || 7
+  const lastWed = new Date(today)
+  lastWed.setDate(today.getDate() - daysSinceCompletedWed)
+  const windows: Array<{ start: string; end: string; label: string }> = []
+  for (let i = weeks - 1; i >= 0; i--) {
+    const end = new Date(lastWed)
+    end.setDate(lastWed.getDate() - i * 7)
+    const start = new Date(end)
+    start.setDate(end.getDate() - 6)
+    const iso  = (d: Date) => d.toISOString().slice(0, 10)
+    const label = `${start.toLocaleString('en-US', { month: 'short' })} ${start.getDate()}`
+    windows.push({ start: iso(start), end: iso(end), label })
+  }
+  const earliestStart = windows[0]?.start
+  const latestEnd     = windows[windows.length - 1]?.end
+  if (!earliestStart || !latestEnd) return out
+  for (const slug of siteSlugs) out[slug].weekLabels = windows.map(w => w.label)
+
+  await Promise.all(siteSlugs.map(async slug => {
+    // 1. tier_keyword winners for this brand × per-market
+    const { data: winners } = await db
+      .from('tier_keywords')
+      .select('id, cluster_market, product_tier_id')
+      .eq('owner_user_id', ownerId)
+      .eq('is_cluster_winner', true)
+    type WinnerRow = { id: string; cluster_market: string; product_tier_id: string }
+    const winnerRows = ((winners ?? []) as WinnerRow[])
+
+    // Also need site_slug filter — tier_keywords doesn't have site_slug,
+    // so we go through product_tiers.
+    const { data: tiers } = await db
+      .from('product_tiers')
+      .select('id, market')
+      .eq('owner_user_id', ownerId)
+      .eq('site_slug', slug)
+    type TierRow = { id: string; market: string }
+    const tierRows = ((tiers ?? []) as TierRow[])
+    const tierIds  = new Set(tierRows.map(t => t.id))
+
+    // Only keep winners whose product_tier belongs to this brand
+    const usWinnerIds = new Set<string>()
+    const idWinnerIds = new Set<string>()
+    for (const w of winnerRows) {
+      if (!tierIds.has(w.product_tier_id)) continue
+      if (w.cluster_market === 'us') usWinnerIds.add(w.id)
+      else if (w.cluster_market === 'id') idWinnerIds.add(w.id)
+    }
+    if (usWinnerIds.size === 0 && idWinnerIds.size === 0) return
+
+    // 2. tier_serp_snapshots within the 12-week window for this brand
+    const productIds = tierRows.map(t => t.id)
+    if (productIds.length === 0) return
+    const { data: snaps } = await db
+      .from('tier_serp_snapshots')
+      .select('tier_keyword_id, market, snapshot_date, our_position')
+      .eq('owner_user_id', ownerId)
+      .in('product_tier_id', productIds)
+      .gte('snapshot_date', earliestStart)
+      .lte('snapshot_date', latestEnd)
+    type SnapRow = { tier_keyword_id: string | null; market: string; snapshot_date: string; our_position: number | null }
+    const snapRows = ((snaps ?? []) as SnapRow[])
+
+    // 3. Bucket by Thu→Wed week × market. For each (week, market), pick
+    //    the LATEST snapshot per tier_keyword_id within that week (in case
+    //    cron ran multiple times in a week, we don't double-count).
+    type Latest = { date: string; pos: number | null }
+    const usBuckets: Array<Map<string, Latest>> = windows.map(() => new Map())
+    const idBuckets: Array<Map<string, Latest>> = windows.map(() => new Map())
+
+    for (const r of snapRows) {
+      if (!r.tier_keyword_id) continue
+      const isUs = r.market === 'us'
+      const winnerSet = isUs ? usWinnerIds : idWinnerIds
+      if (!winnerSet.has(String(r.tier_keyword_id))) continue
+      const wIdx = windows.findIndex(w => r.snapshot_date >= w.start && r.snapshot_date <= w.end)
+      if (wIdx < 0) continue
+      const bucket = (isUs ? usBuckets : idBuckets)[wIdx]
+      const prev   = bucket.get(String(r.tier_keyword_id))
+      if (!prev || r.snapshot_date > prev.date) {
+        bucket.set(String(r.tier_keyword_id), { date: r.snapshot_date, pos: r.our_position })
+      }
+    }
+
+    const collapse = (buckets: Array<Map<string, Latest>>) => ({
+      top3:         buckets.map(b => Array.from(b.values()).filter(v => v.pos != null && v.pos <= 3).length),
+      top10:        buckets.map(b => Array.from(b.values()).filter(v => v.pos != null && v.pos <= 10).length),
+      avg_position: buckets.map(b => {
+        const vals = Array.from(b.values()).filter(v => v.pos != null).map(v => v.pos as number)
+        if (vals.length === 0) return null
+        return +(vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(2)
+      }),
+    })
+
+    out[slug].us = collapse(usBuckets)
+    out[slug].id = collapse(idBuckets)
   }))
 
   return out
@@ -514,18 +651,19 @@ export async function deliverFridayKpi(opts: DeliveryOptions): Promise<DeliveryR
   let png:     Buffer | null = null
   const week:  string        = currentWeekIso()
   try {
-    // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) — load 12 weeks of GSC
-    // clicks/impressions alongside the existing AI Visibility history.
-    // Both pulls happen in parallel; either failing falls back gracefully.
-    const [actionPlans, aiHistory, gscHistorical] = await Promise.all([
+    // Sprint FRIDAY.KPI.HERO-HISTORICAL (336) + COMPETITIVE-TREND (341) —
+    // load all historical data sources in parallel. Each failing falls
+    // back gracefully (chart section skipped if data empty).
+    const [actionPlans, aiHistory, gscHistorical, competitiveTrend] = await Promise.all([
       Promise.all(siteSlugs.map(async slug => ({
         brand: slug,
         plan:  await buildActionPlan({ db, ownerId, siteSlug: slug, weekIso: week }),
       }))),
       loadAiVisibilityHistory(db, ownerId, siteSlugs, 84),
       loadGscHistorical(db, ownerId, siteSlugs, 12),
+      loadCompetitiveTrend(db, ownerId, siteSlugs, 12),
     ])
-    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory, gscHistorical })
+    const html = renderFridayKpiHtml({ payload, actionPlans, aiHistory, gscHistorical, competitiveTrend })
     png = await htmlToPng(html)
     pngDiag.png_size_bytes = png.length
 

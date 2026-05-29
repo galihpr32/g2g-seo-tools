@@ -17,9 +17,10 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { OAuth2Client } from 'google-auth-library'
+import { google } from 'googleapis'
 import { getRefreshedClientFull } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
-import { getGA4RevenueByLandingPage } from '@/lib/ga4/client'
+import { parseGA4Rows } from '@/lib/ga4/client'
 
 export interface KeywordBreakdownQuery {
   query:       string
@@ -28,12 +29,27 @@ export interface KeywordBreakdownQuery {
   impressions: number
 }
 
+export interface KeywordBreakdownMarketSlice {
+  sessions:     number
+  transactions: number
+  revenue:      number
+  top_queries:  KeywordBreakdownQuery[]
+}
+
 export interface KeywordBreakdownRow {
-  page:         string         // normalized path, e.g. '/categories/blade-and-soul-neo'
-  sessions:     number         // GA4 organic sessions
-  transactions: number         // GA4 organic purchases
-  revenue:      number         // GA4 purchaseRevenue (currency = GA4 property default)
-  top_queries:  KeywordBreakdownQuery[]   // up to 5, sorted by clicks desc
+  page:         string                       // normalized path, e.g. '/categories/blade-and-soul-neo'
+  category:     string | null                // joined from product_tiers.category, null = unmatched
+  // Aggregate (US + ID combined)
+  sessions:     number
+  transactions: number
+  revenue:      number
+  top_queries:  KeywordBreakdownQuery[]      // up to 5, sorted by clicks desc
+  // Sprint FRIDAY.KPI.KW.FILTERS (340) — per-market slices for the
+  // server-side US/ID filter. UI swaps which slice it renders based on the
+  // market toggle. Each slice is independently top-N'd to keep payload
+  // small but useful per-market.
+  us: KeywordBreakdownMarketSlice
+  id: KeywordBreakdownMarketSlice
 }
 
 export interface KeywordBreakdownPayload {
@@ -150,6 +166,24 @@ export async function buildKeywordBreakdown(opts: BuildOptions): Promise<Keyword
   const ga4PropertyId = (cfg?.ga4_property_id ?? process.env.GA4_PROPERTY_ID ?? null) as string | null
   const gscProperty   = (cfg?.gsc_property as string | null) ?? null
 
+  // ── Load category map from product_tiers (page path → category) ────────
+  // Sprint FRIDAY.KPI.KW.FILTERS (340) — categories come from the curated
+  // product_tiers table. We resolve them by exact-match on normalized URL.
+  // Pages that don't match any tier (blog posts, hub pages, locale roots)
+  // get category=null — UI shows "Uncategorized" filter option.
+  const { data: tierRows } = await db
+    .from('product_tiers')
+    .select('url, category')
+    .eq('owner_user_id', ownerId)
+    .eq('site_slug', siteSlug)
+    .not('url', 'is', null)
+  const categoryByPath = new Map<string, string>()
+  for (const r of (tierRows ?? []) as Array<{ url: string | null; category: string | null }>) {
+    if (!r.url || !r.category) continue
+    const path = normalizePath(r.url)
+    if (path && !categoryByPath.has(path)) categoryByPath.set(path, r.category)
+  }
+
   // ── OAuth (shared `gsc_connections` for both GSC + GA4) ────────────────
   const { data: conn } = await db
     .from('gsc_connections')
@@ -185,7 +219,7 @@ export async function buildKeywordBreakdown(opts: BuildOptions): Promise<Keyword
     diagnostics.gsc_error = diagnostics.ga4_error
   }
 
-  // ── Parallel fetch: GA4 revenue per landingPage + GSC page×query ───────
+  // ── Parallel fetch: GA4 revenue per [landingPage, country] + GSC [page, query, country] ───
   type Ga4Row = Record<string, string>
   // GSC rows have a known partial shape returned by webmasters API
   interface GscRowRaw { keys?: string[]; clicks?: number; impressions?: number; position?: number }
@@ -201,7 +235,32 @@ export async function buildKeywordBreakdown(opts: BuildOptions): Promise<Keyword
         return []
       }
       try {
-        const rows = await getGA4RevenueByLandingPage(auth, ga4PropertyId, weekStart, weekEnd, 500)
+        // Sprint FRIDAY.KPI.KW.FILTERS (340) — fetch with [landingPage, country]
+        // so we can split revenue between US (all non-ID) and ID buckets.
+        // GA4 country dim returns full names ("Indonesia", "United States").
+        const analyticsdata = google.analyticsdata({ version: 'v1beta', auth })
+        const res = await analyticsdata.properties.runReport({
+          property: `properties/${ga4PropertyId}`,
+          requestBody: {
+            dateRanges: [{ startDate: weekStart, endDate: weekEnd }],
+            dimensions: [{ name: 'landingPage' }, { name: 'country' }],
+            metrics: [
+              { name: 'sessions' },
+              { name: 'purchaseRevenue' },
+              { name: 'transactions' },
+              { name: 'engagedSessions' },
+            ],
+            dimensionFilter: {
+              filter: {
+                fieldName: 'sessionDefaultChannelGroup',
+                stringFilter: { matchType: 'EXACT', value: 'Organic Search' },
+              },
+            },
+            orderBys: [{ metric: { metricName: 'purchaseRevenue' }, desc: true }],
+            limit: '2000',
+          },
+        })
+        const rows = parseGA4Rows(res.data)
         diagnostics.ga4_rows_fetched = rows.length
         return rows
       } catch (e) {
@@ -219,9 +278,13 @@ export async function buildKeywordBreakdown(opts: BuildOptions): Promise<Keyword
         return []
       }
       try {
-        // dim=['page','query']: per landing page × query.
-        // 5000 rows comfortably covers the top of the long tail.
-        const rows = await getSearchAnalytics(auth, gscProperty, weekStart, weekEnd, ['page', 'query'], 5000)
+        // Sprint FRIDAY.KPI.KW.FILTERS (340) — add country to dim so we can
+        // split queries per market. Bump row cap to 10k to absorb the ~3x
+        // expansion from adding a dim. GSC auto-truncates if needed.
+        const rows = await getSearchAnalytics(
+          auth, gscProperty, weekStart, weekEnd,
+          ['page', 'query', 'country'], 10000,
+        )
         diagnostics.gsc_rows_fetched = rows.length
         return rows as GscRowRaw[]
       } catch (e) {
@@ -231,62 +294,100 @@ export async function buildKeywordBreakdown(opts: BuildOptions): Promise<Keyword
     })(),
   ])
 
-  // ── Aggregate GA4 by normalized page path ──────────────────────────────
+  // ── Aggregate GA4 per (page, market) ───────────────────────────────────
+  // Market mapping: GA4 country == "Indonesia" → id; everything else → us.
   type Ga4Bucket = { sessions: number; revenue: number; transactions: number }
-  const ga4ByPath = new Map<string, Ga4Bucket>()
+  const ga4UsByPath = new Map<string, Ga4Bucket>()
+  const ga4IdByPath = new Map<string, Ga4Bucket>()
   for (const r of ga4Rows) {
     const path = normalizePath(r.landingPage ?? '')
     if (!path) continue
-    const b = ga4ByPath.get(path) ?? { sessions: 0, revenue: 0, transactions: 0 }
+    const country = String(r.country ?? '').toLowerCase()
+    const bucket  = country === 'indonesia' ? ga4IdByPath : ga4UsByPath
+    const b = bucket.get(path) ?? { sessions: 0, revenue: 0, transactions: 0 }
     b.sessions     += Number(r.sessions        ?? 0)
     b.revenue      += Number(r.purchaseRevenue ?? 0)
     b.transactions += Number(r.transactions    ?? 0)
-    ga4ByPath.set(path, b)
+    bucket.set(path, b)
   }
 
-  // ── Group GSC by normalized page, keep top 5 queries by clicks ─────────
+  // ── Group GSC per (page, market), keep top 5 queries each ──────────────
+  // Market mapping: GSC country == "idn" → id; everything else → us.
   type GscBucket = { queries: KeywordBreakdownQuery[] }
-  const gscByPath = new Map<string, GscBucket>()
+  const gscUsByPath = new Map<string, GscBucket>()
+  const gscIdByPath = new Map<string, GscBucket>()
   for (const r of gscRows) {
-    const page  = String(r.keys?.[0] ?? '')
-    const query = String(r.keys?.[1] ?? '')
+    const page    = String(r.keys?.[0] ?? '')
+    const query   = String(r.keys?.[1] ?? '')
+    const country = String(r.keys?.[2] ?? '').toLowerCase()
     if (!page || !query) continue
     const path = normalizePath(page)
     if (!path) continue
-    const b = gscByPath.get(path) ?? { queries: [] }
+    const bucket = country === 'idn' ? gscIdByPath : gscUsByPath
+    const b = bucket.get(path) ?? { queries: [] }
     b.queries.push({
       query,
       rank:        r.position == null ? null : +Number(r.position).toFixed(1),
       clicks:      Number(r.clicks      ?? 0),
       impressions: Number(r.impressions ?? 0),
     })
-    gscByPath.set(path, b)
+    bucket.set(path, b)
   }
 
   // ── Merge into final row list ──────────────────────────────────────────
-  const allPaths = new Set<string>([...ga4ByPath.keys(), ...gscByPath.keys()])
+  const allPaths = new Set<string>([
+    ...ga4UsByPath.keys(), ...ga4IdByPath.keys(),
+    ...gscUsByPath.keys(), ...gscIdByPath.keys(),
+  ])
   const merged: KeywordBreakdownRow[] = []
+  const topQueriesOf = (bucket: GscBucket | undefined): KeywordBreakdownQuery[] => {
+    if (!bucket) return []
+    return bucket.queries
+      .slice()
+      .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions)
+      .slice(0, 5)
+  }
+  const sliceOf = (ga: Ga4Bucket | undefined, gs: GscBucket | undefined): KeywordBreakdownMarketSlice => ({
+    sessions:     ga?.sessions     ?? 0,
+    transactions: ga?.transactions ?? 0,
+    revenue:      +((ga?.revenue ?? 0)).toFixed(2),
+    top_queries:  topQueriesOf(gs),
+  })
+
   for (const path of allPaths) {
-    const ga4 = ga4ByPath.get(path)
-    const gsc = gscByPath.get(path)
-    const inGa4 = !!ga4
-    const inGsc = !!gsc
+    const ga4Us = ga4UsByPath.get(path)
+    const ga4Id = ga4IdByPath.get(path)
+    const gscUs = gscUsByPath.get(path)
+    const gscId = gscIdByPath.get(path)
+    const inGa4 = !!(ga4Us || ga4Id)
+    const inGsc = !!(gscUs || gscId)
     if (inGa4 && inGsc) diagnostics.matched_pages++
     else if (inGa4)     diagnostics.ga4_only_pages++
     else                diagnostics.gsc_only_pages++
 
-    // Top 5 queries by clicks desc (with tiebreak by impressions)
-    const topQueries = (gsc?.queries ?? [])
-      .slice()
-      .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions)
-      .slice(0, 5)
+    const us = sliceOf(ga4Us, gscUs)
+    const id = sliceOf(ga4Id, gscId)
+
+    // Aggregate (used for default "All markets" view) — combine top
+    // queries across markets by re-sorting the union by clicks desc.
+    const combinedQueries: KeywordBreakdownQuery[] = []
+    const seen = new Set<string>()
+    for (const q of [...us.top_queries, ...id.top_queries]) {
+      if (seen.has(q.query)) continue
+      seen.add(q.query)
+      combinedQueries.push(q)
+    }
+    combinedQueries.sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions)
 
     merged.push({
       page:         path,
-      sessions:     ga4?.sessions     ?? 0,
-      transactions: ga4?.transactions ?? 0,
-      revenue:      +(ga4?.revenue ?? 0).toFixed(2),
-      top_queries:  topQueries,
+      category:     categoryByPath.get(path) ?? null,
+      sessions:     us.sessions     + id.sessions,
+      transactions: us.transactions + id.transactions,
+      revenue:      +((us.revenue + id.revenue)).toFixed(2),
+      top_queries:  combinedQueries.slice(0, 5),
+      us,
+      id,
     })
   }
 

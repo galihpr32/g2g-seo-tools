@@ -84,6 +84,11 @@ export default function FridayKpiPage() {
   const [error,   setError]   = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [sendResult, setSendResult] = useState<SendResult | null>(null)
+  // Sprint FRIDAY.KPI.DASHBOARD-MERGE (342) — cache-bust token for the
+  // embedded PNG preview. Bump to force the <img> to re-fetch from the
+  // server (puppeteer re-renders with the latest data).
+  const [pngCacheBust, setPngCacheBust] = useState<number>(() => Date.now())
+  const [pngLoading,   setPngLoading]   = useState<boolean>(true)
   // Sprint FRIDAY.KPI.GRAPH.1+2 — canon toggle + action plan state
   const [canon, setCanon] = useState<'dfs' | 'gsc'>('gsc')
   const [actionBrand, setActionBrand] = useState<string>('g2g')
@@ -204,7 +209,7 @@ export default function FridayKpiPage() {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h2 className="text-white font-semibold mb-1">Manual trigger</h2>
-            <p className="text-xs text-purple-200/80">Posts to <code>notification_type=friday_kpi</code> Slack route. Live preview below.</p>
+            <p className="text-xs text-purple-200/80">Posts to <code>notification_type=friday_kpi</code> Slack route. PNG preview below = exactly what gets attached.</p>
           </div>
           <div className="flex items-center gap-2">
             {/* Sprint FRIDAY.KPI.KW-BREAKDOWN.2 (338) — link to the new
@@ -216,14 +221,6 @@ export default function FridayKpiPage() {
             >
               📋 Keyword Breakdown
             </Link>
-            <a
-              href="/api/reports/friday-kpi/render-png?download=1"
-              target="_blank"
-              rel="noreferrer"
-              className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg transition inline-flex items-center gap-1"
-            >
-              🖼️ Preview PNG
-            </a>
             <button onClick={send} disabled={sending || loading}
               className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition">
               {sending ? '📤 Sending…' : '📤 Send Weekly Report to Slack now'}
@@ -260,9 +257,55 @@ export default function FridayKpiPage() {
         )}
       </section>
 
+      {/* Sprint FRIDAY.KPI.DASHBOARD-MERGE (342) —
+          Inline PNG preview at the top. This IS the rendered Weekly
+          Report — what Slack sees, what the public PNG link serves, all
+          one source of truth. Loads on mount; Re-render button forces a
+          fresh chromium pass. */}
+      <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div>
+            <h2 className="text-white font-semibold">🖼️ Dashboard preview (= the PNG)</h2>
+            <p className="text-[11px] text-gray-500 mt-0.5">This image is rendered live by puppeteer from the same data Slack sees. Re-render to refresh.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setPngLoading(true); setPngCacheBust(Date.now()) }}
+              className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white rounded-md transition inline-flex items-center gap-1"
+            >
+              {pngLoading ? '⏳ Rendering…' : '↻ Re-render PNG'}
+            </button>
+            <a
+              href={`/api/reports/friday-kpi/render-png?download=1&t=${pngCacheBust}`}
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-md transition inline-flex items-center gap-1"
+            >
+              ⬇️ Download PNG
+            </a>
+          </div>
+        </div>
+        <div className="bg-[#0a0a0f] border border-gray-800 rounded-lg overflow-hidden relative" style={{ minHeight: 400 }}>
+          {pngLoading && (
+            <div className="absolute inset-0 flex items-center justify-center text-xs text-gray-500 z-10">
+              ⏳ Rendering live PNG (chromium cold start ~20-40s)…
+            </div>
+          )}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={`/api/reports/friday-kpi/render-png?t=${pngCacheBust}`}
+            alt="Weekly Report PNG (live)"
+            className="w-full block"
+            style={{ opacity: pngLoading ? 0.3 : 1, transition: 'opacity 200ms' }}
+            onLoad={() => setPngLoading(false)}
+            onError={() => setPngLoading(false)}
+          />
+        </div>
+      </section>
+
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-6">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-white font-semibold">📊 Live preview</h2>
+          <h2 className="text-white font-semibold text-sm">📊 Raw data (for action plan editing)</h2>
           <button onClick={loadPreview} className="text-xs text-gray-400 hover:text-white">↻ Refresh</button>
         </div>
 
