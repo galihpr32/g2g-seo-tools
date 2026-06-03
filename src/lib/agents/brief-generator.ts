@@ -534,7 +534,11 @@ interface KBItem {
   data:     Record<string, unknown>
 }
 
-async function loadKBBlock(
+// Sprint #353 OPENER.MIMIR.INJECT — exported so the outreach opener
+// generator can reuse the same brand + category context wiring instead of
+// re-implementing it. Passing pageUrl = the G2G target URL (the link we're
+// asking for) and keyword = source_keyword gives same matching behaviour.
+export async function loadKBBlock(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   db: any,
   ownerId: string,

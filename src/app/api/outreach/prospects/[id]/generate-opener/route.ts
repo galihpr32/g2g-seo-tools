@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
+import { loadKBBlock } from '@/lib/agents/brief-generator'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const maxDuration = 60
@@ -67,33 +68,57 @@ export async function POST(
     prospect.notes            ? `Notes: ${prospect.notes}` : null,
   ].filter(Boolean).join('\n')
 
+  // Sprint #353 OPENER.MIMIR.INJECT — pull brand voice + category trust
+  // signals from the knowledge base so the pitch reads in the SAME voice
+  // as our published content. Falls back gracefully (empty string) when
+  // no KB rows exist or when the prospect has no target URL to match a
+  // category. Site slug priority: prospect.site_slug column > 'g2g' default.
+  const siteSlug = (prospect.site_slug as string | undefined)?.toLowerCase() ?? 'g2g'
+  const brandName = siteSlug === 'offgamers' ? 'OffGamers' : 'G2G'
+  const brandDomain = siteSlug === 'offgamers' ? 'offgamers.com' : 'g2g.com'
+
+  let kbBlock = ''
+  try {
+    kbBlock = await loadKBBlock(
+      db,
+      ownerId,
+      prospect.target_url ?? `https://${brandDomain}/`,
+      prospect.source_keyword ?? prospect.topic ?? '',
+      siteSlug,
+    )
+  } catch (e) {
+    console.warn('[generate-opener] KB load failed (continuing without):', e)
+  }
+
   // ── Prompt ───────────────────────────────────────────────────────────────
   const sharedRules = `Rules:
 - Never mention competitor names
 - Avoid: "immerse yourself", "dive into", "game-changing", "revolutionize", "leverage", "delve"
 - Be specific to the prospect's domain — reference what they actually cover
-- Tone: ${tone}`
+- Tone: ${tone}
+- Pull trust signals and brand voice from the BRAND CONTEXT block below — do not invent claims that aren't supported by that block`
+
+  // Brand-aware framing — same voice the published articles use.
+  const brandIntro = siteSlug === 'offgamers'
+    ? `OffGamers (offgamers.com) — a trusted digital marketplace for game keys, top-ups, gift cards, and gaming subscriptions`
+    : `G2G (g2g.com) — a leading peer-to-peer gaming marketplace for in-game currency, items, game accounts, and top-ups`
 
   const systemPrompt = mode === 'full'
-    ? `You are Bragi, G2G's content and outreach copywriter. You write personalised, ${tone} full guestpost outreach EMAILS on behalf of G2G (g2g.com) — a leading peer-to-peer gaming marketplace for in-game currency, items, game accounts, and top-ups.
-
-G2G's key trust signals: GamerProtect buyer protection, escrow system, 200+ payment methods, verified sellers, ISO/IEC 27001:2013 certified, 5M+ transactions.
-
+    ? `You are Bragi, ${brandName}'s content and outreach copywriter. You write personalised, ${tone} full guestpost outreach EMAILS on behalf of ${brandIntro}.
+${kbBlock ? `\n${kbBlock}\n` : ''}
 ${sharedRules}
 
 For FULL EMAIL mode, the body should follow this structure:
   1. Greeting line (e.g. "Hi [Name]," or "Hi there,")
   2. Personalized opener referencing the prospect's site (1-2 sentences)
   3. Value proposition: what content we'd contribute + why it fits THEIR audience (2-3 sentences)
-  4. Light credibility plug — 1 trust signal (NOT a brag dump)
+  4. Light credibility plug — 1 trust signal pulled from BRAND CONTEXT (NOT a brag dump)
   5. Clear, low-pressure ask
-  6. Signoff (e.g. "Best, G2G outreach team")
+  6. Signoff (e.g. "Best, ${brandName} outreach team")
 
 Total length: 120-180 words. Subject: ≤ 10 words.`
-    : `You are Bragi, G2G's content and outreach copywriter. You write personalised, ${tone} guestpost outreach emails on behalf of G2G (g2g.com) — a leading peer-to-peer gaming marketplace for in-game currency, items, game accounts, and top-ups.
-
-G2G's key trust signals: GamerProtect buyer protection, escrow system, 200+ payment methods, verified sellers, ISO/IEC 27001:2013 certified, 5M+ transactions.
-
+    : `You are Bragi, ${brandName}'s content and outreach copywriter. You write personalised, ${tone} guestpost outreach emails on behalf of ${brandIntro}.
+${kbBlock ? `\n${kbBlock}\n` : ''}
 ${sharedRules}
 - Keep it short: subject ≤ 10 words, opener ≤ 4 sentences
 - Opener should NOT include a salutation line (like "Hi [Name]") — just the body paragraph

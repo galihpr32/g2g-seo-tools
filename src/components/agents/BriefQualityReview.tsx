@@ -39,7 +39,16 @@ export interface TyrBreakdown {
     eeat_signals:       DimensionScore
     faq_quality:        DimensionScore
     meta_description:   DimensionScore
-    internal_links?:    DimensionScore
+    // Sprint #356 TYR.GEO.SCORE — 4 new GEO (Generative Engine Optimization)
+    // dimensions. Tyr now scores brief readiness for AI-assistant citations
+    // (ChatGPT / Gemini / Perplexity) alongside classic Google SEO. All
+    // required from server side; UI iterates Object.entries so backward-compat
+    // briefs (without GEO scores) still render without crashing.
+    geo_answer_shape?:    DimensionScore
+    geo_citable_stats?:   DimensionScore
+    geo_entity_naming?:   DimensionScore
+    geo_faq_quotability?: DimensionScore
+    internal_links?:      DimensionScore
   }
   strengths?:    string[]
   weaknesses?:   string[]
@@ -62,6 +71,11 @@ const DIMENSION_META: Record<keyof NonNullable<TyrBreakdown['dimensions']>, { la
   eeat_signals:      { label: 'E-E-A-T Signals',       emoji: '🛡️', help: 'Trust, expertise, authoritativeness signals planned' },
   faq_quality:       { label: 'FAQ Quality',           emoji: '❓', help: 'Real "People Also Ask" questions, grounded answers' },
   meta_description:  { label: 'Meta Description',      emoji: '📄', help: '150-160 chars, primary keyword, clear CTA' },
+  // Sprint #356 TYR.GEO.SCORE — GEO (Generative Engine Optimization) dims
+  geo_answer_shape:    { label: 'GEO · Answer-shaped H2',  emoji: '💬', help: 'H2 headings phrased as questions or claims AI assistants can quote (not generic labels)' },
+  geo_citable_stats:   { label: 'GEO · Citable Stats',     emoji: '📊', help: 'Outline includes ≥3 concrete data points (%, count, duration, certification)' },
+  geo_entity_naming:   { label: 'GEO · Entity Naming',     emoji: '🏷️', help: 'Full proper names (game titles, currencies, regions) — LLMs index entities' },
+  geo_faq_quotability: { label: 'GEO · FAQ Quotability',   emoji: '🗣️', help: 'FAQ Qs direct + answer hints 1-3 sentences (LLM-quotable length)' },
   internal_links:    { label: 'Internal Linking',      emoji: '🔗', help: 'Plans links to related categories/pillars' },
 }
 
@@ -150,7 +164,7 @@ export default function BriefQualityReview({
               const dimCount = isRichShape && breakdown.dimensions
                 ? Object.values(breakdown.dimensions).filter(Boolean).length
                 : 4
-              return `Comprehensive ${dimCount}-dimension SEO brief audit`
+              return `Comprehensive ${dimCount}-dimension SEO + GEO brief audit`
             })()}
             {reviewedAt && ` · Reviewed ${new Date(reviewedAt).toLocaleDateString()}`}
           </p>
@@ -253,7 +267,7 @@ export default function BriefQualityReview({
       {/* Legacy shape — show flat scores if rich not available */}
       {!isRichShape && (
         <div className="mb-6 p-3 bg-amber-950/20 border border-amber-800/30 rounded text-xs text-amber-300">
-          ℹ This brief was reviewed by an older Tyr version (4 dimensions only). Rerun Tyr to get the full 8-dimension audit.
+          ℹ This brief was reviewed by an older Tyr version (4 dimensions only). Rerun Tyr to get the full 11-dimension audit (7 SEO + 4 GEO).
           <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2">
             {([['Coverage', breakdown.coverage], ['Intent', breakdown.intent_match], ['Keywords', breakdown.keyword_grounding], ['FAQ', breakdown.faq_realism]] as const).map(([label, val]) =>
               val != null ? (

@@ -64,6 +64,10 @@ export default function ForsetiDetailPage() {
   const [newStatus,    setNewStatus]    = useState<string>('')
   const [saving,       setSaving]       = useState(false)
   const [err,          setErr]          = useState<string | null>(null)
+  // Sprint #354 FORSETI.AI.REPLY — drafting state + tone control
+  const [drafting,     setDrafting]     = useState(false)
+  const [draftTone,    setDraftTone]    = useState<'helpful' | 'empathetic' | 'professional'>('helpful')
+  const [draftMeta,    setDraftMeta]    = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -114,6 +118,30 @@ export default function ForsetiDetailPage() {
       setErr(e instanceof Error ? e.message : String(e))
     }
     setSaving(false)
+  }
+
+  // Sprint #354 FORSETI.AI.REPLY — call backend to draft a reply, pre-fill
+  // the response textarea so the human can review + edit + post manually.
+  async function draftAiReply() {
+    setDrafting(true); setErr(null); setDraftMeta(null)
+    try {
+      const res = await fetch(`/api/forseti/threads/${id}/draft-reply`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ tone: draftTone }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) {
+        setErr(data.error ?? `HTTP ${res.status}`)
+      } else {
+        setResponseType('reply')
+        setResponseText(data.draft as string)
+        setDraftMeta(`✨ Drafted (${data.tone}, ${data.model}) — ${data.context_summary}. Review + edit before posting.`)
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+    setDrafting(false)
   }
 
   async function quickStatusChange(status: string) {
@@ -252,11 +280,46 @@ export default function ForsetiDetailPage() {
                 </button>
               ))}
             </div>
+
+            {/* Sprint #354 FORSETI.AI.REPLY — AI draft button row.
+                Only shown when 'reply' is selected (drafts make no sense for
+                internal_note / escalation). Tone toggle lets human steer
+                the voice without re-prompting. */}
+            {responseType === 'reply' && (
+              <div className="space-y-1.5 -mb-1">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={draftAiReply}
+                    disabled={drafting}
+                    className="px-3 py-1.5 bg-emerald-700/40 hover:bg-emerald-700/60 disabled:opacity-40 border border-emerald-500/50 text-emerald-100 text-xs font-semibold rounded transition inline-flex items-center gap-1.5"
+                    title="Generate a Mimir-aware reply draft. You review + edit + post manually."
+                  >
+                    {drafting ? '⏳ Drafting…' : '✨ Draft AI reply'}
+                  </button>
+                  <div className="inline-flex gap-0.5 bg-gray-950 border border-gray-800 rounded p-0.5 text-[10px]">
+                    {(['helpful', 'empathetic', 'professional'] as const).map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setDraftTone(t)}
+                        className={`px-2 py-0.5 rounded ${draftTone === t ? 'bg-emerald-700/40 text-emerald-100' : 'text-gray-500 hover:text-gray-300'}`}
+                        title={`Draft with ${t} tone`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {draftMeta && (
+                  <p className="text-[11px] text-emerald-300/80 italic">{draftMeta}</p>
+                )}
+              </div>
+            )}
+
             <textarea
               rows={5}
               value={responseText}
               onChange={e => setResponseText(e.target.value)}
-              placeholder={responseType === 'reply' ? 'Paste the response you posted on Reddit (for archive)…' : responseType === 'internal_note' ? 'Internal note…' : 'Why escalated + to whom…'}
+              placeholder={responseType === 'reply' ? 'Paste the response you posted on Reddit (for archive)… or click ✨ Draft AI reply above to start with a Mimir-aware draft.' : responseType === 'internal_note' ? 'Internal note…' : 'Why escalated + to whom…'}
               className="w-full bg-gray-950 border border-gray-700 rounded p-2 text-sm text-white"
             />
             {responseType === 'reply' && (

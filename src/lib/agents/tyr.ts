@@ -75,12 +75,15 @@ export interface Suggestion {
 }
 
 interface ScoreBreakdown {
-  // Per-dimension structured scores (7 required + 1 optional — see below)
-  // `internal_links` is OPTIONAL: not every page has related categories/
-  // pillars to link to (standalone landings, isolated product lines). Tyr
-  // omits it for those cases so the brief isn't penalised unfairly. Score
-  // normalisation is dynamic — counts present dimensions and scales to 100.
+  // Per-dimension structured scores (11 required + 1 optional — see below)
+  // 7 classic SEO dimensions + 4 GEO (Generative Engine Optimization) added
+  // in Sprint #356. `internal_links` is OPTIONAL: not every page has related
+  // categories/pillars to link to (standalone landings, isolated product
+  // lines). Tyr omits it for those cases so the brief isn't penalised
+  // unfairly. Score normalisation is dynamic — counts present dimensions
+  // and scales to 100.
   dimensions: {
+    // Classic SEO (7)
     coverage:           DimensionScore   // sub-intent coverage
     intent_match:       DimensionScore   // H1 + meta vs search intent
     heading_structure:  DimensionScore   // outline hierarchy quality
@@ -88,6 +91,12 @@ interface ScoreBreakdown {
     eeat_signals:       DimensionScore   // E-E-A-T plan (trust, expertise, etc.)
     faq_quality:        DimensionScore   // FAQ realism + value
     meta_description:   DimensionScore   // meta crafting (length, keyword, CTA)
+    // GEO — AI-assistant citation readiness (4) — Sprint #356
+    geo_answer_shape:    DimensionScore  // H2s phrased as quote-worthy answers
+    geo_citable_stats:   DimensionScore  // concrete data points / numbers planned
+    geo_entity_naming:   DimensionScore  // full proper entity names throughout
+    geo_faq_quotability: DimensionScore  // FAQ Qs direct + answers concise
+    // Optional
     internal_links?:    DimensionScore   // OPTIONAL — only if related content exists
   }
   strengths:    string[]      // 2-3 things the brief gets right
@@ -115,10 +124,11 @@ const dimensionSpec = (description: string) => ({
 
 const judgeTool: Anthropic.Tool = {
   name: 'submit_brief_review',
-  description: 'Submit the comprehensive quality review for an SEO brief — 8 dimensions, strengths, weaknesses, prioritised suggestions.',
+  description: 'Submit the comprehensive quality review for an SEO + GEO brief — 11 dimensions (7 SEO + 4 GEO, plus 1 optional internal_links), strengths, weaknesses, prioritised suggestions.',
   input_schema: {
     type: 'object',
     properties: {
+      // ── Classic SEO dimensions ────────────────────────────────────────
       coverage:          dimensionSpec('Does the outline cover the sub-intents a real user searching this keyword expects? Penalise generic "What is X" intros for clearly transactional intent.'),
       intent_match:      dimensionSpec('Does the H1 + meta description match the commercial/transactional intent? Penalise off-intent phrasing.'),
       heading_structure: dimensionSpec('Outline hierarchy quality. Single H1, well-named H2s, no skipped levels (H1→H3), descriptive (not generic). 4-6 H2s ideal.'),
@@ -126,6 +136,16 @@ const judgeTool: Anthropic.Tool = {
       eeat_signals:      dimensionSpec('E-E-A-T plan: does the brief incorporate trust signals (buyer protection, ratings, secure transactions, refund policy, expert/staff voice, authoritative sourcing)? For commercial gaming marketplace, focus on TRUST + EXPERIENCE.'),
       faq_quality:       dimensionSpec('FAQs: are questions things real users search ("People also ask" style)? Are answers grounded (no hallucinated specifics like "5-minute delivery" without source)? 3-5 questions ideal.'),
       meta_description:  dimensionSpec('Meta description: 150-160 chars, includes primary keyword, has clear CTA. Penalise generic / over-stuffed.'),
+
+      // ── GEO dimensions (Sprint #356 TYR.GEO.SCORE) ────────────────────
+      // These check whether the brief is structured for AI-assistant
+      // citations (ChatGPT / Gemini / Perplexity), not just Google rankings.
+      geo_answer_shape:   dimensionSpec('Are H2 headings phrased so an AI assistant could lift them as quote-worthy answers? Each H2 should be a question ("How long does delivery take?") OR a clear factual claim ("Delivery completes in under 15 minutes for 92% of orders"). Penalise generic labels like "Our Service", "About Us", "Why Choose Us" — LLMs skip these. 10=every H2 is question-shaped or claim-shaped, 5=some are, 0=mostly generic labels.'),
+      geo_citable_stats:  dimensionSpec('Does the outline include concrete, citable data points across bullets? Look for percentages, counts, durations, certifications, prices, regional figures with implied or named sources. LLMs cite specific numbers + attribution; they ignore vague claims. Target ≥3 citable bullets across the outline. 10=≥3 strong data points planned, 5=1-2 weak ones, 0=all vague claims.'),
+      geo_entity_naming:  dimensionSpec('Does the brief name FULL proper entities (game titles, currencies, platforms, regions) explicitly — not pronouns or vague references? LLMs index entity mentions ("Blade & Soul NEO Gold" beats "the in-game currency"). Check the H1, meta, outline headings, FAQ questions, target_keywords. 10=primary entity + 2-3 related entities named consistently, 5=primary only, 0=keyword-stuffed with no entity grounding.'),
+      geo_faq_quotability: dimensionSpec('Are FAQ questions phrased as direct, user-quotable questions (start with How/What/When/Why/Is/Can)? Do answer_hints suggest 1-3 sentence concise answers (LLM-quotable length)? FAQs are the highest-cited block by AI assistants — long essay answers hurt. 10=every FAQ Q is direct + every answer hint is concise + grounded, 5=mixed quality, 0=hidden in jargon or essay-shaped.'),
+
+      // ── Optional dimension ────────────────────────────────────────────
       internal_links:    dimensionSpec('OPTIONAL — only score if the page HAS related categories / pillar pages / supporting content available. For standalone landing pages or isolated product lines with no related content to link to, OMIT this field entirely (do not include it in your response). When present: 10=plans 3+ contextual internal links, 5=mentions linking generally, 0=no plan despite having related content available.'),
 
       strengths: {
@@ -160,7 +180,7 @@ const judgeTool: Anthropic.Tool = {
         description: '1-2 sentence overall verdict. What\'s the headline takeaway?',
       },
     },
-    required: ['coverage', 'intent_match', 'heading_structure', 'keyword_strategy', 'eeat_signals', 'faq_quality', 'meta_description', 'strengths', 'weaknesses', 'suggestions', 'redflags', 'reasoning'],
+    required: ['coverage', 'intent_match', 'heading_structure', 'keyword_strategy', 'eeat_signals', 'faq_quality', 'meta_description', 'geo_answer_shape', 'geo_citable_stats', 'geo_entity_naming', 'geo_faq_quotability', 'strengths', 'weaknesses', 'suggestions', 'redflags', 'reasoning'],
   },
 }
 
@@ -386,9 +406,9 @@ async function judgeBrief(
   db?:   ReturnType<typeof createServiceClient>,
   ownerId?: string,
 ): Promise<ScoreBreakdown> {
-  const prompt = `You are a senior SEO content quality reviewer for G2G.com — a peer-to-peer gaming marketplace (gift cards, in-game items, top-up, accounts) primarily targeting US.
+  const prompt = `You are a senior SEO + GEO (Generative Engine Optimization) content quality reviewer for G2G.com — a peer-to-peer gaming marketplace (gift cards, in-game items, top-up, accounts) primarily targeting US.
 
-Your job: comprehensive SWA-style review of the SEO brief below. Score 8 dimensions (each 0-10), then provide strengths, weaknesses, and prioritised suggestions. Cite SPECIFIC sections / FAQ numbers / keywords in every comment — vague feedback is useless.
+Your job: comprehensive SWA-style review of the brief below. The brief must win BOTH Google rankings (classic SEO) AND AI-assistant citations (ChatGPT / Gemini / Perplexity / Claude — that's GEO). Score 11 required dimensions (7 SEO + 4 GEO) plus 1 optional, then provide strengths, weaknesses, prioritised suggestions. Cite SPECIFIC sections / FAQ numbers / keywords in every comment — vague feedback is useless.
 
 PRIMARY KEYWORD: "${brief.primary_keyword ?? '(missing)'}"
 TARGET PAGE:     ${brief.page ?? '(missing)'}
@@ -408,6 +428,7 @@ ${JSON.stringify(brief.faq_suggestions, null, 2)}
 
 REVIEW RUBRIC — score each dimension 0-10 (be strict, 7-8 = ready, 9-10 = rare excellence):
 
+═══ Classic SEO ═══
 1. **coverage** — does the outline cover sub-intents users searching this keyword expect?
 2. **intent_match** — H1 + meta align with commercial/transactional intent? Penalise generic "Welcome to" or off-intent phrasing.
 3. **heading_structure** — single H1, 4-6 well-named H2s, no skipped levels (H1→H3), descriptive (not generic)
@@ -415,21 +436,33 @@ REVIEW RUBRIC — score each dimension 0-10 (be strict, 7-8 = ready, 9-10 = rare
 5. **eeat_signals** — E-E-A-T plan: trust signals (buyer protection, ratings, secure payments, refund policy), staff/expert voice, authoritative sourcing. Critical for marketplace.
 6. **faq_quality** — questions match real "People Also Ask"; answers grounded (no hallucinated specifics like "5-min delivery" without source).
 7. **meta_description** — 150-160 chars, includes primary keyword, has clear CTA, not over-stuffed
-8. **internal_links** — *OPTIONAL.* Does the brief plan internal links to related categories / pillar pages / supporting content?
-   ⚠ **OMIT this field entirely** if this page is a STANDALONE landing or part of an isolated product line with no related G2G content to link to (e.g. a brand-new game category with no existing pillars yet, or a one-off promo page). Don't penalise pages where internal linking isn't applicable. Only score if related content actually exists for this topic.
+
+═══ GEO — AI-assistant citation readiness ═══
+8. **geo_answer_shape** — H2 headings phrased as questions OR factual claims that LLMs can lift verbatim. Generic labels ("Our Service", "About Us", "Why Choose Us") = LLMs skip them. 10=every H2 is question/claim-shaped, 0=mostly generic labels.
+9. **geo_citable_stats** — Outline bullets contain concrete data points (%, count, duration, certification, price) — the raw material LLMs cite. Target ≥3 strong data points across outline bullets. 10=≥3 strong + attributed, 5=1-2 weak, 0=all vague.
+10. **geo_entity_naming** — Brief names FULL proper entities (game titles, currencies, platforms, regions) explicitly, not pronouns. "Blade & Soul NEO Gold" beats "the in-game currency". Check H1, meta, outline headings, FAQ Qs, target_keywords. 10=primary + 2-3 related entities named, 0=keyword-stuffed without entity grounding.
+11. **geo_faq_quotability** — FAQ questions are direct user-quotable (How/What/When/Why/Is/Can format). answer_hint suggests 1-3 sentence concise answers (LLM-quotable). 10=every Q direct + every A concise + grounded, 0=hidden in jargon / essay-shaped.
+
+═══ Optional ═══
+12. **internal_links** — *OPTIONAL.* Plans internal links to related categories / pillar pages?
+   ⚠ **OMIT this field entirely** if this page is a STANDALONE landing or isolated product line with no related G2G content to link to. Don't penalise pages where internal linking isn't applicable.
 
 After scoring, provide:
-- **strengths** (2-3): specific wins, cite section/FAQ. Example: "FAQ #3 'How long does delivery take?' matches a high-intent PAA query".
-- **weaknesses** (2-4): specific issues. Example: "Outline section 4 'How to Buy' is generic — needs marketplace-specific steps with seller comparison".
-- **suggestions** (3-6 prioritised): high = blocks publish, medium = polish before publish, low = nice-to-have.
+- **strengths** (2-3): specific wins, cite section/FAQ. Example: "FAQ #3 'How long does delivery take?' matches a high-intent PAA query AND is LLM-quotable length".
+- **weaknesses** (2-4): specific issues. Example: "Outline section 4 'About Our Service' is a generic label — LLMs will skip it. Reshape as a question."
+- **suggestions** (3-6 prioritised): high = blocks publish, medium = polish before publish, low = nice-to-have. Address GEO failures explicitly (e.g. "Add at least 1 citable stat to H2 section 2 — currently zero data points there.").
 - **redflags**: copy of weaknesses (back-compat).
-- **reasoning**: 1-2 sentence overall verdict.
+- **reasoning**: 1-2 sentence overall verdict. Call out the SEO/GEO split when relevant (e.g. "Strong SEO foundation but weak GEO: only 1 H2 is question-shaped and zero citable stats.").
 
 Call submit_brief_review with all fields.`
 
   const res = await anthropic.messages.create({
     model:       MODEL,
-    max_tokens:  1024,
+    // Sprint #356 TYR.GEO.SCORE — bumped 1024 → 1500 because 4 new GEO
+    // dimensions each carry a score + comment. 11 dims × ~80 tokens per
+    // {score, comment} pair ≈ 880 just for dimensions, plus strengths/
+    // weaknesses/suggestions/reasoning. 1024 was tight; 1500 is comfortable.
+    max_tokens:  1500,
     tools:       [judgeTool],
     tool_choice: { type: 'tool', name: 'submit_brief_review' },
     messages:    [{ role: 'user', content: prompt }],
@@ -470,14 +503,21 @@ Call submit_brief_review with all fields.`
   // `internal_links` is OPTIONAL — Claude omits it for pages with no related
   // content to link to (standalone landings, isolated product lines). We only
   // include it in the breakdown when Claude actually returned a score.
+  // GEO dimensions (Sprint #356) are required in the schema but we still
+  // dim()-coerce defensively — `dim()` returns a zero-score with empty comment
+  // when the field is missing, so old briefs reviewed pre-#356 don't crash.
   const dimensions: ScoreBreakdown['dimensions'] = {
-    coverage:          dim(raw.coverage),
-    intent_match:      dim(raw.intent_match),
-    heading_structure: dim(raw.heading_structure),
-    keyword_strategy:  dim(raw.keyword_strategy),
-    eeat_signals:      dim(raw.eeat_signals),
-    faq_quality:       dim(raw.faq_quality),
-    meta_description:  dim(raw.meta_description),
+    coverage:            dim(raw.coverage),
+    intent_match:        dim(raw.intent_match),
+    heading_structure:   dim(raw.heading_structure),
+    keyword_strategy:    dim(raw.keyword_strategy),
+    eeat_signals:        dim(raw.eeat_signals),
+    faq_quality:         dim(raw.faq_quality),
+    meta_description:    dim(raw.meta_description),
+    geo_answer_shape:    dim(raw.geo_answer_shape),
+    geo_citable_stats:   dim(raw.geo_citable_stats),
+    geo_entity_naming:   dim(raw.geo_entity_naming),
+    geo_faq_quotability: dim(raw.geo_faq_quotability),
   }
   if (raw.internal_links != null && typeof raw.internal_links === 'object') {
     dimensions.internal_links = dim(raw.internal_links)

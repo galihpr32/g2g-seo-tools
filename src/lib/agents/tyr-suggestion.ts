@@ -47,6 +47,13 @@ const DIMENSION_TO_SECTION: Record<string, 'outline' | 'faq' | 'meta' | 'keyword
   meta_description:  'meta',
   internal_links:    'outline',     // outline includes internal-link plan
   eeat_signals:      'outline',     // E-E-A-T touches outline copy
+  // Sprint #356 TYR.GEO.SCORE — GEO dimensions also route to a section.
+  // Answer-shape, citable stats and entity naming all live in the outline
+  // (H2 phrasing + body framing). FAQ quotability is naturally the FAQ.
+  geo_answer_shape:    'outline',
+  geo_citable_stats:   'outline',
+  geo_entity_naming:   'outline',
+  geo_faq_quotability: 'faq',
 }
 
 /**

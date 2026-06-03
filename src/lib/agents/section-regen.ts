@@ -37,7 +37,13 @@ interface BriefSnapshot {
 
 function buildOutlinePrompt(b: BriefSnapshot, userNotes: string): string {
   const existingFaqs = JSON.stringify(b.faq_suggestions ?? [], null, 2).slice(0, 1500)
-  const tyrFeedback = extractTyrFeedback(b.tyr_breakdown, ['coverage', 'heading_structure', 'eeat_signals', 'internal_links'])
+  // Sprint #356 — also pull GEO dim feedback. Outline is the section that
+  // controls H2 phrasing, citable stats placement, and entity naming, so
+  // these GEO scores all map back to "regenerate the outline".
+  const tyrFeedback = extractTyrFeedback(b.tyr_breakdown, [
+    'coverage', 'heading_structure', 'eeat_signals', 'internal_links',
+    'geo_answer_shape', 'geo_citable_stats', 'geo_entity_naming',
+  ])
   return `Regenerate the CONTENT OUTLINE for this SEO content brief.
 
 PRIMARY KEYWORD: ${b.primary_keyword ?? '(unknown)'}
@@ -53,12 +59,24 @@ ${tyrFeedback || '(no specific feedback)'}
 USER NOTES:
 ${userNotes || '(none)'}
 
-RULES:
+RULES (SEO):
 - Single H1 (use existing primary keyword as base)
 - 4-6 H2 sections, each with 2-4 sub-bullets
 - Cover commercial intent + value props + safety/trust + comparison + FAQ-feeder section
 - Suggest internal-link targets where relevant
 - DO NOT include FAQ section in outline (FAQ is separate)
+
+RULES (GEO — AI-assistant citation readiness):
+- ★ Phrase EVERY H2 as either a question ("How long does delivery take?")
+  OR a clear factual claim ("Delivery completes in under 15 minutes for
+  92% of orders"). Generic labels ("Our Service", "Why Choose Us") are
+  banned — LLMs skip them.
+- ★ Plan ≥3 citable data points across the sub-bullets (percentages,
+  durations, counts, certifications). LLMs cite specific numbers; they
+  ignore vague claims like "fast and reliable".
+- ★ Name FULL proper entities (game titles, currencies, regions) — never
+  use pronouns or "the in-game currency" when "Blade & Soul NEO Gold"
+  would work. LLMs index entity mentions.
 
 OUTPUT: strict JSON array, no fences:
 [
@@ -69,7 +87,8 @@ OUTPUT: strict JSON array, no fences:
 
 function buildFaqPrompt(b: BriefSnapshot, userNotes: string): string {
   const existingOutline = JSON.stringify(b.content_outline ?? [], null, 2).slice(0, 1500)
-  const tyrFeedback = extractTyrFeedback(b.tyr_breakdown, ['faq_quality'])
+  // Sprint #356 — pull GEO FAQ-quotability feedback in addition to classic FAQ quality.
+  const tyrFeedback = extractTyrFeedback(b.tyr_breakdown, ['faq_quality', 'geo_faq_quotability'])
   return `Regenerate the FAQ section for this SEO content brief.
 
 PRIMARY KEYWORD: ${b.primary_keyword ?? '(unknown)'}
@@ -85,12 +104,21 @@ ${tyrFeedback || '(no specific feedback)'}
 USER NOTES:
 ${userNotes || '(none)'}
 
-RULES:
+RULES (SEO):
 - 5-8 FAQs that match real "People Also Ask" patterns
 - Each Q is a natural question a buyer would type
 - Each A is 1-3 sentences, factual, non-promotional, non-hallucinated
 - Include at least 1 question about pricing, 1 about safety/legality, 1 about delivery time
 - DO NOT make up specific prices unless the user notes have them
+
+RULES (GEO — AI-assistant quotability):
+- ★ Every question must start with How / What / When / Why / Is / Can —
+  direct, user-typeable phrasing. NO multi-clause framed questions
+  ("In what way could a buyer potentially...") — LLMs skip those.
+- ★ Each suggested_answer should be 1-3 short sentences. LLMs quote
+  concise answers; long essay answers get truncated or skipped.
+- ★ Name the full entity in answers (e.g. "Blade & Soul NEO Gold",
+  not "this currency") so AI assistants can index the mention.
 
 OUTPUT: strict JSON array, no fences:
 [
