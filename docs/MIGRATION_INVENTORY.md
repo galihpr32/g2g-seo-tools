@@ -31,12 +31,12 @@
 ### Anthropic (1 required + 6 optional flags)
 | Var | Type | Required | Notes |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | secret | yes | Same |
-| `ANTHROPIC_MONTHLY_BUDGET_USD` | secret | optional | Cost cap |
-| `BRAGI_MODEL_T*` (T0/T1/T2/TRANSLATION) | secret | optional | Per-tier model overrides |
-| `ID_NATIVE_MODEL` | secret | optional | ID experiment |
-| `TYR_MODEL` | secret | optional | Tyr translator |
-| `MIMIR_ONPAGE_MODEL` | secret | optional | Mimir learner |
+| `ANTHROPIC_API_KEY` | secret | **YES** | Copy from Vercel |
+| `ANTHROPIC_MONTHLY_BUDGET_USD` | secret | optional | Cost cap; only copy if set in Vercel |
+| `BRAGI_MODEL_T0` / `T1` / `T2` / `TRANSLATION` | secret | **SKIP unless set** | Sprint #168 — per-tier model override. Code has sensible defaults (opus-4-6 / sonnet-4-6 / sonnet-4-6 / haiku-4-5). Only copy if value exists in Vercel — if not set, app uses defaults. |
+| `ID_NATIVE_MODEL` | secret | **SKIP unless set** | Defaults to `BRAGI_MODEL_T2`. Same logic. |
+| `TYR_MODEL` | secret | **SKIP unless set** | Defaults to sonnet-4-6. Same logic. |
+| `MIMIR_ONPAGE_MODEL` | secret | **SKIP unless set** | Defaults to haiku-4-5. Same logic. |
 
 ### DataForSEO
 | Var | Type | Required |

@@ -656,8 +656,16 @@ function buildPrompt(input: BriefInput, kbBlock: string, brandName: string = 'G2
 - userIntent: 1-2 sentences describing what the user actually wants (not what we want to sell).
 - targetKeywords: primary keyword + 4-7 related long-tail variants and LSI terms (NOT just price/cheap/buy permutations — include intent-specific variants).
 - contentOutline: 4-6 H2 sections, each with 2-4 bullet points. The first section should NOT be a generic "What is X" intro — start with what the user came here for (price comparison, listings, trust signals).
+  ★ GEO requirement: each H2 should be phrased so it answers ONE specific user question — either as a question itself ("How fast does delivery work?") or as a clear factual claim ("Delivery completes in under 15 minutes for 92% of orders"). LLMs cite answer-shaped blocks. Generic headings ("Our service", "About us") do not get cited.
+  ★ At least one bullet under each H2 should call out a concrete, citable data point: a percentage, a count, a duration, a price comparison, a trust certification number — something an AI assistant could quote with a source.
 - faqSuggestions: 3-5 questions real users actually search (use "people also ask" style — pricing, safety, delivery time, refund policy).
-- Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.`
+- Anchor every section to commercial/transactional intent where the search clearly has buying intent. Avoid filler.
+
+GEO (Generative Engine Optimization) baseline — every brief must satisfy:
+1. Q&A structure: H2 headings phrased as questions or stating claims that LLMs can quote standalone.
+2. Citable stats: at least 3 bullet-level data points across the outline (numbers, percentages, counts, certifications, durations) that the writer can later attribute to a source.
+3. Entity coverage: target keyword + 2-3 related entity nouns (game titles, currencies, platforms, regions) named explicitly — LLMs index entities, not just keywords.
+4. The FAQ section must answer questions in 1-3 sentences MAX (LLM-quotable length); long-form answers belong inside H2 sections.`
 
   // Sprint BRAGI.10 — Hoist upstream agent signals into a prominent
   // DETECTED OPPORTUNITY block. BDT (May 2026) flagged that Odin/Loki
@@ -774,7 +782,13 @@ function buildRegenFeedbackBlock(review: PreviousTyrReview): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ASSEMBLY_MODEL       = 'claude-haiku-4-5-20251001'
-const ASSEMBLY_MAX_TOKENS  = 4096
+// Sprint #352 BRAGI.GEO.FORMAT — bumped 4096 → 6000 because the new GEO
+// prompt requires the article body PLUS a FAQPage (+ optional Product)
+// JSON-LD schema block. Target article = 1200-1500 words ≈ 2200 tokens;
+// schema = 500-1200 tokens depending on FAQ count + Product fields.
+// 6000 leaves comfortable headroom and keeps cold start fast (Haiku is
+// fast even with this ceiling).
+const ASSEMBLY_MAX_TOKENS  = 6000
 const ASSEMBLY_BACKOFF_MS  = 800
 
 interface AssemblyOutlineSection { heading: string; points?: string[] }
@@ -839,7 +853,20 @@ export async function assembleFullArticle(
 
   const isCategoryPage = briefType === 'category_page' || pageUrl.includes('/categories/')
 
-  const prompt = `You are the lead SEO writer for ${brandName} (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown.
+  // Sprint #352 BRAGI.GEO.FORMAT — collect FAQ entries for FAQPage schema
+  // generation later in this same prompt. The writer must use the EXACT same
+  // questions as the structured ones below, so we can later assemble a
+  // JSON-LD block whose questions match what's in the body — Google + LLMs
+  // both want consistency between visible content and structured data.
+  const faqJsonForSchema = faqs.length
+    ? faqs.map(f => ({
+        question: f.question,
+        // Answer hint will be rewritten by the LLM in the body, then mirrored
+        // into the schema. We don't pre-fill the answer text here.
+      }))
+    : []
+
+  const prompt = `You are the lead SEO writer for ${brandName} (a leading gaming marketplace). The structured brief below has already been reviewed for quality. Now write the FULL article body in publish-ready markdown that wins BOTH Google rankings AND AI-assistant citations (ChatGPT, Gemini, Perplexity, Claude).
 
 PAGE CONTEXT
 - Primary keyword: "${keyword}"
@@ -852,10 +879,11 @@ ${targetKws.slice(0, 8).map(k => `- ${k}`).join('\n')}
 
 REQUIRED ARTICLE STRUCTURE
 1. **H1** — the suggested title above (one line, # prefix)
-2. **Lead paragraph** — 2-3 sentences (40-70 words) IMMEDIATELY after the H1, BEFORE any H2. This is non-negotiable. Establishes context: what the page is about, who it's for, why they should care. Include the primary keyword naturally in the FIRST sentence (helps Google's featured-snippet capture and gives readers a clean entry point). Mention 1-2 trust signals briefly. NO heading above this paragraph.
+2. **Lead paragraph** — 2-3 sentences (40-70 words) IMMEDIATELY after the H1, BEFORE any H2. Non-negotiable. Include the primary keyword naturally in the FIRST sentence. Mention 1-2 trust signals briefly. NO heading above this paragraph.
 3. **Body sections** — one ## H2 per outline entry, in the order given below, ~150-300 words each.
-4. **FAQ section** — at the end, "## Frequently Asked Questions" with the entries below.
+4. **FAQ section** — "## Frequently Asked Questions" with the entries below. Each answer 1-3 sentences MAX (LLM-quotable length).
 5. **Closing paragraph** — soft CTA back to the page, no hard sell.
+6. **Schema markup block** — at the very bottom of the article, a fenced \`\`\`json code block containing FAQPage JSON-LD schema${isCategoryPage ? ' + Product schema (category page)' : ''}. See SCHEMA section below for exact format.
 
 OUTLINE (each item below = one ## H2 section, written in order):
 ${outlineBlock}
@@ -863,13 +891,82 @@ ${outlineBlock}
 FAQs to weave in (inside the closing FAQ section, NOT inline with body):
 ${faqBlock}
 
+═════════════════════════════════════════════════════════════════════
+🌐 GEO-OPTIMIZED CONTENT RULES — every section must satisfy these
+═════════════════════════════════════════════════════════════════════
+
+These rules make the article quotable by AI assistants (LLMs cite specific, source-backed claims; they ignore generic prose).
+
+a) **Answer-shaped H2 headings.** Phrase each H2 either as a question ("How long does delivery take?") OR as a clear factual claim that stands alone ("Delivery for 92% of orders completes in under 15 minutes"). NEVER use vague labels like "Our Service", "About Us", "Why Choose Us" — LLMs skip these.
+
+b) **Cite stats with source patterns.** Whenever you state a number, percentage, duration, or count, write it in this format:
+   - Plain inline: "92% of orders complete in under 15 minutes (based on our 2024 internal delivery metrics)."
+   - With named source: "According to Newzoo's 2024 Global Games Market Report, the MMORPG segment generated $XB in revenue."
+   The article must include AT LEAST 3 such citable data points across body sections. If you don't have a hard number, use a credible relative claim ("the most popular …", "the fastest …") with a brief qualifier.
+
+c) **Lead each H2 with a 1-2 sentence "answer block."** The first 1-2 sentences of every H2 section must give a direct, self-contained answer to the implicit question in the heading. LLMs lift these top sentences as quotes. The rest of the section can elaborate. Example for "How long does delivery take?":
+   "Most G2G orders complete in 5–15 minutes after payment confirmation. The exact time depends on game, currency type, and seller availability."
+   …then elaborate.
+
+d) **Name entities explicitly.** When mentioning games, currencies, platforms, regions, or services, use the FULL proper name at least once per section, even if redundant. LLMs index entity mentions ("Blade & Soul NEO Gold" beats "the in-game currency"). Use the primary keyword's full entity form in the lead paragraph and in at least 3 H2 sections.
+
+e) **FAQ answers must be Q-and-A-shaped, not essays.** Each FAQ answer = 1-3 sentences MAX. Include the question's keyword in the answer. These are the highest-cited blocks by AI assistants.
+
+═════════════════════════════════════════════════════════════════════
+📜 SCHEMA MARKUP — append at the very END of the article
+═════════════════════════════════════════════════════════════════════
+
+After the closing CTA paragraph, add a section:
+
+## Schema markup (publisher: paste into page \`<head>\`)
+
+Then a fenced code block:
+
+\`\`\`json
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        ${faqJsonForSchema.map(f => `{
+          "@type": "Question",
+          "name": ${JSON.stringify(f.question)},
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "<paste the answer you wrote for this FAQ in the body, verbatim>"
+          }
+        }`).join(',\n        ') || '<<inline the FAQ entries from the body here in this shape>>'}
+      ]
+    }${isCategoryPage ? `,
+    {
+      "@type": "Product",
+      "name": ${JSON.stringify(h1Hint)},
+      "description": "<paste the meta description here>",
+      "brand": { "@type": "Brand", "name": ${JSON.stringify(brandName)} },
+      "offers": {
+        "@type": "AggregateOffer",
+        "priceCurrency": "USD",
+        "lowPrice": "<lowest listing price you see on this page>",
+        "highPrice": "<highest>",
+        "offerCount": "<count of active listings, integer>"
+      }
+    }` : ''}
+  ]
+}
+\`\`\`
+
+Use the FAQ questions+answers you actually wrote in the body — answers in the schema must match the body verbatim (Google penalises schema/body mismatch). For the Product schema fields (low/high/count), leave as plain text placeholders for the publisher to fill from the live offer listings.
+
+═════════════════════════════════════════════════════════════════════
+
 WRITING RULES
 - Markdown headings: # for H1 (only one, at the very top), ## for section H2, ### for sub-points.
 - Plain prose paragraphs. No HTML. No <br> tags. Use blank lines to separate paragraphs.
 - DO NOT use the forbidden filler vocabulary: "immerse yourself", "step into", "dive into", "delve into", "embark", "captivating", "buckle up", "unravel", "thrill", "forge".
 - Bold ONLY brand/feature names (e.g. **GamerProtect**) — never bold the primary keyword itself.
 - Mention ${brandName}'s trust signals naturally — pull them from the BRAND CONTEXT block above (or the workspace's KB). Do NOT mention competing marketplaces or the game's own publisher/developer. (For G2G specifically: GamerProtect escrow, ISO/IEC 27001:2013 certified, 200+ payment methods, 24/7 support, transparent ratings — these are G2G-only facts; OG and other brands have their own list in the KB.)
-- Hit the word count: minimum 800 words, target 1200-1500 for category pages, max 1800.
+- Hit the word count: minimum 800 words, target 1200-1500 for category pages, max 1800 (NOT counting the JSON schema block).
 - Final paragraph should end with a soft CTA back to the page (no hard sell).
 - Do NOT output meta description, target keyword list, or any "writing rules" headers — those live in the structured brief, not the article body.
 - ⚠ NEVER skip the lead paragraph. The article MUST flow: H1 → lead paragraph (no heading) → first H2. If you go straight from H1 to H2, you have failed the brief.
@@ -877,7 +974,7 @@ WRITING RULES
 ${kbBlock}
 
 OUTPUT FORMAT
-Return ONLY the markdown article body. No preamble, no JSON, no explanation. Start with "# ${h1Hint}" on the first line.
+Return ONLY the markdown article body (including the trailing JSON schema code block). No preamble, no commentary, no explanation. Start with "# ${h1Hint}" on the first line.
 
 ${draftHeader ? `\nFor reference, the meta description and user intent already approved are:\n\n${draftHeader}\n` : ''}`
 

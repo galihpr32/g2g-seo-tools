@@ -1,24 +1,22 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
+import { use, useEffect, useMemo, useState } from 'react'
 
 /**
- * Sprint FRIDAY.KPI.KW-BREAKDOWN.2 (338) + FRIDAY.KPI.KW.FILTERS (340) —
- * /reports/friday-kpi/keywords sub-page.
+ * Sprint KW.BREAKDOWN.PUBLIC (350) —
+ * /public/friday-kpi/keywords/[token] read-only public view.
  *
- * Surfaces the GA4 (revenue per landing page) × GSC (top queries per page)
- * join for one Thu→Wed week, per brand. Internal-only (auth required),
- * manual Refresh button to re-fetch from Google.
+ * Mirrors the internal /reports/friday-kpi/keywords UI (filters, sort, expand)
+ * but:
+ *   • Fetches via /api/...?token=<token> which bypasses auth on the server
+ *   • Locked to one (site × week) snapshot — no refresh, no week picker
+ *   • No share/CSV buttons (management already has the link, they don't need
+ *     to re-share). CSV export stays because exporting data is useful to
+ *     management too.
  *
- * Filters (sprint 340):
- *   • Search box — match by page path substring
- *   • URL include — startsWith filter (e.g. "/categories" to focus product hubs)
- *   • Market — All / US / ID (server-side split per landing page)
- *   • Category — joined from product_tiers
- *   • Week picker — last 12 Thu→Wed weeks; load cached or refresh
- *
- * Sort: Sessions desc default, toggle Revenue.
+ * Filters + sort + expand all work the same as internal — management can
+ * drill down. Read-only means they can't trigger a fresh Refresh call (that
+ * stays gated to logged-in users).
  */
 
 interface BreakdownQuery {
@@ -61,21 +59,14 @@ interface BreakdownPayload {
 }
 interface ApiResponse {
   ok:           boolean
-  cached?:      boolean
+  public?:      boolean
   site_slug?:   string
   week_start?:  string
   generated_at?: string
   payload?:     BreakdownPayload
-  /** Sprint KW.BREAKDOWN.PUBLIC (350) — surfaced on cached rows so the
-   *  UI can construct a shareable public URL without a separate roundtrip. */
-  public_token?: string
-  hint?:        string
-  warning?:     string
   error?:       string
 }
 
-const SITES = ['g2g', 'offgamers'] as const
-type Site    = typeof SITES[number]
 type Market  = 'all' | 'us' | 'id'
 type SortKey = 'sessions' | 'revenue'
 
@@ -87,39 +78,6 @@ function fmtMoney(n: number): string {
   if (n == null || n === 0) return '—'
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
-function fmtRel(iso: string): string {
-  const ms  = Date.now() - new Date(iso).getTime()
-  const min = Math.floor(ms / 60000)
-  if (min < 1)    return 'just now'
-  if (min < 60)   return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24)    return `${hr}h ago`
-  const d = Math.floor(hr / 24)
-  return `${d}d ago`
-}
-
-/**
- * Last 12 Thu→Wed weeks ending at the most-recently-completed Wed.
- * UI dropdown options. Newest first.
- */
-function listLast12WeekStarts(now: Date = new Date()): string[] {
-  const today = new Date(now)
-  today.setHours(0, 0, 0, 0)
-  const day = today.getDay()
-  const daysSinceCompletedWed = day === 3 ? 7 : (day + 4) % 7 || 7
-  const lastWed = new Date(today)
-  lastWed.setDate(today.getDate() - daysSinceCompletedWed)
-  const out: string[] = []
-  for (let i = 0; i < 12; i++) {
-    const end = new Date(lastWed)
-    end.setDate(lastWed.getDate() - i * 7)
-    const start = new Date(end)
-    start.setDate(end.getDate() - 6)
-    out.push(start.toISOString().slice(0, 10))
-  }
-  return out  // newest → oldest
-}
-
 function fmtWeekLabel(weekStart: string): string {
   const d   = new Date(weekStart + 'T00:00:00Z')
   const end = new Date(d.getTime() + 6 * 86_400_000)
@@ -127,11 +85,8 @@ function fmtWeekLabel(weekStart: string): string {
   return `${fmt(d)} – ${fmt(end)}`
 }
 
-/**
- * Sprint KW.BREAKDOWN.CSV (349) — escape one cell for RFC 4180 CSV. Wraps
- * values containing commas, quotes, or newlines in double-quotes and
- * doubles any internal quotes. Numbers/empty cells pass through bare.
- */
+// CSV helpers (duplicate of internal page — keeping them inline so the public
+// route is self-contained and doesn't reach into the dashboard tree).
 function csvEscape(v: unknown): string {
   if (v == null) return ''
   const s = String(v)
@@ -139,26 +94,11 @@ function csvEscape(v: unknown): string {
   if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
   return s
 }
-
-/**
- * Sprint KW.BREAKDOWN.CSV (349) — convert filtered rows to a CSV string in
- * Format A: 1 row per landing page, top 5 queries flattened into 20 columns
- * (q1, q1_rank, q1_clicks, q1_impressions, q2, …). Cells respect the active
- * market filter (slice that's currently shown in the table) so what the user
- * exports matches what they see.
- */
 function buildCsv(rows: BreakdownRow[], market: Market): string {
-  const header = [
-    'Landing Page',
-    'Category',
-    'Sessions',
-    'Transactions',
-    'Revenue',
-  ]
+  const header = ['Landing Page', 'Category', 'Sessions', 'Transactions', 'Revenue']
   for (let i = 1; i <= 5; i++) {
     header.push(`Q${i}`, `Q${i} Rank`, `Q${i} Clicks`, `Q${i} Impressions`)
   }
-
   const lines: string[] = [header.map(csvEscape).join(',')]
   for (const r of rows) {
     const slice = market === 'us' ? r.us : market === 'id' ? r.id : null
@@ -166,7 +106,6 @@ function buildCsv(rows: BreakdownRow[], market: Market): string {
     const transactions = slice ? slice.transactions : r.transactions
     const revenue      = slice ? slice.revenue      : r.revenue
     const queries      = slice ? slice.top_queries  : r.top_queries
-
     const row: (string | number)[] = [
       r.page,
       r.category ?? '',
@@ -186,12 +125,6 @@ function buildCsv(rows: BreakdownRow[], market: Market): string {
   }
   return lines.join('\r\n')
 }
-
-/**
- * Sprint KW.BREAKDOWN.CSV (349) — trigger a CSV download via Blob + anchor
- * click. No server roundtrip; everything happens in the browser using the
- * data the table is already rendering.
- */
 function downloadCsv(filename: string, csv: string): void {
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' })
   const url  = URL.createObjectURL(blob)
@@ -204,66 +137,41 @@ function downloadCsv(filename: string, csv: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-export default function KeywordBreakdownPage() {
-  // Brand tab + sort
-  const [site,    setSite]    = useState<Site>('g2g')
-  const [sort,    setSort]    = useState<SortKey>('sessions')
-  // Filters
-  const [search,        setSearch]        = useState('')
-  const [urlInclude,    setUrlInclude]    = useState('')
-  const [market,        setMarket]        = useState<Market>('all')
-  const [category,      setCategory]      = useState<string>('all')   // 'all' | category name | '__uncategorized__'
-  const [weekStart,     setWeekStart]     = useState<string>(() => listLast12WeekStarts()[0])
+export default function PublicKeywordBreakdownPage({ params }: { params: Promise<{ token: string }> }) {
+  const { token } = use(params)
 
-  const weekOptions = useMemo(() => listLast12WeekStarts(), [])
+  const [data,    setData]    = useState<ApiResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error,   setError]   = useState<string | null>(null)
 
-  // Data per (site × weekStart) — keyed for cheap tab/week switching
-  const [data, setData] = useState<Record<string, ApiResponse | null>>({})
-  const [loading,    setLoading]    = useState(false)
-  const [refreshing, setRefreshing] = useState(false)
-  const [expanded,   setExpanded]   = useState<Set<string>>(new Set())
-  // Sprint KW.BREAKDOWN.PUBLIC (350) — transient toast after copy-link success
-  const [shareToast, setShareToast] = useState<string | null>(null)
+  const [sort,        setSort]        = useState<SortKey>('sessions')
+  const [search,      setSearch]      = useState('')
+  const [urlInclude,  setUrlInclude]  = useState('')
+  const [market,      setMarket]      = useState<Market>('all')
+  const [category,    setCategory]    = useState<string>('all')
+  const [expanded,    setExpanded]    = useState<Set<string>>(new Set())
 
-  const cacheKey = `${site}::${weekStart}`
-  const active   = data[cacheKey] ?? null
-  const payload  = active?.payload ?? null
-
-  // Auto-load when (site, weekStart) changes if we don't have it cached yet
   useEffect(() => {
-    if (data[cacheKey] !== undefined) return
     void (async () => {
-      setLoading(true)
+      setLoading(true); setError(null)
       try {
-        const res = await fetch(`/api/reports/friday-kpi/keyword-breakdown?site=${site}&week=${weekStart}`, { cache: 'no-store' })
+        const res = await fetch(`/api/reports/friday-kpi/keyword-breakdown?token=${encodeURIComponent(token)}`, { cache: 'no-store' })
         const j   = await res.json() as ApiResponse
-        setData(d => ({ ...d, [cacheKey]: j }))
+        if (!res.ok || !j.ok) {
+          setError(j.error ?? `HTTP ${res.status}`)
+        } else {
+          setData(j)
+        }
       } catch (e) {
-        setData(d => ({ ...d, [cacheKey]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
+        setError(e instanceof Error ? e.message : String(e))
       } finally {
         setLoading(false)
       }
     })()
-  }, [cacheKey, site, weekStart, data])
+  }, [token])
 
-  async function refresh() {
-    setRefreshing(true)
-    try {
-      const res = await fetch(`/api/reports/friday-kpi/keyword-breakdown`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ site_slug: site, week_start: weekStart }),
-      })
-      const j = await res.json() as ApiResponse
-      setData(d => ({ ...d, [cacheKey]: j }))
-    } catch (e) {
-      setData(d => ({ ...d, [cacheKey]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
-    } finally {
-      setRefreshing(false)
-    }
-  }
+  const payload = data?.payload ?? null
 
-  // ── Apply filters + sort ─────────────────────────────────────────────
   const allCategories = useMemo(() => {
     if (!payload) return [] as string[]
     const s = new Set<string>()
@@ -280,7 +188,6 @@ export default function KeywordBreakdownPage() {
       if (inc && !r.page.toLowerCase().startsWith(inc)) return false
       if (category === '__uncategorized__' && r.category) return false
       if (category !== 'all' && category !== '__uncategorized__' && r.category !== category) return false
-      // Market: rows hide when slice has 0 sessions AND 0 queries (truly no signal in that market)
       if (market === 'us' && r.us.sessions === 0 && r.us.top_queries.length === 0) return false
       if (market === 'id' && r.id.sessions === 0 && r.id.top_queries.length === 0) return false
       return true
@@ -306,108 +213,66 @@ export default function KeywordBreakdownPage() {
     })
   }
 
-  // Sprint KW.BREAKDOWN.CSV (349) — export filtered rows to a CSV file.
-  // Uses `rows` from useMemo above so it picks up active filter + sort.
+  function clearFilters() {
+    setSearch(''); setUrlInclude(''); setMarket('all'); setCategory('all')
+  }
+
   function exportCsv() {
     if (!payload || rows.length === 0) return
     const csv      = buildCsv(rows, market)
-    const filename = `kw-breakdown-${site}-${payload.week_start}${market === 'all' ? '' : '-' + market}.csv`
+    const filename = `kw-breakdown-${payload.site_slug}-${payload.week_start}${market === 'all' ? '' : '-' + market}.csv`
     downloadCsv(filename, csv)
-  }
-
-  // Sprint KW.BREAKDOWN.PUBLIC (350) — copy a public URL to clipboard.
-  // Token comes from the API response (present on cached rows). If absent
-  // (e.g. user opened week with no snapshot yet), show error toast.
-  async function copyShareLink() {
-    const token = active?.public_token
-    if (!token) {
-      setShareToast('⚠️ Snapshot has no public token yet. Click Refresh, then try again.')
-      setTimeout(() => setShareToast(null), 4000)
-      return
-    }
-    const url = `${window.location.origin}/public/friday-kpi/keywords/${token}`
-    try {
-      await navigator.clipboard.writeText(url)
-      setShareToast('🔗 Public link copied — paste it anywhere; no login required')
-    } catch {
-      // Clipboard write blocked (e.g. http context). Fall back to prompt so
-      // user can still grab the URL manually.
-      window.prompt('Copy this public URL:', url)
-      setShareToast('🔗 Public URL above — copy manually')
-    }
-    setTimeout(() => setShareToast(null), 4000)
-  }
-
-  function clearFilters() {
-    setSearch('')
-    setUrlInclude('')
-    setMarket('all')
-    setCategory('all')
   }
 
   const filtersActive = !!(search || urlInclude || market !== 'all' || category !== 'all')
 
-  return (
-    <main className="max-w-7xl mx-auto p-6">
-      <Link href="/reports/friday-kpi" className="text-xs text-gray-500 hover:text-gray-300 inline-flex items-center gap-1 mb-2">← Weekly Report</Link>
-      <div className="flex items-start justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-white mb-1">📋 Keyword Breakdown</h1>
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-200 p-6">
+        <div className="max-w-7xl mx-auto py-20 text-center text-gray-500 text-sm">Loading shared snapshot…</div>
+      </main>
+    )
+  }
+
+  if (error || !payload) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-200 p-6">
+        <div className="max-w-3xl mx-auto py-20 text-center">
+          <h1 className="text-2xl font-bold text-white mb-2">Snapshot not found</h1>
           <p className="text-sm text-gray-400">
-            Landing pages with GA4 revenue and the top 5 organic queries that drove rank to that page (Thu→Wed weekly windows).
+            {error ?? 'This share link is invalid or has been rotated.'}
+          </p>
+          <p className="text-xs text-gray-600 mt-4">
+            If you received this link from your team, ask them to refresh the snapshot and resend.
           </p>
         </div>
-      </div>
+      </main>
+    )
+  }
 
-      {/* Brand tabs */}
-      <div className="inline-flex gap-1 bg-gray-900 border border-gray-800 rounded-lg p-1 mb-4">
-        {SITES.map(s => (
-          <button
-            key={s}
-            onClick={() => setSite(s)}
-            className={`px-4 py-1.5 text-sm rounded-md transition ${
-              site === s
-                ? 'bg-violet-500/20 text-violet-200 border border-violet-500/40'
-                : 'text-gray-400 hover:text-gray-200'
-            }`}
-          >
-            {s.toUpperCase()}
-          </button>
-        ))}
-      </div>
+  return (
+    <main className="min-h-screen bg-gray-950 text-gray-200">
+      <div className="max-w-7xl mx-auto p-6">
+        <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-bold text-white mb-1">📋 Keyword Breakdown — {payload.site_slug.toUpperCase()}</h1>
+            <p className="text-sm text-gray-400">
+              Landing pages with GA4 revenue and the top 5 organic queries that drove rank to that page.
+            </p>
+            <p className="text-[11px] text-gray-600 mt-1">
+              Window <strong className="text-gray-400">{fmtWeekLabel(payload.week_start)}</strong>
+              {' · '}
+              Generated <strong className="text-gray-400">{new Date(payload.generated_at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}</strong>
+              {' · '}
+              <span className="text-emerald-400/70">🔓 Public link</span>
+            </p>
+          </div>
+        </div>
 
-      {/* Header bar: week picker + meta + refresh */}
+      {/* Header bar: sort + CSV */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-3 flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <label className="text-xs text-gray-500">Week:</label>
-          <select
-            value={weekStart}
-            onChange={e => setWeekStart(e.target.value)}
-            className="bg-gray-950 border border-gray-800 text-gray-200 text-xs rounded-md px-2 py-1.5 focus:outline-none focus:border-violet-500"
-          >
-            {weekOptions.map((w, i) => (
-              <option key={w} value={w}>
-                {fmtWeekLabel(w)} {i === 0 ? '(latest)' : ''}
-              </option>
-            ))}
-          </select>
-          <span className="text-xs text-gray-500 ml-2">
-            {payload ? (
-              <>
-                Generated <strong className="text-white">{fmtRel(payload.generated_at)}</strong>
-                {' · '}
-                <span className="text-gray-600">
-                  GA4: {payload.diagnostics.ga4_rows_fetched} · GSC: {payload.diagnostics.gsc_rows_fetched} · matched: {payload.diagnostics.matched_pages}
-                </span>
-              </>
-            ) : active?.hint ? (
-              <span className="text-amber-300/80">No snapshot for this week — click Refresh.</span>
-            ) : active?.error ? (
-              <span className="text-red-400">Error: {active.error}</span>
-            ) : loading ? (
-              <span className="text-gray-500">Loading…</span>
-            ) : null}
-          </span>
+        <div className="text-xs text-gray-500">
+          GA4 rows: {payload.diagnostics.ga4_rows_fetched} · GSC rows: {payload.diagnostics.gsc_rows_fetched} · matched pages: {payload.diagnostics.matched_pages}
         </div>
 
         <div className="flex items-center gap-2">
@@ -426,41 +291,15 @@ export default function KeywordBreakdownPage() {
             </button>
           </div>
 
-          {/* Sprint KW.BREAKDOWN.CSV (349) — export filtered view as CSV */}
           <button
             onClick={exportCsv}
-            disabled={!payload || rows.length === 0}
+            disabled={rows.length === 0}
             className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1 border border-gray-700"
-            title="Download current filtered view as CSV"
           >
             📥 Export CSV
           </button>
-
-          {/* Sprint KW.BREAKDOWN.PUBLIC (350) — copy tokenized public URL */}
-          <button
-            onClick={copyShareLink}
-            disabled={!active?.public_token}
-            className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1 border border-gray-700"
-            title="Generate a public link viewable without login"
-          >
-            🔗 Share
-          </button>
-
-          <button
-            onClick={refresh}
-            disabled={refreshing}
-            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1"
-          >
-            {refreshing ? '⏳ Refreshing…' : '↻ Refresh'}
-          </button>
         </div>
       </section>
-
-      {shareToast && (
-        <div className="bg-emerald-500/10 border border-emerald-500/40 rounded-lg text-emerald-200 text-xs p-3 mb-3">
-          {shareToast}
-        </div>
-      )}
 
       {/* Filter bar */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-3 mb-4 grid grid-cols-1 md:grid-cols-12 gap-2">
@@ -520,30 +359,11 @@ export default function KeywordBreakdownPage() {
         </div>
       </section>
 
-      {/* Diagnostic warnings */}
-      {payload?.diagnostics.ga4_error && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-200 text-xs p-3 mb-3">
-          ⚠️ GA4: {payload.diagnostics.ga4_error}
-        </div>
-      )}
-      {payload?.diagnostics.gsc_error && payload.diagnostics.gsc_error !== payload.diagnostics.ga4_error && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-200 text-xs p-3 mb-3">
-          ⚠️ GSC: {payload.diagnostics.gsc_error}
-        </div>
-      )}
-      {active?.warning && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-200 text-xs p-3 mb-3">
-          ⚠️ {active.warning}
-        </div>
-      )}
-
       {/* Table */}
       <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-        {loading ? (
-          <div className="p-10 text-center text-gray-500 text-sm">Loading…</div>
-        ) : rows.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="p-10 text-center text-gray-500 text-sm">
-            {payload ? (filtersActive ? 'No rows match the filters.' : 'No rows for this week.') : 'No snapshot yet — click Refresh.'}
+            {filtersActive ? 'No rows match the filters.' : 'No rows in this snapshot.'}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -576,14 +396,14 @@ export default function KeywordBreakdownPage() {
       </section>
 
       <p className="text-[11px] text-gray-600 italic mt-3">
-        Sessions/Tx/Revenue from GA4 (Organic Search only). When market = US or ID, slice shows traffic where GA4&apos;s <code>country</code> dim matches that market. Top queries come from GSC filtered to the same country (idn = ID, else = US). Each landing page&apos;s revenue is total for that market — queries are the top organic drivers but the table does <em>not</em> pro-rate revenue across queries.
+        Sessions/Tx/Revenue from GA4 (Organic Search only). Per-market filter (US/ID) splits revenue and queries by GA4&apos;s <code>country</code> dim (idn = ID, else = US). Each landing page&apos;s revenue is total for that market — queries are the top organic drivers but the table does <em>not</em> pro-rate revenue across queries.
       </p>
+      </div>
     </main>
   )
 }
 
 function RowGroup({ row, market, isOpen, onToggle }: { row: BreakdownRow; market: Market; isOpen: boolean; onToggle: () => void }) {
-  // Pick slice based on market filter
   const slice = market === 'us' ? row.us : market === 'id' ? row.id : null
   const sessions     = slice ? slice.sessions     : row.sessions
   const transactions = slice ? slice.transactions : row.transactions

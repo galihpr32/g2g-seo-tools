@@ -1,14 +1,33 @@
-// ── Puppeteer launcher (dev + serverless) ──────────────────────────────────
+// ── Puppeteer launcher (Coolify Docker + Vercel/Lambda + dev) ──────────────
 //
-// Sprint FRIDAY.KPI.GRAPH.4 — single chokepoint for spinning up headless
-// Chromium. On Vercel/Lambda we use @sparticuz/chromium which bundles a
-// stripped binary that fits under the function-size budget. Locally we fall
-// back to whatever Chrome the dev box has installed (env override available).
+// Sprint FRIDAY.KPI.GRAPH.4 + COOLIFY.PUPPETEER (346) — single chokepoint
+// for spinning up headless Chromium. Three execution environments:
 //
-// Both code paths use puppeteer-core (NOT puppeteer) so no chromium binary
+//   1. Coolify Docker (production target) — system chromium installed via
+//      apt in the Dockerfile. `PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium`
+//      is set at build time. Fastest startup, no tarball download.
+//
+//   2. Vercel/Lambda — @sparticuz/chromium pulls a stripped binary tarball
+//      at cold-start time (the binary is too big to bundle in a 50MB
+//      function package). 15-30s cold start cost.
+//
+//   3. Local dev — point at the installed Chrome browser via env var or
+//      sensible macOS default. Useful for testing puppeteer changes
+//      without spinning up Docker.
+//
+// All three paths use puppeteer-core (NOT puppeteer) so no chromium binary
 // is downloaded at install time.
 
 import type { Browser } from 'puppeteer-core'
+
+// Coolify-Docker detection: the Dockerfile sets this env var to the system
+// chromium path. If present, prefer it — it's the fastest path and avoids
+// pulling a 100MB tarball at cold start. We don't trust `IS_LAMBDA` alone
+// to gate this because we want local devs to be able to point at a Docker-
+// like setup too (run `PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium npm run
+// start` after `docker run`-ing the image locally).
+const SYSTEM_CHROMIUM_PATH = process.env.PUPPETEER_EXECUTABLE_PATH
+const HAS_SYSTEM_CHROMIUM  = !!SYSTEM_CHROMIUM_PATH && SYSTEM_CHROMIUM_PATH.startsWith('/')
 
 const IS_LAMBDA = !!process.env.AWS_LAMBDA_FUNCTION_VERSION || !!process.env.VERCEL
 
@@ -28,10 +47,37 @@ const IS_LAMBDA = !!process.env.AWS_LAMBDA_FUNCTION_VERSION || !!process.env.VER
 const CHROMIUM_PACK_URL = process.env.CHROMIUM_PACK_URL
   ?? 'https://github.com/Sparticuz/chromium/releases/download/v141.0.0/chromium-v141.0.0-pack.x64.tar'
 
+// Common viewport for the Friday KPI PNG.
+const DEFAULT_VIEWPORT = { width: 1280, height: 1800, deviceScaleFactor: 2 }
+
+// Sandbox flags that Chromium requires inside a Docker container (no user
+// namespace by default). Safe to apply outside Docker too — they just
+// disable extra hardening the OS would have provided anyway.
+const DOCKER_SAFE_ARGS = [
+  '--no-sandbox',
+  '--disable-setuid-sandbox',
+  '--disable-dev-shm-usage',  // /dev/shm in containers defaults to 64MB; Chromium hates that
+  '--disable-gpu',
+  '--no-zygote',
+  '--single-process',         // helps on tiny containers; can drop if memory allows multi-process
+  '--disable-features=VizDisplayCompositor',
+]
+
 export async function launchBrowser(): Promise<Browser> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const puppeteer = require('puppeteer-core') as typeof import('puppeteer-core')
 
+  // ── Path 1: Coolify Docker (and any host that pre-installed chromium) ──
+  if (HAS_SYSTEM_CHROMIUM) {
+    return puppeteer.launch({
+      headless: true,
+      defaultViewport: DEFAULT_VIEWPORT,
+      executablePath: SYSTEM_CHROMIUM_PATH,
+      args: DOCKER_SAFE_ARGS,
+    })
+  }
+
+  // ── Path 2: Vercel/Lambda — sparticuz tarball ──
   if (IS_LAMBDA) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require('@sparticuz/chromium')
@@ -39,7 +85,7 @@ export async function launchBrowser(): Promise<Browser> {
     const chromium = (mod.default ?? mod) as any
     return puppeteer.launch({
       args: chromium.args,
-      defaultViewport: { width: 1280, height: 1800, deviceScaleFactor: 2 },
+      defaultViewport: DEFAULT_VIEWPORT,
       // Pass the pack URL — sparticuz downloads, extracts to /tmp, and sets
       // LD_LIBRARY_PATH so the binary can find libnss3.so + friends.
       executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
@@ -48,14 +94,12 @@ export async function launchBrowser(): Promise<Browser> {
     })
   }
 
-  // Dev: use system Chrome. PUPPETEER_EXECUTABLE_PATH lets devs point at
-  // their own browser (e.g. /Applications/Google Chrome.app/Contents/MacOS/Google Chrome).
-  const execPath = process.env.PUPPETEER_EXECUTABLE_PATH
-    ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  // ── Path 3: Local dev — system Chrome at macOS default location ──
+  const macChromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
   return puppeteer.launch({
     headless: true,
-    defaultViewport: { width: 1280, height: 1800, deviceScaleFactor: 2 },
-    executablePath: execPath,
+    defaultViewport: DEFAULT_VIEWPORT,
+    executablePath: macChromePath,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   })
 }

@@ -36,20 +36,48 @@ function getDefaultWeekStart(now: Date = new Date()): string {
 }
 
 export async function GET(req: Request) {
+  const db = createServiceClient()
+  const url = new URL(req.url)
+
+  // Sprint KW.BREAKDOWN.PUBLIC (350) — token-based read path. When a `token`
+  // query param is present, we skip auth entirely and look up the row by
+  // public_token. The token is a UUID generated at insert time; anyone who
+  // has it can view that single snapshot. No owner/site/week needed —
+  // they're all derivable from the row.
+  const token = url.searchParams.get('token')
+  if (token) {
+    const { data, error } = await db
+      .from('friday_kpi_keyword_breakdown')
+      .select('payload, generated_at, site_slug, week_start, public_token')
+      .eq('public_token', token)
+      .maybeSingle()
+    if (error)  return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!data)  return NextResponse.json({ error: 'Token not found' }, { status: 404 })
+    return NextResponse.json({
+      ok:           true,
+      cached:       true,
+      public:       true,
+      site_slug:    data.site_slug,
+      week_start:   data.week_start,
+      generated_at: data.generated_at,
+      public_token: data.public_token,
+      payload:      data.payload as KeywordBreakdownPayload,
+    })
+  }
+
+  // Authenticated read path (existing behaviour for the internal page).
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const ownerId = await getEffectiveOwnerId(supabase, user.id)
-  const db      = createServiceClient()
 
-  const url      = new URL(req.url)
   const siteSlug = (url.searchParams.get('site') ?? 'g2g').toLowerCase()
   const week     = url.searchParams.get('week') ?? getDefaultWeekStart()
 
   const { data, error } = await db
     .from('friday_kpi_keyword_breakdown')
-    .select('payload, generated_at')
+    .select('payload, generated_at, public_token')
     .eq('owner_user_id', ownerId)
     .eq('site_slug', siteSlug)
     .eq('week_start', week)
@@ -73,6 +101,7 @@ export async function GET(req: Request) {
     site_slug:    siteSlug,
     week_start:   week,
     generated_at: data.generated_at,
+    public_token: data.public_token,
     payload:      data.payload as KeywordBreakdownPayload,
   })
 }
@@ -99,7 +128,9 @@ export async function POST(req: Request) {
 
     // Upsert: one row per (owner × site × week_start). Refresh replaces in
     // place so the UI sees a single canonical snapshot per week.
-    const { error: upsertError } = await db
+    // Sprint KW.BREAKDOWN.PUBLIC (350) — chain .select() so we get the
+    // public_token back (auto-generated on insert; preserved on update).
+    const { data: row, error: upsertError } = await db
       .from('friday_kpi_keyword_breakdown')
       .upsert({
         owner_user_id: ownerId,
@@ -108,6 +139,8 @@ export async function POST(req: Request) {
         payload,
         generated_at:  new Date().toISOString(),
       }, { onConflict: 'owner_user_id,site_slug,week_start' })
+      .select('public_token')
+      .single()
 
     if (upsertError) {
       // Still return the freshly built payload even if cache write failed
@@ -128,6 +161,7 @@ export async function POST(req: Request) {
       site_slug:    siteSlug,
       week_start:   weekStart,
       generated_at: payload.generated_at,
+      public_token: row?.public_token,
       payload,
     })
   } catch (err) {
