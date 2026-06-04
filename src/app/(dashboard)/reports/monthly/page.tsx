@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { LottieLoader } from '@/components/ui/LottieLoader'
 import AgentActivitySummary, { type AgentInsightsLite } from '@/components/reports/AgentActivitySummary'
 import MimirPanel from '@/components/agents/MimirPanel'
+import { useSiteSlug } from '@/lib/hooks/useSiteSlug'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -805,7 +806,19 @@ function ExperimentsSnapshotSection({ ex }: { ex: ExperimentsSnapshot }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
+export default function MonthlyReportPage({ site: siteProp }: { site?: string } = {}) {
+  // Sprint #360 MONTHLY.SITE.LEAK — when no `site` prop is passed (un-prefixed
+  // /reports/monthly URL, e.g. when user clicked Sidebar link from a non-
+  // prefixed page), fall back to the cookie/localStorage signal via
+  // useSiteSlug(). Previous default 'g2g' caused OffGamers users to see G2G
+  // data inside an OffGamers shell — sidebar theme + branding said OG, but
+  // every API call sent ?site=g2g.
+  //
+  // When the prop IS passed (from /[site]/reports/monthly wrapper which
+  // reads params.site), URL prefix is authoritative and the prop wins —
+  // matches the same precedence order useSiteSlug itself applies.
+  const hookSlug = useSiteSlug()
+  const site     = siteProp ?? hookSlug
   const [reports, setReports]             = useState<ReportSummary[]>([])
   const [selectedId, setSelectedId]       = useState<string | null>(null)
   const [report, setReport]               = useState<MonthlyReport | null>(null)
@@ -841,6 +854,18 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
   }, [site]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadList() }, [loadList])
+
+  // Sprint #360 — when the active site changes (cookie/SiteSwitcher), drop
+  // any stale selection from the previous brand. Otherwise the list reloads
+  // with the new brand's reports but selectedId still points at the prior
+  // brand's row id, and the report card shows cross-site data until the
+  // user clicks something. The single-report GET doesn't filter by site
+  // (intentional — id is globally unique), so without this reset the UI
+  // would render the previous brand's data inside the new brand's shell.
+  useEffect(() => {
+    setSelectedId(null)
+    setReport(null)
+  }, [site])
 
   // ── Load single report ───────────────────────────────────────────────────────
   useEffect(() => {
