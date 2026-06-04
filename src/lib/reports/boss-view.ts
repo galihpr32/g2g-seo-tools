@@ -31,6 +31,13 @@ import { normalizePath } from './friday-kpi-keyword-breakdown'
 export function bossViewWindows(now: Date = new Date()): {
   cur:  { start: string; end: string }
   prev: { start: string; end: string }
+  /** Sprint #363 — historical range Jan 1 of current year → cur.end. The
+   *  per-brand build pulls one GSC + one GA4 call covering this range and
+   *  buckets into Thu→Wed weeks. */
+  historical: { start: string; end: string }
+  /** Thu→Wed week boundaries from historical.start → historical.end. Newest
+   *  bucket is the same window as `cur`. */
+  weeks: Array<{ start: string; end: string }>
 } {
   const today = new Date(now)
   today.setHours(0, 0, 0, 0)
@@ -45,9 +52,35 @@ export function bossViewWindows(now: Date = new Date()): {
   const prevStart = new Date(prevEnd)
   prevStart.setDate(prevEnd.getDate() - 6)
   const iso = (d: Date) => d.toISOString().slice(0, 10)
+
+  // Historical range — Jan 1 of CUR-end's year. If Jan 1 ≥ today we'd have
+  // an empty range, so we cap to a minimum of 12 weeks back. That edge case
+  // really only happens in the first week of January when the year just
+  // rolled over.
+  const yearStart = new Date(curEnd.getFullYear(), 0, 1)
+  let histStart = new Date(yearStart)
+  const minHistStart = new Date(curEnd)
+  minHistStart.setDate(curEnd.getDate() - 7 * 12)    // 12 weeks fallback
+  if (histStart > minHistStart) histStart = minHistStart
+
+  // Walk Thu→Wed weeks backwards from curEnd until we hit histStart.
+  const weeks: Array<{ start: string; end: string }> = []
+  const cursor = new Date(curEnd)
+  while (cursor >= histStart) {
+    const wkEnd   = new Date(cursor)
+    const wkStart = new Date(cursor)
+    wkStart.setDate(cursor.getDate() - 6)
+    if (wkStart >= histStart) {
+      weeks.unshift({ start: iso(wkStart), end: iso(wkEnd) })
+    }
+    cursor.setDate(cursor.getDate() - 7)
+  }
+
   return {
     cur:  { start: iso(curStart), end: iso(curEnd) },
     prev: { start: iso(prevStart), end: iso(prevEnd) },
+    historical: { start: iso(histStart), end: iso(curEnd) },
+    weeks,
   }
 }
 
@@ -62,34 +95,74 @@ export interface BossViewMarketSlice {
 
 export interface BossViewFocusKeyword {
   keyword:    string
-  /** True when this KW was picked from G2G's cluster_winners (vs OG). Used by
-   *  the renderer to color/label rows; the same KW could appear on both
-   *  brands' lists in theory, but composite z-scores are computed per-brand. */
+  /** Brand slug ('g2g' | 'offgamers'). Composite z-scores are computed
+   *  per-brand (and for G2G, per-market). */
   brand:      string
+  /** Market scope this KW was scored within. For G2G focus lists this is
+   *  either 'us' or 'id' (separate lists). For OG it's 'all' (single list,
+   *  US + ID combined). The renderer hides the irrelevant rank columns
+   *  based on this field. */
+  scope:      'us' | 'id' | 'all'
   /** Composite z-score (clicks_z + revenue_z). Higher = more important. */
   score:      number
   /** Current-week stats that drove the selection. Surfaced in the table so
-   *  the reader sees "why is this KW on the list?" without guessing. */
-  clicks:     number      // total clicks (US + ID) for THIS week
-  revenue:    number      // proxy: GA4 revenue of top landing page for this KW
+   *  the reader sees "why is this KW on the list?" without guessing. The
+   *  clicks/revenue figures are SCOPED — i.e. for a G2G US focus KW these
+   *  are US-only metrics, not US+ID summed. */
+  clicks:     number
+  revenue:    number      // Sprint #363 — winner-take-all per LP, pro-rated none.
   topLandingPage: string  // normalized path
   /** Rank per (market × week). null = no tier_serp_snapshots row in that
-   *  (market × Thu→Wed window) — typically means the KW isn't tracked in
-   *  that market, or DataForSEO scrape missed it. UI renders "—" for null. */
+   *  (market × Thu→Wed window). For G2G US focus KW, only `us` is populated
+   *  (ID columns rendered as N/A); for G2G ID focus KW, only `id`. For OG
+   *  focus KW both markets present. */
   us: { lastWeek: number | null; thisWeek: number | null }
   id: { lastWeek: number | null; thisWeek: number | null }
+}
+
+/**
+ * Sprint #363 — historical timeline series per brand × market. One bucket
+ * per ISO week from Jan 1 of the current year to the latest completed
+ * Thu→Wed week. Used to render the 4 trend charts (G2G-US, G2G-ID, OG-US,
+ * OG-ID) replacing the WoW grouped-bar chart.
+ */
+export interface HistoricalBucket {
+  /** Week ending date (Wed), 'YYYY-MM-DD'. Used as X-axis tick. */
+  weekEnd:  string
+  clicks:   number
+  /** Organic Search revenue from GA4 (filtered to channelGroup contains
+   *  'organic'). 0 when GA4 not connected for this brand. */
+  revenue:  number
 }
 
 export interface BossViewBrand {
   siteSlug: string
   siteName: string
 
-  // Chart 1 — per-market traffic + revenue, WoW
+  // Compact KPI strip (rendered above the per-brand-country historical
+  // charts) — still shows WoW for the current week pair so the eye can
+  // catch "what changed" at a glance, but no longer drives a separate chart.
   traffic: { us: BossViewMarketSlice; id: BossViewMarketSlice }
   revenue: { us: BossViewMarketSlice; id: BossViewMarketSlice }
 
-  // Chart 2 — top 5 focus KW
-  focusKeywords: BossViewFocusKeyword[]
+  // Sprint #363 — 4 historical timelines, Jan 1 of current year → latest
+  // completed Thu→Wed week. Keys: 'us' + 'id'. OG-ID timeline still rendered
+  // even though OG's focus KW are unified — exec wants to see if ID traffic
+  // is moving regardless of which KW are surfaced.
+  historical: {
+    us: HistoricalBucket[]
+    id: HistoricalBucket[]
+  }
+
+  // Chart 2 data — top focus KW. Layout depends on brand:
+  //   - G2G: focusKeywordsUs (5 KW scored within US) + focusKeywordsId (5
+  //     KW scored within ID). Two separate lists because Galih's data shows
+  //     US and ID focus KWs barely overlap.
+  //   - OG: focusKeywords (5 KW scored on US+ID combined). Smaller portfolio,
+  //     single list keeps it readable.
+  focusKeywordsUs?: BossViewFocusKeyword[]   // G2G only
+  focusKeywordsId?: BossViewFocusKeyword[]   // G2G only
+  focusKeywords?:   BossViewFocusKeyword[]   // OG only
 
   // Diagnostics — surfaced in preview UI footer so reader can debug
   diagnostics: {
@@ -97,6 +170,7 @@ export interface BossViewBrand {
     gsc_queries_fetched:   number
     ga4_rev_pages_fetched: number
     kw_with_ga4_match:     number
+    historical_weeks:      number
     skip_reason?:          string
   }
 }
@@ -199,7 +273,7 @@ export interface BuildBossViewOptions {
 
 export async function buildBossView(opts: BuildBossViewOptions): Promise<BossViewPayload> {
   const { db, ownerId, siteSlugs } = opts
-  const { cur, prev } = bossViewWindows()
+  const { cur, prev, historical, weeks } = bossViewWindows()
 
   // ── Shared OAuth resolver ─────────────────────────────────────────────────
   const { data: conn } = await db
@@ -228,7 +302,9 @@ export async function buildBossView(opts: BuildBossViewOptions): Promise<BossVie
   // ── Per-brand boss-view rows (serial — small N) ───────────────────────────
   const brands: BossViewBrand[] = []
   for (const slug of siteSlugs) {
-    const brand = await buildBrandBossView(db, ownerId, slug, auth, cur, prev)
+    const brand = await buildBrandBossView(
+      db, ownerId, slug, auth, cur, prev, historical, weeks,
+    )
     brands.push(brand)
   }
 
@@ -250,17 +326,30 @@ export async function buildBossView(opts: BuildBossViewOptions): Promise<BossVie
   }
 }
 
-// ─── Per-brand boss view ────────────────────────────────────────────────────
+// ─── Per-brand boss view (Sprint #363 V2) ──────────────────────────────────
+//
+// Changes vs V1:
+//   - Historical timeline data (Jan → now) per brand × market
+//   - Winner-take-all LP revenue attribution (top-clicking KW per LP gets
+//     all the revenue; others on the same LP get $0)
+//   - Min clicks threshold (MIN_CLICKS_FOR_FOCUS) to filter noise
+//   - G2G focus KW split per market (US list + ID list, scored within
+//     market); OG focus KW unified (US+ID combined)
+
+const MIN_CLICKS_FOR_FOCUS = 10   // ignore KWs with <10 clicks/week in selection
 
 async function buildBrandBossView(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db:       SupabaseClient<any>,
-  ownerId:  string,
-  siteSlug: string,
-  auth:     OAuth2Client | null,
-  cur:      { start: string; end: string },
-  prev:     { start: string; end: string },
+  db:         SupabaseClient<any>,
+  ownerId:    string,
+  siteSlug:   string,
+  auth:       OAuth2Client | null,
+  cur:        { start: string; end: string },
+  prev:       { start: string; end: string },
+  historical: { start: string; end: string },
+  weeks:      Array<{ start: string; end: string }>,
 ): Promise<BossViewBrand> {
+  const emptyHist: HistoricalBucket[] = weeks.map(w => ({ weekEnd: w.end, clicks: 0, revenue: 0 }))
   const empty: BossViewBrand = {
     siteSlug,
     siteName: siteSlug === 'offgamers' ? 'OffGamers' : 'G2G',
@@ -272,12 +361,13 @@ async function buildBrandBossView(
       us: { thisWeek: 0, lastWeek: 0, pct: null },
       id: { thisWeek: 0, lastWeek: 0, pct: null },
     },
-    focusKeywords: [],
+    historical: { us: emptyHist, id: emptyHist },
     diagnostics: {
       cluster_winner_count:  0,
       gsc_queries_fetched:   0,
       ga4_rev_pages_fetched: 0,
       kw_with_ga4_match:     0,
+      historical_weeks:      weeks.length,
     },
   }
 
@@ -310,11 +400,6 @@ async function buildBrandBossView(
     empty.diagnostics.skip_reason = `no product_tiers for brand ${siteSlug}`
     return empty
   }
-  // Map productId → market so we can later infer per-market rank presence.
-  const productMarket = new Map<string, string>()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const p of (tierProducts ?? []) as any[]) productMarket.set(String(p.id), String(p.market))
-
   const { data: winnerRows } = await db
     .from('tier_keywords')
     .select('id, keyword, product_tier_id')
@@ -340,70 +425,85 @@ async function buildBrandBossView(
   }
   const uniqueKeywords = Array.from(idsByKeyword.keys())
 
-  // ── Traffic + revenue per (market × week) from GSC + GA4 (brand-level) ────
-  // Two GSC calls per brand × week: dim=['date','country'] gives us click /
-  // impression totals split by US vs ID. Used to drive Chart 1 bars.
-  let trafficUsCur = 0, trafficIdCur = 0, trafficUsPrev = 0, trafficIdPrev = 0
+  // ── Historical timeline (Jan 1 of current year → cur.end) ────────────────
+  // One GSC call dim=['date','country'] + one GA4 call dim=['date','country',
+  // 'sessionDefaultChannelGroup']. Both span the historical window; we
+  // bucket the day-level rows into Thu→Wed weeks for the chart.
+  const histUs: HistoricalBucket[] = weeks.map(w => ({ weekEnd: w.end, clicks: 0, revenue: 0 }))
+  const histId: HistoricalBucket[] = weeks.map(w => ({ weekEnd: w.end, clicks: 0, revenue: 0 }))
+
+  // Helper: find the week index a given date falls into (or -1 if outside).
+  const findWeekIdx = (date: string): number => {
+    for (let i = 0; i < weeks.length; i++) {
+      if (date >= weeks[i].start && date <= weeks[i].end) return i
+    }
+    return -1
+  }
+
   if (auth && gscProperty) {
     try {
-      const [curRows, prevRows] = await Promise.all([
-        getSearchAnalytics(auth, gscProperty, cur.start,  cur.end,  ['date', 'country'], 25000),
-        getSearchAnalytics(auth, gscProperty, prev.start, prev.end, ['date', 'country'], 25000),
-      ])
-      for (const r of curRows) {
+      const rows = await getSearchAnalytics(
+        auth, gscProperty, historical.start, historical.end, ['date', 'country'], 25000,
+      )
+      for (const r of rows) {
+        const date    = String(r.keys?.[0] ?? '')
         const country = String(r.keys?.[1] ?? '').toLowerCase()
         const clicks  = Number(r.clicks ?? 0)
-        if (country === 'idn') trafficIdCur += clicks
-        else                    trafficUsCur += clicks
-      }
-      for (const r of prevRows) {
-        const country = String(r.keys?.[1] ?? '').toLowerCase()
-        const clicks  = Number(r.clicks ?? 0)
-        if (country === 'idn') trafficIdPrev += clicks
-        else                    trafficUsPrev += clicks
+        const idx = findWeekIdx(date)
+        if (idx < 0) continue
+        if (country === 'idn') histId[idx].clicks += clicks
+        else                   histUs[idx].clicks += clicks
       }
     } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] GSC brand traffic failed:`, e)
+      console.warn(`[boss-view ${siteSlug}] historical GSC failed:`, e)
     }
   }
 
-  // ── GA4 organic revenue per (market × week) ───────────────────────────────
-  // Filter to channel = Organic Search, dim=country.
-  let revUsCur = 0, revIdCur = 0, revUsPrev = 0, revIdPrev = 0
   if (auth && ga4PropertyId) {
     try {
-      const [curResp, prevResp] = await Promise.all([
-        getGA4Report(auth, ga4PropertyId, cur.start,  cur.end,
-          ['country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 1000),
-        getGA4Report(auth, ga4PropertyId, prev.start, prev.end,
-          ['country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 1000),
-      ])
-      const accumulate = (rows: ReturnType<typeof parseGA4Rows>, isCur: boolean) => {
-        for (const r of rows) {
-          if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
-          const country = (r.country ?? '').toLowerCase()
-          const rev     = parseFloat(r.purchaseRevenue ?? '0')
-          const isId    = country === 'indonesia'
-          if (isCur) {
-            if (isId) revIdCur += rev
-            else      revUsCur += rev
-          } else {
-            if (isId) revIdPrev += rev
-            else      revUsPrev += rev
-          }
-        }
+      // GA4 date dim returns date as 'YYYYMMDD' (no dashes) — convert before
+      // bucketing.
+      const resp = await getGA4Report(
+        auth, ga4PropertyId, historical.start, historical.end,
+        ['date', 'country', 'sessionDefaultChannelGroup'],
+        ['purchaseRevenue'],
+        25000,
+      )
+      const rows = parseGA4Rows(resp)
+      for (const r of rows) {
+        if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
+        const raw = String(r.date ?? '')
+        // 20260601 → 2026-06-01
+        const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
+        const country = (r.country ?? '').toLowerCase()
+        const rev     = parseFloat(r.purchaseRevenue ?? '0')
+        const idx = findWeekIdx(date)
+        if (idx < 0) continue
+        if (country === 'indonesia') histId[idx].revenue += rev
+        else                          histUs[idx].revenue += rev
       }
-      accumulate(parseGA4Rows(curResp),  true)
-      accumulate(parseGA4Rows(prevResp), false)
     } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] GA4 organic revenue failed:`, e)
+      console.warn(`[boss-view ${siteSlug}] historical GA4 failed:`, e)
     }
   }
 
-  // ── Per-KW clicks (GSC dim=['query','country']) ───────────────────────────
-  // Filter post-fetch to cluster_winner keywords. GSC dimensionFilter could
-  // pre-filter but with 100s of KWs the URL gets huge. Post-filter is fine.
-  const clicksByKeyword = new Map<string, number>()     // KW → total clicks (US + ID)
+  // KPI strip values (this wk + last wk) come straight from the historical
+  // buckets — last 2 entries — so we don't duplicate API calls.
+  const lastIdx = weeks.length - 1
+  const prevIdx = weeks.length - 2
+  const trafficUsCur  = lastIdx >= 0 ? histUs[lastIdx].clicks : 0
+  const trafficIdCur  = lastIdx >= 0 ? histId[lastIdx].clicks : 0
+  const trafficUsPrev = prevIdx >= 0 ? histUs[prevIdx].clicks : 0
+  const trafficIdPrev = prevIdx >= 0 ? histId[prevIdx].clicks : 0
+  const revUsCur  = lastIdx >= 0 ? histUs[lastIdx].revenue : 0
+  const revIdCur  = lastIdx >= 0 ? histId[lastIdx].revenue : 0
+  const revUsPrev = prevIdx >= 0 ? histUs[prevIdx].revenue : 0
+  const revIdPrev = prevIdx >= 0 ? histId[prevIdx].revenue : 0
+
+  // ── Per-(KW × market) clicks (GSC dim=['query','country']) ───────────────
+  // Filter post-fetch to cluster_winner keywords. We now keep US and ID
+  // clicks separate so we can score G2G focus KW per market.
+  const clicksByKwMarket = new Map<string, { us: number; id: number }>()
   if (auth && gscProperty) {
     try {
       const rows = await getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['query', 'country'], 25000)
@@ -412,156 +512,244 @@ async function buildBrandBossView(
       for (const r of rows) {
         const q = String(r.keys?.[0] ?? '').toLowerCase().trim()
         if (!winnerSet.has(q)) continue
-        clicksByKeyword.set(q, (clicksByKeyword.get(q) ?? 0) + Number(r.clicks ?? 0))
+        const country = String(r.keys?.[1] ?? '').toLowerCase()
+        const isId    = country === 'idn'
+        const clicks  = Number(r.clicks ?? 0)
+        const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0 }
+        if (isId) bucket.id += clicks
+        else      bucket.us += clicks
+        clicksByKwMarket.set(q, bucket)
       }
     } catch (e) {
       console.warn(`[boss-view ${siteSlug}] GSC per-query failed:`, e)
     }
   }
 
-  // ── Per-KW top landing page (GSC dim=['page','query']) ────────────────────
-  // For each cluster_winner KW, find the page with the most clicks. That's
-  // the "primary LP" we'll attribute GA4 revenue to.
-  const topPageByKeyword = new Map<string, { path: string; clicks: number }>()
+  // ── Per-(KW × market) top landing page (GSC dim=['page','query','country']) ──
+  // For each cluster_winner KW, find the page with the most clicks WITHIN
+  // each market separately. Same KW can have different top LPs per market
+  // (e.g. US ranks /categories/poe-2-currency, ID ranks /id/categories/poe-2-currency).
+  type LpBucket = { path: string; clicks: number }
+  const topPageByKwMarket = new Map<string, { us?: LpBucket; id?: LpBucket }>()
   if (auth && gscProperty) {
     try {
-      const rows = await getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['page', 'query'], 25000)
+      const rows = await getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['page', 'query', 'country'], 25000)
       const winnerSet = new Set(uniqueKeywords)
       for (const r of rows) {
-        const page = String(r.keys?.[0] ?? '')
-        const q    = String(r.keys?.[1] ?? '').toLowerCase().trim()
+        const page    = String(r.keys?.[0] ?? '')
+        const q       = String(r.keys?.[1] ?? '').toLowerCase().trim()
+        const country = String(r.keys?.[2] ?? '').toLowerCase()
         if (!winnerSet.has(q)) continue
         const clicks = Number(r.clicks ?? 0)
-        const cur    = topPageByKeyword.get(q)
-        if (!cur || clicks > cur.clicks) {
-          topPageByKeyword.set(q, { path: normalizePath(page), clicks })
+        const isId   = country === 'idn'
+        const path   = normalizePath(page)
+        const entry  = topPageByKwMarket.get(q) ?? {}
+        const slot   = isId ? entry.id : entry.us
+        if (!slot || clicks > slot.clicks) {
+          if (isId) entry.id = { path, clicks }
+          else      entry.us = { path, clicks }
+          topPageByKwMarket.set(q, entry)
         }
       }
     } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] GSC page×query failed:`, e)
+      console.warn(`[boss-view ${siteSlug}] GSC page×query×country failed:`, e)
     }
   }
 
-  // ── GA4 revenue per landing page (Organic Search filter, this week) ──────
-  // Used to attribute revenue to each cluster_winner KW via its top LP.
-  const revenueByPath = new Map<string, number>()
+  // ── GA4 revenue per (LP × country) — Organic Search filter ───────────────
+  const revenueByPathMarket = new Map<string, { us: number; id: number }>()
   if (auth && ga4PropertyId) {
     try {
       const resp = await getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
-        ['landingPage', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 5000)
+        ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 10000)
       const rows = parseGA4Rows(resp)
       empty.diagnostics.ga4_rev_pages_fetched = rows.length
       for (const r of rows) {
         if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
-        const path = normalizePath(r.landingPage ?? '')
-        const rev  = parseFloat(r.purchaseRevenue ?? '0')
+        const path    = normalizePath(r.landingPage ?? '')
+        const country = (r.country ?? '').toLowerCase()
+        const rev     = parseFloat(r.purchaseRevenue ?? '0')
         if (!path) continue
-        revenueByPath.set(path, (revenueByPath.get(path) ?? 0) + rev)
+        const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0 }
+        if (country === 'indonesia') bucket.id += rev
+        else                          bucket.us += rev
+        revenueByPathMarket.set(path, bucket)
       }
     } catch (e) {
       console.warn(`[boss-view ${siteSlug}] GA4 LP revenue failed:`, e)
     }
   }
 
-  // ── Compose: per-KW (clicks, revenue) → composite z-score → top 5 ────────
-  type Candidate = { keyword: string; clicks: number; revenue: number; lp: string }
-  const candidates: Candidate[] = []
-  for (const kw of uniqueKeywords) {
-    const clicks = clicksByKeyword.get(kw) ?? 0
-    const lp     = topPageByKeyword.get(kw)?.path ?? ''
-    const rev    = lp ? (revenueByPath.get(lp) ?? 0) : 0
-    candidates.push({ keyword: kw, clicks, revenue: rev, lp })
-  }
-  empty.diagnostics.kw_with_ga4_match = candidates.filter(c => c.revenue > 0).length
-
-  // Drop candidates with zero clicks AND zero revenue — noise.
-  const meaningful = candidates.filter(c => c.clicks > 0 || c.revenue > 0)
-  if (meaningful.length === 0) {
-    empty.diagnostics.skip_reason = 'no cluster_winners had GSC clicks or GA4 revenue this week'
-    return {
-      ...empty,
-      traffic: {
-        us: { thisWeek: trafficUsCur, lastWeek: trafficUsPrev, pct: pctChange(trafficUsCur, trafficUsPrev) },
-        id: { thisWeek: trafficIdCur, lastWeek: trafficIdPrev, pct: pctChange(trafficIdCur, trafficIdPrev) },
-      },
-      revenue: {
-        us: { thisWeek: revUsCur, lastWeek: revUsPrev, pct: pctChange(revUsCur, revUsPrev) },
-        id: { thisWeek: revIdCur, lastWeek: revIdPrev, pct: pctChange(revIdCur, revIdPrev) },
-      },
+  // ── Focus KW selection: per-scope, winner-take-all attribution ───────────
+  //
+  // For each scope ('us', 'id', or 'all'):
+  //   1. Collect candidate KWs with their scoped clicks + top LP within scope
+  //   2. Group candidates by LP. For each LP, only the top-clicking KW gets
+  //      the LP's revenue. Other KWs sharing the LP get $0 (winner-take-all).
+  //   3. Filter to KWs with ≥ MIN_CLICKS_FOR_FOCUS clicks in scope.
+  //   4. Z-score normalize clicks + revenue, sum, top 5 by composite.
+  //
+  // selectFocus also captures the top-clicking LP per KW so the table can
+  // display "Why this KW?" — that LP is shown beneath the keyword.
+  function selectFocus(scope: 'us' | 'id' | 'all'): BossViewFocusKeyword[] {
+    type Cand = { keyword: string; clicks: number; lp: string; revenue: number }
+    // 1. Collect raw candidates
+    const raw: Cand[] = []
+    for (const kw of uniqueKeywords) {
+      const c = clicksByKwMarket.get(kw)
+      if (!c) continue
+      const lpEntry = topPageByKwMarket.get(kw)
+      let clicks = 0, lp = ''
+      if (scope === 'us') {
+        clicks = c.us
+        lp     = lpEntry?.us?.path ?? ''
+      } else if (scope === 'id') {
+        clicks = c.id
+        lp     = lpEntry?.id?.path ?? ''
+      } else {
+        clicks = c.us + c.id
+        // For 'all', prefer the LP with more clicks
+        const usLp = lpEntry?.us
+        const idLp = lpEntry?.id
+        lp = !usLp ? (idLp?.path ?? '') :
+             !idLp ? usLp.path :
+             usLp.clicks >= idLp.clicks ? usLp.path : idLp.path
+      }
+      if (clicks < MIN_CLICKS_FOR_FOCUS) continue
+      raw.push({ keyword: kw, clicks, lp, revenue: 0 })
     }
-  }
+    if (raw.length === 0) return []
 
-  const clicksZ  = zScores(meaningful.map(c => c.clicks))
-  const revZ     = zScores(meaningful.map(c => c.revenue))
-  const scored   = meaningful.map((c, i) => ({ ...c, score: clicksZ[i] + revZ[i] }))
-  const top5     = scored.sort((a, b) => b.score - a.score).slice(0, 5)
-
-  // ── Rank lookup for top 5 KW (tier_serp_snapshots, cur + prev windows) ───
-  // We need rank per (KW × market × week). Pull all snapshots in the
-  // [prevStart, curEnd] window, filtered to the chosen KW IDs. Bucket by
-  // (kw, market, week) and pick the latest snapshot.
-  const focusKwIds: string[] = []
-  const idToKeyword = new Map<string, string>()
-  for (const k of top5) {
-    const ids = idsByKeyword.get(k.keyword) ?? []
-    for (const id of ids) {
-      focusKwIds.push(id)
-      idToKeyword.set(id, k.keyword)
+    // 2. Winner-take-all by LP within scope
+    // For each LP, find the KW with the highest clicks. That KW gets the
+    // LP's scoped revenue; all other KWs sharing the LP get $0.
+    const byLp = new Map<string, Cand[]>()
+    for (const c of raw) {
+      if (!c.lp) continue   // KW without resolved LP — gets 0 revenue
+      const list = byLp.get(c.lp) ?? []
+      list.push(c)
+      byLp.set(c.lp, list)
     }
-  }
-
-  type SnapRow = {
-    tier_keyword_id: string | null
-    market:          string
-    snapshot_date:   string
-    our_position:    number | null
-  }
-  const snaps: SnapRow[] = []
-  if (focusKwIds.length > 0) {
-    const { data } = await db
-      .from('tier_serp_snapshots')
-      .select('tier_keyword_id, market, snapshot_date, our_position')
-      .eq('owner_user_id', ownerId)
-      .in('tier_keyword_id', focusKwIds)
-      .gte('snapshot_date', prev.start)
-      .lte('snapshot_date', cur.end)
-    snaps.push(...((data ?? []) as SnapRow[]))
-  }
-
-  // Bucket per (kw, market, window). Window detection by date range.
-  type RankCell = { date: string; pos: number | null }
-  const ranks = new Map<string, RankCell>()   // key = `${kw}|${market}|${win}`
-  for (const r of snaps) {
-    if (!r.tier_keyword_id) continue
-    const kw = idToKeyword.get(String(r.tier_keyword_id))
-    if (!kw) continue
-    const market = r.market === 'id' ? 'id' : 'us'
-    const win    = r.snapshot_date >= cur.start && r.snapshot_date <= cur.end ? 'cur' :
-                   r.snapshot_date >= prev.start && r.snapshot_date <= prev.end ? 'prev' : null
-    if (!win) continue
-    const k = `${kw}|${market}|${win}`
-    const prevCell = ranks.get(k)
-    if (!prevCell || r.snapshot_date > prevCell.date) {
-      ranks.set(k, { date: r.snapshot_date, pos: r.our_position })
+    for (const [lp, candList] of byLp.entries()) {
+      const lpRevByMkt = revenueByPathMarket.get(lp)
+      if (!lpRevByMkt) continue
+      const lpRev = scope === 'us' ? lpRevByMkt.us :
+                    scope === 'id' ? lpRevByMkt.id :
+                                     lpRevByMkt.us + lpRevByMkt.id
+      if (lpRev <= 0) continue
+      // Winner = top-clicking KW for this LP. Tie-break by keyword string
+      // alphabetical for determinism.
+      candList.sort((a, b) => b.clicks - a.clicks || a.keyword.localeCompare(b.keyword))
+      candList[0].revenue = lpRev
     }
+
+    // 3 + 4. Composite z-score + top 5
+    const clicksZ = zScores(raw.map(c => c.clicks))
+    const revZ    = zScores(raw.map(c => c.revenue))
+    const scored = raw
+      .map((c, i) => ({ ...c, score: clicksZ[i] + revZ[i] }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5)
+
+    // Map scoped tier_keyword_ids — for G2G we filter to product_tiers.market
+    // matching scope; for OG we accept any.
+    return scored.map(s => ({
+      keyword:        s.keyword,
+      brand:          siteSlug,
+      scope,
+      score:          +s.score.toFixed(3),
+      clicks:         s.clicks,
+      revenue:        +s.revenue.toFixed(2),
+      topLandingPage: s.lp,
+      us: { lastWeek: null, thisWeek: null },
+      id: { lastWeek: null, thisWeek: null },
+    }))
   }
 
-  const focusKeywords: BossViewFocusKeyword[] = top5.map(k => ({
-    keyword:        k.keyword,
-    brand:          siteSlug,
-    score:          +k.score.toFixed(3),
-    clicks:         k.clicks,
-    revenue:        +k.revenue.toFixed(2),
-    topLandingPage: k.lp,
-    us: {
-      lastWeek: ranks.get(`${k.keyword}|us|prev`)?.pos ?? null,
-      thisWeek: ranks.get(`${k.keyword}|us|cur`)?.pos  ?? null,
-    },
-    id: {
-      lastWeek: ranks.get(`${k.keyword}|id|prev`)?.pos ?? null,
-      thisWeek: ranks.get(`${k.keyword}|id|cur`)?.pos  ?? null,
-    },
-  }))
+  // Per-brand focus list selection
+  let focusKeywordsUs: BossViewFocusKeyword[] | undefined
+  let focusKeywordsId: BossViewFocusKeyword[] | undefined
+  let focusKeywords:   BossViewFocusKeyword[] | undefined
+  if (siteSlug === 'g2g') {
+    focusKeywordsUs = selectFocus('us')
+    focusKeywordsId = selectFocus('id')
+  } else {
+    focusKeywords = selectFocus('all')
+  }
+
+  const allFocusKws = [
+    ...(focusKeywordsUs ?? []),
+    ...(focusKeywordsId ?? []),
+    ...(focusKeywords   ?? []),
+  ]
+  empty.diagnostics.kw_with_ga4_match = allFocusKws.filter(k => k.revenue > 0).length
+
+  // ── Rank lookup for all focus KWs across all scopes ──────────────────────
+  if (allFocusKws.length > 0) {
+    const wantedKeywords = new Set(allFocusKws.map(k => k.keyword))
+    const focusKwIds: string[] = []
+    const idToKeyword = new Map<string, string>()
+    for (const kw of wantedKeywords) {
+      const ids = idsByKeyword.get(kw) ?? []
+      for (const id of ids) {
+        focusKwIds.push(id)
+        idToKeyword.set(id, kw)
+      }
+    }
+
+    type SnapRow = {
+      tier_keyword_id: string | null
+      market:          string
+      snapshot_date:   string
+      our_position:    number | null
+    }
+    const snaps: SnapRow[] = []
+    if (focusKwIds.length > 0) {
+      const { data } = await db
+        .from('tier_serp_snapshots')
+        .select('tier_keyword_id, market, snapshot_date, our_position')
+        .eq('owner_user_id', ownerId)
+        .in('tier_keyword_id', focusKwIds)
+        .gte('snapshot_date', prev.start)
+        .lte('snapshot_date', cur.end)
+      snaps.push(...((data ?? []) as SnapRow[]))
+    }
+
+    type RankCell = { date: string; pos: number | null }
+    const ranks = new Map<string, RankCell>()
+    for (const r of snaps) {
+      if (!r.tier_keyword_id) continue
+      const kw = idToKeyword.get(String(r.tier_keyword_id))
+      if (!kw) continue
+      const market = r.market === 'id' ? 'id' : 'us'
+      const win    = r.snapshot_date >= cur.start && r.snapshot_date <= cur.end ? 'cur' :
+                     r.snapshot_date >= prev.start && r.snapshot_date <= prev.end ? 'prev' : null
+      if (!win) continue
+      const k = `${kw}|${market}|${win}`
+      const prevCell = ranks.get(k)
+      if (!prevCell || r.snapshot_date > prevCell.date) {
+        ranks.set(k, { date: r.snapshot_date, pos: r.our_position })
+      }
+    }
+
+    const enrich = (kw: BossViewFocusKeyword) => {
+      kw.us = {
+        lastWeek: ranks.get(`${kw.keyword}|us|prev`)?.pos ?? null,
+        thisWeek: ranks.get(`${kw.keyword}|us|cur`)?.pos  ?? null,
+      }
+      kw.id = {
+        lastWeek: ranks.get(`${kw.keyword}|id|prev`)?.pos ?? null,
+        thisWeek: ranks.get(`${kw.keyword}|id|cur`)?.pos  ?? null,
+      }
+    }
+    focusKeywordsUs?.forEach(enrich)
+    focusKeywordsId?.forEach(enrich)
+    focusKeywords?.forEach(enrich)
+  }
+
+  if (allFocusKws.length === 0) {
+    empty.diagnostics.skip_reason = `no cluster_winners cleared ${MIN_CLICKS_FOR_FOCUS}-clicks threshold`
+  }
 
   return {
     siteSlug,
@@ -574,6 +762,9 @@ async function buildBrandBossView(
       us: { thisWeek: revUsCur, lastWeek: revUsPrev, pct: pctChange(revUsCur, revUsPrev) },
       id: { thisWeek: revIdCur, lastWeek: revIdPrev, pct: pctChange(revIdCur, revIdPrev) },
     },
+    historical: { us: histUs, id: histId },
+    focusKeywordsUs,
+    focusKeywordsId,
     focusKeywords,
     diagnostics: empty.diagnostics,
   }
