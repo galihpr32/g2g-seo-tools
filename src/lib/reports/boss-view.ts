@@ -21,7 +21,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { OAuth2Client } from 'google-auth-library'
-import { getRefreshedClientFull } from '@/lib/gsc/auth'
+import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows } from '@/lib/ga4/client'
 import { normalizePath } from './friday-kpi-keyword-breakdown'
@@ -211,10 +211,14 @@ export async function buildBossView(opts: BuildBossViewOptions): Promise<BossVie
   let auth: OAuth2Client | null = null
   if (conn?.access_token && conn?.refresh_token) {
     try {
-      auth = await getRefreshedClientFull(
+      // getRefreshedClient returns the OAuth2Client directly (vs the Full
+      // variant which also surfaces newCredentials we don't need here).
+      // expires_at can be null on legacy rows — pass epoch so the client
+      // treats the token as expired and refreshes immediately.
+      auth = await getRefreshedClient(
         conn.access_token  as string,
         conn.refresh_token as string,
-        conn.expires_at    as string | null,
+        (conn.expires_at as string | null) ?? new Date(0).toISOString(),
       )
     } catch (e) {
       console.warn('[boss-view] OAuth refresh failed:', e)
