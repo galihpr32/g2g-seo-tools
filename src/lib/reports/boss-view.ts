@@ -299,14 +299,16 @@ export async function buildBossView(opts: BuildBossViewOptions): Promise<BossVie
     }
   }
 
-  // ── Per-brand boss-view rows (serial — small N) ───────────────────────────
-  const brands: BossViewBrand[] = []
-  for (const slug of siteSlugs) {
-    const brand = await buildBrandBossView(
+  // ── Per-brand boss-view rows ──────────────────────────────────────────────
+  // Sprint #364 — parallelize across brands (was serial, contributing to 60s
+  // Vercel Hobby timeout). Each brand's build internally also parallelizes
+  // its GSC + GA4 calls. Net effect: brand work overlaps + API calls within
+  // each brand overlap, fitting comfortably under cap.
+  const brands = await Promise.all(
+    siteSlugs.map(slug => buildBrandBossView(
       db, ownerId, slug, auth, cur, prev, historical, weeks,
-    )
-    brands.push(brand)
-  }
+    )),
+  )
 
   // ── AI source (parallel per brand) ────────────────────────────────────────
   const aiSource: BossViewAiSlice = { bySite: {} }
@@ -426,9 +428,11 @@ async function buildBrandBossView(
   const uniqueKeywords = Array.from(idsByKeyword.keys())
 
   // ── Historical timeline (Jan 1 of current year → cur.end) ────────────────
-  // One GSC call dim=['date','country'] + one GA4 call dim=['date','country',
-  // 'sessionDefaultChannelGroup']. Both span the historical window; we
-  // bucket the day-level rows into Thu→Wed weeks for the chart.
+  // Sprint #364 — historical GSC + GA4 + current-week per-KW + LP revenue
+  // all fire in parallel via Promise.all below. They share no data deps with
+  // each other; only post-processing depends on uniqueKeywords (computed
+  // synchronously above). Net wall time = max(individual call) instead of
+  // sum, halving total brand-build duration.
   const histUs: HistoricalBucket[] = weeks.map(w => ({ weekEnd: w.end, clicks: 0, revenue: 0 }))
   const histId: HistoricalBucket[] = weeks.map(w => ({ weekEnd: w.end, clicks: 0, revenue: 0 }))
 
@@ -440,52 +444,124 @@ async function buildBrandBossView(
     return -1
   }
 
-  if (auth && gscProperty) {
-    try {
-      const rows = await getSearchAnalytics(
-        auth, gscProperty, historical.start, historical.end, ['date', 'country'], 25000,
-      )
-      for (const r of rows) {
-        const date    = String(r.keys?.[0] ?? '')
-        const country = String(r.keys?.[1] ?? '').toLowerCase()
-        const clicks  = Number(r.clicks ?? 0)
-        const idx = findWeekIdx(date)
-        if (idx < 0) continue
-        if (country === 'idn') histId[idx].clicks += clicks
-        else                   histUs[idx].clicks += clicks
-      }
-    } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] historical GSC failed:`, e)
-    }
-  }
+  // Per-(KW × market) clicks bucket
+  const clicksByKwMarket = new Map<string, { us: number; id: number }>()
+  // Per-(KW × market) top landing page bucket
+  type LpBucket = { path: string; clicks: number }
+  const topPageByKwMarket = new Map<string, { us?: LpBucket; id?: LpBucket }>()
+  // Per-(LP × market) GA4 revenue bucket
+  const revenueByPathMarket = new Map<string, { us: number; id: number }>()
 
-  if (auth && ga4PropertyId) {
-    try {
-      // GA4 date dim returns date as 'YYYYMMDD' (no dashes) — convert before
-      // bucketing.
-      const resp = await getGA4Report(
-        auth, ga4PropertyId, historical.start, historical.end,
-        ['date', 'country', 'sessionDefaultChannelGroup'],
-        ['purchaseRevenue'],
-        25000,
-      )
-      const rows = parseGA4Rows(resp)
-      for (const r of rows) {
-        if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
-        const raw = String(r.date ?? '')
-        // 20260601 → 2026-06-01
-        const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
-        const country = (r.country ?? '').toLowerCase()
-        const rev     = parseFloat(r.purchaseRevenue ?? '0')
-        const idx = findWeekIdx(date)
-        if (idx < 0) continue
-        if (country === 'indonesia') histId[idx].revenue += rev
-        else                          histUs[idx].revenue += rev
-      }
-    } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] historical GA4 failed:`, e)
-    }
-  }
+  // Fire 5 independent calls in parallel. Each call's parse/bucket logic runs
+  // inside the call's .then() so the outer Promise.all just waits.
+  await Promise.all([
+    // 1. Historical GSC (full Jan→now window, day-level)
+    auth && gscProperty
+      ? getSearchAnalytics(auth, gscProperty, historical.start, historical.end, ['date', 'country'], 25000)
+          .then(rows => {
+            for (const r of rows) {
+              const date    = String(r.keys?.[0] ?? '')
+              const country = String(r.keys?.[1] ?? '').toLowerCase()
+              const clicks  = Number(r.clicks ?? 0)
+              const idx = findWeekIdx(date)
+              if (idx < 0) continue
+              if (country === 'idn') histId[idx].clicks += clicks
+              else                   histUs[idx].clicks += clicks
+            }
+          })
+          .catch(e => console.warn(`[boss-view ${siteSlug}] historical GSC failed:`, e))
+      : Promise.resolve(),
+
+    // 2. Historical GA4 (full window, organic only)
+    auth && ga4PropertyId
+      ? getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
+          ['date', 'country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 25000)
+          .then(resp => {
+            const rows = parseGA4Rows(resp)
+            for (const r of rows) {
+              if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
+              const raw = String(r.date ?? '')
+              // GA4 date dim returns YYYYMMDD — normalize to YYYY-MM-DD
+              const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
+              const country = (r.country ?? '').toLowerCase()
+              const rev     = parseFloat(r.purchaseRevenue ?? '0')
+              const idx = findWeekIdx(date)
+              if (idx < 0) continue
+              if (country === 'indonesia') histId[idx].revenue += rev
+              else                          histUs[idx].revenue += rev
+            }
+          })
+          .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 failed:`, e))
+      : Promise.resolve(),
+
+    // 3. Per-(KW × market) GSC clicks for current week
+    auth && gscProperty
+      ? getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['query', 'country'], 25000)
+          .then(rows => {
+            empty.diagnostics.gsc_queries_fetched = rows.length
+            const winnerSet = new Set(uniqueKeywords)
+            for (const r of rows) {
+              const q = String(r.keys?.[0] ?? '').toLowerCase().trim()
+              if (!winnerSet.has(q)) continue
+              const country = String(r.keys?.[1] ?? '').toLowerCase()
+              const isId    = country === 'idn'
+              const clicks  = Number(r.clicks ?? 0)
+              const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0 }
+              if (isId) bucket.id += clicks
+              else      bucket.us += clicks
+              clicksByKwMarket.set(q, bucket)
+            }
+          })
+          .catch(e => console.warn(`[boss-view ${siteSlug}] GSC per-query failed:`, e))
+      : Promise.resolve(),
+
+    // 4. Per-(KW × market) top landing page for current week
+    auth && gscProperty
+      ? getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['page', 'query', 'country'], 25000)
+          .then(rows => {
+            const winnerSet = new Set(uniqueKeywords)
+            for (const r of rows) {
+              const page    = String(r.keys?.[0] ?? '')
+              const q       = String(r.keys?.[1] ?? '').toLowerCase().trim()
+              const country = String(r.keys?.[2] ?? '').toLowerCase()
+              if (!winnerSet.has(q)) continue
+              const clicks = Number(r.clicks ?? 0)
+              const isId   = country === 'idn'
+              const path   = normalizePath(page)
+              const entry  = topPageByKwMarket.get(q) ?? {}
+              const slot   = isId ? entry.id : entry.us
+              if (!slot || clicks > slot.clicks) {
+                if (isId) entry.id = { path, clicks }
+                else      entry.us = { path, clicks }
+                topPageByKwMarket.set(q, entry)
+              }
+            }
+          })
+          .catch(e => console.warn(`[boss-view ${siteSlug}] GSC page×query×country failed:`, e))
+      : Promise.resolve(),
+
+    // 5. GA4 LP revenue (current week, organic only)
+    auth && ga4PropertyId
+      ? getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
+          ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 10000)
+          .then(resp => {
+            const rows = parseGA4Rows(resp)
+            empty.diagnostics.ga4_rev_pages_fetched = rows.length
+            for (const r of rows) {
+              if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
+              const path    = normalizePath(r.landingPage ?? '')
+              const country = (r.country ?? '').toLowerCase()
+              const rev     = parseFloat(r.purchaseRevenue ?? '0')
+              if (!path) continue
+              const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0 }
+              if (country === 'indonesia') bucket.id += rev
+              else                          bucket.us += rev
+              revenueByPathMarket.set(path, bucket)
+            }
+          })
+          .catch(e => console.warn(`[boss-view ${siteSlug}] GA4 LP revenue failed:`, e))
+      : Promise.resolve(),
+  ])
 
   // KPI strip values (this wk + last wk) come straight from the historical
   // buckets — last 2 entries — so we don't duplicate API calls.
@@ -500,85 +576,10 @@ async function buildBrandBossView(
   const revUsPrev = prevIdx >= 0 ? histUs[prevIdx].revenue : 0
   const revIdPrev = prevIdx >= 0 ? histId[prevIdx].revenue : 0
 
-  // ── Per-(KW × market) clicks (GSC dim=['query','country']) ───────────────
-  // Filter post-fetch to cluster_winner keywords. We now keep US and ID
-  // clicks separate so we can score G2G focus KW per market.
-  const clicksByKwMarket = new Map<string, { us: number; id: number }>()
-  if (auth && gscProperty) {
-    try {
-      const rows = await getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['query', 'country'], 25000)
-      empty.diagnostics.gsc_queries_fetched = rows.length
-      const winnerSet = new Set(uniqueKeywords)
-      for (const r of rows) {
-        const q = String(r.keys?.[0] ?? '').toLowerCase().trim()
-        if (!winnerSet.has(q)) continue
-        const country = String(r.keys?.[1] ?? '').toLowerCase()
-        const isId    = country === 'idn'
-        const clicks  = Number(r.clicks ?? 0)
-        const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0 }
-        if (isId) bucket.id += clicks
-        else      bucket.us += clicks
-        clicksByKwMarket.set(q, bucket)
-      }
-    } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] GSC per-query failed:`, e)
-    }
-  }
-
-  // ── Per-(KW × market) top landing page (GSC dim=['page','query','country']) ──
-  // For each cluster_winner KW, find the page with the most clicks WITHIN
-  // each market separately. Same KW can have different top LPs per market
-  // (e.g. US ranks /categories/poe-2-currency, ID ranks /id/categories/poe-2-currency).
-  type LpBucket = { path: string; clicks: number }
-  const topPageByKwMarket = new Map<string, { us?: LpBucket; id?: LpBucket }>()
-  if (auth && gscProperty) {
-    try {
-      const rows = await getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['page', 'query', 'country'], 25000)
-      const winnerSet = new Set(uniqueKeywords)
-      for (const r of rows) {
-        const page    = String(r.keys?.[0] ?? '')
-        const q       = String(r.keys?.[1] ?? '').toLowerCase().trim()
-        const country = String(r.keys?.[2] ?? '').toLowerCase()
-        if (!winnerSet.has(q)) continue
-        const clicks = Number(r.clicks ?? 0)
-        const isId   = country === 'idn'
-        const path   = normalizePath(page)
-        const entry  = topPageByKwMarket.get(q) ?? {}
-        const slot   = isId ? entry.id : entry.us
-        if (!slot || clicks > slot.clicks) {
-          if (isId) entry.id = { path, clicks }
-          else      entry.us = { path, clicks }
-          topPageByKwMarket.set(q, entry)
-        }
-      }
-    } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] GSC page×query×country failed:`, e)
-    }
-  }
-
-  // ── GA4 revenue per (LP × country) — Organic Search filter ───────────────
-  const revenueByPathMarket = new Map<string, { us: number; id: number }>()
-  if (auth && ga4PropertyId) {
-    try {
-      const resp = await getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
-        ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 10000)
-      const rows = parseGA4Rows(resp)
-      empty.diagnostics.ga4_rev_pages_fetched = rows.length
-      for (const r of rows) {
-        if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
-        const path    = normalizePath(r.landingPage ?? '')
-        const country = (r.country ?? '').toLowerCase()
-        const rev     = parseFloat(r.purchaseRevenue ?? '0')
-        if (!path) continue
-        const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0 }
-        if (country === 'indonesia') bucket.id += rev
-        else                          bucket.us += rev
-        revenueByPathMarket.set(path, bucket)
-      }
-    } catch (e) {
-      console.warn(`[boss-view ${siteSlug}] GA4 LP revenue failed:`, e)
-    }
-  }
+  // (clicksByKwMarket, topPageByKwMarket, revenueByPathMarket are all
+  // populated by the parallel Promise.all block above. Just declare the
+  // maps before they're used — actual data already in by the time we get
+  // here.)
 
   // ── Focus KW selection: per-scope, winner-take-all attribution ───────────
   //
