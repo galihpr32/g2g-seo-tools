@@ -938,8 +938,10 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
         return
       }
 
+      // Server returns the full Supabase row (insert .select().single()),
+      // which structurally satisfies both MonthlyReport and ReportSummary.
       const { report: r, error: e, needs_narrative } = await res.json() as {
-        report?: { id: string; month_start: string; ai_narrative: string; [k: string]: unknown }
+        report?: MonthlyReport
         error?: string
         needs_narrative?: boolean
       }
@@ -950,10 +952,10 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
       // sees the data report immediately; AI narrative arrives in stage 2.
       setReports(prev => {
         const filtered = prev.filter(p => p.month_start !== r.month_start)
-        return [r as typeof prev[number], ...filtered]
+        return [r, ...filtered]
       })
       setSelectedId(r.id)
-      setReport(r as typeof report)
+      setReport(r)
       setShowPicker(false)
 
       // STAGE 2: AI narrative — fire-and-await separately so it has its own
@@ -977,7 +979,7 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
           }
           const { ok, report: updated, error: nerr } = await nres.json() as {
             ok: boolean
-            report?: typeof report
+            report?: MonthlyReport
             error?: string
           }
           if (!ok || !updated) {
@@ -985,7 +987,7 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
             return
           }
           setReport(updated)
-          setReports(prev => prev.map(p => p.id === r.id ? (updated as typeof p) : p))
+          setReports(prev => prev.map(p => p.id === r.id ? updated : p))
         } catch (nerr) {
           console.warn('[monthly] narrative threw:', nerr)
           setError('AI summary generation threw. Data report is ready; retry via "Regenerate AI summary".')
@@ -1021,12 +1023,12 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
       }
       const { ok, report: updated, error: nerr } = await res.json() as {
         ok: boolean
-        report?: typeof report
+        report?: MonthlyReport
         error?: string
       }
       if (!ok || !updated) { setError(nerr ?? 'AI summary failed'); return }
       setReport(updated)
-      setReports(prev => prev.map(p => p.id === selectedId ? (updated as typeof p) : p))
+      setReports(prev => prev.map(p => p.id === selectedId ? updated : p))
     } catch (err) {
       setError(String(err))
     } finally {
