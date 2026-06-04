@@ -812,6 +812,10 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
   const [loadingList, setLoadingList]     = useState(true)
   const [loadingReport, setLoadingReport] = useState(false)
   const [generating, setGenerating]       = useState(false)
+  // Sprint #358 — 'data' = STAGE 1 (GSC/GA4/SEMrush gather), 'narrative' =
+  // STAGE 2 (Anthropic AI summary). Drives the spinner copy + progress bar
+  // so the user knows what's happening across the two-stage flow.
+  const [generatingStage, setGeneratingStage] = useState<'data' | 'narrative' | null>(null)
   const [error, setError]                 = useState<string | null>(null)
   const [showPicker, setShowPicker]       = useState(false)
   // PPTX export state
@@ -901,28 +905,133 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
     }
   }
 
-  // ── Generate ─────────────────────────────────────────────────────────────────
+  // ── Generate (two-stage: data first, then AI narrative) ──────────────────
   async function generate() {
     setGenerating(true)
+    setGeneratingStage('data')
     setError(null)
     try {
+      // STAGE 1: gather GSC/GA4/SEMrush/etc + save row (no AI yet, fits 60s)
       const res = await fetch('/api/reports/monthly', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ site, year: pickYear, month: pickMonth }),
       })
-      const { report: r, error: e } = await res.json()
+
+      // Sprint #357 MONTHLY.JSON.ERR — Vercel can return non-JSON when the
+      // function times out / OOMs (HTML "An error occurred…" page).
+      const ct = res.headers.get('content-type') ?? ''
+      if (!res.ok || !ct.includes('application/json')) {
+        let detail = ''
+        if (ct.includes('application/json')) {
+          const data = await res.json().catch(() => null) as { error?: string } | null
+          detail = data?.error ?? ''
+        }
+        if (!detail) detail = (await res.text().catch(() => '')).trim().slice(0, 500)
+        if (/An error occurred|FUNCTION_INVOCATION_TIMEOUT|504/i.test(detail)) {
+          setError(`HTTP ${res.status}: Data fetch timed out. Try again — if this persists, contact engineering.`)
+        } else {
+          setError(detail
+            ? `HTTP ${res.status}: ${detail}`
+            : `HTTP ${res.status}: Report generation failed (no error body returned)`)
+        }
+        return
+      }
+
+      const { report: r, error: e, needs_narrative } = await res.json() as {
+        report?: { id: string; month_start: string; ai_narrative: string; [k: string]: unknown }
+        error?: string
+        needs_narrative?: boolean
+      }
       if (e) { setError(e); return }
+      if (!r) { setError('Unexpected response shape'); return }
+
+      // Stage 1 done — insert the row, select it, refresh list. The user
+      // sees the data report immediately; AI narrative arrives in stage 2.
       setReports(prev => {
         const filtered = prev.filter(p => p.month_start !== r.month_start)
-        return [r, ...filtered]
+        return [r as typeof prev[number], ...filtered]
       })
       setSelectedId(r.id)
+      setReport(r as typeof report)
       setShowPicker(false)
+
+      // STAGE 2: AI narrative — fire-and-await separately so it has its own
+      // 60s budget. UI flips to "Generating AI summary…" while this runs.
+      if (needs_narrative !== false) {
+        setGeneratingStage('narrative')
+        try {
+          const nres = await fetch('/api/reports/monthly/narrative', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: r.id }),
+          })
+          const nct = nres.headers.get('content-type') ?? ''
+          if (!nres.ok || !nct.includes('application/json')) {
+            const txt = (await nres.text().catch(() => '')).slice(0, 300)
+            console.warn('[monthly] narrative failed:', nres.status, txt)
+            // Soft-fail — user already has the data report. Show a non-fatal
+            // notice and let them retry via the dedicated button (below).
+            setError(`AI summary generation failed (HTTP ${nres.status}). The data report is ready; click "Regenerate AI summary" to try again.`)
+            return
+          }
+          const { ok, report: updated, error: nerr } = await nres.json() as {
+            ok: boolean
+            report?: typeof report
+            error?: string
+          }
+          if (!ok || !updated) {
+            setError(nerr ?? 'AI summary failed but data report is ready')
+            return
+          }
+          setReport(updated)
+          setReports(prev => prev.map(p => p.id === r.id ? (updated as typeof p) : p))
+        } catch (nerr) {
+          console.warn('[monthly] narrative threw:', nerr)
+          setError('AI summary generation threw. Data report is ready; retry via "Regenerate AI summary".')
+        }
+      }
     } catch (err: unknown) {
       setError(String(err))
     } finally {
       setGenerating(false)
+      setGeneratingStage(null)
+    }
+  }
+
+  // Sprint #358 — manual retry handler. Called from the "Regenerate AI
+  // summary" button shown when ai_narrative is empty (failure case OR
+  // user just wants a fresh take with same data).
+  async function regenerateNarrative() {
+    if (!selectedId) return
+    setGenerating(true)
+    setGeneratingStage('narrative')
+    setError(null)
+    try {
+      const res = await fetch('/api/reports/monthly/narrative', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedId }),
+      })
+      const ct = res.headers.get('content-type') ?? ''
+      if (!res.ok || !ct.includes('application/json')) {
+        const txt = (await res.text().catch(() => '')).slice(0, 300)
+        setError(`AI summary failed (HTTP ${res.status}): ${txt || 'unknown error'}`)
+        return
+      }
+      const { ok, report: updated, error: nerr } = await res.json() as {
+        ok: boolean
+        report?: typeof report
+        error?: string
+      }
+      if (!ok || !updated) { setError(nerr ?? 'AI summary failed'); return }
+      setReport(updated)
+      setReports(prev => prev.map(p => p.id === selectedId ? (updated as typeof p) : p))
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setGenerating(false)
+      setGeneratingStage(null)
     }
   }
 
@@ -1012,7 +1121,11 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
                   disabled={generating}
                   className="w-full bg-red-700 hover:bg-red-600 disabled:opacity-50 text-white text-xs font-semibold py-2 rounded-lg transition"
                 >
-                  {generating ? '⏳ Generating…' : '🚀 Generate'}
+                  {generating
+                    ? (generatingStage === 'narrative'
+                        ? '🪄 Generating AI summary…'
+                        : '⏳ Gathering data…')
+                    : '🚀 Generate'}
                 </button>
               </div>
             )}
@@ -1602,6 +1715,36 @@ export default function MonthlyReportPage({ site = 'g2g' }: { site?: string }) {
                     {report.ai_narrative.split('\n\n').map((para, i) => (
                       <p key={i} className="text-sm text-gray-300 leading-relaxed">{para}</p>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Sprint #358 — AI summary missing / failed. Show a retry CTA
+                  so the user isn't stuck. Two cases:
+                    1. Generate just finished stage 1 but stage 2 errored —
+                       error message already surfaced via top-level banner.
+                    2. Legacy row, or user wants a fresh take. */}
+              {!report.ai_narrative && (
+                <div className="bg-gradient-to-br from-amber-950/40 to-gray-900 border border-amber-800/40 rounded-xl p-6">
+                  <div className="flex items-start gap-3">
+                    <span className="text-2xl">🪄</span>
+                    <div className="flex-1">
+                      <h3 className="text-sm font-semibold text-white mb-1">AI summary not yet generated</h3>
+                      <p className="text-xs text-gray-400 leading-relaxed mb-3">
+                        The data report is ready. The AI executive summary &amp; action plan
+                        haven&apos;t been generated for this report yet — click below to run them now.
+                        (~30-50s, uses Claude Opus.)
+                      </p>
+                      <button
+                        onClick={regenerateNarrative}
+                        disabled={generating}
+                        className="text-xs bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg transition font-medium"
+                      >
+                        {generating && generatingStage === 'narrative'
+                          ? '⏳ Generating AI summary…'
+                          : '🪄 Generate AI summary'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

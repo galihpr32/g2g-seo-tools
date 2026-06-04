@@ -63,7 +63,11 @@ ENV NEXT_PUBLIC_TEST_SLACK_CHANNEL_LBL=${NEXT_PUBLIC_TEST_SLACK_CHANNEL_LBL}
 
 # Suppress Next.js telemetry phone-home
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NODE_OPTIONS=--max-old-space-size=6144
+# Sprint COOLIFY.DOCKERFILE (344) — Next.js build worker is memory-heavy
+# (hundreds of routes × webpack chunk analysis). 6144 hit V8 heap ceiling
+# after full sprint work synced in; bumping to 8192. If still OOMs, try
+# 10240 or 12288 — but at some point the server RAM is the real limit.
+ENV NODE_OPTIONS=--max-old-space-size=8192
 RUN npm run build
 
 # ─── Stage 3: runner (final image) ──────────────────────────────────────────

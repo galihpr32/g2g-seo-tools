@@ -3,17 +3,17 @@ import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { getEffectiveOwnerId } from '@/lib/workspace'
 import { getDomainKeywords, getDomainOverview } from '@/lib/semrush/client'
-import { getAgentInsights, formatInsightsForPrompt } from '@/lib/reports/agent-insights'
+import { getAgentInsights } from '@/lib/reports/agent-insights'
 import { fetchChannelBreakdown } from '@/lib/reports/channel-breakdown'
 import { analyzeTrackedRankings } from '@/lib/reports/ranking-analysis'
 import { getRefreshedClient } from '@/lib/gsc/auth'
 import { getSearchAnalytics } from '@/lib/gsc/client'
 import { getGA4Report, parseGA4Rows, sumMetric } from '@/lib/ga4/client'
-import Anthropic from '@anthropic-ai/sdk'
 
+// Sprint #358 MONTHLY.SPLIT — back down to 60s. AI narrative is now split
+// out to /api/reports/monthly/narrative, so this hot path only does data
+// gathering (~20-30s). Fits Vercel Hobby tier's 60s function cap.
 export const maxDuration = 60
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -615,9 +615,10 @@ export async function POST(req: Request) {
   }
 
   // ── Tracked-product ranking analysis (DataForSEO history) ──────────────
-  // Site-isolated via site_slug — G2G & OG never cross-pollinate. AI action
-  // plan only fires monthly (cost-control); weekly route also calls this with
-  // withActionPlan=false.
+  // Site-isolated via site_slug — G2G & OG never cross-pollinate.
+  // Sprint #358 MONTHLY.SPLIT — withActionPlan: false in the hot path to
+  // skip the internal AI call (saved ~20-30s, fits Hobby 60s cap). The
+  // narrative endpoint backfills actionPlan after the row is saved.
   let trackedRankings: Awaited<ReturnType<typeof analyzeTrackedRankings>> | null = null
   try {
     trackedRankings = await analyzeTrackedRankings({
@@ -629,7 +630,7 @@ export async function POST(req: Request) {
       periodStart: monthStart,
       periodEnd:   monthEnd,
       periodDays:  30,
-      withActionPlan: true,
+      withActionPlan: false,
     })
   } catch (e) {
     console.warn('[monthly-report] tracked rankings analysis failed:', e)
@@ -677,28 +678,12 @@ export async function POST(req: Request) {
     generatedAt: new Date().toISOString(),
   }
 
-  // ── AI narrative ─────────────────────────────────────────────────────────────
-  const narrativePrompt = buildNarrativePrompt(reportData)
-  let aiNarrative = ''
-  let aiActionPlan = ''
-
-  try {
-    const msg = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 2500,
-      messages: [{ role: 'user', content: narrativePrompt }],
-    })
-    const raw = msg.content[0]?.type === 'text' ? msg.content[0].text : ''
-    const [narrativePart, actionPart] = raw.split(/\n---ACTION_PLAN---\n/)
-    aiNarrative  = narrativePart?.trim() ?? raw
-    aiActionPlan = actionPart?.trim() ?? ''
-  } catch (e) {
-    console.warn('[monthly-report] AI generation failed:', e)
-    aiNarrative  = '_AI narrative could not be generated. Check Anthropic API key._'
-    aiActionPlan = ''
-  }
-
-  // ── Save ─────────────────────────────────────────────────────────────────────
+  // ── Save (DEFERS AI) ─────────────────────────────────────────────────────────
+  // Sprint #358 MONTHLY.SPLIT — AI narrative + action plan are deferred to
+  // POST /api/reports/monthly/narrative so this hot path fits Vercel Hobby
+  // tier's 60s function cap. Frontend calls the narrative endpoint right
+  // after this returns; UI shows two-stage progress ("Generating data…" →
+  // "Generating AI summary…").
   const { data: saved, error: saveErr } = await db
     .from('monthly_reports')
     .insert({
@@ -707,14 +692,14 @@ export async function POST(req: Request) {
       month_start:    monthStart,
       month_end:      monthEnd,
       report_data:    reportData,
-      ai_narrative:   aiNarrative,
-      ai_action_plan: aiActionPlan,
+      ai_narrative:   '',   // populated by /narrative endpoint
+      ai_action_plan: '',   // populated by /narrative endpoint
     })
     .select()
     .single()
 
   if (saveErr) return NextResponse.json({ error: saveErr.message }, { status: 500 })
-  return NextResponse.json({ report: saved })
+  return NextResponse.json({ report: saved, needs_narrative: true })
 }
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
@@ -738,113 +723,6 @@ export async function DELETE(req: Request) {
   return NextResponse.json({ ok: true })
 }
 
-// ── AI Prompt ─────────────────────────────────────────────────────────────────
-function buildNarrativePrompt(d: {
-  monthStart: string; monthEnd: string; monthLabel: string; prevMonthLabel: string
-  gsc: {
-    monthClicks: number; prevMonthClicks: number; clicksPct: number | null
-    monthImpressions: number; monthCtr: number; prevCtr: number; avgPosition: number
-    topGainers: { page: string; delta: number }[]
-    topDroppers: { page: string; delta: number }[]
-  }
-  ga4: {
-    monthSessions: number; prevSessions: number; sessionsPct: number | null
-    bounceRate: number
-    totalConversions: number; prevConversions: number; conversionsPct: number | null
-    totalRevenue: number; prevRevenue: number; revenuePct: number | null
-  } | null
-  semrush: {
-    totalKeywords: number; top3: number; top10: number; top20: number
-    avgPosition: number; organicTraffic: number
-    topMoversUp: { keyword: string; position: number; positionDiff: number; volume: number }[]
-    topMoversDown: { keyword: string; position: number; positionDiff: number; volume: number }[]
-  }
-  actionItems: { total: number; pending: number; inProgress: number; done: number }
-  competitive: { trackedCompetitors: { domain: string; name?: string }[]; sovTable: { domain: string; sov: number }[] }
-  backlinks: {
-    totalActive: number; newThisMonth: number; pendingLinks: number; brokenLinks: number
-    totalCostThisMonth: number; totalCostAllTime: number; avgPositionImprovement: number | null
-  }
-  agentInsights?: { windowStart: string; windowEnd: string } | null
-  siteName?: string
-}): string {
-  const agentInsightsBlock = d.agentInsights
-    ? formatInsightsForPrompt(d.agentInsights as Parameters<typeof formatInsightsForPrompt>[0])
-    : ''
-  const fmtUrl = (url: string) => url.replace('https://www.g2g.com', '').replace('https://g2g.com', '') || '/'
-  const fmtUsd = (n: number) => n >= 1_000_000 ? `$${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `$${(n/1_000).toFixed(0)}K` : `$${Math.round(n)}`
-  const pctStr = (v: number | null) => v != null ? `${v > 0 ? '+' : ''}${v}%` : 'n/a'
-  const gainers  = d.gsc.topGainers.slice(0, 6).map(g => `  • ${fmtUrl(g.page)} (+${g.delta} clicks)`).join('\n') || '  None'
-  const droppers = d.gsc.topDroppers.slice(0, 6).map(g => `  • ${fmtUrl(g.page)} (${g.delta} clicks)`).join('\n') || '  None'
-  const kwUp     = d.semrush.topMoversUp.slice(0, 6).map(k => `  • "${k.keyword}" pos ${k.position} (improved ${Math.abs(k.positionDiff)} places)`).join('\n') || '  None'
-  const kwDown   = d.semrush.topMoversDown.slice(0, 6).map(k => `  • "${k.keyword}" pos ${k.position} (dropped ${k.positionDiff} places)`).join('\n') || '  None'
-  const sov      = d.competitive.sovTable.slice(0, 5).map(s => `  • ${s.domain}: ${s.sov}%`).join('\n') || '  No data'
-  const competitors = d.competitive.trackedCompetitors.map(c => c.domain).join(', ') || 'none tracked'
-
-  return `You are an expert SEO strategist writing a monthly performance report for ${d.siteName ?? 'G2G.com'} — a gaming marketplace (gift cards, game items, top-up) primarily targeting the US market.
-
-Analyze the following data for ${d.monthLabel} (vs ${d.prevMonthLabel}) and write:
-1. A comprehensive executive narrative (4–5 paragraphs) covering:
-   - Overall organic performance summary (with numbers)
-   - Revenue and conversion analysis
-   - Keyword ranking wins and losses
-   - Content and page performance insights
-   - Strategic outlook for next month
-2. A monthly action plan with 6 prioritized, concrete tasks
-
-DATA:
-GSC Performance (${d.monthLabel}):
-- Clicks: ${d.gsc.monthClicks.toLocaleString()} (prev: ${d.gsc.prevMonthClicks.toLocaleString()}, ${pctStr(d.gsc.clicksPct)})
-- Impressions: ${d.gsc.monthImpressions.toLocaleString()}
-- CTR: ${d.gsc.monthCtr}% (prev: ${d.gsc.prevCtr}%)
-- Avg position: ${d.gsc.avgPosition}
-Top gaining pages (YoY by clicks):
-${gainers}
-Top dropping pages:
-${droppers}
-
-${d.ga4 ? `GA4 Performance:
-- Organic sessions: ${d.ga4.monthSessions.toLocaleString()} (prev: ${d.ga4.prevSessions.toLocaleString()}, ${pctStr(d.ga4.sessionsPct)})
-- Conversions: ${d.ga4.totalConversions.toLocaleString()} (prev: ${d.ga4.prevConversions.toLocaleString()}, ${pctStr(d.ga4.conversionsPct)})
-- Revenue: ${fmtUsd(d.ga4.totalRevenue)} (prev: ${fmtUsd(d.ga4.prevRevenue)}, ${pctStr(d.ga4.revenuePct)})
-- Bounce rate: ${(d.ga4.bounceRate * 100).toFixed(1)}%` : 'GA4: Not available'}
-
-SEMrush Rankings:
-- Total tracked keywords: ${d.semrush.totalKeywords.toLocaleString()}
-- Top 3: ${d.semrush.top3} | Top 10: ${d.semrush.top10} | Top 20: ${d.semrush.top20}
-- Avg position: ${d.semrush.avgPosition}
-- Est. organic traffic: ${d.semrush.organicTraffic.toLocaleString()}
-Keywords improved this period:
-${kwUp}
-Keywords dropped:
-${kwDown}
-
-Share of Voice:
-${sov}
-
-Action Items this month:
-- Created: ${d.actionItems.total} | Completed: ${d.actionItems.done} | Still open: ${d.actionItems.pending + d.actionItems.inProgress}
-
-Paid Backlinks:
-- Total active backlinks: ${d.backlinks.totalActive}
-- New links acquired this month: ${d.backlinks.newThisMonth}
-- Cost this month: ${d.backlinks.totalCostThisMonth > 0 ? `$${d.backlinks.totalCostThisMonth.toLocaleString()}` : 'n/a'}
-- Total portfolio cost: ${d.backlinks.totalCostAllTime > 0 ? `$${d.backlinks.totalCostAllTime.toLocaleString()}` : 'n/a'}
-${d.backlinks.avgPositionImprovement != null ? `- Avg position improvement for linked pages: ${d.backlinks.avgPositionImprovement} positions` : ''}
-- Pending / broken: ${d.backlinks.pendingLinks} / ${d.backlinks.brokenLinks}
-
-Tracked competitors: ${competitors}
-
-${agentInsightsBlock}
-
-FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
-[Write the 4-5 paragraph executive narrative here]
-
----ACTION_PLAN---
-1. **[Task title]** — [2-3 sentence explanation of what to do and why it matters this month]
-2. **[Task title]** — [explanation]
-3. **[Task title]** — [explanation]
-4. **[Task title]** — [explanation]
-5. **[Task title]** — [explanation]
-6. **[Task title]** — [explanation]`
-}
+// Sprint #358 — buildNarrativePrompt extracted to
+// src/lib/reports/monthly-narrative-prompt.ts (Next.js route files shouldn't
+// export non-route handlers). The narrative endpoint imports it from there.

@@ -102,7 +102,10 @@ function buildBuckets(movements: KeywordRankingMovement[], which: 'cur' | 'prev'
 
 // ─── AI action plan (Sonnet — concise, actionable) ──────────────────────────
 
-async function generateActionPlan(opts: {
+// Exported (Sprint #358) — narrative endpoint calls this with pre-computed
+// movements + buckets (loaded from the saved report) so it can fill in the
+// trackedRankings.actionPlan without re-fetching DataForSEO.
+export async function generateActionPlan(opts: {
   siteName:     string
   domain:       string
   movements:    KeywordRankingMovement[]
