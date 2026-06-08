@@ -1,4 +1,5 @@
-// ─── Friday KPI — Boss View data layer ──────────────────────────────────────
+// ─── Friday KPI — Boss View data layer ─────────────────────────────────────
+// Build tag: 2026-06-08-sprint382-redeploy
 //
 // Sprint #361 WEEKLY.BOSS.VIEW — per-brand exec-friendly weekly snapshot:
 //   1. Chart 1 — traffic bars (this wk vs last wk) + revenue lines per market
