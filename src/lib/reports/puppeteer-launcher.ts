@@ -125,3 +125,69 @@ export async function htmlToPng(html: string): Promise<Buffer> {
     await browser.close()
   }
 }
+
+// ── Sprint #380 BOSS.VIEW.PDF — server-side PDF rendering ──────────────────
+//
+// `htmlToPdf` is the PDF sibling of `htmlToPng`. Reuses the exact same
+// browser launch path so we don't have to maintain two chromium configs.
+// Differences vs the PNG path:
+//   - `page.pdf()` (not screenshot) — natively rasterizes each A4 page
+//     including @page CSS rules (running headers, margin boxes, page nums).
+//   - `displayHeaderFooter: false` — Chrome's default print header/footer
+//     prints the URL + date + page X/Y, which looks like a print-from-the-
+//     browser screenshot. The HTML template supplies its own branded chrome
+//     via @page margin boxes; we don't want Chrome's defaults stomping on
+//     top.
+//   - `printBackground: true` — without this Chrome strips body backgrounds
+//     + custom div backgrounds, which would kill the branded red header
+//     stripe and the KPI table shading.
+//
+// Caller is responsible for the HTML; this just plumbs the buffer back.
+
+export interface HtmlToPdfOptions {
+  /** Margins around the printable area. Header/footer rendered by the HTML's
+   *  @page margin boxes will live INSIDE these — bigger = more room for
+   *  branding. Defaults to 0.4in all around (matches the social team's
+   *  reference PDF). */
+  margin?: { top: string; bottom: string; left: string; right: string }
+  /** Override page format. Defaults to 'A4' (matches reference). */
+  format?: 'A4' | 'Letter'
+  /** How long to wait for `window.kpiReady = true` before snapshotting
+   *  anyway. Default 15s — charts take 1-2s each and the PDF has ~6 of
+   *  them so we give some headroom. */
+  readyTimeoutMs?: number
+}
+
+export async function htmlToPdf(html: string, opts: HtmlToPdfOptions = {}): Promise<Buffer> {
+  const browser = await launchBrowser()
+  try {
+    const page = await browser.newPage()
+    // Switch to print media so any `@media print` rules in the HTML take
+    // effect during pdf() generation (otherwise Chromium uses screen media).
+    await page.emulateMediaType('print')
+    await page.setContent(html, { waitUntil: 'load', timeout: 30_000 })
+    // Wait for the renderer to flag charts painted. Re-using `window.kpiReady`
+    // so the PDF template can copy the same ready-signal pattern as the
+    // existing PNG renderer (one less thing to invent).
+    await page
+      .waitForFunction(() => (window as unknown as { kpiReady?: boolean }).kpiReady === true, {
+        timeout: opts.readyTimeoutMs ?? 15_000,
+      })
+      .catch(() => { /* fall through — render whatever's painted */ })
+    const pdf = await page.pdf({
+      format:               opts.format ?? 'A4',
+      printBackground:      true,
+      displayHeaderFooter:  false,
+      preferCSSPageSize:    true,    // honor @page size/margin from the HTML
+      margin:               opts.margin ?? {
+        top:    '0.4in',
+        bottom: '0.4in',
+        left:   '0.4in',
+        right:  '0.4in',
+      },
+    })
+    return Buffer.from(pdf)
+  } finally {
+    await browser.close()
+  }
+}

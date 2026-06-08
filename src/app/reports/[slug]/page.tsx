@@ -24,10 +24,15 @@ export default function PublicReportPage({ params }: { params: Promise<{ slug: s
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [meta, setMeta] = useState<{ generatedAt?: string; publishedAt?: string } | null>(null)
+  // Sprint #380 — keep the slug in component state so we can forward it to
+  // <BossViewContent publicSlug=…/> for the server-side PDF download (it
+  // hits /api/reports/friday-kpi/boss-view/pdf?slug=… in public mode).
+  const [slug, setSlug] = useState<string | null>(null)
 
   useEffect(() => {
     (async () => {
       const { slug } = await params
+      setSlug(slug)
       try {
         const res = await fetch(`/api/public/reports/friday-kpi/boss-view/${slug}`)
         const ct = res.headers.get('content-type') ?? ''
@@ -78,6 +83,7 @@ export default function PublicReportPage({ params }: { params: Promise<{ slug: s
           loading={loading}
           error={error}
           commentary={payload?.commentary ?? null}
+          publicSlug={slug ?? undefined}
         />
       </div>
     </div>

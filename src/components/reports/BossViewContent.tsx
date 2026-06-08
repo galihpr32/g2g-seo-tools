@@ -568,11 +568,17 @@ export interface BossViewContentProps {
   onSaveCommentary?:  (next: { whyWorked: string; actionTaken: string }) => Promise<void>
   onRegenerateCommentary?: () => Promise<void>
   commentaryBusy?:    boolean
+  /** Sprint #380 — when set, the Download PDF button hits the public PDF
+   *  endpoint scoped to this slug (`?slug=…`). When undefined, the button
+   *  calls the auth-gated endpoint that reads the caller's cached payload
+   *  (admin preview mode). */
+  publicSlug?:        string
 }
 
 export function BossViewContent({
   payload, loading, error,
   commentary, onSaveCommentary, onRegenerateCommentary, commentaryBusy,
+  publicSlug,
 }: BossViewContentProps) {
   const [copyOk, setCopyOk] = useState(false)
   // Sprint #374 — local edit buffer. To avoid the React-19
@@ -678,9 +684,53 @@ export function BossViewContent({
     setEditing(false)
   }
 
-  // Sprint #379 — PDF export via browser print dialog
-  function downloadPdf() {
-    if (typeof window !== 'undefined') window.print()
+  // Sprint #380 — server-side Puppeteer PDF export. Replaces the old
+  // window.print() approach (Chrome's print dialog produced an ugly PDF
+  // with the URL footer + date header artifacts that the social team
+  // wouldn't want to share). The endpoint runs a headless Chromium server-
+  // side, renders our branded HTML template, and streams back a clean PDF.
+  //
+  // Two modes:
+  //   - publicSlug set (public /reports/[slug] page) → hit /pdf?slug=…
+  //   - publicSlug undefined (admin dashboard) → hit /pdf (auth-gated cache)
+  const [pdfBusy, setPdfBusy] = useState(false)
+  const [pdfErr,  setPdfErr]  = useState<string | null>(null)
+  async function downloadPdf() {
+    if (pdfBusy) return
+    setPdfBusy(true)
+    setPdfErr(null)
+    try {
+      const url = publicSlug
+        ? `/api/reports/friday-kpi/boss-view/pdf?slug=${encodeURIComponent(publicSlug)}`
+        : '/api/reports/friday-kpi/boss-view/pdf'
+      const res = await fetch(url, { method: 'GET' })
+      if (!res.ok) {
+        // Try to parse a JSON error body — the route returns
+        // { error: string } on the failure paths.
+        const ct = res.headers.get('content-type') ?? ''
+        if (ct.includes('application/json')) {
+          const data = await res.json().catch(() => ({})) as { error?: string }
+          throw new Error(data.error ?? `HTTP ${res.status}`)
+        }
+        throw new Error(`HTTP ${res.status}`)
+      }
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = blobUrl
+      a.download = `weekly-snapshot-${publicSlug ?? 'preview'}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      // Give the browser a beat to actually start the download before
+      // revoking the URL (Chrome can race the revoke otherwise).
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'PDF download failed'
+      setPdfErr(msg)
+    } finally {
+      setPdfBusy(false)
+    }
   }
 
   return (
@@ -710,9 +760,9 @@ export function BossViewContent({
         }
       `}</style>
 
-      {(error || chartErr) && (
+      {(error || chartErr || pdfErr) && (
         <div className="mb-4 p-3 bg-red-900/30 border border-red-700/40 text-red-300 text-sm rounded-lg print-hide">
-          {error || chartErr}
+          {error || chartErr || pdfErr}
         </div>
       )}
 
@@ -727,9 +777,10 @@ export function BossViewContent({
           <div className="flex justify-end mb-3 print-hide">
             <button
               onClick={downloadPdf}
-              className="text-xs bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg transition font-medium"
-              title="Open browser Print dialog — pick 'Save as PDF'"
-            >📄 Download PDF</button>
+              disabled={pdfBusy}
+              className="text-xs bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg transition font-medium"
+              title="Generate a branded, server-side PDF (10–30s)"
+            >{pdfBusy ? '⏳ Generating PDF…' : '📄 Download PDF'}</button>
           </div>
           {/* ── KPI Strip ── */}
           <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
