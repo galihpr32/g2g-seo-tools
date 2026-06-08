@@ -12,14 +12,14 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BossViewContent, type Payload, type BossViewCommentary } from '@/components/reports/BossViewContent'
 
-interface PublishedSnapshot {
-  slug:        string
-  weekLabel:   string
-  curStart:    string | null
-  curEnd:      string | null
-  generatedAt: string
-  publishedAt: string
+// Sprint #379 — unified row shape for both snapshots + kw breakdowns.
+interface PublishedItem {
+  type:        'snapshot' | 'kw_breakdown'
   url:         string
+  label:       string
+  sub:         string | null
+  publishedAt: string
+  generatedAt: string
 }
 
 export default function BossViewPreviewPage() {
@@ -36,8 +36,9 @@ export default function BossViewPreviewPage() {
   // Sprint #374 — commentary state (admin can regenerate via AI or edit)
   const [commentary,     setCommentary]     = useState<BossViewCommentary | null>(null)
   const [commentaryBusy, setCommentaryBusy] = useState(false)
-  // Sprint #378 — list of previously-published snapshots for quick re-access
-  const [publishedList, setPublishedList] = useState<PublishedSnapshot[]>([])
+  // Sprint #378/#379 — unified list of previously-published reports
+  // (snapshots + KW breakdowns) for quick re-access.
+  const [publishedList, setPublishedList] = useState<PublishedItem[]>([])
   const [publishedListOpen, setPublishedListOpen] = useState(false)
 
   async function load(refresh = false) {
@@ -123,7 +124,7 @@ export default function BossViewPreviewPage() {
     try {
       const res = await fetch('/api/reports/friday-kpi/boss-view/published')
       if (!res.ok) return
-      const data = await res.json() as { snapshots?: PublishedSnapshot[] }
+      const data = await res.json() as { snapshots?: PublishedItem[] }
       setPublishedList(data.snapshots ?? [])
     } catch { /* silent — list is optional */ }
   }, [])
@@ -238,7 +239,8 @@ export default function BossViewPreviewPage() {
         </div>
       )}
 
-      {/* Sprint #378 — collapsible list of previously-published snapshots */}
+      {/* Sprint #378/#379 — collapsible unified list of published reports
+          (boss view snapshots + KW breakdown public tokens). Type badge per row. */}
       {publishedList.length > 0 && (
         <section className="mb-5 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           <button
@@ -246,31 +248,45 @@ export default function BossViewPreviewPage() {
             className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-900/60 transition"
           >
             <p className="text-sm font-semibold text-white">
-              📚 Published snapshots
-              <span className="text-xs text-gray-500 font-normal ml-2">{publishedList.length} {publishedList.length === 1 ? 'snapshot' : 'snapshots'}</span>
+              📚 Published reports
+              <span className="text-xs text-gray-500 font-normal ml-2">
+                {publishedList.length} {publishedList.length === 1 ? 'item' : 'items'}
+                {' · '}
+                {publishedList.filter(i => i.type === 'snapshot').length} snapshot{publishedList.filter(i => i.type === 'snapshot').length === 1 ? '' : 's'}
+                {' / '}
+                {publishedList.filter(i => i.type === 'kw_breakdown').length} KW breakdown{publishedList.filter(i => i.type === 'kw_breakdown').length === 1 ? '' : 's'}
+              </span>
             </p>
             <span className="text-gray-500 text-sm">{publishedListOpen ? '▾' : '▸'}</span>
           </button>
           {publishedListOpen && (
             <div className="border-t border-gray-800 max-h-72 overflow-y-auto">
               <ul className="divide-y divide-gray-800/60">
-                {publishedList.map(s => (
-                  <li key={s.slug} className="px-4 py-2.5 hover:bg-gray-950/60 flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm text-white font-medium truncate">{s.weekLabel}</p>
-                      <p className="text-[11px] text-gray-500">
-                        <span className="font-mono text-gray-400">/{s.slug}</span>
-                        <span className="ml-2">published {new Date(s.publishedAt).toLocaleString()}</span>
-                      </p>
-                    </div>
-                    <a
-                      href={s.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 px-2.5 py-1 rounded transition flex-shrink-0"
-                    >🔗 Open</a>
-                  </li>
-                ))}
+                {publishedList.map((item, i) => {
+                  const isSnap = item.type === 'snapshot'
+                  return (
+                    <li key={`${item.type}-${item.url}-${i}`} className="px-4 py-2.5 hover:bg-gray-950/60 flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-white font-medium truncate flex items-center gap-2">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-normal ${isSnap ? 'bg-purple-700/30 text-purple-300' : 'bg-amber-700/30 text-amber-300'}`}>
+                            {isSnap ? '📸 Snapshot' : '🔑 KW Breakdown'}
+                          </span>
+                          {item.label}
+                        </p>
+                        <p className="text-[11px] text-gray-500">
+                          <span className="font-mono text-gray-400">{item.url}</span>
+                          <span className="ml-2">published {new Date(item.publishedAt).toLocaleString()}</span>
+                        </p>
+                      </div>
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 px-2.5 py-1 rounded transition flex-shrink-0"
+                      >🔗 Open</a>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
           )}

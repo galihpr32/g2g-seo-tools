@@ -678,10 +678,40 @@ export function BossViewContent({
     setEditing(false)
   }
 
+  // Sprint #379 — PDF export via browser print dialog
+  function downloadPdf() {
+    if (typeof window !== 'undefined') window.print()
+  }
+
   return (
     <>
+      {/* Sprint #379 — print stylesheet. Hides sidebar/buttons/dismissibles
+          and tightens spacing so browser "Save as PDF" produces a clean
+          multi-page document. Charts (Chart.js canvas) print as-is. Each
+          major section gets a page-break-inside:avoid to keep cards intact. */}
+      <style jsx global>{`
+        @media print {
+          aside, nav, button { display: none !important; }
+          /* Hide the dashboard sidebar layout chrome */
+          .sidebar, [class*="Sidebar"] { display: none !important; }
+          body { background: #ffffff !important; color: #0F1218 !important; }
+          /* Force dark cards to white background + dark text for PDF */
+          .bg-gray-900, .bg-gray-950, .bg-black { background: #ffffff !important; }
+          .text-white, .text-gray-200, .text-gray-300, .text-gray-400 { color: #0F1218 !important; }
+          .border-gray-800, .border-gray-700, .border-gray-800\\/60 {
+            border-color: #d1d5db !important;
+          }
+          section { page-break-inside: avoid; margin-bottom: 12pt !important; }
+          h1, h2, h3 { color: #0F1218 !important; }
+          /* Make sure charts render at full size, not collapsed */
+          canvas { max-height: 380px !important; }
+          /* Hide commentary edit controls + buttons */
+          .print-hide { display: none !important; }
+        }
+      `}</style>
+
       {(error || chartErr) && (
-        <div className="mb-4 p-3 bg-red-900/30 border border-red-700/40 text-red-300 text-sm rounded-lg">
+        <div className="mb-4 p-3 bg-red-900/30 border border-red-700/40 text-red-300 text-sm rounded-lg print-hide">
           {error || chartErr}
         </div>
       )}
@@ -692,6 +722,15 @@ export function BossViewContent({
 
       {payload && (
         <>
+          {/* Sprint #379 — Download PDF button. Floats at top-right of content;
+              hidden in print output via .print-hide. */}
+          <div className="flex justify-end mb-3 print-hide">
+            <button
+              onClick={downloadPdf}
+              className="text-xs bg-indigo-700 hover:bg-indigo-600 text-white px-3 py-1.5 rounded-lg transition font-medium"
+              title="Open browser Print dialog — pick 'Save as PDF'"
+            >📄 Download PDF</button>
+          </div>
           {/* ── KPI Strip ── */}
           <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
             {payload.brands.flatMap(b => (['us', 'id'] as const).map(m => {
