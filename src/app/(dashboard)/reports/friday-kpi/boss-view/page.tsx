@@ -1,23 +1,26 @@
 'use client'
 
 /**
- * Sprint #361 / Sprint #363 — Weekly Boss View preview page (admin).
+ * Sprint #361 / Sprint #363 — Weekly Snapshot preview page (admin).
  * Sprint #373 — Render content via shared <BossViewContent /> component
  * so the public /reports/[slug] page can reuse all the same visualization.
- * Adds a "📤 Create Report Page" button that snapshots the current cached
- * payload to the published table and copies the public URL to clipboard.
- *
- * This page keeps:
- *   - Data fetching (GET cached / POST refresh)
- *   - Header with title + Refresh + Publish buttons
- *   - State for cached/generatedAt/refreshing
- *
- * Everything else (KPI strip, 4 historical charts, scatter charts, focus
- * tables, AI source panel, Slack preview) lives in BossViewContent.
+ * Sprint #378 — renamed "Weekly Boss View" → "Weekly Snapshot". Added a
+ * Published Snapshots list (last 50) so the user can re-open past report
+ * pages without hunting URLs.
  */
 
 import { useCallback, useEffect, useState } from 'react'
 import { BossViewContent, type Payload, type BossViewCommentary } from '@/components/reports/BossViewContent'
+
+interface PublishedSnapshot {
+  slug:        string
+  weekLabel:   string
+  curStart:    string | null
+  curEnd:      string | null
+  generatedAt: string
+  publishedAt: string
+  url:         string
+}
 
 export default function BossViewPreviewPage() {
   const [payload,     setPayload]     = useState<Payload | null>(null)
@@ -27,10 +30,15 @@ export default function BossViewPreviewPage() {
   const [error,       setError]       = useState<string | null>(null)
   const [cached,      setCached]      = useState(false)
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
-  const [publishToast, setPublishToast] = useState<string | null>(null)
+  // Sprint #378 — toast holds the published URL so we can render a real
+  // clickable anchor + Open button (was plain text before).
+  const [publishToast, setPublishToast] = useState<{ url: string; copied: boolean } | null>(null)
   // Sprint #374 — commentary state (admin can regenerate via AI or edit)
   const [commentary,     setCommentary]     = useState<BossViewCommentary | null>(null)
   const [commentaryBusy, setCommentaryBusy] = useState(false)
+  // Sprint #378 — list of previously-published snapshots for quick re-access
+  const [publishedList, setPublishedList] = useState<PublishedSnapshot[]>([])
+  const [publishedListOpen, setPublishedListOpen] = useState(false)
 
   async function load(refresh = false) {
     if (refresh) setRefreshing(true)
@@ -109,6 +117,18 @@ export default function BossViewPreviewPage() {
     }
   }, [])
 
+  // Sprint #378 — load the published-list whenever a publish completes (or
+  // on first mount) so the list stays in sync with the publish action.
+  const fetchPublishedList = useCallback(async () => {
+    try {
+      const res = await fetch('/api/reports/friday-kpi/boss-view/published')
+      if (!res.ok) return
+      const data = await res.json() as { snapshots?: PublishedSnapshot[] }
+      setPublishedList(data.snapshots ?? [])
+    } catch { /* silent — list is optional */ }
+  }, [])
+  useEffect(() => { fetchPublishedList() }, [fetchPublishedList])
+
   async function publish() {
     if (!payload || refreshing) return
     setPublishing(true)
@@ -132,13 +152,16 @@ export default function BossViewPreviewPage() {
       const absoluteUrl = data.url.startsWith('http')
         ? data.url
         : (typeof window !== 'undefined' ? window.location.origin + data.url : data.url)
+      // Sprint #378 — store URL + copy flag; toast renders real clickable anchor.
+      let copied = false
       try {
         await navigator.clipboard.writeText(absoluteUrl)
-        setPublishToast(`Published — URL copied: ${absoluteUrl}`)
-      } catch {
-        setPublishToast(`Published — ${absoluteUrl}`)
-      }
-      setTimeout(() => setPublishToast(null), 3000)
+        copied = true
+      } catch { /* ignore clipboard rejection — still show link */ }
+      setPublishToast({ url: absoluteUrl, copied })
+      // Sprint #378 — refresh the published list so the new entry shows up
+      fetchPublishedList()
+      // Don't auto-dismiss — user might want to click the link
     } catch (e) {
       setError(String(e))
     } finally {
@@ -153,7 +176,7 @@ export default function BossViewPreviewPage() {
       <header className="flex items-start justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-            🔍 Weekly Boss View
+            📸 Weekly Snapshot
             <span className="text-xs px-2 py-0.5 bg-purple-700/30 text-purple-300 rounded font-normal">Preview</span>
           </h1>
           <p className="text-sm text-gray-400 mt-1">
@@ -184,10 +207,74 @@ export default function BossViewPreviewPage() {
         </div>
       </header>
 
+      {/* Sprint #378 — publish toast with real clickable anchor + Open button.
+          Doesn't auto-dismiss; user clicks ✕ to close. */}
       {publishToast && (
-        <div className="mb-4 p-3 bg-emerald-900/30 border border-emerald-700/40 text-emerald-300 text-sm rounded-lg break-all">
-          {publishToast}
+        <div className="mb-4 p-3 bg-emerald-900/30 border border-emerald-700/40 rounded-lg flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-emerald-300 text-sm font-semibold mb-1">
+              ✅ Published {publishToast.copied && <span className="text-emerald-400/70 font-normal">· URL copied to clipboard</span>}
+            </p>
+            <a
+              href={publishToast.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-emerald-200 hover:text-white text-sm font-mono break-all underline decoration-emerald-700 hover:decoration-white"
+            >{publishToast.url}</a>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <a
+              href={publishToast.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-1.5 rounded transition font-medium"
+            >🔗 Open</a>
+            <button
+              onClick={() => setPublishToast(null)}
+              className="text-emerald-400 hover:text-white text-lg leading-none px-2"
+              title="Dismiss"
+            >×</button>
+          </div>
         </div>
+      )}
+
+      {/* Sprint #378 — collapsible list of previously-published snapshots */}
+      {publishedList.length > 0 && (
+        <section className="mb-5 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setPublishedListOpen(o => !o)}
+            className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-900/60 transition"
+          >
+            <p className="text-sm font-semibold text-white">
+              📚 Published snapshots
+              <span className="text-xs text-gray-500 font-normal ml-2">{publishedList.length} {publishedList.length === 1 ? 'snapshot' : 'snapshots'}</span>
+            </p>
+            <span className="text-gray-500 text-sm">{publishedListOpen ? '▾' : '▸'}</span>
+          </button>
+          {publishedListOpen && (
+            <div className="border-t border-gray-800 max-h-72 overflow-y-auto">
+              <ul className="divide-y divide-gray-800/60">
+                {publishedList.map(s => (
+                  <li key={s.slug} className="px-4 py-2.5 hover:bg-gray-950/60 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-white font-medium truncate">{s.weekLabel}</p>
+                      <p className="text-[11px] text-gray-500">
+                        <span className="font-mono text-gray-400">/{s.slug}</span>
+                        <span className="ml-2">published {new Date(s.publishedAt).toLocaleString()}</span>
+                      </p>
+                    </div>
+                    <a
+                      href={s.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 px-2.5 py-1 rounded transition flex-shrink-0"
+                    >🔗 Open</a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
       )}
 
       <BossViewContent

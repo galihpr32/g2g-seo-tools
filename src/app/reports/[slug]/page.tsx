@@ -60,7 +60,7 @@ export default function PublicReportPage({ params }: { params: Promise<{ slug: s
         <header className="flex items-start justify-between mb-6 flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-2">
-              🔍 Weekly Boss View
+              📸 Weekly Snapshot
               <span className="text-xs px-2 py-0.5 bg-emerald-700/30 text-emerald-300 rounded font-normal">Public</span>
             </h1>
             <p className="text-sm text-gray-400 mt-1">

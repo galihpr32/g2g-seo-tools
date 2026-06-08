@@ -431,7 +431,7 @@ function buildSlackPostPreview(payload: Payload, commentary?: BossViewCommentary
   const weekRange = `${shortWeekLabel(payload.curStart)}–${shortWeekLabel(payload.curEnd)}`
 
   lines.push(sep)
-  lines.push(`🔍  SEO  |  ${payload.weekLabel.split('·')[0].trim()}  ·  ${weekRange}`)
+  lines.push(`📸  Weekly Snapshot  |  ${payload.weekLabel.split('·')[0].trim()}  ·  ${weekRange}`)
   lines.push(sep)
 
   // Metric table
