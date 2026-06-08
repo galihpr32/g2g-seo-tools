@@ -50,8 +50,23 @@ export async function GET(req: Request) {
 
   try {
     if (slug) {
-      // Public mode — anyone with the slug can download the PDF, matching
-      // the existing /reports/[slug] page's no-auth contract.
+      // Sprint #384 — slug mode is no-longer-anonymous: gate on @g2g.com /
+      // @offgamers.com email so PDF download can't bypass the same domain
+      // gate now enforced on the public /reports/[slug] page.
+      const supabase = await createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return NextResponse.json({
+        error: 'unauthenticated',
+        message: 'Please sign in with your G2G or OffGamers account.',
+      }, { status: 401 })
+      const lower = (user.email ?? '').toLowerCase().trim()
+      const allowed = lower.endsWith('@g2g.com') || lower.endsWith('@offgamers.com')
+      if (!allowed) return NextResponse.json({
+        error: 'forbidden_domain',
+        message: 'Only @g2g.com & @offgamers.com domains can open this file. ' +
+                 'Please use your account profile to open this file.',
+      }, { status: 403 })
+
       const db = createServiceClient()
       const { data, error } = await db
         .from('friday_kpi_boss_view_published')
