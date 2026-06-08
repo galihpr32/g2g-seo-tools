@@ -503,9 +503,22 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 2. Historical GA4 (full window, organic only)
+    // Sprint #377 — added dimensionFilter to dodge GA4 sampling. Without
+    // it, dim=[date,country,channelGroup] over 13 weeks generates ~200K
+    // row permutations and GA4 silently samples to ~25% of actuals.
+    // Filtering to country IN US+ID + channel CONTAINS Organic cuts the
+    // permutation space to ~300 rows → no sampling.
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
-          ['date', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 25000)
+          ['date', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 25000,
+          {
+            andGroup: { expressions: [
+              { filter: { fieldName: 'country',
+                inListFilter: { values: ['United States', 'Indonesia'] } } },
+              { filter: { fieldName: 'sessionDefaultChannelGroup',
+                stringFilter: { matchType: 'CONTAINS', value: 'Organic' } } },
+            ] },
+          })
           .then(resp => {
             // Sprint #375 — switched purchaseRevenue → totalRevenue to match
             // what GA4's "Total revenue" dashboard column shows. For a pure
@@ -582,9 +595,18 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 5. GA4 LP revenue (current week, organic only)
+    // Sprint #377 — same dimensionFilter trick as historical query above.
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
-          ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 10000)
+          ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 10000,
+          {
+            andGroup: { expressions: [
+              { filter: { fieldName: 'country',
+                inListFilter: { values: ['United States', 'Indonesia'] } } },
+              { filter: { fieldName: 'sessionDefaultChannelGroup',
+                stringFilter: { matchType: 'CONTAINS', value: 'Organic' } } },
+            ] },
+          })
           .then(resp => {
             // Sprint #375 — switched to totalRevenue (was purchaseRevenue).
             const rows = parseGA4Rows(resp)

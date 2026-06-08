@@ -3,6 +3,25 @@ import type { OAuth2Client } from 'google-auth-library'
 
 // ─── GA4 Data API ─────────────────────────────────────────────────────────────
 
+/**
+ * Sprint #377 — `dimensionFilter` is now passed through. GA4 samples large
+ * queries (e.g. dim=[date,country,channel] over 13 weeks generates ~200K
+ * row permutations and gets sampled to 25% of actuals). Pre-filtering at
+ * the API level via `inListFilter` on country/channel cuts row count to a
+ * few hundred → no sampling, full revenue numbers.
+ *
+ * Shape examples:
+ *   filter: {
+ *     andGroup: { expressions: [
+ *       { filter: { fieldName: 'country', inListFilter: { values: ['United States', 'Indonesia'] } } },
+ *       { filter: { fieldName: 'sessionDefaultChannelGroup', stringFilter: { matchType: 'CONTAINS', value: 'Organic' } } },
+ *     ] }
+ *   }
+ *   filter: { filter: { fieldName: 'country', stringFilter: { value: 'United States' } } }
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Ga4DimensionFilter = any   // GA4 API type is deep + verbose; we pass through as-is
+
 export async function getGA4Report(
   auth: OAuth2Client,
   propertyId: string,
@@ -10,7 +29,8 @@ export async function getGA4Report(
   endDate: string,
   dimensions: string[],
   metrics: string[],
-  limit = 100
+  limit = 100,
+  dimensionFilter?: Ga4DimensionFilter,
 ) {
   const analyticsdata = google.analyticsdata({ version: 'v1beta', auth })
   const res = await analyticsdata.properties.runReport({
@@ -21,6 +41,7 @@ export async function getGA4Report(
       metrics: metrics.map(name => ({ name })),
       limit: String(limit),
       orderBys: [{ metric: { metricName: metrics[0] }, desc: true }],
+      ...(dimensionFilter ? { dimensionFilter } : {}),
     },
   })
   return res.data
