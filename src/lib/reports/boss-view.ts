@@ -12,8 +12,10 @@
 // Focus KW selection per brand = composite z-score of (clicks + revenue):
 //   - Universe = cluster_winners (tier_keywords with is_cluster_winner=true)
 //   - clicks  = GSC clicks per query, summed across US + ID
-//   - revenue = GA4 purchaseRevenue of the top landing page that ranks for
+//   - revenue = GA4 totalRevenue of the top landing page that ranks for
 //               the query (best-effort attribution; LP-level not KW-level)
+//               Sprint #375 — switched from purchaseRevenue to totalRevenue
+//               to match GA4 dashboard's default "Total revenue" column.
 //   - z-score each metric independently, sum, top 5 by composite
 //
 // Window: same Thu→Wed pair as friday-kpi.ts so the boss view aligns with
@@ -466,8 +468,13 @@ async function buildBrandBossView(
               const clicks  = Number(r.clicks ?? 0)
               const idx = findWeekIdx(date)
               if (idx < 0) continue
-              if (country === 'idn') histId[idx].clicks += clicks
-              else                   histUs[idx].clicks += clicks
+              // Sprint #375 — strict country match. Previously "anything not
+              // idn" was lumped as US, which incorrectly included BR/DE/RU
+              // etc and over-inflated the US bucket. Now we ONLY count
+              // GSC's 3-letter codes 'usa' / 'idn'; everything else is dropped.
+              if      (country === 'usa') histUs[idx].clicks += clicks
+              else if (country === 'idn') histId[idx].clicks += clicks
+              // (rest-of-world traffic is not represented on this dashboard)
             }
           })
           .catch(e => console.warn(`[boss-view ${siteSlug}] historical GSC failed:`, e))
@@ -476,8 +483,12 @@ async function buildBrandBossView(
     // 2. Historical GA4 (full window, organic only)
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
-          ['date', 'country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 25000)
+          ['date', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 25000)
           .then(resp => {
+            // Sprint #375 — switched purchaseRevenue → totalRevenue to match
+            // what GA4's "Total revenue" dashboard column shows. For a pure
+            // marketplace they're usually identical, but totalRevenue also
+            // includes ad/subscription revenue if any.
             const rows = parseGA4Rows(resp)
             for (const r of rows) {
               if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
@@ -485,11 +496,12 @@ async function buildBrandBossView(
               // GA4 date dim returns YYYYMMDD — normalize to YYYY-MM-DD
               const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
               const country = (r.country ?? '').toLowerCase()
-              const rev     = parseFloat(r.purchaseRevenue ?? '0')
+              const rev     = parseFloat(r.totalRevenue ?? '0')
               const idx = findWeekIdx(date)
               if (idx < 0) continue
-              if (country === 'indonesia') histId[idx].revenue += rev
-              else                          histUs[idx].revenue += rev
+              // Sprint #375 — strict country match (see GSC equivalent above)
+              if      (country === 'united states') histUs[idx].revenue += rev
+              else if (country === 'indonesia')      histId[idx].revenue += rev
             }
           })
           .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 failed:`, e))
@@ -505,11 +517,12 @@ async function buildBrandBossView(
               const q = String(r.keys?.[0] ?? '').toLowerCase().trim()
               if (!winnerSet.has(q)) continue
               const country = String(r.keys?.[1] ?? '').toLowerCase()
-              const isId    = country === 'idn'
               const clicks  = Number(r.clicks ?? 0)
               const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0 }
-              if (isId) bucket.id += clicks
-              else      bucket.us += clicks
+              // Sprint #375 — strict country: only 'usa' / 'idn' counted.
+              if      (country === 'usa') bucket.us += clicks
+              else if (country === 'idn') bucket.id += clicks
+              else continue
               clicksByKwMarket.set(q, bucket)
             }
           })
@@ -526,6 +539,8 @@ async function buildBrandBossView(
               const q       = String(r.keys?.[1] ?? '').toLowerCase().trim()
               const country = String(r.keys?.[2] ?? '').toLowerCase()
               if (!winnerSet.has(q)) continue
+              // Sprint #375 — strict country: only USA/IDN rows considered.
+              if (country !== 'usa' && country !== 'idn') continue
               const clicks = Number(r.clicks ?? 0)
               const isId   = country === 'idn'
               const path   = normalizePath(page)
@@ -544,19 +559,22 @@ async function buildBrandBossView(
     // 5. GA4 LP revenue (current week, organic only)
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
-          ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['purchaseRevenue'], 10000)
+          ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 10000)
           .then(resp => {
+            // Sprint #375 — switched to totalRevenue (was purchaseRevenue).
             const rows = parseGA4Rows(resp)
             empty.diagnostics.ga4_rev_pages_fetched = rows.length
             for (const r of rows) {
               if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
               const path    = normalizePath(r.landingPage ?? '')
               const country = (r.country ?? '').toLowerCase()
-              const rev     = parseFloat(r.purchaseRevenue ?? '0')
+              const rev     = parseFloat(r.totalRevenue ?? '0')
               if (!path) continue
               const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0 }
-              if (country === 'indonesia') bucket.id += rev
-              else                          bucket.us += rev
+              // Sprint #375 — strict country: only 'united states' / 'indonesia' counted.
+              if      (country === 'united states') bucket.us += rev
+              else if (country === 'indonesia')      bucket.id += rev
+              else continue
               revenueByPathMarket.set(path, bucket)
             }
           })
@@ -804,10 +822,13 @@ async function buildAiSourceForBrand(
 
   try {
     const [curResp, prevResp] = await Promise.all([
+      // Sprint #375 — switched purchaseRevenue → totalRevenue to match GA4
+      // dashboard's "Total revenue" column. Same change as the brand-level
+      // historical revenue queries above.
       getGA4Report(auth, ga4PropertyId, cur.start,  cur.end,
-        ['sessionSource'], ['totalUsers', 'sessions', 'purchaseRevenue'], 200),
+        ['sessionSource'], ['totalUsers', 'sessions', 'totalRevenue'], 200),
       getGA4Report(auth, ga4PropertyId, prev.start, prev.end,
-        ['sessionSource'], ['totalUsers', 'sessions', 'purchaseRevenue'], 200),
+        ['sessionSource'], ['totalUsers', 'sessions', 'totalRevenue'], 200),
     ])
     const curRows  = parseGA4Rows(curResp)
     const prevRows = parseGA4Rows(prevResp)
@@ -832,7 +853,7 @@ async function buildAiSourceForBrand(
         if (!label) continue
         const u = Number(r.totalUsers ?? 0)
         const s = Number(r.sessions ?? 0)
-        const v = parseFloat(r.purchaseRevenue ?? '0')
+        const v = parseFloat(r.totalRevenue ?? '0')
         const bucket = buckets.get(label) ?? { users: 0, sessions: 0, revenue: 0 }
         bucket.users    += u
         bucket.sessions += s
