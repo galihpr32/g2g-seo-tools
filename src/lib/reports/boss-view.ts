@@ -506,18 +506,20 @@ async function buildBrandBossView(
     // Sprint #377 — added dimensionFilter to dodge GA4 sampling. Without
     // it, dim=[date,country,channelGroup] over 13 weeks generates ~200K
     // row permutations and GA4 silently samples to ~25% of actuals.
-    // Filtering to country IN US+ID + channel CONTAINS Organic cuts the
-    // permutation space to ~300 rows → no sampling.
+    // Sprint #381 — REMOVED the country filter from the dimensionFilter.
+    // Sprint #377's country `inListFilter: ['United States','Indonesia']`
+    // was case-sensitive and matched ONLY the long display names — rows
+    // GA4 returns tagged 'US' / 'USA' / 'United States of America' (which
+    // classifyMarket() handles fine in code) got dropped at API level,
+    // crashing G2G-US revenue back to ~$201K. Channel-only filter is still
+    // tight enough to escape sampling: ~91 days × ~200 countries × Organic
+    // ≈ ~18K rows, well under the sampling threshold.
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
           ['date', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 25000,
           {
-            andGroup: { expressions: [
-              { filter: { fieldName: 'country',
-                inListFilter: { values: ['United States', 'Indonesia'] } } },
-              { filter: { fieldName: 'sessionDefaultChannelGroup',
-                stringFilter: { matchType: 'CONTAINS', value: 'Organic' } } },
-            ] },
+            filter: { fieldName: 'sessionDefaultChannelGroup',
+              stringFilter: { matchType: 'CONTAINS', value: 'Organic' } },
           })
           .then(resp => {
             // Sprint #375 — switched purchaseRevenue → totalRevenue to match
@@ -595,17 +597,13 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 5. GA4 LP revenue (current week, organic only)
-    // Sprint #377 — same dimensionFilter trick as historical query above.
+    // Sprint #377/#381 — channel-only filter (see historical GA4 call note).
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
           ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 10000,
           {
-            andGroup: { expressions: [
-              { filter: { fieldName: 'country',
-                inListFilter: { values: ['United States', 'Indonesia'] } } },
-              { filter: { fieldName: 'sessionDefaultChannelGroup',
-                stringFilter: { matchType: 'CONTAINS', value: 'Organic' } } },
-            ] },
+            filter: { fieldName: 'sessionDefaultChannelGroup',
+              stringFilter: { matchType: 'CONTAINS', value: 'Organic' } },
           })
           .then(resp => {
             // Sprint #375 — switched to totalRevenue (was purchaseRevenue).
