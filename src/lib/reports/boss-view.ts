@@ -506,20 +506,28 @@ async function buildBrandBossView(
     // Sprint #377 — added dimensionFilter to dodge GA4 sampling. Without
     // it, dim=[date,country,channelGroup] over 13 weeks generates ~200K
     // row permutations and GA4 silently samples to ~25% of actuals.
-    // Sprint #381 — REMOVED the country filter from the dimensionFilter.
-    // Sprint #377's country `inListFilter: ['United States','Indonesia']`
-    // was case-sensitive and matched ONLY the long display names — rows
-    // GA4 returns tagged 'US' / 'USA' / 'United States of America' (which
-    // classifyMarket() handles fine in code) got dropped at API level,
-    // crashing G2G-US revenue back to ~$201K. Channel-only filter is still
-    // tight enough to escape sampling: ~91 days × ~200 countries × Organic
-    // ≈ ~18K rows, well under the sampling threshold.
+    // Sprint #381 — DROPPED country filter, kept channel-only. But that
+    // still left ~54K rows (91 days × ~200 countries × ~3 organic channels)
+    // — over sampling threshold — and revenue STILL came back at ~25% of
+    // actual ($200K vs expected $713K).
+    // Sprint #382 — BRING BACK country filter but enumerate every variant
+    // GA4 has been observed to emit ('US' / 'USA' / display name / etc.),
+    // and force `caseSensitive: false` so the API stops doing exact match.
+    // ~7 countries × 91 days × 3 channels ≈ 1.9K rows, well under sampling.
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
           ['date', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 25000,
           {
-            filter: { fieldName: 'sessionDefaultChannelGroup',
-              stringFilter: { matchType: 'CONTAINS', value: 'Organic' } },
+            andGroup: { expressions: [
+              { filter: { fieldName: 'country',
+                inListFilter: {
+                  values: ['United States', 'US', 'USA', 'United States of America',
+                           'Indonesia', 'ID', 'IDN'],
+                  caseSensitive: false,
+                } } },
+              { filter: { fieldName: 'sessionDefaultChannelGroup',
+                stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+            ] },
           })
           .then(resp => {
             // Sprint #375 — switched purchaseRevenue → totalRevenue to match
@@ -597,13 +605,21 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 5. GA4 LP revenue (current week, organic only)
-    // Sprint #377/#381 — channel-only filter (see historical GA4 call note).
+    // Sprint #382 — country variants + channel filter (see historical note).
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
           ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 10000,
           {
-            filter: { fieldName: 'sessionDefaultChannelGroup',
-              stringFilter: { matchType: 'CONTAINS', value: 'Organic' } },
+            andGroup: { expressions: [
+              { filter: { fieldName: 'country',
+                inListFilter: {
+                  values: ['United States', 'US', 'USA', 'United States of America',
+                           'Indonesia', 'ID', 'IDN'],
+                  caseSensitive: false,
+                } } },
+              { filter: { fieldName: 'sessionDefaultChannelGroup',
+                stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+            ] },
           })
           .then(resp => {
             // Sprint #375 — switched to totalRevenue (was purchaseRevenue).
