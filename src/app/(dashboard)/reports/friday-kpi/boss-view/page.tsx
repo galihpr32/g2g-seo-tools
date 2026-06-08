@@ -447,20 +447,28 @@ function buildSlackPostPreview(payload: Payload): string {
   lines.push('')
   lines.push(pad('Metric', 18) + pad('G2G-US', 14) + pad('WoW', 11) + pad('G2G-ID', 12) + pad('WoW', 11) + pad('OG-US', 12) + pad('WoW', 11) + pad('OG-ID', 11) + 'WoW')
   lines.push('─'.repeat(110))
+  // Sprint #371 — defensive: an old cached row may have brand.traffic /
+  // brand.revenue undefined or missing the per-market shape. Substitute
+  // zero/null placeholders so render doesn't crash. Click Refresh data to
+  // get a fresh cache built with the current shape.
+  const safe = (slice: BossViewMarketSlice | undefined): BossViewMarketSlice =>
+    slice ?? { thisWeek: 0, lastWeek: 0, pct: null }
+  const t = (b: BossViewBrand | undefined, m: 'us' | 'id') => safe(b?.traffic?.[m])
+  const r = (b: BossViewBrand | undefined, m: 'us' | 'id') => safe(b?.revenue?.[m])
   if (g2g && og) {
     lines.push(
       pad('Organic Traffic', 18) +
-      pad(fmtCell(g2g.traffic.us.thisWeek, false), 14) + pad(fmtPctCell(g2g.traffic.us.pct), 11) +
-      pad(fmtCell(g2g.traffic.id.thisWeek, false), 12) + pad(fmtPctCell(g2g.traffic.id.pct), 11) +
-      pad(fmtCell(og.traffic.us.thisWeek, false), 12)  + pad(fmtPctCell(og.traffic.us.pct), 11) +
-      pad(fmtCell(og.traffic.id.thisWeek, false), 11)  + fmtPctCell(og.traffic.id.pct)
+      pad(fmtCell(t(g2g, 'us').thisWeek, false), 14) + pad(fmtPctCell(t(g2g, 'us').pct), 11) +
+      pad(fmtCell(t(g2g, 'id').thisWeek, false), 12) + pad(fmtPctCell(t(g2g, 'id').pct), 11) +
+      pad(fmtCell(t(og,  'us').thisWeek, false), 12) + pad(fmtPctCell(t(og,  'us').pct), 11) +
+      pad(fmtCell(t(og,  'id').thisWeek, false), 11) + fmtPctCell(t(og,  'id').pct)
     )
     lines.push(
       pad('Organic Revenue', 18) +
-      pad(fmtCell(g2g.revenue.us.thisWeek, true), 14) + pad(fmtPctCell(g2g.revenue.us.pct), 11) +
-      pad(fmtCell(g2g.revenue.id.thisWeek, true), 12) + pad(fmtPctCell(g2g.revenue.id.pct), 11) +
-      pad(fmtCell(og.revenue.us.thisWeek, true), 12)  + pad(fmtPctCell(og.revenue.us.pct), 11) +
-      pad(fmtCell(og.revenue.id.thisWeek, true), 11)  + fmtPctCell(og.revenue.id.pct)
+      pad(fmtCell(r(g2g, 'us').thisWeek, true), 14) + pad(fmtPctCell(r(g2g, 'us').pct), 11) +
+      pad(fmtCell(r(g2g, 'id').thisWeek, true), 12) + pad(fmtPctCell(r(g2g, 'id').pct), 11) +
+      pad(fmtCell(r(og,  'us').thisWeek, true), 12) + pad(fmtPctCell(r(og,  'us').pct), 11) +
+      pad(fmtCell(r(og,  'id').thisWeek, true), 11) + fmtPctCell(r(og,  'id').pct)
     )
   }
 
@@ -599,21 +607,27 @@ export default function BossViewPreviewPage() {
       const g2g = payload.brands.find(b => b.siteSlug === 'g2g')
       const og  = payload.brands.find(b => b.siteSlug === 'offgamers')
 
+      // Sprint #367 — old cached rows from before Sprint #363 may not have
+      // `historical` field. Default to empty array buckets so chart renders
+      // empty rather than crashing with "Cannot read properties of undefined".
+      const histOrEmpty = (b: BossViewBrand | undefined): { us: HistoricalBucket[]; id: HistoricalBucket[] } =>
+        b?.historical ?? { us: [], id: [] }
+
       // Historical timelines
       if (histRefs.g2gUs.current && g2g) {
-        const h = makeHistoricalChart(histRefs.g2gUs.current, g2g.historical.us, 'g2g-us')
+        const h = makeHistoricalChart(histRefs.g2gUs.current, histOrEmpty(g2g).us, 'g2g-us')
         if (h) chartHandles.current.push(h)
       }
       if (histRefs.g2gId.current && g2g) {
-        const h = makeHistoricalChart(histRefs.g2gId.current, g2g.historical.id, 'g2g-id')
+        const h = makeHistoricalChart(histRefs.g2gId.current, histOrEmpty(g2g).id, 'g2g-id')
         if (h) chartHandles.current.push(h)
       }
       if (histRefs.ogUs.current && og) {
-        const h = makeHistoricalChart(histRefs.ogUs.current, og.historical.us, 'offgamers-us')
+        const h = makeHistoricalChart(histRefs.ogUs.current, histOrEmpty(og).us, 'offgamers-us')
         if (h) chartHandles.current.push(h)
       }
       if (histRefs.ogId.current && og) {
-        const h = makeHistoricalChart(histRefs.ogId.current, og.historical.id, 'offgamers-id')
+        const h = makeHistoricalChart(histRefs.ogId.current, histOrEmpty(og).id, 'offgamers-id')
         if (h) chartHandles.current.push(h)
       }
 
@@ -687,8 +701,11 @@ export default function BossViewPreviewPage() {
           {/* ── KPI Strip ── */}
           <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
             {payload.brands.flatMap(b => (['us', 'id'] as const).map(m => {
-              const t = b.traffic[m]
-              const r = b.revenue[m]
+              // Sprint #371 — defensive against old cache rows that lack
+              // traffic/revenue per-market shape. Empty slice → renders 0s.
+              const empty: BossViewMarketSlice = { thisWeek: 0, lastWeek: 0, pct: null }
+              const t = b.traffic?.[m] ?? empty
+              const r = b.revenue?.[m] ?? empty
               const tp = fmtPct(t.pct)
               const rp = fmtPct(r.pct)
               return (
@@ -705,10 +722,11 @@ export default function BossViewPreviewPage() {
 
           {/* ── Historical timelines: 2×2 grid ── */}
           <section className="bg-gray-900 border border-gray-800 rounded-xl p-5 mb-5">
-            <h2 className="text-sm font-semibold text-white mb-1">📊 Historical Trend — Year to Date</h2>
+            <h2 className="text-sm font-semibold text-white mb-1">📊 Historical Trend — Last 13 Weeks</h2>
             <p className="text-xs text-gray-500 mb-4">
               Weekly organic clicks (bars, left axis) + organic revenue (line, right axis).
-              From Jan 1 to current week. One chart per brand-country.
+              Quarter back through current week. One chart per brand-country.
+              <span className="text-gray-700"> (Hobby tier 60s cap — full YTD requires endpoint split, queued as Sprint #368.)</span>
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {[

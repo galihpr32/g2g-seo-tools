@@ -53,15 +53,16 @@ export function bossViewWindows(now: Date = new Date()): {
   prevStart.setDate(prevEnd.getDate() - 6)
   const iso = (d: Date) => d.toISOString().slice(0, 10)
 
-  // Historical range — Jan 1 of CUR-end's year. If Jan 1 ≥ today we'd have
-  // an empty range, so we cap to a minimum of 12 weeks back. That edge case
-  // really only happens in the first week of January when the year just
-  // rolled over.
+  // Sprint #367 — historical range capped at LAST 13 WEEKS (was Jan→now /
+  // year-to-date). YTD was the original spec but a 22-week GSC + GA4 fetch
+  // tipped Vercel Hobby's 60s function cap consistently. 13 weeks ≈ one
+  // quarter back; still gives a meaningful trend curve on the chart without
+  // blowing the budget. UI label updated to "Last 13 Weeks" to reflect.
   const yearStart = new Date(curEnd.getFullYear(), 0, 1)
   let histStart = new Date(yearStart)
-  const minHistStart = new Date(curEnd)
-  minHistStart.setDate(curEnd.getDate() - 7 * 12)    // 12 weeks fallback
-  if (histStart > minHistStart) histStart = minHistStart
+  const maxHistStart = new Date(curEnd)
+  maxHistStart.setDate(curEnd.getDate() - 7 * 13)
+  if (histStart < maxHistStart) histStart = maxHistStart
 
   // Walk Thu→Wed weeks backwards from curEnd until we hit histStart.
   const weeks: Array<{ start: string; end: string }> = []
