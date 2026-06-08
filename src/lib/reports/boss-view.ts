@@ -216,6 +216,29 @@ export interface BossViewPayload {
   aiSource: BossViewAiSlice
 }
 
+// ─── Country matching (Sprint #375 / #376) ─────────────────────────────────
+//
+// GSC and GA4 don't agree on country format:
+//   GSC `country` dim     → 3-letter ISO codes: 'usa', 'idn'
+//   GA4 `country` dim     → display names: 'United States', 'Indonesia'
+//   GA4 may also return   → 'US', 'ID' (2-letter ISO) on some properties
+//
+// Sprint #375 went too strict (only 'usa' / 'united states') and dropped
+// significant US revenue ($654K → $201K). Sprint #376 broadens to accept
+// every common variant for each market. Tag matching is case-insensitive +
+// trimmed. Empty / '(not set)' / other-country rows are still dropped.
+
+const US_TAGS = new Set(['usa', 'us', 'united states', 'united states of america'])
+const ID_TAGS = new Set(['idn', 'id', 'indonesia'])
+
+function classifyMarket(raw: string | null | undefined): 'us' | 'id' | null {
+  if (!raw) return null
+  const norm = raw.toLowerCase().trim()
+  if (US_TAGS.has(norm)) return 'us'
+  if (ID_TAGS.has(norm)) return 'id'
+  return null
+}
+
 // ─── AI source whitelist ────────────────────────────────────────────────────
 // Domains GA4 reports for AI-assistant referrals. Source: Galih's GA4
 // "AI Source - Test" custom channel group screenshot (2026-06-04). We
@@ -464,17 +487,16 @@ async function buildBrandBossView(
           .then(rows => {
             for (const r of rows) {
               const date    = String(r.keys?.[0] ?? '')
-              const country = String(r.keys?.[1] ?? '').toLowerCase()
+              const country = String(r.keys?.[1] ?? '')
               const clicks  = Number(r.clicks ?? 0)
               const idx = findWeekIdx(date)
               if (idx < 0) continue
-              // Sprint #375 — strict country match. Previously "anything not
-              // idn" was lumped as US, which incorrectly included BR/DE/RU
-              // etc and over-inflated the US bucket. Now we ONLY count
-              // GSC's 3-letter codes 'usa' / 'idn'; everything else is dropped.
-              if      (country === 'usa') histUs[idx].clicks += clicks
-              else if (country === 'idn') histId[idx].clicks += clicks
-              // (rest-of-world traffic is not represented on this dashboard)
+              // Sprint #376 — accept all common country variants (see
+              // classifyMarket). Sprint #375's strict 'usa'/'idn'-only check
+              // dropped legit data.
+              const mkt = classifyMarket(country)
+              if      (mkt === 'us') histUs[idx].clicks += clicks
+              else if (mkt === 'id') histId[idx].clicks += clicks
             }
           })
           .catch(e => console.warn(`[boss-view ${siteSlug}] historical GSC failed:`, e))
@@ -495,13 +517,14 @@ async function buildBrandBossView(
               const raw = String(r.date ?? '')
               // GA4 date dim returns YYYYMMDD — normalize to YYYY-MM-DD
               const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
-              const country = (r.country ?? '').toLowerCase()
+              const country = r.country ?? ''
               const rev     = parseFloat(r.totalRevenue ?? '0')
               const idx = findWeekIdx(date)
               if (idx < 0) continue
-              // Sprint #375 — strict country match (see GSC equivalent above)
-              if      (country === 'united states') histUs[idx].revenue += rev
-              else if (country === 'indonesia')      histId[idx].revenue += rev
+              // Sprint #376 — fuzzy country match
+              const mkt = classifyMarket(country)
+              if      (mkt === 'us') histUs[idx].revenue += rev
+              else if (mkt === 'id') histId[idx].revenue += rev
             }
           })
           .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 failed:`, e))
@@ -516,12 +539,13 @@ async function buildBrandBossView(
             for (const r of rows) {
               const q = String(r.keys?.[0] ?? '').toLowerCase().trim()
               if (!winnerSet.has(q)) continue
-              const country = String(r.keys?.[1] ?? '').toLowerCase()
+              const country = String(r.keys?.[1] ?? '')
               const clicks  = Number(r.clicks ?? 0)
               const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0 }
-              // Sprint #375 — strict country: only 'usa' / 'idn' counted.
-              if      (country === 'usa') bucket.us += clicks
-              else if (country === 'idn') bucket.id += clicks
+              // Sprint #376 — fuzzy country match
+              const mkt = classifyMarket(country)
+              if      (mkt === 'us') bucket.us += clicks
+              else if (mkt === 'id') bucket.id += clicks
               else continue
               clicksByKwMarket.set(q, bucket)
             }
@@ -537,12 +561,13 @@ async function buildBrandBossView(
             for (const r of rows) {
               const page    = String(r.keys?.[0] ?? '')
               const q       = String(r.keys?.[1] ?? '').toLowerCase().trim()
-              const country = String(r.keys?.[2] ?? '').toLowerCase()
+              const country = String(r.keys?.[2] ?? '')
               if (!winnerSet.has(q)) continue
-              // Sprint #375 — strict country: only USA/IDN rows considered.
-              if (country !== 'usa' && country !== 'idn') continue
+              // Sprint #376 — fuzzy country match
+              const mkt = classifyMarket(country)
+              if (!mkt) continue
               const clicks = Number(r.clicks ?? 0)
-              const isId   = country === 'idn'
+              const isId   = mkt === 'id'
               const path   = normalizePath(page)
               const entry  = topPageByKwMarket.get(q) ?? {}
               const slot   = isId ? entry.id : entry.us
@@ -567,13 +592,14 @@ async function buildBrandBossView(
             for (const r of rows) {
               if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
               const path    = normalizePath(r.landingPage ?? '')
-              const country = (r.country ?? '').toLowerCase()
+              const country = r.country ?? ''
               const rev     = parseFloat(r.totalRevenue ?? '0')
               if (!path) continue
               const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0 }
-              // Sprint #375 — strict country: only 'united states' / 'indonesia' counted.
-              if      (country === 'united states') bucket.us += rev
-              else if (country === 'indonesia')      bucket.id += rev
+              // Sprint #376 — fuzzy country match
+              const mkt = classifyMarket(country)
+              if      (mkt === 'us') bucket.us += rev
+              else if (mkt === 'id') bucket.id += rev
               else continue
               revenueByPathMarket.set(path, bucket)
             }
