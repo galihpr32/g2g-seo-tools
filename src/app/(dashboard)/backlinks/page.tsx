@@ -420,6 +420,21 @@ export default function BacklinksPage() {
     done: number; total: number; flipped_active: number; flipped_broken: number; errors: number
   } | null>(null)
 
+  // Sprint #387 BACKLINKS.SHEET.SYNC — Google Sheet (published CSV URL) sync
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false)
+  const [syncCfg, setSyncCfg] = useState<{
+    sheet_url:              string | null
+    last_synced_at:         string | null
+    last_sync_rows_added:   number | null
+    last_sync_rows_skipped: number | null
+    last_sync_rows_errored: number | null
+    last_sync_error:        string | null
+  } | null>(null)
+  const [syncUrlDraft, setSyncUrlDraft] = useState('')
+  const [syncSaving,   setSyncSaving]   = useState(false)
+  const [syncRunning,  setSyncRunning]  = useState(false)
+  const [syncResult,   setSyncResult]   = useState<string | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -444,6 +459,90 @@ export default function BacklinksPage() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { loadAnalytics(analyticsDays) }, [loadAnalytics, analyticsDays])
+
+  // Sprint #387 — load sheet sync config on mount
+  const loadSyncCfg = useCallback(async () => {
+    try {
+      const res = await fetch('/api/backlinks/sync')
+      if (!res.ok) return
+      const data = await res.json() as {
+        config: {
+          sheet_url:              string
+          last_synced_at:         string | null
+          last_sync_rows_added:   number | null
+          last_sync_rows_skipped: number | null
+          last_sync_rows_errored: number | null
+          last_sync_error:        string | null
+        } | null
+      }
+      if (data.config) {
+        setSyncCfg(data.config)
+        setSyncUrlDraft(data.config.sheet_url ?? '')
+      }
+    } catch { /* silent — sync is optional */ }
+  }, [])
+  useEffect(() => { loadSyncCfg() }, [loadSyncCfg])
+
+  // Sprint #387 — save URL
+  async function handleSaveSyncUrl() {
+    setSyncSaving(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch('/api/backlinks/sync', {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ sheet_url: syncUrlDraft.trim() }),
+      })
+      const data = await res.json().catch(() => ({})) as { config?: typeof syncCfg; error?: string }
+      if (!res.ok || data.error) {
+        setSyncResult(`✗ ${data.error ?? `HTTP ${res.status}`}`)
+        return
+      }
+      if (data.config) setSyncCfg(data.config)
+      setSyncResult('✓ URL saved')
+    } catch (e) {
+      setSyncResult(`✗ ${String(e)}`)
+    } finally {
+      setSyncSaving(false)
+    }
+  }
+
+  // Sprint #387 — run sync
+  async function handleRunSync() {
+    setSyncRunning(true)
+    setSyncResult(null)
+    try {
+      const res = await fetch('/api/backlinks/sync', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({}),
+      })
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean
+        added?: number
+        skipped?: number
+        errored?: number
+        totalRows?: number
+        errorSamples?: Array<{ row: number; reason: string }>
+        error?: string
+      }
+      if (!res.ok || data.error) {
+        setSyncResult(`✗ ${data.error ?? `HTTP ${res.status}`}`)
+        return
+      }
+      const samples = (data.errorSamples ?? []).map(s => `row ${s.row}: ${s.reason}`).join(' · ')
+      setSyncResult(
+        `✓ Synced ${data.totalRows ?? 0} rows · ${data.added ?? 0} added · ${data.skipped ?? 0} skipped (dup) · ${data.errored ?? 0} errored` +
+        (samples ? ` — ${samples}` : ''),
+      )
+      // Reload backlinks list + config (to pick up new last_synced_at, etc.)
+      await Promise.all([load(), loadSyncCfg()])
+    } catch (e) {
+      setSyncResult(`✗ ${String(e)}`)
+    } finally {
+      setSyncRunning(false)
+    }
+  }
 
   async function handleAdd(form: FormData) {
     const res = await fetch('/api/backlinks', {
@@ -686,6 +785,16 @@ export default function BacklinksPage() {
           <p className="text-gray-400 text-sm mt-1">Track all inbound links (paid + free guest posts + organic mentions) — monitor if they&apos;re still live and their ranking impact</p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Sprint #387 — Sheet Sync toggle */}
+          <button onClick={() => setSyncPanelOpen(o => !o)}
+            className={`text-sm px-4 py-2 rounded-lg border transition flex items-center gap-2 ${
+              syncPanelOpen
+                ? 'border-emerald-500 text-emerald-300 bg-emerald-500/10'
+                : 'border-gray-700 text-gray-300 hover:text-white hover:border-gray-500'
+            }`}
+            title="Sync backlinks from a published Google Sheet">
+            📊 Sheet Sync
+          </button>
           <button onClick={handleRefreshAll} disabled={refreshing || backlinks.length === 0}
             className="text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 disabled:opacity-40 transition flex items-center gap-2">
             {refreshing ? <><span className="animate-spin inline-block">⟳</span> Refreshing…</> : '⟳ Monthly Refresh'}
@@ -696,6 +805,83 @@ export default function BacklinksPage() {
           </button>
         </div>
       </div>
+
+      {/* Sprint #387 BACKLINKS.SHEET.SYNC — config + run panel */}
+      {syncPanelOpen && (
+        <div className="mb-4 max-w-7xl bg-gray-900/60 border border-gray-700 rounded-xl p-5">
+          <div className="flex items-start justify-between mb-3 gap-3 flex-wrap">
+            <div>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                📊 Sync from Google Sheet
+              </h3>
+              <p className="text-xs text-gray-400 mt-1 max-w-2xl">
+                Publish your sheet via{' '}
+                <span className="text-gray-300">File → Share → Publish to web → CSV format</span>,
+                paste the URL below, save, then Sync. Only NEW rows are added — existing backlinks
+                (matched by URL) are skipped to avoid overwriting your edits.
+              </p>
+            </div>
+            <a href="/backlinks-template.csv" download
+              className="text-xs px-3 py-1.5 rounded border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 whitespace-nowrap">
+              ⬇ Download CSV template
+            </a>
+          </div>
+
+          <div className="flex gap-2 mb-3 flex-wrap">
+            <input
+              type="url"
+              value={syncUrlDraft}
+              onChange={e => setSyncUrlDraft(e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/e/.../pub?output=csv"
+              className="flex-1 min-w-[300px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
+            />
+            <button onClick={handleSaveSyncUrl} disabled={syncSaving || !syncUrlDraft.trim()}
+              className="text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-300 hover:text-white hover:border-gray-500 disabled:opacity-40">
+              {syncSaving ? 'Saving…' : 'Save URL'}
+            </button>
+            <button onClick={handleRunSync} disabled={syncRunning || !syncCfg?.sheet_url}
+              className="text-sm px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white font-semibold disabled:opacity-40 disabled:hover:bg-emerald-700">
+              {syncRunning ? <><span className="animate-spin inline-block">⟳</span> Syncing…</> : '⚡ Sync Now'}
+            </button>
+          </div>
+
+          {syncCfg?.last_synced_at && (
+            <div className="text-xs text-gray-500">
+              Last sync: <span className="text-gray-300">{new Date(syncCfg.last_synced_at).toLocaleString()}</span>
+              {syncCfg.last_sync_rows_added != null && (
+                <>
+                  {' · '}
+                  <span className="text-emerald-300">+{syncCfg.last_sync_rows_added} added</span>
+                  {' · '}
+                  <span className="text-gray-400">{syncCfg.last_sync_rows_skipped ?? 0} skipped</span>
+                  {(syncCfg.last_sync_rows_errored ?? 0) > 0 && (
+                    <>
+                      {' · '}
+                      <span className="text-amber-300">{syncCfg.last_sync_rows_errored} errored</span>
+                    </>
+                  )}
+                </>
+              )}
+              {syncCfg.last_sync_error && (
+                <>
+                  {' · '}
+                  <span className="text-red-300">last error: {syncCfg.last_sync_error}</span>
+                </>
+              )}
+            </div>
+          )}
+
+          {syncResult && (
+            <div className={`mt-3 text-xs px-3 py-2 rounded border ${
+              syncResult.startsWith('✓')
+                ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/30'
+                : 'text-red-300 bg-red-500/10 border-red-500/30'
+            }`}>
+              {syncResult}
+            </div>
+          )}
+        </div>
+      )}
 
       {refreshResult && (
         <div className={`mb-4 text-sm px-4 py-2 rounded-lg border max-w-7xl ${refreshResult.startsWith('✓') ? 'text-green-400 bg-green-500/10 border-green-500/20' : 'text-red-400 bg-red-500/10 border-red-500/20'}`}>
