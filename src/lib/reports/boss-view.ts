@@ -494,13 +494,17 @@ async function buildBrandBossView(
     return total
   }
 
-  // Per-(KW × market) clicks bucket
-  const clicksByKwMarket = new Map<string, { us: number; id: number }>()
-  // Per-(KW × market) top landing page bucket
+  // Per-(KW × market) clicks bucket. `ww` (worldwide) accumulates EVERY
+  // GSC row regardless of country — used by OG's worldwide focus selection
+  // (Sprint #390). For G2G it's tracked but unused (selectFocus reads us/id).
+  const clicksByKwMarket = new Map<string, { us: number; id: number; ww: number }>()
+  // Per-(KW × market) top landing page bucket. `ww` = best LP across all
+  // countries (used by OG's worldwide selectFocus).
   type LpBucket = { path: string; clicks: number }
-  const topPageByKwMarket = new Map<string, { us?: LpBucket; id?: LpBucket }>()
-  // Per-(LP × market) GA4 revenue bucket
-  const revenueByPathMarket = new Map<string, { us: number; id: number }>()
+  const topPageByKwMarket = new Map<string, { us?: LpBucket; id?: LpBucket; ww?: LpBucket }>()
+  // Per-(LP × market) GA4 revenue bucket. `ww` is populated ONLY for OG (a
+  // separate uncountry-filtered GA4 LP query feeds it). G2G uses us/id only.
+  const revenueByPathMarket = new Map<string, { us: number; id: number; ww: number }>()
 
   // Fire 5 independent calls in parallel. Each call's parse/bucket logic runs
   // inside the call's .then() so the outer Promise.all just waits.
@@ -582,6 +586,9 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 3. Per-(KW × market) GSC clicks for current week
+    // Sprint #390 — accumulate worldwide (ww) clicks for every row regardless
+    // of country. US/ID-classified rows ALSO contribute to their respective
+    // market bucket. OG's worldwide selectFocus reads `ww`; G2G stays on us/id.
     auth && gscProperty
       ? getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['query', 'country'], 25000)
           .then(rows => {
@@ -592,12 +599,11 @@ async function buildBrandBossView(
               if (!winnerSet.has(q)) continue
               const country = String(r.keys?.[1] ?? '')
               const clicks  = Number(r.clicks ?? 0)
-              const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0 }
-              // Sprint #376 — fuzzy country match
+              const bucket  = clicksByKwMarket.get(q) ?? { us: 0, id: 0, ww: 0 }
+              bucket.ww += clicks
               const mkt = classifyMarket(country)
               if      (mkt === 'us') bucket.us += clicks
               else if (mkt === 'id') bucket.id += clicks
-              else continue
               clicksByKwMarket.set(q, bucket)
             }
           })
@@ -605,26 +611,44 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 4. Per-(KW × market) top landing page for current week
+    // Sprint #390 — also tracks `ww` (worldwide top LP) per KW: highest-click
+    // LP across all countries. Used by OG worldwide selectFocus. US/ID slots
+    // still populated for G2G's per-market focus.
     auth && gscProperty
       ? getSearchAnalytics(auth, gscProperty, cur.start, cur.end, ['page', 'query', 'country'], 25000)
           .then(rows => {
             const winnerSet = new Set(uniqueKeywords)
+            // Aggregate clicks per (kw, page) across ALL countries so the
+            // worldwide top LP isn't biased to one country's slice.
+            const wwClicks = new Map<string, number>()   // key = `${q}|${path}`
             for (const r of rows) {
               const page    = String(r.keys?.[0] ?? '')
               const q       = String(r.keys?.[1] ?? '').toLowerCase().trim()
               const country = String(r.keys?.[2] ?? '')
               if (!winnerSet.has(q)) continue
-              // Sprint #376 — fuzzy country match
-              const mkt = classifyMarket(country)
-              if (!mkt) continue
               const clicks = Number(r.clicks ?? 0)
-              const isId   = mkt === 'id'
               const path   = normalizePath(page)
               const entry  = topPageByKwMarket.get(q) ?? {}
-              const slot   = isId ? entry.id : entry.us
-              if (!slot || clicks > slot.clicks) {
-                if (isId) entry.id = { path, clicks }
-                else      entry.us = { path, clicks }
+              // Per-market US/ID slots (existing behavior, used by G2G)
+              const mkt = classifyMarket(country)
+              if (mkt === 'us') {
+                if (!entry.us || clicks > entry.us.clicks) entry.us = { path, clicks }
+              } else if (mkt === 'id') {
+                if (!entry.id || clicks > entry.id.clicks) entry.id = { path, clicks }
+              }
+              // Worldwide aggregation
+              const wwKey = `${q}|${path}`
+              wwClicks.set(wwKey, (wwClicks.get(wwKey) ?? 0) + clicks)
+              topPageByKwMarket.set(q, entry)
+            }
+            // Resolve worldwide top LP per KW from the aggregated map
+            for (const [key, totalClicks] of wwClicks.entries()) {
+              const sep  = key.indexOf('|')
+              const q    = key.slice(0, sep)
+              const path = key.slice(sep + 1)
+              const entry = topPageByKwMarket.get(q) ?? {}
+              if (!entry.ww || totalClicks > entry.ww.clicks) {
+                entry.ww = { path, clicks: totalClicks }
                 topPageByKwMarket.set(q, entry)
               }
             }
@@ -633,24 +657,33 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 5. GA4 LP revenue (current week, organic only)
-    // Sprint #382 — country variants + channel filter (see historical note).
+    // Sprint #390 — for OG (worldwide focus selection) drop country filter
+    // entirely and bucket ALL countries into `ww`. For G2G, keep country
+    // filtered to US/ID variants and bucket into us/id slots (existing
+    // behavior — G2G's focus selection is per-market).
     auth && ga4PropertyId
       ? getGA4Report(auth, ga4PropertyId, cur.start, cur.end,
           ['landingPage', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 10000,
-          {
-            andGroup: { expressions: [
-              { filter: { fieldName: 'country',
-                inListFilter: {
-                  values: ['United States', 'US', 'USA', 'United States of America',
-                           'Indonesia', 'ID', 'IDN'],
-                  caseSensitive: false,
-                } } },
-              { filter: { fieldName: 'sessionDefaultChannelGroup',
-                stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
-            ] },
-          })
+          siteSlug === 'offgamers'
+            ? {
+                // OG: channel filter only, no country filter
+                filter: { fieldName: 'sessionDefaultChannelGroup',
+                  stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } },
+              }
+            : {
+                // G2G: country + channel filter
+                andGroup: { expressions: [
+                  { filter: { fieldName: 'country',
+                    inListFilter: {
+                      values: ['United States', 'US', 'USA', 'United States of America',
+                               'Indonesia', 'ID', 'IDN'],
+                      caseSensitive: false,
+                    } } },
+                  { filter: { fieldName: 'sessionDefaultChannelGroup',
+                    stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+                ] },
+              })
           .then(resp => {
-            // Sprint #375 — switched to totalRevenue (was purchaseRevenue).
             const rows = parseGA4Rows(resp)
             empty.diagnostics.ga4_rev_pages_fetched = rows.length
             for (const r of rows) {
@@ -659,12 +692,16 @@ async function buildBrandBossView(
               const country = r.country ?? ''
               const rev     = parseFloat(r.totalRevenue ?? '0')
               if (!path) continue
-              const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0 }
-              // Sprint #376 — fuzzy country match
-              const mkt = classifyMarket(country)
-              if      (mkt === 'us') bucket.us += rev
-              else if (mkt === 'id') bucket.id += rev
-              else continue
+              const bucket = revenueByPathMarket.get(path) ?? { us: 0, id: 0, ww: 0 }
+              // OG: every row is worldwide-eligible. G2G: still split US/ID.
+              if (siteSlug === 'offgamers') {
+                bucket.ww += rev
+              } else {
+                const mkt = classifyMarket(country)
+                if      (mkt === 'us') bucket.us += rev
+                else if (mkt === 'id') bucket.id += rev
+                else continue
+              }
               revenueByPathMarket.set(path, bucket)
             }
           })
@@ -725,13 +762,11 @@ async function buildBrandBossView(
         clicks = c.id
         lp     = lpEntry?.id?.path ?? ''
       } else {
-        clicks = c.us + c.id
-        // For 'all', prefer the LP with more clicks
-        const usLp = lpEntry?.us
-        const idLp = lpEntry?.id
-        lp = !usLp ? (idLp?.path ?? '') :
-             !idLp ? usLp.path :
-             usLp.clicks >= idLp.clicks ? usLp.path : idLp.path
+        // Sprint #390 — 'all' is now true WORLDWIDE (was US+ID combined).
+        // OG portfolio is global; SG/MY/PH/TH all contribute. ww field was
+        // populated by every GSC row in the bucketing pass above.
+        clicks = c.ww
+        lp     = lpEntry?.ww?.path ?? lpEntry?.us?.path ?? lpEntry?.id?.path ?? ''
       }
       if (clicks <= 0) continue
       scopedTotalClicks += clicks
@@ -755,9 +790,12 @@ async function buildBrandBossView(
     for (const [lp, candList] of byLp.entries()) {
       const lpRevByMkt = revenueByPathMarket.get(lp)
       if (!lpRevByMkt) continue
+      // Sprint #390 — 'all' scope uses ww (worldwide GA4 LP revenue, populated
+      // for OG only by the country-unfiltered GA4 query). Fallback to us+id
+      // sum in case ww is zero (defensive for old cache).
       const lpRev = scope === 'us' ? lpRevByMkt.us :
                     scope === 'id' ? lpRevByMkt.id :
-                                     lpRevByMkt.us + lpRevByMkt.id
+                                     (lpRevByMkt.ww > 0 ? lpRevByMkt.ww : lpRevByMkt.us + lpRevByMkt.id)
       if (lpRev <= 0) continue
       // Winner = top-clicking KW for this LP. Tie-break by keyword string
       // alphabetical for determinism.
