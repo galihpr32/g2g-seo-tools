@@ -471,25 +471,15 @@ async function buildBrandBossView(
     return -1
   }
 
-  // Sprint #386 — shared bucketer for the two per-market historical GA4
-  // queries. Each call is country-pre-filtered at API level, so we don't
-  // need to classifyMarket() here — every row goes to the passed bucket.
+  // Sprint #388 — sum totalRevenue across all rows of a per-week GA4 response.
+  // Each per-week query is already country+channel filtered at API level,
+  // so every row counts toward the week total. Returns plain number.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const bucketRevenueByDate = (resp: any, bucket: HistoricalBucket[]): void => {
+  const sumRevenue = (resp: any): number => {
     const rows = parseGA4Rows(resp)
-    for (const r of rows) {
-      // Defensive: dimensionFilter is CONTAINS 'Organic' (catches Organic
-      // Search/Social/Video/Shopping). If GA4 ever changes its channel
-      // grouping, drop the row instead of silently inflating bucket totals.
-      if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
-      const raw = String(r.date ?? '')
-      // GA4 date dim returns YYYYMMDD — normalize to YYYY-MM-DD
-      const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
-      const rev  = parseFloat(r.totalRevenue ?? '0')
-      const idx  = findWeekIdx(date)
-      if (idx < 0) continue
-      bucket[idx].revenue += rev
-    }
+    let total = 0
+    for (const r of rows) total += parseFloat(r.totalRevenue ?? '0')
+    return total
   }
 
   // Per-(KW × market) clicks bucket
@@ -525,56 +515,57 @@ async function buildBrandBossView(
       : Promise.resolve(),
 
     // 2. Historical GA4 (full window, organic only)
-    // Sprint #377 — added dimensionFilter to dodge GA4 sampling. Without
-    //              it, dim=[date,country,channelGroup] over 13 weeks generates
-    //              ~200K row permutations and GA4 silently samples to ~25%.
-    // Sprint #381 — Tried channel-only filter; still sampled (~54K rows).
-    // Sprint #382 — Country variants + caseSensitive: false; identical
-    //              output → GA4 only emits "United States" anyway, variants
-    //              were never the bottleneck.
-    // Sprint #383 — Frustration hardcode of dashboard values (removed in #386).
-    // Sprint #386 — ROOT FIX. Split into TWO parallel queries (US + ID),
-    //              drop `country` from dimensions (keep in filter only),
-    //              and drop high-cardinality `country` dim entirely.
-    //              Per-query: dim=[date, channel] → 91 days × ~3 channel
-    //              variants = ~273 rows. Way under sampling threshold for
-    //              any GA4 property tier. The GA4 Traffic Acquisition
-    //              standard report works the same way (no `date` × per-country
-    //              breakdown) which is why it shows unsampled $713K.
+    // Sprint #377 — added dimensionFilter to dodge GA4 sampling. Failed.
+    // Sprint #381 — channel-only filter. Failed.
+    // Sprint #382 — country variants + caseSensitive: false. Failed.
+    // Sprint #383 — frustration hardcode (removed in #386).
+    // Sprint #386 — split historical into per-market queries (US + ID),
+    //              drop country from dimensions. Got us $201K → $241K only
+    //              (truth is $713K). Still ~66% under. GA4 sampling is
+    //              triggered by query SCAN volume (events touched), not
+    //              output row count — a 91-day single-query scan touches
+    //              way too many sessions and samples down regardless of
+    //              how few dims/rows we ask for.
+    // Sprint #388 — PER-WEEK fan-out. For each of the 13 weeks, fire a
+    //              separate 7-day GA4 query per market. Per-query scan
+    //              volume is ~1/13th the previous size, well under sampling
+    //              threshold even on huge properties. 13 × 2 markets =
+    //              26 calls per brand, all parallel. Net wall-time =
+    //              single call latency (GA4 handles concurrent fine).
     auth && ga4PropertyId
       ? Promise.all([
-          // ── US slice ────────────────────────────────────────────────
-          getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
-              ['date', 'sessionDefaultChannelGroup'], ['totalRevenue'], 5000,
-              {
-                andGroup: { expressions: [
-                  { filter: { fieldName: 'country',
-                    inListFilter: {
-                      values: ['United States', 'US', 'USA', 'United States of America'],
-                      caseSensitive: false,
-                    } } },
-                  { filter: { fieldName: 'sessionDefaultChannelGroup',
-                    stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
-                ] },
-              })
-            .then(resp => bucketRevenueByDate(resp, histUs))
-            .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 US failed:`, e)),
-          // ── ID slice ────────────────────────────────────────────────
-          getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
-              ['date', 'sessionDefaultChannelGroup'], ['totalRevenue'], 5000,
-              {
-                andGroup: { expressions: [
-                  { filter: { fieldName: 'country',
-                    inListFilter: {
-                      values: ['Indonesia', 'ID', 'IDN'],
-                      caseSensitive: false,
-                    } } },
-                  { filter: { fieldName: 'sessionDefaultChannelGroup',
-                    stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
-                ] },
-              })
-            .then(resp => bucketRevenueByDate(resp, histId))
-            .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 ID failed:`, e)),
+          ...weeks.flatMap((w, idx) => [
+            getGA4Report(auth, ga4PropertyId, w.start, w.end,
+                ['date'], ['totalRevenue'], 100,
+                {
+                  andGroup: { expressions: [
+                    { filter: { fieldName: 'country',
+                      inListFilter: {
+                        values: ['United States', 'US', 'USA', 'United States of America'],
+                        caseSensitive: false,
+                      } } },
+                    { filter: { fieldName: 'sessionDefaultChannelGroup',
+                      stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+                  ] },
+                })
+              .then(resp => { histUs[idx].revenue = sumRevenue(resp) })
+              .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 US week ${w.start} failed:`, e)),
+            getGA4Report(auth, ga4PropertyId, w.start, w.end,
+                ['date'], ['totalRevenue'], 100,
+                {
+                  andGroup: { expressions: [
+                    { filter: { fieldName: 'country',
+                      inListFilter: {
+                        values: ['Indonesia', 'ID', 'IDN'],
+                        caseSensitive: false,
+                      } } },
+                    { filter: { fieldName: 'sessionDefaultChannelGroup',
+                      stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+                  ] },
+                })
+              .then(resp => { histId[idx].revenue = sumRevenue(resp) })
+              .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 ID week ${w.start} failed:`, e)),
+          ]),
         ]).then(() => { /* collapse to void for Promise.all parent */ })
       : Promise.resolve(),
 
