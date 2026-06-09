@@ -365,7 +365,19 @@ export async function buildBossView(opts: BuildBossViewOptions): Promise<BossVie
 //   - G2G focus KW split per market (US list + ID list, scored within
 //     market); OG focus KW unified (US+ID combined)
 
-const MIN_CLICKS_FOR_FOCUS = 10   // ignore KWs with <10 clicks/week in selection
+// Sprint #389 — adaptive min-clicks threshold. Static 10 was too restrictive
+// for small brands/markets (OG had only 1 KW pass, G2G-ID only 3). Now derived
+// per scope from total weekly clicks: max(3, scoped_total / 1000).
+//   G2G-US  (~75K clicks)  → threshold 75   (stays tight; lots of high-traffic KWs)
+//   G2G-ID  (~12K clicks)  → threshold 12
+//   OG-US   (~1.2K clicks) → threshold 3    (don't gate out the long tail)
+//   OG-all  (~1.5K clicks) → threshold 3
+// Floor of 3 keeps single-click flukes from polluting any scope.
+const FOCUS_MIN_CLICKS_FLOOR     = 3
+const FOCUS_CLICKS_SCALE_DIVISOR = 1000
+function adaptiveMinClicks(scopedTotalClicks: number): number {
+  return Math.max(FOCUS_MIN_CLICKS_FLOOR, Math.floor(scopedTotalClicks / FOCUS_CLICKS_SCALE_DIVISOR))
+}
 
 async function buildBrandBossView(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -686,15 +698,21 @@ async function buildBrandBossView(
   //   1. Collect candidate KWs with their scoped clicks + top LP within scope
   //   2. Group candidates by LP. For each LP, only the top-clicking KW gets
   //      the LP's revenue. Other KWs sharing the LP get $0 (winner-take-all).
-  //   3. Filter to KWs with ≥ MIN_CLICKS_FOR_FOCUS clicks in scope.
+  //   3. Filter to KWs with ≥ adaptiveMinClicks(scoped_total) clicks in scope.
   //   4. Z-score normalize clicks + revenue, sum, top 5 by composite.
+  //
+  // Sprint #389 — threshold is now scope-adaptive, so small brands/markets
+  // (OG, G2G-ID) still surface 5 focus KW instead of getting gated out by a
+  // static "≥10 clicks" rule designed for G2G-US's traffic volume.
   //
   // selectFocus also captures the top-clicking LP per KW so the table can
   // display "Why this KW?" — that LP is shown beneath the keyword.
   function selectFocus(scope: 'us' | 'id' | 'all'): BossViewFocusKeyword[] {
     type Cand = { keyword: string; clicks: number; lp: string; revenue: number }
-    // 1. Collect raw candidates
-    const raw: Cand[] = []
+    // 1. First pass: collect ALL candidates with scoped clicks (no threshold
+    //    yet — need to compute scoped total first to derive threshold).
+    const allCands: Cand[] = []
+    let scopedTotalClicks = 0
     for (const kw of uniqueKeywords) {
       const c = clicksByKwMarket.get(kw)
       if (!c) continue
@@ -715,9 +733,13 @@ async function buildBrandBossView(
              !idLp ? usLp.path :
              usLp.clicks >= idLp.clicks ? usLp.path : idLp.path
       }
-      if (clicks < MIN_CLICKS_FOR_FOCUS) continue
-      raw.push({ keyword: kw, clicks, lp, revenue: 0 })
+      if (clicks <= 0) continue
+      scopedTotalClicks += clicks
+      allCands.push({ keyword: kw, clicks, lp, revenue: 0 })
     }
+    // Sprint #389 — adaptive threshold: scales with brand-market traffic.
+    const minClicks = adaptiveMinClicks(scopedTotalClicks)
+    const raw = allCands.filter(c => c.clicks >= minClicks)
     if (raw.length === 0) return []
 
     // 2. Winner-take-all by LP within scope
@@ -848,7 +870,7 @@ async function buildBrandBossView(
   }
 
   if (allFocusKws.length === 0) {
-    empty.diagnostics.skip_reason = `no cluster_winners cleared ${MIN_CLICKS_FOR_FOCUS}-clicks threshold`
+    empty.diagnostics.skip_reason = `no cluster_winners cleared adaptive min-clicks threshold (floor ${FOCUS_MIN_CLICKS_FLOOR})`
   }
 
   return {
