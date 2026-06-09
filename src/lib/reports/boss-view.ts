@@ -471,6 +471,27 @@ async function buildBrandBossView(
     return -1
   }
 
+  // Sprint #386 — shared bucketer for the two per-market historical GA4
+  // queries. Each call is country-pre-filtered at API level, so we don't
+  // need to classifyMarket() here — every row goes to the passed bucket.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bucketRevenueByDate = (resp: any, bucket: HistoricalBucket[]): void => {
+    const rows = parseGA4Rows(resp)
+    for (const r of rows) {
+      // Defensive: dimensionFilter is CONTAINS 'Organic' (catches Organic
+      // Search/Social/Video/Shopping). If GA4 ever changes its channel
+      // grouping, drop the row instead of silently inflating bucket totals.
+      if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
+      const raw = String(r.date ?? '')
+      // GA4 date dim returns YYYYMMDD — normalize to YYYY-MM-DD
+      const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
+      const rev  = parseFloat(r.totalRevenue ?? '0')
+      const idx  = findWeekIdx(date)
+      if (idx < 0) continue
+      bucket[idx].revenue += rev
+    }
+  }
+
   // Per-(KW × market) clicks bucket
   const clicksByKwMarket = new Map<string, { us: number; id: number }>()
   // Per-(KW × market) top landing page bucket
@@ -505,53 +526,56 @@ async function buildBrandBossView(
 
     // 2. Historical GA4 (full window, organic only)
     // Sprint #377 — added dimensionFilter to dodge GA4 sampling. Without
-    // it, dim=[date,country,channelGroup] over 13 weeks generates ~200K
-    // row permutations and GA4 silently samples to ~25% of actuals.
-    // Sprint #381 — DROPPED country filter, kept channel-only. But that
-    // still left ~54K rows (91 days × ~200 countries × ~3 organic channels)
-    // — over sampling threshold — and revenue STILL came back at ~25% of
-    // actual ($200K vs expected $713K).
-    // Sprint #382 — BRING BACK country filter but enumerate every variant
-    // GA4 has been observed to emit ('US' / 'USA' / display name / etc.),
-    // and force `caseSensitive: false` so the API stops doing exact match.
-    // ~7 countries × 91 days × 3 channels ≈ 1.9K rows, well under sampling.
+    //              it, dim=[date,country,channelGroup] over 13 weeks generates
+    //              ~200K row permutations and GA4 silently samples to ~25%.
+    // Sprint #381 — Tried channel-only filter; still sampled (~54K rows).
+    // Sprint #382 — Country variants + caseSensitive: false; identical
+    //              output → GA4 only emits "United States" anyway, variants
+    //              were never the bottleneck.
+    // Sprint #383 — Frustration hardcode of dashboard values (removed in #386).
+    // Sprint #386 — ROOT FIX. Split into TWO parallel queries (US + ID),
+    //              drop `country` from dimensions (keep in filter only),
+    //              and drop high-cardinality `country` dim entirely.
+    //              Per-query: dim=[date, channel] → 91 days × ~3 channel
+    //              variants = ~273 rows. Way under sampling threshold for
+    //              any GA4 property tier. The GA4 Traffic Acquisition
+    //              standard report works the same way (no `date` × per-country
+    //              breakdown) which is why it shows unsampled $713K.
     auth && ga4PropertyId
-      ? getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
-          ['date', 'country', 'sessionDefaultChannelGroup'], ['totalRevenue'], 25000,
-          {
-            andGroup: { expressions: [
-              { filter: { fieldName: 'country',
-                inListFilter: {
-                  values: ['United States', 'US', 'USA', 'United States of America',
-                           'Indonesia', 'ID', 'IDN'],
-                  caseSensitive: false,
-                } } },
-              { filter: { fieldName: 'sessionDefaultChannelGroup',
-                stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
-            ] },
-          })
-          .then(resp => {
-            // Sprint #375 — switched purchaseRevenue → totalRevenue to match
-            // what GA4's "Total revenue" dashboard column shows. For a pure
-            // marketplace they're usually identical, but totalRevenue also
-            // includes ad/subscription revenue if any.
-            const rows = parseGA4Rows(resp)
-            for (const r of rows) {
-              if (!(r.sessionDefaultChannelGroup ?? '').toLowerCase().includes('organic')) continue
-              const raw = String(r.date ?? '')
-              // GA4 date dim returns YYYYMMDD — normalize to YYYY-MM-DD
-              const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw
-              const country = r.country ?? ''
-              const rev     = parseFloat(r.totalRevenue ?? '0')
-              const idx = findWeekIdx(date)
-              if (idx < 0) continue
-              // Sprint #376 — fuzzy country match
-              const mkt = classifyMarket(country)
-              if      (mkt === 'us') histUs[idx].revenue += rev
-              else if (mkt === 'id') histId[idx].revenue += rev
-            }
-          })
-          .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 failed:`, e))
+      ? Promise.all([
+          // ── US slice ────────────────────────────────────────────────
+          getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
+              ['date', 'sessionDefaultChannelGroup'], ['totalRevenue'], 5000,
+              {
+                andGroup: { expressions: [
+                  { filter: { fieldName: 'country',
+                    inListFilter: {
+                      values: ['United States', 'US', 'USA', 'United States of America'],
+                      caseSensitive: false,
+                    } } },
+                  { filter: { fieldName: 'sessionDefaultChannelGroup',
+                    stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+                ] },
+              })
+            .then(resp => bucketRevenueByDate(resp, histUs))
+            .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 US failed:`, e)),
+          // ── ID slice ────────────────────────────────────────────────
+          getGA4Report(auth, ga4PropertyId, historical.start, historical.end,
+              ['date', 'sessionDefaultChannelGroup'], ['totalRevenue'], 5000,
+              {
+                andGroup: { expressions: [
+                  { filter: { fieldName: 'country',
+                    inListFilter: {
+                      values: ['Indonesia', 'ID', 'IDN'],
+                      caseSensitive: false,
+                    } } },
+                  { filter: { fieldName: 'sessionDefaultChannelGroup',
+                    stringFilter: { matchType: 'CONTAINS', value: 'Organic', caseSensitive: false } } },
+                ] },
+              })
+            .then(resp => bucketRevenueByDate(resp, histId))
+            .catch(e => console.warn(`[boss-view ${siteSlug}] historical GA4 ID failed:`, e)),
+        ]).then(() => { /* collapse to void for Promise.all parent */ })
       : Promise.resolve(),
 
     // 3. Per-(KW × market) GSC clicks for current week
@@ -645,32 +669,10 @@ async function buildBrandBossView(
       : Promise.resolve(),
   ])
 
-  // ─── TEMPORARY HARDCODE OVERRIDE (Sprint #383) ────────────────────────
-  // 2026-06-08: GA4 API keeps returning sampled data (~28% of actual).
-  //   Boss view: $201K US organic for week May 28-Jun 3
-  //   GA4 dashboard truth: $713K US organic for week May 27-Jun 2
-  //   Sprint #382 country variants didn't help (output identical).
-  // Patching current + prev week buckets with dashboard values so today's
-  // demo to boss shows correct numbers. The older historical weeks are
-  // also visibly under-reported (~$200-400K vs reality probably $700K-1M+
-  // range), so applying the same ratio across all G2G US buckets to keep
-  // the chart trend shape consistent.
-  // REMOVE THIS BLOCK once root cause is identified (Sprint #384).
-  if (siteSlug === 'g2g' && histUs.length >= 2) {
-    const GA4_DASH_CUR_US  = 713687.03      // May 27-Jun 2 (1-day window shift OK)
-    const GA4_DASH_PREV_US = 493006.23      // May 20-26
-    const curBucket = histUs[histUs.length - 1]
-    const observedCur = curBucket?.revenue || 1
-    const ratio = GA4_DASH_CUR_US / observedCur
-    for (const b of histUs) b.revenue = +(b.revenue * ratio).toFixed(2)
-    // Force exact dashboard values for the two anchor weeks (in case ratio
-    // drift accumulates noticeable rounding on prev).
-    histUs[histUs.length - 1].revenue = GA4_DASH_CUR_US
-    histUs[histUs.length - 2].revenue = GA4_DASH_PREV_US
-  }
-
   // KPI strip values (this wk + last wk) come straight from the historical
   // buckets — last 2 entries — so we don't duplicate API calls.
+  // (Sprint #383 hardcode override removed in #386 — root sampling cause
+  // fixed by splitting historical query into per-market calls.)
   const lastIdx = weeks.length - 1
   const prevIdx = weeks.length - 2
   const trafficUsCur  = lastIdx >= 0 ? histUs[lastIdx].clicks : 0
