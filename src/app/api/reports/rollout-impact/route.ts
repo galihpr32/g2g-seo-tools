@@ -84,12 +84,26 @@ export async function GET(req: Request) {
     })
   }
 
-  // 2. Pull ALL snapshots for these products
+  // 2. Pull snapshots for these products within the lookback window.
+  //
+  // Sprint #393 fixes:
+  //   (a) Add owner_user_id filter — previously omitted, which let legacy /
+  //       other-owner rows tied to the same product_tier_id leak in and
+  //       hijack baseline/latest dates (we'd see 2026-05-13 → 2026-05-14
+  //       stale May data even when fresh 6/4 snapshots existed).
+  //   (b) Add a 60-day lookback. Without it baseline_date = global oldest
+  //       snapshot (could be years old) so the comparison never reflects
+  //       recent rollout impact. 60 days gives 2-3 monthly runs to compare.
   const productIds = products.map(p => p.id)
+  const lookbackDays  = 60
+  const lookbackStart = new Date(Date.now() - lookbackDays * 86_400_000)
+    .toISOString().slice(0, 10)
   const { data: snaps } = await db
     .from('tier_serp_snapshots')
     .select('product_tier_id, keyword, market, snapshot_date, our_position')
+    .eq('owner_user_id', ownerId)
     .in('product_tier_id', productIds)
+    .gte('snapshot_date', lookbackStart)
     .order('snapshot_date', { ascending: true })
 
   if (!snaps?.length) {
