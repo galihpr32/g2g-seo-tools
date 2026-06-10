@@ -121,23 +121,28 @@ export async function GET(req: Request) {
     })
   }
 
-  // Sprint #394 — density-based baseline picker. Group all snapshots by
-  // snapshot_date, count rows per date, then KEEP only dates with row
-  // count ≥ 50% of the max row count. This drops partial/test runs (e.g.
-  // 1-2 rows on 5/13 from an early bring-up) so baseline picks the first
-  // FULL run instead. Then we filter `snaps` to only those qualifying dates.
+  // Sprint #394/#396 — replaced "density relative to max" (was too aggressive
+  // when one date had a bulk seed run that dwarfed normal runs, causing only
+  // that single date to survive and baseline=latest=same-day self-comparison)
+  // with an ABSOLUTE row floor. Drops obvious test/partial runs (< 5 rows)
+  // but keeps every real scrape run regardless of its size relative to peers.
+  const ABS_FLOOR = 5
   const rowCountByDate = new Map<string, number>()
   for (const s of snaps as Snapshot[]) {
     rowCountByDate.set(s.snapshot_date, (rowCountByDate.get(s.snapshot_date) ?? 0) + 1)
   }
-  const maxRowCount       = Math.max(0, ...Array.from(rowCountByDate.values()))
-  const densityThreshold  = Math.floor(maxRowCount * 0.5)
-  const qualifyingDates   = new Set(
+  const qualifyingDates = new Set(
     Array.from(rowCountByDate.entries())
-      .filter(([, count]) => count >= densityThreshold)
+      .filter(([, count]) => count >= ABS_FLOOR)
       .map(([date]) => date),
   )
   const filteredSnaps = (snaps as Snapshot[]).filter(s => qualifyingDates.has(s.snapshot_date))
+
+  // Build a sorted histogram for diagnostics — shows the UI exactly which
+  // dates were considered and how many rows each had.
+  const dateHistogram = Array.from(rowCountByDate.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, count]) => ({ date, count, kept: qualifyingDates.has(date) }))
 
   // 3. Bucket by (product, keyword, market) → list of qualifying snapshots
   type Key = string
@@ -248,10 +253,13 @@ export async function GET(req: Request) {
       keywords_unchanged: totalUnchanged,
       keywords_new:       totalNew,
       keywords_lost:      totalLost,
-      // Sprint #394 — use FILTERED snaps (density-qualified runs only) so
+      // Sprint #394/#396 — use FILTERED snaps (qualifying runs only) so
       // baseline shows the first proper run, not a 1-row test snapshot.
       baseline_date: filteredSnaps[0]?.snapshot_date ?? null,
       latest_date:   filteredSnaps[filteredSnaps.length - 1]?.snapshot_date ?? null,
+      // Sprint #396 — surface the date histogram so the UI/devtools can
+      // verify which dates were considered + dropped, and why.
+      date_histogram: dateHistogram,
     },
     products: productSummaries,
   })
