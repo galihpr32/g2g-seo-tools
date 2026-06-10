@@ -68,6 +68,12 @@ export async function GET(req: Request) {
 
   const { searchParams } = new URL(req.url)
   const baselineParam = searchParams.get('baseline')   // ISO date or null
+  // Sprint #395 — market filter. Default to US + ID only (matches boss
+  // view + monthly report scope). Override with ?markets=us,id,de etc.
+  const rawMarkets = searchParams.get('markets')
+  const markets    = (rawMarkets ? rawMarkets.split(',') : ['us', 'id'])
+    .map(m => m.trim().toLowerCase())
+    .filter(Boolean)
 
   // 1. Pull tier products
   const { data: products } = await db
@@ -103,6 +109,7 @@ export async function GET(req: Request) {
     .select('product_tier_id, keyword, market, snapshot_date, our_position')
     .eq('owner_user_id', ownerId)
     .in('product_tier_id', productIds)
+    .in('market', markets)                         // Sprint #395 — US + ID only by default
     .gte('snapshot_date', lookbackStart)
     .order('snapshot_date', { ascending: true })
 
@@ -114,10 +121,28 @@ export async function GET(req: Request) {
     })
   }
 
-  // 3. Bucket by (product, keyword, market) → list of snapshots
+  // Sprint #394 — density-based baseline picker. Group all snapshots by
+  // snapshot_date, count rows per date, then KEEP only dates with row
+  // count ≥ 50% of the max row count. This drops partial/test runs (e.g.
+  // 1-2 rows on 5/13 from an early bring-up) so baseline picks the first
+  // FULL run instead. Then we filter `snaps` to only those qualifying dates.
+  const rowCountByDate = new Map<string, number>()
+  for (const s of snaps as Snapshot[]) {
+    rowCountByDate.set(s.snapshot_date, (rowCountByDate.get(s.snapshot_date) ?? 0) + 1)
+  }
+  const maxRowCount       = Math.max(0, ...Array.from(rowCountByDate.values()))
+  const densityThreshold  = Math.floor(maxRowCount * 0.5)
+  const qualifyingDates   = new Set(
+    Array.from(rowCountByDate.entries())
+      .filter(([, count]) => count >= densityThreshold)
+      .map(([date]) => date),
+  )
+  const filteredSnaps = (snaps as Snapshot[]).filter(s => qualifyingDates.has(s.snapshot_date))
+
+  // 3. Bucket by (product, keyword, market) → list of qualifying snapshots
   type Key = string
   const byKey = new Map<Key, Snapshot[]>()
-  for (const s of snaps as Snapshot[]) {
+  for (const s of filteredSnaps) {
     const k = `${s.product_tier_id}|${s.keyword}|${s.market}`
     const arr = byKey.get(k) ?? []
     arr.push(s)
@@ -223,9 +248,10 @@ export async function GET(req: Request) {
       keywords_unchanged: totalUnchanged,
       keywords_new:       totalNew,
       keywords_lost:      totalLost,
-      // Earliest + latest snapshot dates (so UI can show "from MAY 1 → MAY 28")
-      baseline_date: (snaps as Snapshot[])[0]?.snapshot_date ?? null,
-      latest_date:   (snaps as Snapshot[])[(snaps as Snapshot[]).length - 1]?.snapshot_date ?? null,
+      // Sprint #394 — use FILTERED snaps (density-qualified runs only) so
+      // baseline shows the first proper run, not a 1-row test snapshot.
+      baseline_date: filteredSnaps[0]?.snapshot_date ?? null,
+      latest_date:   filteredSnaps[filteredSnaps.length - 1]?.snapshot_date ?? null,
     },
     products: productSummaries,
   })
