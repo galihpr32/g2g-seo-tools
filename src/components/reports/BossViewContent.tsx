@@ -56,6 +56,9 @@ export interface BossViewBrand {
   traffic:  { us: BossViewMarketSlice; id: BossViewMarketSlice }
   revenue:  { us: BossViewMarketSlice; id: BossViewMarketSlice }
   historical: { us: HistoricalBucket[]; id: HistoricalBucket[] }
+  // Sprint #397 — set when GSC clicks landed but GA4 revenue is still
+  // aggregating (24-48h lag). UI shows a banner instead of misleading $0.
+  revenuePending?: { us: boolean; id: boolean }
   focusKeywordsUs?: FocusKeyword[]
   focusKeywordsId?: FocusKeyword[]
   focusKeywords?:   FocusKeyword[]
@@ -782,6 +785,35 @@ export function BossViewContent({
               title="Generate a branded, server-side PDF (10–30s)"
             >{pdfBusy ? '⏳ Generating PDF…' : '📄 Download PDF'}</button>
           </div>
+          {/* Sprint #397 — GA4 freshness banner. Shows when ANY brand-market
+              has GSC clicks for the current week but GA4 revenue is still 0
+              (typical 24-48h aggregation lag). Actionable guidance below
+              tells the viewer exactly what to do. */}
+          {(() => {
+            const pendingMarkets: string[] = []
+            for (const b of payload.brands) {
+              if (b.revenuePending?.us) pendingMarkets.push(`${b.siteName}-US`)
+              if (b.revenuePending?.id) pendingMarkets.push(`${b.siteName}-ID`)
+            }
+            if (pendingMarkets.length === 0) return null
+            return (
+              <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 text-sm">
+                <p className="text-amber-300 font-semibold mb-1">⏳ GA4 revenue still aggregating</p>
+                <p className="text-amber-200/80 leading-relaxed">
+                  Clicks landed but revenue events haven&apos;t finished aggregating for{' '}
+                  <span className="font-mono">{pendingMarkets.join(', ')}</span>.
+                  GA4 typically needs 24–48h post-week to finalize purchase data.
+                </p>
+                <p className="text-amber-200/70 leading-relaxed mt-2 text-xs">
+                  <span className="font-semibold">What to do:</span> wait until tomorrow same hour, then click
+                  <span className="text-amber-100"> 🔄 Refresh data</span>. Verify by opening{' '}
+                  <a className="underline hover:text-amber-100" href="https://analytics.google.com" target="_blank" rel="noreferrer">GA4 dashboard</a>
+                  {' '}→ Reports → Traffic acquisition → Country filter to your market → check the date range matches the snapshot window.
+                </p>
+              </div>
+            )
+          })()}
+
           {/* ── KPI Strip ── */}
           <section className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
             {payload.brands.flatMap(b => (['us', 'id'] as const).map(m => {
@@ -792,13 +824,24 @@ export function BossViewContent({
               const r = b.revenue?.[m] ?? empty
               const tp = fmtPct(t.pct)
               const rp = fmtPct(r.pct)
+              // Sprint #397 — flag this card if GA4 revenue hasn't aggregated yet.
+              const pending = b.revenuePending?.[m] === true
               return (
-                <div key={`${b.siteSlug}-${m}`} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <div key={`${b.siteSlug}-${m}`} className={`bg-gray-900 border rounded-xl p-4 ${pending ? 'border-amber-500/40' : 'border-gray-800'}`}>
                   <p className="text-gray-500 text-[10px] uppercase tracking-wider font-semibold">{b.siteName}-{m.toUpperCase()}</p>
                   <p className="text-white font-mono text-xl mt-2">{fmtNum(t.thisWeek)}</p>
                   <p className="text-xs"><span style={{ color: tp.color }}>{tp.emoji} {tp.text} WoW</span></p>
-                  <p className="text-emerald-300 font-mono text-base mt-2">{fmtUsd(r.thisWeek)}</p>
-                  <p className="text-xs"><span style={{ color: rp.color }}>{rp.emoji} {rp.text} WoW</span></p>
+                  {pending ? (
+                    <>
+                      <p className="text-amber-300 font-mono text-base mt-2">⏳ pending</p>
+                      <p className="text-xs text-amber-200/70">GA4 still aggregating</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-emerald-300 font-mono text-base mt-2">{fmtUsd(r.thisWeek)}</p>
+                      <p className="text-xs"><span style={{ color: rp.color }}>{rp.emoji} {rp.text} WoW</span></p>
+                    </>
+                  )}
                 </div>
               )
             }))}

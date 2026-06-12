@@ -149,6 +149,12 @@ export interface BossViewBrand {
   traffic: { us: BossViewMarketSlice; id: BossViewMarketSlice }
   revenue: { us: BossViewMarketSlice; id: BossViewMarketSlice }
 
+  // Sprint #397 — flags per-market revenue pending freshness from GA4 (clicks
+  // arrived from GSC but revenue events haven't finished aggregating; typically
+  // a 24-48h lag on the current week). UI surfaces a banner with actionable
+  // guidance instead of showing $0 / -100% WoW as if real.
+  revenuePending?: { us: boolean; id: boolean }
+
   // Sprint #363 — 4 historical timelines, Jan 1 of current year → latest
   // completed Thu→Wed week. Keys: 'us' + 'id'. OG-ID timeline still rendered
   // even though OG's focus KW are unified — exec wants to see if ID traffic
@@ -724,6 +730,15 @@ async function buildBrandBossView(
   const revUsPrev = prevIdx >= 0 ? histUs[prevIdx].revenue : 0
   const revIdPrev = prevIdx >= 0 ? histId[prevIdx].revenue : 0
 
+  // Sprint #397 — detect GA4 data freshness gap. Heuristic: if traffic
+  // arrived (GSC) but revenue is 0 (GA4) for the current week, GA4 hasn't
+  // finished aggregating yet. The UI banner picks this up to show actionable
+  // guidance instead of misleading $0/-100% WoW numbers.
+  const revenuePending = {
+    us: trafficUsCur > 0 && revUsCur === 0,
+    id: trafficIdCur > 0 && revIdCur === 0,
+  }
+
   // (clicksByKwMarket, topPageByKwMarket, revenueByPathMarket are all
   // populated by the parallel Promise.all block above. Just declare the
   // maps before they're used — actual data already in by the time we get
@@ -923,6 +938,7 @@ async function buildBrandBossView(
       id: { thisWeek: revIdCur, lastWeek: revIdPrev, pct: pctChange(revIdCur, revIdPrev) },
     },
     historical: { us: histUs, id: histId },
+    revenuePending,
     focusKeywordsUs,
     focusKeywordsId,
     focusKeywords,
